@@ -30,6 +30,20 @@ def route_webhook_event(
             "zen": payload.get("zen", ""),
         }
 
+    # 0. GitHub Push Events (Self-Update & Hot Reload on main)
+    elif event_type == "push":
+        ref = payload.get("ref", "")
+        if ref in ("refs/heads/main", "refs/heads/master"):
+            return {
+                "status": "accepted",
+                "action": "self_update",
+                "ref": ref,
+            }
+        return {
+            "status": "ignored",
+            "reason": f"Push ref '{ref}' is not target main branch",
+        }
+
     # 1. Pull Request Events
     elif event_type == "pull_request":
         action = payload.get("action")

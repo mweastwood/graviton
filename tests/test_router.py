@@ -175,6 +175,25 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["agent"], "code_fixer")
         self.assertIn("Draft initial PR for Issue #55", result["prompt"])
 
+    def test_push_main_event(self):
+        payload = {"ref": "refs/heads/main"}
+        result = route_webhook_event("push", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["action"], "self_update")
+        self.assertEqual(result["ref"], "refs/heads/main")
+
+    def test_push_master_event(self):
+        payload = {"ref": "refs/heads/master"}
+        result = route_webhook_event("push", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["action"], "self_update")
+        self.assertEqual(result["ref"], "refs/heads/master")
+
+    def test_push_feature_branch_ignored(self):
+        payload = {"ref": "refs/heads/feat/some-feature"}
+        result = route_webhook_event("push", payload)
+        self.assertEqual(result["status"], "ignored")
+
     def test_unknown_event_type(self):
         result = route_webhook_event("unknown_event", {})
         self.assertEqual(result["status"], "ignored")
