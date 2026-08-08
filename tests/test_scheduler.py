@@ -1,0 +1,210 @@
+"""
+Unit tests for Periodic Background Task Scheduler Engine (lib/scheduler.py).
+"""
+
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from lib.scheduler import (
+    ScheduledJob,
+    TaskScheduler,
+    fetch_open_issues,
+    is_duplicate_issue,
+)
+
+
+class TestScheduledJob(unittest.TestCase):
+
+    def test_job_serialization(self):
+        job = ScheduledJob(
+            job_id="test_job",
+            name="Test Job",
+            interval_seconds=3600,
+            agent="codebase_auditor",
+            prompt="Audit code",
+            enabled=True,
+        )
+        data = job.to_dict()
+        self.assertEqual(data["job_id"], "test_job")
+        self.assertEqual(data["interval_seconds"], 3600)
+
+        restored = ScheduledJob.from_dict(data)
+        self.assertEqual(restored.job_id, "test_job")
+        self.assertEqual(restored.name, "Test Job")
+        self.assertEqual(restored.agent, "codebase_auditor")
+        self.assertTrue(restored.enabled)
+
+    def test_is_due_disabled(self):
+        job = ScheduledJob(
+            job_id="test",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=False,
+        )
+        self.assertFalse(job.is_due())
+
+    def test_is_due_new_job(self):
+        job = ScheduledJob(
+            job_id="test",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+        )
+        self.assertTrue(job.is_due())
+
+    def test_is_due_future_next_run(self):
+        future_dt = datetime.now(timezone.utc) + timedelta(hours=2)
+        job = ScheduledJob(
+            job_id="test",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            next_run=future_dt.isoformat(),
+        )
+        self.assertFalse(job.is_due())
+
+    def test_is_due_past_next_run(self):
+        past_dt = datetime.now(timezone.utc) - timedelta(hours=2)
+        job = ScheduledJob(
+            job_id="test",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            next_run=past_dt.isoformat(),
+        )
+        self.assertTrue(job.is_due())
+
+    def test_mark_executed(self):
+        job = ScheduledJob(
+            job_id="test",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+        )
+        now_dt = datetime.now(timezone.utc)
+        job.mark_executed(now_dt)
+
+        self.assertIsNotNone(job.last_run)
+        self.assertIsNotNone(job.next_run)
+        self.assertEqual(job.last_run, now_dt.isoformat())
+
+
+class TestTaskScheduler(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.temp_dir.name) / "schedules.json"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_load_default_jobs_if_file_missing(self):
+        mock_runner = MagicMock()
+        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        self.assertTrue(self.config_path.exists())
+        self.assertIn("periodic_bug_sweep", scheduler.jobs)
+        self.assertIn("periodic_quality_sweep", scheduler.jobs)
+
+    def test_add_get_remove_job(self):
+        scheduler = TaskScheduler(config_path=self.config_path)
+        new_job = ScheduledJob(
+            job_id="custom_sweep",
+            name="Custom Sweep",
+            interval_seconds=7200,
+            agent="codebase_auditor",
+            prompt="Custom prompt",
+        )
+        scheduler.add_job(new_job)
+
+        retrieved = scheduler.get_job("custom_sweep")
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.name, "Custom Sweep")
+
+        removed = scheduler.remove_job("custom_sweep")
+        self.assertTrue(removed)
+        self.assertIsNone(scheduler.get_job("custom_sweep"))
+
+    def test_trigger_job(self):
+        mock_runner = MagicMock()
+        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        success = scheduler.trigger_job("periodic_bug_sweep")
+        self.assertTrue(success)
+        mock_runner.assert_called_once()
+
+    def test_start_and_stop_lifecycle(self):
+        scheduler = TaskScheduler(config_path=self.config_path, check_interval_seconds=0.1)
+        scheduler.start()
+        self.assertTrue(scheduler.is_running())
+        scheduler.stop()
+        self.assertFalse(scheduler.is_running())
+
+    def test_scheduler_loop_executes_due_job(self):
+        mock_runner = MagicMock()
+        # Set a short interval and job due in past
+        past_dt = datetime.now(timezone.utc) - timedelta(days=1)
+        job = ScheduledJob(
+            job_id="due_job",
+            name="Due Job",
+            interval_seconds=1,
+            agent="codebase_auditor",
+            prompt="Audit now",
+            enabled=True,
+            next_run=past_dt.isoformat(),
+        )
+
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            runner=mock_runner,
+            check_interval_seconds=0.05,
+        )
+        scheduler.start()
+        # Wait briefly for thread to loop
+        import time
+
+        time.sleep(0.3)
+        scheduler.stop()
+
+        mock_runner.assert_called()
+
+
+class TestIssueUtilities(unittest.TestCase):
+
+    def test_is_duplicate_issue(self):
+        existing = [
+            {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
+            {"number": 2, "title": "[Bug Sweep] Memory leak in runner thread", "body": "..."},
+        ]
+        self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing))
+        self.assertTrue(is_duplicate_issue("[Bug Sweep] Memory leak in runner thread", existing))
+        self.assertFalse(is_duplicate_issue("Completely new bug report", existing))
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues(self, mock_run):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = json.dumps([{"number": 10, "title": "Periodic tasks"}])
+        mock_run.return_value = mock_res
+
+        issues = fetch_open_issues()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["number"], 10)
+
+
+if __name__ == "__main__":
+    unittest.main()

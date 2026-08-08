@@ -17,6 +17,7 @@ import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Optional
 
 # Add REPO_ROOT to sys.path to allow importing lib
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +28,7 @@ from lib.security import verify_signature
 from lib.router import route_webhook_event
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
+from lib.scheduler import TaskScheduler
 
 # Setup logging
 logging.basicConfig(
@@ -44,16 +46,21 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_reviewer: str = "code_reviewer"
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
+    scheduler: Optional[TaskScheduler] = None
 
     def do_GET(self):
         """Health check endpoint."""
         if self.path in ("/", "/health"):
+            sched = GravitonHandler.scheduler
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
                 "reviewer_agent": self.default_reviewer,
                 "fixer_agent": self.default_fixer,
                 "triager_agent": self.default_triager,
+                "scheduler_enabled": sched is not None,
+                "scheduler_running": sched.is_running() if sched else False,
+                "active_jobs": len(sched.jobs) if sched else 0,
             })
         else:
             self._send_json(404, {"error": "Not Found"})
@@ -142,6 +149,8 @@ def main():
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
+    parser.add_argument("--enable-scheduler", action="store_true", default=os.getenv("ENABLE_SCHEDULER", "false").lower() in ("true", "1", "yes"), help="Enable periodic task scheduler on server startup")
+    parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     args = parser.parse_args()
 
     GravitonHandler.secret = args.secret
@@ -158,15 +167,31 @@ def main():
         logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
         sys.exit(1)
 
+    scheduler: Optional[TaskScheduler] = None
+    if args.enable_scheduler:
+        config_path = Path(args.schedules_config)
+        logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
+        scheduler = TaskScheduler(
+            config_path=config_path,
+            runner=run_agent_async,
+            script_path=RUN_CONTAINER_SCRIPT,
+            cwd=REPO_ROOT,
+        )
+        scheduler.start()
+        GravitonHandler.scheduler = scheduler
+
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
+    logger.info(f"Scheduler enabled: {args.enable_scheduler}")
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         logger.info("Stopping Graviton Webhook Server...")
+        if scheduler:
+            scheduler.stop()
         httpd.shutdown()
 
 

@@ -27,6 +27,7 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.secret = ""
         GravitonHandler.default_reviewer = "code_reviewer"
         GravitonHandler.default_fixer = "code_fixer"
+        GravitonHandler.scheduler = None
 
     def test_health_check_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
@@ -36,6 +37,23 @@ class TestGravitonHandler(unittest.TestCase):
         args, _ = handler._send_json.call_args
         self.assertEqual(args[0], 200)
         self.assertEqual(args[1]["status"], "ok")
+        self.assertFalse(args[1]["scheduler_enabled"])
+
+    def test_health_check_endpoint_with_scheduler(self):
+        mock_scheduler = MagicMock()
+        mock_scheduler.is_running.return_value = True
+        mock_scheduler.jobs = {"job1": MagicMock()}
+        GravitonHandler.scheduler = mock_scheduler
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/health"
+        GravitonHandler.do_GET(handler)
+        handler._send_json.assert_called_once()
+        args, _ = handler._send_json.call_args
+        self.assertEqual(args[0], 200)
+        self.assertTrue(args[1]["scheduler_enabled"])
+        self.assertTrue(args[1]["scheduler_running"])
+        self.assertEqual(args[1]["active_jobs"], 1)
 
     def test_not_found_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
