@@ -32,8 +32,14 @@ mkdir -p "${TEMP_WORKSPACE}"
 # Fast local git clone to ensure an isolated .git index and working copy
 git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
 
-# Clean up ephemeral workspace on exit
-trap 'rm -rf "${TEMP_WORKSPACE}"' EXIT
+# Restore original remote origin URL (git clone --local sets origin to the local host folder)
+ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
+if [ -n "${ORIGIN_URL}" ]; then
+  git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
+fi
+
+# Clean up ephemeral workspace on exit (suppress permission warnings if created files are restricted)
+trap 'rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true' EXIT
 
 AGY_BIN_MOUNT=()
 if command -v agy &>/dev/null; then
@@ -46,7 +52,7 @@ if [ -d "${TEMP_WORKSPACE}/skills" ]; then
   SKILLS_MOUNT=(-v "${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro")
 fi
 
-# Pass user SSH keys and gh configuration for seamless git push & gh commands
+# Pass user SSH keys, gh configuration, and antigravity-cli directory if present
 SSH_MOUNT=()
 if [ -d "${HOME}/.ssh" ]; then
   SSH_MOUNT=(-v "${HOME}/.ssh:/root/.ssh:ro")
@@ -57,11 +63,17 @@ if [ -d "${HOME}/.config/gh" ]; then
   GH_CONFIG_MOUNT=(-v "${HOME}/.config/gh:/root/.config/gh:ro")
 fi
 
+CLI_DIR_MOUNT=()
+if [ -d "${HOME}/.gemini/antigravity-cli" ]; then
+  CLI_DIR_MOUNT=(-v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli")
+fi
+
 echo "Starting sandboxed Antigravity Agent container (Agent: ${AGENT_NAME}, Run ID: ${RUN_ID})..."
 
 # Launch container with retry / continuation loop for turn & timeout limits
 MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-2}"
 ATTEMPT=1
+EXIT_CODE=0
 
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
@@ -79,7 +91,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     "${SKILLS_MOUNT[@]}" \
     "${SSH_MOUNT[@]}" \
     "${GH_CONFIG_MOUNT[@]}" \
-    -v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli" \
+    "${CLI_DIR_MOUNT[@]}" \
     -v "${TEMP_WORKSPACE}:/workspace" \
     -w /workspace \
     -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
@@ -97,3 +109,8 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   echo "Agent exited with code ${EXIT_CODE} on attempt ${ATTEMPT}."
   ATTEMPT=$((ATTEMPT + 1))
 done
+
+if [ $EXIT_CODE -ne 0 ]; then
+  echo "Agent '${AGENT_NAME}' failed after ${MAX_ATTEMPTS} attempts with exit code ${EXIT_CODE}."
+  exit "${EXIT_CODE}"
+fi
