@@ -27,6 +27,7 @@ graviton/
 │   └── workflows/
 │       └── test.yml            # CI workflow for unit tests
 ├── bin/
+│   ├── build_agent_container.sh# Script to build Docker container image
 │   ├── graviton-server.py      # Webhook server & event router entrypoint
 │   ├── run_agent_container.sh  # Docker container launcher with auth volume mounts
 │   └── run_listener.sh         # Smee.io local proxy runner
@@ -56,7 +57,7 @@ graviton/
 
 ### 1. Build the Sandboxed Agent Container
 ```bash
-docker build -t antigravity-agent:latest -f Dockerfile .
+./bin/build_agent_container.sh
 ```
 
 ### 2. Start the Graviton Webhook Server
