@@ -35,12 +35,15 @@ graviton/
 │   ├── __init__.py
 │   ├── router.py               # GitHub event parsing & routing logic
 │   ├── runner.py               # Subprocess agent container executor
-│   └── security.py             # HMAC signature & bot tag verification
-├── tests/                      # Unit test suite (23+ tests)
+│   ├── security.py             # HMAC signature & bot tag verification
+│   └── updater.py              # Git sync & hot reload process manager
+├── tests/                      # Unit test suite (33+ tests)
+│   ├── test_agent_skills.py
 │   ├── test_router.py
 │   ├── test_runner.py
 │   ├── test_security.py
-│   └── test_server.py
+│   ├── test_server.py
+│   └── test_updater.py
 ├── agents/                     # Agent role specifications
 │   ├── issue_triager.json      # Issue Triage & Design Specifier spec
 │   ├── code_reviewer.json      # PR Code Reviewer spec
