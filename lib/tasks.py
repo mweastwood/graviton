@@ -204,6 +204,7 @@ class TaskManager:
                 continue
 
             if task is None or not self._running:
+                self._queue.task_done()
                 break
 
             # Update task to RUNNING
@@ -220,8 +221,10 @@ class TaskManager:
                         task.agent, task.prompt, self.script_path, self.cwd
                     )
                     return_code = res.returncode
+                    stderr_output = (res.stderr or "").strip()
                 else:
                     return_code = 0
+                    stderr_output = ""
 
                 with self._lock:
                     task.finish_time = time.time()
@@ -231,6 +234,7 @@ class TaskManager:
                         logger.info(f"[{worker_id}] Task '{task.id}' COMPLETED successfully.")
                     else:
                         task.status = TaskStatus.FAILED
+                        task.error_message = stderr_output or f"Process exited with code {return_code}"
                         logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")

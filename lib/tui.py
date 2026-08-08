@@ -114,7 +114,7 @@ class TerminalDashboard:
         line1_content = f"{title}{' ' * pad_len}{reload_badge}"
 
         info_line = f"Host: {self.host}:{self.port} │ Branch: {branch} │ Commit: {commit} │ Uptime: {uptime}"
-        info_padded = info_line.ljust(inner_w)
+        info_padded = info_line[:inner_w].ljust(inner_w)
 
         return [
             "┌" + "─" * (width - 2) + "┐",

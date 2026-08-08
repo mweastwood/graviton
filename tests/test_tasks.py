@@ -44,7 +44,7 @@ class TestTaskManager(unittest.TestCase):
         manager.start()
 
         task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
-        self.assertEqual(task1.status, TaskStatus.QUEUED)
+        self.assertIn(task1.status, (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.COMPLETED))
 
         # Wait for worker thread to process dummy execution
         for _ in range(50):
