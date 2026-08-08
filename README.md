@@ -23,10 +23,23 @@ graviton/
 ├── README.md                   # Setup guide & documentation
 ├── LICENSE
 ├── Dockerfile                  # Sandboxed agent container image definition
+├── .github/
+│   └── workflows/
+│       └── test.yml            # CI workflow for unit tests
 ├── bin/
-│   ├── graviton-server.py      # Webhook server & event router
+│   ├── graviton-server.py      # Webhook server & event router entrypoint
 │   ├── run_agent_container.sh  # Docker container launcher with auth volume mounts
 │   └── run_listener.sh         # Smee.io local proxy runner
+├── lib/                        # Core library components
+│   ├── __init__.py
+│   ├── router.py               # GitHub event parsing & routing logic
+│   ├── runner.py               # Subprocess agent container executor
+│   └── security.py             # HMAC signature & bot tag verification
+├── tests/                      # Unit test suite (23+ tests)
+│   ├── test_router.py
+│   ├── test_runner.py
+│   ├── test_security.py
+│   └── test_server.py
 ├── agents/                     # Agent role specifications
 │   ├── code_reviewer.json      # PR Code Reviewer spec
 │   └── code_fixer.json         # PR Code Fixer & Thread Responder spec
