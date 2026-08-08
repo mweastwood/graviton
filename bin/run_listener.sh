@@ -13,10 +13,17 @@ if [ -z "${SMEE_URL}" ]; then
   exit 1
 fi
 
-if ! command -v smee &>/dev/null; then
+SMEE_CMD=""
+if command -v smee &>/dev/null; then
+  SMEE_CMD="smee"
+elif [ -x "${HOME}/.npm-global/bin/smee" ]; then
+  SMEE_CMD="${HOME}/.npm-global/bin/smee"
+elif command -v npx &>/dev/null; then
+  SMEE_CMD="npx smee"
+else
   echo "Error: 'smee' CLI tool not found. Install it using: npm install -g smee-client"
   exit 1
 fi
 
 echo "Starting smee webhook listener relaying to http://localhost:${PORT}/..."
-smee --url "${SMEE_URL}" --path / --port "${PORT}"
+${SMEE_CMD} --url "${SMEE_URL}" --path / --port "${PORT}"

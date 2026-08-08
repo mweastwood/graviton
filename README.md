@@ -46,8 +46,12 @@ graviton/
 │   ├── code_reviewer.json      # PR Code Reviewer spec
 │   └── code_fixer.json         # PR Code Fixer & Thread Responder spec
 ├── skills/                     # Project agent skills
-│   └── code-review-guidelines/
-│       └── SKILL.md            # Code review standards skill
+│   ├── code-review-guidelines/ # Dedicated skill for code_reviewer
+│   │   └── SKILL.md
+│   ├── code-fixer-guidelines/  # Dedicated skill for code_fixer
+│   │   └── SKILL.md
+│   └── issue-triager-guidelines/# Dedicated skill for issue_triager
+│       └── SKILL.md
 └── docs/
     └── ARCHITECTURE.md         # Event state machine & webhook routing specs
 ```
