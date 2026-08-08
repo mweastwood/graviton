@@ -63,7 +63,7 @@ def route_webhook_event(
                 "reason": "Bot self-review event dropped",
             }
 
-        if action == "submitted" and review_state == "CHANGES_REQUESTED":
+        if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
             prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
             return {
                 "status": "accepted",
