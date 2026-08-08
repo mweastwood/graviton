@@ -96,13 +96,18 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 return
 
             if decision.get("action") == "self_update":
+                ref = decision.get("ref", "refs/heads/main")
                 self._send_json(200, {
                     "status": "accepted",
                     "action": "self_update",
-                    "ref": decision.get("ref", ""),
+                    "ref": ref,
                     "message": "Self-update triggered. Syncing repository and reloading server...",
                 })
-                threading.Thread(target=sync_repo_and_reload, args=(REPO_ROOT,), daemon=True).start()
+                threading.Thread(
+                    target=sync_repo_and_reload,
+                    args=(REPO_ROOT, ref, self.server),
+                    daemon=True,
+                ).start()
                 return
 
             agent = decision.get("agent")

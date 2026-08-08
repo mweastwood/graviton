@@ -36,10 +36,10 @@ class TestUpdater(unittest.TestCase):
             stderr="",
         )
         repo_root = Path("/tmp/fake_repo")
-        success, output = perform_git_pull(repo_root)
+        success, output = perform_git_pull(repo_root, branch="master")
 
         mock_run.assert_called_once_with(
-            ["git", "pull", "origin", "main"],
+            ["git", "pull", "origin", "master"],
             cwd=str(repo_root),
             capture_output=True,
             text=True,
