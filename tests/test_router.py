@@ -100,7 +100,47 @@ class TestRouter(unittest.TestCase):
         result = route_webhook_event("pull_request_review_comment", payload)
         self.assertEqual(result["status"], "ignored")
 
-    def test_issue_comment_mention_fix(self):
+    def test_issues_opened_triggers_triager(self):
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 55,
+                "title": "Add support for user profile avatars",
+                "body": "Users should be able to upload PNG/JPG avatars.",
+            },
+        }
+        result = route_webhook_event("issues", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "issue_triager")
+        self.assertEqual(result["issue_number"], 55)
+        self.assertIn("Triage Issue #55", result["prompt"])
+
+    def test_issues_labeled_ready_for_pr_triggers_fixer(self):
+        payload = {
+            "action": "labeled",
+            "label": {"name": "ready-for-pr"},
+            "issue": {
+                "number": 55,
+                "title": "Add support for user profile avatars",
+                "body": "Approved design spec.",
+            },
+        }
+        result = route_webhook_event("issues", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["issue_number"], 55)
+        self.assertIn("Draft initial PR", result["prompt"])
+
+    def test_issues_labeled_other_ignored(self):
+        payload = {
+            "action": "labeled",
+            "label": {"name": "bug"},
+            "issue": {"number": 55},
+        }
+        result = route_webhook_event("issues", payload)
+        self.assertEqual(result["status"], "ignored")
+
+    def test_issue_comment_on_pr_mention_fix(self):
         payload = {
             "action": "created",
             "comment": {"body": "@antigravity /fix add validation logic"},
@@ -110,24 +150,30 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["agent"], "code_fixer")
 
-    def test_issue_comment_mention_review(self):
+    def test_issue_comment_on_pure_issue_triggers_triager(self):
         payload = {
             "action": "created",
-            "comment": {"body": "@antigravity /review please review again"},
-            "issue": {"number": 12, "pull_request": {"url": "https://api.github.com/..."}},
+            "comment": {"body": "Here are the reproduction steps you asked for."},
+            "issue": {"number": 55},  # No pull_request key
         }
         result = route_webhook_event("issue_comment", payload)
         self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["agent"], "code_reviewer")
+        self.assertEqual(result["agent"], "issue_triager")
+        self.assertIn("Continue triage on Issue #55", result["prompt"])
 
-    def test_issue_comment_non_pr_ignored(self):
+    def test_issue_comment_on_ready_issue_triggers_fixer(self):
         payload = {
             "action": "created",
-            "comment": {"body": "@antigravity /fix something"},
-            "issue": {"number": 12},  # No pull_request key
+            "comment": {"body": "@antigravity /draft-pr start working"},
+            "issue": {
+                "number": 55,
+                "labels": [{"name": "ready-for-pr"}],
+            },
         }
         result = route_webhook_event("issue_comment", payload)
-        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+        self.assertIn("Draft initial PR for Issue #55", result["prompt"])
 
     def test_unknown_event_type(self):
         result = route_webhook_event("unknown_event", {})
