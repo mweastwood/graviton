@@ -92,3 +92,45 @@ Even with a single GitHub account, Graviton differentiates human comments from a
    - `code_fixer` executes unit tests (`pytest` / `npm test` / `flutter test`) locally before committing. If tests fail, it posts the failure log to the PR thread instead of pushing broken code.
 3. **Bot Tag Filtering**:
    - Prevents agent self-triggering by dropping any webhook payload containing `<!-- antigravity-auto-reply -->`.
+
+---
+
+## 5. Periodic Task Scheduler & Codebase Auditor
+
+Graviton includes a zero-dependency periodic background task scheduler engine (`lib/scheduler.py`) that runs alongside the HTTP server process when `--enable-scheduler` is passed.
+
+### Periodic Maintenance Architecture
+
+```mermaid
+stateDiagram-v2
+    [*] --> TaskSchedulerDaemon: Server Startup (--enable-scheduler)
+    TaskSchedulerDaemon --> EvaluateJobs: Interval Timer Check (threading.Event)
+
+    state "TaskScheduler Manager" as TaskSchedulerDaemon {
+        [*] --> LoadSchedulesConfig: Read config/schedules.json
+        LoadSchedulesConfig --> EvaluateDueJobs
+    }
+
+    EvaluateJobs --> AuditorAgent: Job Due (periodic_bug_sweep / periodic_quality_sweep)
+
+    state "Agent D: codebase_auditor" as AuditorAgent {
+        [*] --> FetchOpenIssues: gh issue list --json title,body,labels
+        FetchOpenIssues --> ScanCodebase: Audit /workspace for bugs or refactoring needs
+        ScanCodebase --> DeduplicateFindings: Check against open issues cache
+        DeduplicateFindings --> FileGitHubIssue: gh issue create --label bug/enhancement
+    }
+
+    AuditorAgent --> TaskSchedulerDaemon: Update last_run & next_run timestamps
+```
+
+### Scheduled Job Definitions (`config/schedules.json`)
+
+1. **`periodic_bug_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 24 hours (86,400s) by default.
+   - **Action**: Queries open GitHub issues, scans `/workspace` for unhandled exceptions, resource leaks, broken paths, or race conditions, deduplicates findings, and files new issues via `gh issue create --label "bug"`.
+2. **`periodic_quality_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 24 hours (86,400s) by default.
+   - **Action**: Queries open refactoring/enhancement issues, scans codebase for performance bottlenecks, long functions, or modularization needs, deduplicates findings, and files new issues via `gh issue create --label "enhancement"`.
+
