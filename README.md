@@ -42,6 +42,7 @@ graviton/
 │   ├── test_security.py
 │   └── test_server.py
 ├── agents/                     # Agent role specifications
+│   ├── issue_triager.json      # Issue Triage & Design Specifier spec
 │   ├── code_reviewer.json      # PR Code Reviewer spec
 │   └── code_fixer.json         # PR Code Fixer & Thread Responder spec
 ├── skills/                     # Project agent skills

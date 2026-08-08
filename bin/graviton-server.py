@@ -3,7 +3,7 @@
 Graviton Webhook Server & Event Router.
 
 Listens for GitHub webhook events (pull_request, pull_request_review,
-pull_request_review_comment, issue_comment) and triggers sandboxed
+pull_request_review_comment, issues, issue_comment) and triggers sandboxed
 Antigravity agent containers in response.
 
 Uses standard Python library only (0 external dependencies).
@@ -41,6 +41,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     secret: str = ""
     default_reviewer: str = "code_reviewer"
     default_fixer: str = "code_fixer"
+    default_triager: str = "issue_triager"
 
     def do_GET(self):
         """Health check endpoint."""
@@ -50,6 +51,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "service": "graviton-server",
                 "reviewer_agent": self.default_reviewer,
                 "fixer_agent": self.default_fixer,
+                "triager_agent": self.default_triager,
             })
         else:
             self._send_json(404, {"error": "Not Found"})
@@ -83,6 +85,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             payload=payload,
             default_reviewer=self.default_reviewer,
             default_fixer=self.default_fixer,
+            default_triager=self.default_triager,
         )
 
         if decision.get("status") == "accepted":
@@ -121,11 +124,13 @@ def main():
     parser.add_argument("--secret", "-s", default=os.getenv("WEBHOOK_SECRET", os.getenv("GITHUB_WEBHOOK_SECRET", "")), help="GitHub webhook secret for HMAC verification")
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
+    parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
     args = parser.parse_args()
 
     GravitonHandler.secret = args.secret
     GravitonHandler.default_reviewer = args.reviewer
     GravitonHandler.default_fixer = args.fixer
+    GravitonHandler.default_triager = args.triager
 
     if not args.secret:
         logger.warning("No WEBHOOK_SECRET specified. HMAC signature verification is DISABLED.")
@@ -139,7 +144,7 @@ def main():
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
-    logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}'")
+    logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
 
     try:
         httpd.serve_forever()
