@@ -29,10 +29,17 @@ if command -v agy &>/dev/null; then
   AGY_BIN_MOUNT=(-v "$(command -v agy):/usr/local/bin/agy:ro")
 fi
 
+# Mount repository skills directory if present into container global config
+SKILLS_MOUNT=()
+if [ -d "${WORKSPACE_DIR}/skills" ]; then
+  SKILLS_MOUNT=(-v "${WORKSPACE_DIR}/skills:/root/.gemini/config/skills:ro")
+fi
+
 echo "Starting sandboxed Antigravity Agent container (Agent: ${AGENT_NAME})..."
 
 docker run --rm \
   "${AGY_BIN_MOUNT[@]}" \
+  "${SKILLS_MOUNT[@]}" \
   -v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli" \
   -v "${WORKSPACE_DIR}:/workspace" \
   -w /workspace \
