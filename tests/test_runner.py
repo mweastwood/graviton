@@ -65,7 +65,7 @@ class TestAgentContainerScript(unittest.TestCase):
         subprocess.run(["git", "add", "README.md"], cwd=str(self.repo_dir), check=True)
         subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(self.repo_dir), check=True)
 
-        self.script_path = Path("/workspace/bin/run_agent_container.sh")
+        self.script_path = Path(__file__).resolve().parent.parent / 'bin' / 'run_agent_container.sh'
 
     def tearDown(self):
         self.temp_dir.cleanup()
