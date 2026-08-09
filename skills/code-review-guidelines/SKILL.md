@@ -31,9 +31,10 @@ This skill provides comprehensive instructions for the `code_reviewer` agent to 
    - **Code Quality & Style**: Verify readability, adherence to design patterns, and absence of redundant logic.
 
 5. **Review Submission Decision Logic**:
-   - Use `gh api` or `gh pr review` to submit the review.
+   - Use `gh api` or `gh pr review` to submit the review, ensuring `<!-- antigravity-auto-reply -->` signature is included in the body submission.
    - Set review state to `APPROVE` if all quality standards, presubmit checks, and mergeability checks pass with no critical issues.
    - Set review state to `CHANGES_REQUESTED` if bugs, missing tests, security concerns, failing presubmit checks, or merge conflicts are identified.
 
 6. **Safety & Loop Protection**:
-   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to all GitHub review comments to prevent infinite agent loop recursion.
+   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+

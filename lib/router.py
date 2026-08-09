@@ -47,6 +47,19 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     return True
 
 
+def has_explicit_command(text: str) -> bool:
+    """
+    Check whether a comment or review body contains an explicit human command.
+
+    :param text: Comment or review text body.
+    :return: True if text contains explicit commands like '/fix' or '@antigravity', False otherwise.
+    """
+    if not text:
+        return False
+    text_lower = text.lower()
+    return "/fix" in text_lower or "@antigravity" in text_lower
+
+
 def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Handle GitHub 'ping' webhook event."""
     return {
@@ -116,13 +129,19 @@ def handle_pull_request_review_event(
     pr_user = pr.get("user", {}) if isinstance(pr.get("user"), dict) else {}
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
 
+    if contains_bot_marker(review_body):
+        return {
+            "status": "ignored",
+            "reason": "Bot self-review event dropped",
+        }
+
     if pr_tracker and pr_number is not None:
         if action == "submitted" and review_state == "APPROVED":
             pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url)
         elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
             pr_tracker.remove_approved_pr(pr_number)
 
-    if not is_pr_created_by_us(pr):
+    if not is_pr_created_by_us(pr) and not has_explicit_command(review_body):
         return {
             "status": "ignored",
             "reason": "PR was not created by us",
@@ -137,12 +156,6 @@ def handle_pull_request_review_event(
             "pr_number": pr_number,
             "agent": default_fixer,
             "prompt": prompt,
-        }
-
-    if contains_bot_marker(review_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot self-review event dropped",
         }
 
     if action == "submitted" and review_state == "COMMENTED":
@@ -181,7 +194,7 @@ def handle_pull_request_review_comment_event(
             "reason": "Bot comment dropped",
         }
 
-    if not is_pr_created_by_us(pr):
+    if not is_pr_created_by_us(pr) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "PR was not created by us",
@@ -273,7 +286,7 @@ def handle_issue_comment_event(
         # 1. Comment on a Pull Request
         if pr:
             pr_data = {**issue, **(pr if isinstance(pr, dict) else {})}
-            if not is_pr_created_by_us(pr_data):
+            if not is_pr_created_by_us(pr_data) and not has_explicit_command(comment_body):
                 return {
                     "status": "ignored",
                     "reason": "PR was not created by us",

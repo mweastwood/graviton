@@ -30,8 +30,8 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
    - When triggered on issues labeled `ready-for-pr` or receiving `/draft-pr`:
      - Create a new feature branch from `main`.
      - Implement the required changes and run unit tests.
-     - Open a new pull request using `gh pr create`.
+     - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` appended to the PR body description.
 
 6. **Safety & Loop Protection**:
-   - Always append `<!-- antigravity-auto-reply -->` to all GitHub comment replies, including links to fix commits.
+   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
    - Track iteration count using `<!-- agy-cycle: X/3 -->` to enforce maximum cycle limits.
