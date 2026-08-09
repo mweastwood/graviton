@@ -137,31 +137,152 @@ class TaskManager:
 
     def drain_active_tasks(self, timeout: float = 300.0) -> bool:
         """
-        Block new incoming tasks and wait for active (running and queued) tasks to complete.
+        Pause worker execution of queued tasks and wait for currently running tasks to complete.
 
         :param timeout: Maximum seconds to wait for active tasks to complete.
-        :return: True if all active tasks completed within timeout, False if timed out.
+        :return: True if all active running tasks completed within timeout, False if timed out.
         """
         with self._lock:
             self._draining = True
 
-        logger.info("TaskManager entering drain mode. Blocking new task submissions...")
+        logger.info("TaskManager entering drain mode. Pausing new active task execution...")
         start_time = time.time()
         while time.time() - start_time < timeout:
-            if not self.get_active_tasks() and not self.get_queued_tasks():
-                logger.info("TaskManager drain completed cleanly. No active or queued tasks remain.")
+            if not self.get_active_tasks():
+                queued_count = len(self.get_queued_tasks())
+                logger.info(
+                    f"TaskManager drain completed cleanly. No active tasks remain ({queued_count} queued task(s) preserved)."
+                )
                 return True
             time.sleep(0.1)
 
         remaining_active = len(self.get_active_tasks())
         remaining_queued = len(self.get_queued_tasks())
-        if remaining_active > 0 or remaining_queued > 0:
+        if remaining_active > 0:
             logger.warning(
                 f"TaskManager drain timed out after {timeout}s with "
                 f"{remaining_active} running and {remaining_queued} queued task(s) remaining."
             )
             return False
         return True
+
+    def _get_default_state_path(self, filepath: Optional[Path] = None) -> Path:
+        if filepath is not None:
+            return Path(filepath)
+        if self.cwd:
+            return self.cwd / ".graviton_queue_state.json"
+        return Path(".graviton_queue_state.json")
+
+    def dump_queue_state(self, filepath: Optional[Path] = None) -> int:
+        """
+        Serialize pending queued tasks and task counter to disk JSON file.
+
+        :param filepath: Optional Path override for destination state file.
+        :return: Number of queued tasks serialized.
+        """
+        path = self._get_default_state_path(filepath)
+        with self._lock:
+            queued_tasks = [
+                t for t in self._tasks.values() if t.status == TaskStatus.QUEUED
+            ]
+            if not queued_tasks:
+                if path.exists():
+                    try:
+                        path.unlink()
+                    except Exception as e:
+                        logger.warning(f"Could not remove stale state file '{path}': {e}")
+                return 0
+
+            state = {
+                "task_counter": self._task_counter,
+                "queued_tasks": [t.to_dict() for t in queued_tasks],
+            }
+
+        try:
+            import json
+            path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            logger.info(f"Dumped {len(queued_tasks)} queued task(s) state to {path}.")
+            return len(queued_tasks)
+        except Exception as e:
+            logger.exception(f"Failed to dump queue state to '{path}': {e}")
+            return 0
+
+    def restore_queue_state(self, filepath: Optional[Path] = None) -> int:
+        """
+        Restore pending queued tasks and task counter from disk JSON file.
+
+        :param filepath: Optional Path override for source state file.
+        :return: Number of queued tasks restored.
+        """
+        path = self._get_default_state_path(filepath)
+        if not path.exists():
+            return 0
+
+        try:
+            import json
+            data = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                path.unlink()
+            except Exception as e:
+                logger.warning(f"Could not remove state file '{path}' after reading: {e}")
+        except Exception as e:
+            logger.exception(f"Failed to read queue state file '{path}': {e}")
+            return 0
+
+        if not isinstance(data, dict):
+            logger.warning(f"Invalid queue state format in '{path}': expected JSON object.")
+            return 0
+
+        queued_data = data.get("queued_tasks", [])
+        if not isinstance(queued_data, list):
+            logger.warning(f"Invalid queued_tasks format in '{path}': expected list.")
+            return 0
+
+        saved_counter = data.get("task_counter", 0)
+
+        with self._lock:
+            if isinstance(saved_counter, int):
+                self._task_counter = max(self._task_counter, saved_counter)
+            restored_count = 0
+            for td in queued_data:
+                if not isinstance(td, dict):
+                    logger.warning(f"Skipping non-dict item in queued_tasks state: {td}")
+                    continue
+
+                try:
+                    task_id = td.get("id")
+                    agent = td.get("agent")
+                    prompt = td.get("prompt")
+                    if not task_id or not agent or prompt is None:
+                        logger.warning(
+                            f"Skipping queue state item missing required fields ('id', 'agent', 'prompt'): {td}"
+                        )
+                        continue
+
+                    if isinstance(task_id, str) and task_id.startswith("task-"):
+                        try:
+                            num = int(task_id.split("-")[1])
+                            self._task_counter = max(self._task_counter, num)
+                        except (IndexError, ValueError):
+                            pass
+
+                    task = Task(
+                        id=str(task_id),
+                        agent=str(agent),
+                        prompt=str(prompt),
+                        target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
+                        status=TaskStatus.QUEUED,
+                        enqueue_time=float(td.get("enqueue_time", time.time())),
+                    )
+                    self._tasks[task.id] = task
+                    self._queue.put(task)
+                    restored_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to restore queued task item {td}: {e}")
+                    continue
+
+        logger.info(f"Restored {restored_count} queued task(s) state from {path}.")
+        return restored_count
 
     def _prune_tasks_locked(self):
         """
@@ -210,8 +331,6 @@ class TaskManager:
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
-            if self._draining:
-                raise RuntimeError("TaskManager is draining tasks")
             self._task_counter += 1
             task_id = f"task-{self._task_counter}"
             task = Task(
@@ -281,6 +400,13 @@ class TaskManager:
 
     def _worker_loop(self, worker_id: str):
         while self._running:
+            with self._lock:
+                draining = self._draining
+
+            if draining and self._running:
+                time.sleep(0.1)
+                continue
+
             try:
                 task = self._queue.get(timeout=0.5)
             except queue.Empty:
@@ -290,8 +416,13 @@ class TaskManager:
                 self._queue.task_done()
                 break
 
-            # Update task to RUNNING
+            # Double-check draining under lock before transitioning task to RUNNING
             with self._lock:
+                if self._draining:
+                    self._queue.put(task)
+                    self._queue.task_done()
+                    time.sleep(0.1)
+                    continue
                 task.status = TaskStatus.RUNNING
                 task.start_time = time.time()
                 task.worker_thread_id = worker_id
@@ -330,3 +461,4 @@ class TaskManager:
                     self._prune_tasks_locked()
             finally:
                 self._queue.task_done()
+
