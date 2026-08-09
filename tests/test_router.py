@@ -19,6 +19,8 @@ class TestRouter(unittest.TestCase):
 
         self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
 
     def test_ping_event(self):
         payload = {"zen": "Non-blocking is better than blocking."}
@@ -51,7 +53,7 @@ class TestRouter(unittest.TestCase):
             "action": "submitted",
             "review": {
                 "state": "CHANGES_REQUESTED",
-                "body": "Fix null pointer exception",
+                "body": f"Fix null pointer exception {BOT_MARKER}",
             },
             "pull_request": {"number": 15, "user": {"login": "antigravity-bot"}},
         }
@@ -86,7 +88,7 @@ class TestRouter(unittest.TestCase):
         payload = {
             "action": "submitted",
             "review": {
-                "state": "CHANGES_REQUESTED",
+                "state": "COMMENTED",
                 "body": f"Automated reply {BOT_MARKER}",
             },
             "pull_request": {"number": 15},
@@ -190,8 +192,8 @@ class TestRouter(unittest.TestCase):
             "comment": {"body": "Please add error handling here as well."},
             "issue": {
                 "number": 12,
-                "pull_request": {"url": "https://api.github.com/..."},
-                "user": {"login": "antigravity-bot"},
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/12", "html_url": "https://github.com/org/repo/pull/12"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
             },
         }
         result = route_webhook_event("issue_comment", payload)
@@ -205,7 +207,7 @@ class TestRouter(unittest.TestCase):
             "comment": {"body": "Please add error handling here as well."},
             "issue": {
                 "number": 12,
-                "pull_request": {"url": "https://api.github.com/..."},
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/12", "html_url": "https://github.com/org/repo/pull/12"},
                 "user": {"login": "external_dev", "type": "User"},
             },
         }

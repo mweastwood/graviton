@@ -27,14 +27,7 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     if contains_bot_marker(body):
         return True
 
-    # 3. Check head branch name ref prefix
-    head = pr.get("head")
-    if isinstance(head, dict):
-        head_ref = head.get("ref", "").lower()
-        if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
-            return True
-
-    # 4. Check user author details
+    # 3. Check user author details
     user = pr.get("user")
     if isinstance(user, dict) and user:
         login = user.get("login", "").lower()
@@ -43,6 +36,13 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
             return True
         # Explicit user object given that is a human and not a bot / antigravity
         return False
+
+    # 4. Check head branch name ref prefix
+    head = pr.get("head")
+    if isinstance(head, dict):
+        head_ref = head.get("ref", "").lower()
+        if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
+            return True
 
     return True
 
@@ -113,19 +113,30 @@ def route_webhook_event(
         pr = payload.get("pull_request", {})
         pr_number = pr.get("number") or payload.get("number")
 
-        if contains_bot_marker(review_body):
-            return {
-                "status": "ignored",
-                "reason": "Bot self-review event dropped",
-            }
-
         if not is_pr_created_by_us(pr):
             return {
                 "status": "ignored",
                 "reason": "PR was not created by us",
             }
 
-        if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
+        if action == "submitted" and review_state == "CHANGES_REQUESTED":
+            prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
+            return {
+                "status": "accepted",
+                "action": action,
+                "review_state": review_state,
+                "pr_number": pr_number,
+                "agent": default_fixer,
+                "prompt": prompt,
+            }
+
+        if contains_bot_marker(review_body):
+            return {
+                "status": "ignored",
+                "reason": "Bot self-review event dropped",
+            }
+
+        if action == "submitted" and review_state == "COMMENTED":
             prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
             return {
                 "status": "accepted",
@@ -237,7 +248,7 @@ def route_webhook_event(
         if action == "created":
             # 5a. Comment on a Pull Request
             if pr:
-                pr_data = pr if (isinstance(pr, dict) and len(pr) > 1) else issue
+                pr_data = {**issue, **(pr if isinstance(pr, dict) else {})}
                 if not is_pr_created_by_us(pr_data):
                     return {
                         "status": "ignored",
