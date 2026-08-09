@@ -143,7 +143,7 @@ fi
         log_content = docker_log.read_text()
         self.assertIn("run -d --name graviton-agent-run-", log_content)
         self.assertIn("exec -w /workspace graviton-agent-run-", log_content)
-        self.assertIn("Resume from your existing work in /workspace and complete the commit/PR drafting", log_content)
+        self.assertIn("Resume from your existing work in /workspace and complete your goal", log_content)
         self.assertIn("rm -f graviton-agent-run-", log_content)
 
     def test_fallback_to_docker_run_when_exec_fails(self):
@@ -203,7 +203,7 @@ fi
 
         log_content = docker_log.read_text()
         self.assertIn("run --rm", log_content)
-        self.assertIn("Resume from your existing work in /workspace and complete the commit/PR drafting", log_content)
+        self.assertIn("Resume from your existing work in /workspace and complete your goal", log_content)
 
     def test_remote_origin_synchronization(self):
         import os
@@ -263,6 +263,171 @@ exit 0
         self.assertTrue(sync_verified_file.exists())
         self.assertEqual(sync_verified_file.read_text().strip(), "synced")
 
+    def test_transcript_incomplete_triggers_continuation_retry(self):
+        import os
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls.log"
+
+        conv_id = "11111111-2222-3333-4444-555555555555"
+        mock_home = self.test_dir / "home"
+        brain_log_dir = mock_home / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs"
+        brain_log_dir.mkdir(parents=True, exist_ok=True)
+        transcript_file = brain_log_dir / "transcript.jsonl"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+echo "Conversation ID: {conv_id}"
+
+if [ "$1" = "run" ] && [ "$2" = "-d" ]; then
+    exit 0
+elif [ "$1" = "exec" ]; then
+    if [ ! -f "{self.test_dir}/attempt2_ran.txt" ]; then
+        # Attempt 1: output incomplete transcript
+        echo '{{"type": "PLANNER_RESPONSE", "tool_calls": [{{"name": "write_file"}}]}}' > "{transcript_file}"
+        echo "ran_attempt_1" > "{self.test_dir}/attempt2_ran.txt"
+        exit 0
+    else
+        # Attempt 2: complete transcript
+        echo '{{"type": "PLANNER_RESPONSE", "tool_calls": []}}' > "{transcript_file}"
+        exit 0
+    fi
+else
+    exit 0
+fi
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HOME"] = str(mock_home)
+        env["MAX_AGENT_RETRIES"] = "2"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("Agent session hit step limit with unexecuted tool calls. Auto-continuing conversation (Attempt 2/2)...", proc.stdout)
+
+    def test_transcript_complete_exits_cleanly(self):
+        import os
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls.log"
+
+        conv_id = "66666666-7777-8888-9999-000000000000"
+        mock_home = self.test_dir / "home"
+        brain_log_dir = mock_home / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs"
+        brain_log_dir.mkdir(parents=True, exist_ok=True)
+        transcript_file = brain_log_dir / "transcript.jsonl"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+echo "Conversation ID: {conv_id}"
+echo '{{"type": "PLANNER_RESPONSE", "tool_calls": []}}' > "{transcript_file}"
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HOME"] = str(mock_home)
+        env["MAX_AGENT_RETRIES"] = "2"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("Agent 'code_fixer' completed successfully.", proc.stdout)
+        self.assertNotIn("Auto-continuing conversation", proc.stdout)
+
+
+class TestTranscriptInspector(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.test_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_is_transcript_incomplete_true(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "transcript.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {}}], "content": "Run tool"}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+        self.assertTrue(is_transcript_incomplete(str(transcript_file)))
+
+    def test_is_transcript_incomplete_false_completed(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "transcript.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {}}], "content": "Run tool"}',
+            '{"step_index": 3, "type": "TOOL_RESULT", "status": "DONE"}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_false_empty_tool_calls(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "transcript.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Finished"}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_missing_file_and_empty(self):
+        from lib.runner import is_transcript_incomplete
+        non_existent = self.test_dir / "missing.jsonl"
+        self.assertFalse(is_transcript_incomplete(non_existent))
+
+        empty_file = self.test_dir / "empty.jsonl"
+        empty_file.write_text("", encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(empty_file))
+
+    def test_is_transcript_incomplete_cli_execution(self):
+        runner_py = Path(__file__).resolve().parent.parent / "lib" / "runner.py"
+
+        incomplete_file = self.test_dir / "incomplete.jsonl"
+        incomplete_file.write_text(
+            '{"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "test"}]}', encoding="utf-8"
+        )
+        res_inc = subprocess.run(["python3", str(runner_py), str(incomplete_file)])
+        self.assertEqual(res_inc.returncode, 0)
+
+        complete_file = self.test_dir / "complete.jsonl"
+        complete_file.write_text(
+            '{"type": "PLANNER_RESPONSE", "tool_calls": []}', encoding="utf-8"
+        )
+        res_comp = subprocess.run(["python3", str(runner_py), str(complete_file)])
+        self.assertEqual(res_comp.returncode, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

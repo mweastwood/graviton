@@ -2,13 +2,40 @@
 Agent container execution runner for Graviton.
 """
 
+import json
 import logging
 import subprocess
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 logger = logging.getLogger("graviton.runner")
+
+
+def is_transcript_incomplete(transcript_path: Union[str, Path]) -> bool:
+    """
+    Check if an agy agent session transcript ended mid-task with unexecuted tool calls.
+
+    :param transcript_path: Path to transcript.jsonl file.
+    :return: True if last step is a PLANNER_RESPONSE with non-empty tool_calls, False otherwise.
+    """
+    try:
+        path = Path(transcript_path)
+        if not path.is_file():
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        if not lines:
+            return False
+        last_step = json.loads(lines[-1])
+        if last_step.get("type") == "PLANNER_RESPONSE":
+            tool_calls = last_step.get("tool_calls", [])
+            if tool_calls and len(tool_calls) > 0:
+                return True
+    except Exception as e:
+        logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")
+    return False
+
 
 
 def run_agent_container(
@@ -103,3 +130,16 @@ def run_agent_async(
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     return thread
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
+        target_file = sys.argv[1]
+        if is_transcript_incomplete(target_file):
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    else:
+        sys.exit(2)
+

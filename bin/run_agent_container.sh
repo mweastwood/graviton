@@ -114,6 +114,9 @@ set -e
 MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-2}"
 ATTEMPT=1
 EXIT_CODE=0
+AGENT_LOG="${TEMP_WORKSPACE}/agent_output.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
 
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
@@ -121,14 +124,14 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   if [ $ATTEMPT -eq 1 ]; then
     AGY_ARGS+=(--prompt "${PROMPT}")
   else
-    echo "Agent session paused or hit step limit. Auto-continuing conversation (Attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
-    AGY_ARGS+=(--continue --prompt "Resume from your existing work in /workspace and complete the commit/PR drafting")
+    echo "Agent session hit step limit with unexecuted tool calls. Auto-continuing conversation (Attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
+    AGY_ARGS+=(--continue --prompt "Resume from your existing work in /workspace and complete your goal")
   fi
 
   set +e
   if [ "$USE_CONTAINER_EXEC" = true ]; then
-    docker exec -w /workspace "${CONTAINER_NAME}" "${AGY_ARGS[@]}"
-    EXIT_CODE=$?
+    docker exec -w /workspace "${CONTAINER_NAME}" "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
+    EXIT_CODE=${PIPESTATUS[0]}
   else
     docker run --rm \
       "${AGY_BIN_MOUNT[@]}" \
@@ -145,17 +148,31 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
       --security-opt=no-new-privileges \
       "${IMAGE_NAME}" \
-      "${AGY_ARGS[@]}"
-    EXIT_CODE=$?
+      "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
+    EXIT_CODE=${PIPESTATUS[0]}
   fi
   set -e
 
-  if [ $EXIT_CODE -eq 0 ]; then
+  IS_INCOMPLETE=false
+  CONVERSATION_ID="$(grep -oE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "${AGENT_LOG}" 2>/dev/null | tail -n 1 || echo "")"
+  if [ -n "${CONVERSATION_ID}" ]; then
+    TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${CONVERSATION_ID}/.system_generated/logs/transcript.jsonl"
+    if [ -f "${TRANSCRIPT_PATH}" ]; then
+      if "${PYTHON_BIN}" "${SCRIPT_DIR}/../lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
+        IS_INCOMPLETE=true
+      fi
+    fi
+  fi
+
+  if [ $EXIT_CODE -eq 0 ] && [ "$IS_INCOMPLETE" = false ]; then
     echo "Agent '${AGENT_NAME}' completed successfully."
     break
   fi
 
-  echo "Agent exited with code ${EXIT_CODE} on attempt ${ATTEMPT}."
+  if [ $EXIT_CODE -ne 0 ]; then
+    echo "Agent exited with code ${EXIT_CODE} on attempt ${ATTEMPT}."
+  fi
+
   ATTEMPT=$((ATTEMPT + 1))
 done
 
@@ -163,3 +180,4 @@ if [ $EXIT_CODE -ne 0 ]; then
   echo "Agent '${AGENT_NAME}' failed after ${MAX_ATTEMPTS} attempts with exit code ${EXIT_CODE}."
   exit "${EXIT_CODE}"
 fi
+
