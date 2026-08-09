@@ -660,7 +660,7 @@ class TestTerminalDashboard(unittest.TestCase):
 
     def test_quota_panel_rendering(self):
         now = time.time()
-        quota = QuotaTracker(remaining_percentage=65.0)
+        quota = QuotaTracker(remaining_percentage=65.0, quota_pool="gemini")
         quota.update_quota(
             remaining_percentage=65.0,
             remaining_percentage_5h=65.0,
@@ -672,9 +672,9 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
 
         rendered = dashboard.render(width=100)
-        self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
-        self.assertIn("5H QUOTA: 65%", rendered)
-        self.assertIn("1W QUOTA: 20%", rendered)
+        self.assertIn("ANTIGRAVITY MODEL QUOTA (GEMINI)", rendered)
+        self.assertIn("GEMINI 5H QUOTA: 65%", rendered)
+        self.assertIn("GEMINI 1W QUOTA: 20%", rendered)
         self.assertIn("PACING: BEHIND", rendered)
         self.assertIn("Backoff:", rendered)
 

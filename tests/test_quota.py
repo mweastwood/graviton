@@ -313,7 +313,11 @@ class TestQuotaTracker(unittest.TestCase):
                     "quotaInfo": {
                         "remainingFraction": 0.85,
                         "resetTime": "2026-08-09T10:00:00Z",
-                    }
+                    },
+                    "weeklyQuotaInfo": {
+                        "remainingFraction": 0.90,
+                        "resetTime": "2026-08-16T10:00:00Z",
+                    },
                 },
                 "claude-sonnet-4-6": {
                     "quotaInfo": {
@@ -327,16 +331,72 @@ class TestQuotaTracker(unittest.TestCase):
                 },
             }
         }
-        res = parse_antigravity_quota_json(data)
-        self.assertIsNotNone(res)
-        w_5h, w_1w = res
-        self.assertEqual(w_5h.name, "5H")
-        self.assertEqual(w_5h.remaining_percentage, 85.0)
-        self.assertEqual(w_5h.reset_time, "2026-08-09T10:00:00Z")
+        # 1. Test default "gemini" pool extraction: extracts from gemini-3.6-flash-high, ignores claude-sonnet-4-6
+        res_gemini = parse_antigravity_quota_json(data, pool="gemini")
+        self.assertIsNotNone(res_gemini)
+        w_5h_g, w_1w_g = res_gemini
+        self.assertEqual(w_5h_g.name, "5H")
+        self.assertEqual(w_5h_g.remaining_percentage, 85.0)
+        self.assertEqual(w_5h_g.reset_time, "2026-08-09T10:00:00Z")
 
-        self.assertEqual(w_1w.name, "1W")
-        self.assertEqual(w_1w.remaining_percentage, 40.0)
-        self.assertEqual(w_1w.reset_time, "2026-08-16T10:00:00Z")
+        self.assertEqual(w_1w_g.name, "1W")
+        self.assertEqual(w_1w_g.remaining_percentage, 90.0)
+        self.assertEqual(w_1w_g.reset_time, "2026-08-16T10:00:00Z")
+
+        # 2. Test "claude_gpt" pool extraction: extracts from claude-sonnet-4-6, ignores gemini-3.6-flash-high
+        res_claude = parse_antigravity_quota_json(data, pool="claude_gpt")
+        self.assertIsNotNone(res_claude)
+        w_5h_c, w_1w_c = res_claude
+        self.assertEqual(w_5h_c.name, "5H")
+        self.assertEqual(w_5h_c.remaining_percentage, 40.0)
+        self.assertEqual(w_5h_c.reset_time, "2026-08-16T10:00:00Z")
+
+        self.assertEqual(w_1w_c.name, "1W")
+        self.assertEqual(w_1w_c.remaining_percentage, 40.0)
+        self.assertEqual(w_1w_c.reset_time, "2026-08-16T10:00:00Z")
+
+    def test_parse_antigravity_quota_json_top_level_pools_schema(self):
+        data = {
+            "pools": {
+                "gemini": {
+                    "quotaInfo": {"remainingFraction": 0.70, "resetTime": "2026-08-09T12:00:00Z"},
+                    "weeklyQuotaInfo": {"remainingFraction": 0.80, "resetTime": "2026-08-16T12:00:00Z"},
+                },
+                "claude_gpt": {
+                    "quotaInfo": {"remainingFraction": 0.30, "resetTime": "2026-08-09T15:00:00Z"},
+                    "weeklyQuotaInfo": {"remainingFraction": 0.50, "resetTime": "2026-08-16T15:00:00Z"},
+                },
+            }
+        }
+        # Gemini pool
+        w_5h_g, w_1w_g = parse_antigravity_quota_json(data, pool="gemini")
+        self.assertEqual(w_5h_g.remaining_percentage, 70.0)
+        self.assertEqual(w_1w_g.remaining_percentage, 80.0)
+
+        # Claude/GPT pool
+        w_5h_c, w_1w_c = parse_antigravity_quota_json(data, pool="claude_gpt")
+        self.assertEqual(w_5h_c.remaining_percentage, 30.0)
+        self.assertEqual(w_1w_c.remaining_percentage, 50.0)
+
+    def test_quota_tracker_pool_configuration(self):
+        # Explicit quota_pool
+        t1 = QuotaTracker(quota_pool="claude_gpt")
+        self.assertEqual(t1.quota_pool, "claude_gpt")
+        self.assertEqual(t1.get_info().quota_pool, "claude_gpt")
+        self.assertEqual(t1.get_info().to_dict()["quota_pool"], "claude_gpt")
+
+        # Environment variable fallback
+        with patch.dict("os.environ", {"ANTIGRAVITY_QUOTA_POOL": "claude_gpt"}):
+            t2 = QuotaTracker()
+            self.assertEqual(t2.quota_pool, "claude_gpt")
+
+    def test_format_quota_badge_with_pool(self):
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=65.0, reset_time="2026-08-09T08:18:45Z")
+        badge = format_quota_badge(w_5h, quota_pool="gemini")
+        self.assertIn("[ GEMINI 5H QUOTA: 65%", badge)
+
+        badge_c = format_quota_badge(w_5h, quota_pool="claude_gpt")
+        self.assertIn("[ CLAUDE_GPT 5H QUOTA: 65%", badge_c)
 
     @patch("lib.quota.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen):
@@ -348,7 +408,11 @@ class TestQuotaTracker(unittest.TestCase):
                     "quotaInfo": {
                         "remainingFraction": 0.65,
                         "resetTime": "2026-08-09T09:00:00Z",
-                    }
+                    },
+                    "weeklyQuotaInfo": {
+                        "remainingFraction": 0.75,
+                        "resetTime": "2026-08-16T09:00:00Z",
+                    },
                 },
                 "claude-sonnet-4-6": {
                     "quotaInfo": {
@@ -360,11 +424,11 @@ class TestQuotaTracker(unittest.TestCase):
         }).encode("utf-8")
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
-        res = fetch_live_antigravity_quota(token="test-oauth-token")
+        res = fetch_live_antigravity_quota(token="test-oauth-token", quota_pool="gemini")
         self.assertIsNotNone(res)
         w_5h, w_1w = res
         self.assertEqual(w_5h.remaining_percentage, 65.0)
-        self.assertEqual(w_1w.remaining_percentage, 20.0)
+        self.assertEqual(w_1w.remaining_percentage, 75.0)
 
         # Verify request parameters
         req = mock_urlopen.call_args[0][0]
@@ -406,4 +470,5 @@ class TestQuotaTracker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

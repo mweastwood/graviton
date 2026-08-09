@@ -434,6 +434,7 @@ class TerminalDashboard:
     def _render_quota_panel(self, width: int) -> list:
         inner_w = width - 4
         quota_tracker = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+        pool = getattr(quota_tracker, "quota_pool", "gemini") if quota_tracker else "gemini"
 
         if quota_tracker:
             w_5h = getattr(
@@ -450,8 +451,8 @@ class TerminalDashboard:
             w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
             w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
 
-        badge_5h_text = format_quota_badge(w_5h)
-        badge_1w_text = format_quota_badge(w_1w)
+        badge_5h_text = format_quota_badge(w_5h, quota_pool=pool)
+        badge_1w_text = format_quota_badge(w_1w, quota_pool=pool)
 
         status_5h, _ = w_5h.get_pacing_status()
         status_1w, _ = w_1w.get_pacing_status()
@@ -467,7 +468,7 @@ class TerminalDashboard:
             else ("\033[91m\033[1m" if w_1w.remaining_percentage == 0 else "\033[93m\033[1m")
         )
 
-        panel_title = " ANTIGRAVITY MODEL QUOTA "
+        panel_title = f" ANTIGRAVITY MODEL QUOTA ({pool.upper()}) "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
 
