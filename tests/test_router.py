@@ -475,6 +475,34 @@ class TestRouter(unittest.TestCase):
         route_webhook_event("pull_request_review", payload_changes, pr_tracker=tracker)
         self.assertEqual(len(tracker.get_approved_prs()), 0)
 
+    def test_router_updates_pr_tracker_on_bot_approval(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+
+        payload_bot_approved = {
+            "action": "submitted",
+            "review": {
+                "state": "APPROVED",
+                "body": "LGTM! <!-- antigravity-auto-reply -->",
+            },
+            "pull_request": {
+                "number": 59,
+                "title": "Fix Empty Approved PRs Panel",
+                "html_url": "https://github.com/mweastwood/graviton/pull/59",
+                "user": {"login": "code_reviewer"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload_bot_approved, pr_tracker=tracker)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot self-review event dropped")
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 59)
+        self.assertEqual(approved[0]["title"], "Fix Empty Approved PRs Panel")
+        self.assertEqual(approved[0]["author"], "code_reviewer")
+
     def test_router_updates_pr_tracker_on_review_dismissed(self):
         from lib.pr_tracker import PRTracker
         tracker = PRTracker()

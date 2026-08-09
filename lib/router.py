@@ -159,6 +159,12 @@ def handle_pull_request_review_event(
         elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
             pr_tracker.remove_approved_pr(pr_number)
 
+    if contains_bot_marker(review_body) and review_state != "CHANGES_REQUESTED":
+        return {
+            "status": "ignored",
+            "reason": "Bot self-review event dropped",
+        }
+
     if not is_pr_created_by_us(pr) and not has_explicit_command(review_body):
         return {
             "status": "ignored",
