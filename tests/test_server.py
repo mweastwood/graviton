@@ -110,6 +110,28 @@ class TestGravitonHandler(unittest.TestCase):
         )
         handler._send_json.assert_called_once()
 
+    @patch("graviton_server.logger")
+    def test_do_post_logging_enriched_context(self, mock_logger):
+        payload = json.dumps({
+            "action": "opened",
+            "issue": {"number": 62, "title": "Enhance event logs", "body": "Details"}
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issues",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_triager = "issue_triager"
+        handler.task_manager = None
+
+        with patch("graviton_server.run_agent_async"):
+            GravitonHandler.do_POST(handler)
+
+        mock_logger.info.assert_any_call("Received GitHub webhook event: issues (Issue #62 (action: opened))")
+        mock_logger.info.assert_any_call("Routed webhook event 'issues' (Issue #62 (action: opened)): status=accepted, agent=issue_triager")
+
 
 if __name__ == "__main__":
     unittest.main()

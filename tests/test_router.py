@@ -6,6 +6,7 @@ import time
 import unittest
 from lib.router import (
     route_webhook_event,
+    format_event_summary,
     is_pr_created_by_us,
     has_explicit_command,
     handle_ping_event,
@@ -532,6 +533,58 @@ class TestRouter(unittest.TestCase):
         time.sleep(0.02)
         res6 = handle_pull_request_event(payload_sync, debounce_window=0.01)
         self.assertEqual(res6["status"], "accepted")
+
+    def test_format_event_summary_pull_request(self):
+        # pull_request opened
+        p1 = {"action": "opened", "number": 12}
+        self.assertEqual(format_event_summary("pull_request", p1), "PR #12 (action: opened)")
+
+        # pull_request_review submitted
+        p2 = {"action": "submitted", "pull_request": {"number": 15}}
+        self.assertEqual(format_event_summary("pull_request_review", p2), "PR #15 (action: submitted)")
+
+        # pull_request_review_comment created with html_url
+        p3 = {"action": "created", "pull_request": {"html_url": "https://github.com/org/repo/pull/88"}}
+        self.assertEqual(format_event_summary("pull_request_review_comment", p3), "PR #88 (action: created)")
+
+        # pull_request without action
+        p4 = {"number": 7}
+        self.assertEqual(format_event_summary("pull_request", p4), "PR #7")
+
+    def test_format_event_summary_issues(self):
+        p1 = {"action": "opened", "issue": {"number": 62}}
+        self.assertEqual(format_event_summary("issues", p1), "Issue #62 (action: opened)")
+
+        p2 = {"action": "labeled", "issue": {"number": 55}, "label": {"name": "ready-for-pr"}}
+        self.assertEqual(format_event_summary("issues", p2), "Issue #55 (action: labeled)")
+
+        p3 = {"issue": {"number": 10}}
+        self.assertEqual(format_event_summary("issues", p3), "Issue #10")
+
+    def test_format_event_summary_issue_comment(self):
+        # Pure issue comment
+        p1 = {"action": "created", "issue": {"number": 62}}
+        self.assertEqual(format_event_summary("issue_comment", p1), "Issue #62 (action: created)")
+
+        # PR comment via issue_comment event
+        p2 = {"action": "created", "issue": {"number": 12, "pull_request": {"url": "https://api.github.com/pulls/12"}}}
+        self.assertEqual(format_event_summary("issue_comment", p2), "PR #12 (action: created)")
+
+    def test_format_event_summary_push(self):
+        p1 = {"ref": "refs/heads/main"}
+        self.assertEqual(format_event_summary("push", p1), "Branch 'refs/heads/main'")
+
+        p2 = {}
+        self.assertEqual(format_event_summary("push", p2), "Push")
+
+    def test_format_event_summary_ping(self):
+        p1 = {"zen": "Non-blocking is better than blocking."}
+        self.assertEqual(format_event_summary("ping", p1), "Ping")
+
+    def test_format_event_summary_fallbacks(self):
+        self.assertEqual(format_event_summary("custom_event", {"action": "sync"}), "custom_event (action: sync)")
+        self.assertEqual(format_event_summary("custom_event", {}), "custom_event")
+        self.assertEqual(format_event_summary("custom_event", None), "custom_event")
 
 
 if __name__ == "__main__":

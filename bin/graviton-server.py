@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.security import verify_signature
-from lib.router import route_webhook_event
+from lib.router import route_webhook_event, format_event_summary
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
@@ -90,7 +90,6 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 return
 
         event_type = self.headers.get("X-GitHub-Event", "unknown")
-        logger.info(f"Received GitHub webhook event: {event_type}")
 
         try:
             payload = json.loads(payload_bytes.decode("utf-8"))
@@ -98,6 +97,9 @@ class GravitonHandler(BaseHTTPRequestHandler):
             logger.error("Failed to parse JSON payload.")
             self._send_json(400, {"error": "Invalid JSON payload"})
             return
+
+        target_summary = format_event_summary(event_type, payload)
+        logger.info(f"Received GitHub webhook event: {event_type} ({target_summary})")
 
         # Route event using lib.router
         decision = route_webhook_event(
@@ -108,6 +110,24 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_triager=self.default_triager,
             pr_tracker=self.pr_tracker,
         )
+
+        status = decision.get("status", "unknown")
+        agent = decision.get("agent")
+        reason = decision.get("reason")
+        action = decision.get("action")
+
+        if status == "accepted":
+            if agent:
+                logger.info(f"Routed webhook event '{event_type}' ({target_summary}): status=accepted, agent={agent}")
+            elif action:
+                logger.info(f"Routed webhook event '{event_type}' ({target_summary}): status=accepted, action={action}")
+            else:
+                logger.info(f"Routed webhook event '{event_type}' ({target_summary}): status=accepted")
+        else:
+            if reason:
+                logger.info(f"Routed webhook event '{event_type}' ({target_summary}): status=ignored, reason={reason}")
+            else:
+                logger.info(f"Routed webhook event '{event_type}' ({target_summary}): status=ignored")
 
         if decision.get("status") == "accepted":
             if decision.get("action") == "ping":
