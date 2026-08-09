@@ -193,7 +193,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["issue_number"], 55)
         self.assertIn("Triage Issue #55", result["prompt"])
 
-    def test_issues_labeled_ready_for_pr_triggers_fixer(self):
+    def test_issues_labeled_ready_for_pr_triggers_drafter(self):
         payload = {
             "action": "labeled",
             "label": {"name": "ready-for-pr"},
@@ -205,7 +205,7 @@ class TestRouter(unittest.TestCase):
         }
         result = route_webhook_event("issues", payload)
         self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["agent"], "pr_drafter")
         self.assertEqual(result["issue_number"], 55)
         self.assertIn("Draft initial PR", result["prompt"])
 
@@ -349,7 +349,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["agent"], "issue_triager")
         self.assertIn("Continue triage on Issue #55", result["prompt"])
 
-    def test_issue_comment_on_ready_issue_triggers_fixer(self):
+    def test_issue_comment_on_ready_issue_triggers_drafter(self):
         payload = {
             "action": "created",
             "comment": {"body": "@antigravity /draft-pr start working"},
@@ -360,7 +360,7 @@ class TestRouter(unittest.TestCase):
         }
         result = route_webhook_event("issue_comment", payload)
         self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["agent"], "pr_drafter")
         self.assertIn("Draft initial PR for Issue #55", result["prompt"])
 
     def test_push_main_event(self):
@@ -432,6 +432,13 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res_issues["status"], "accepted")
         self.assertEqual(res_issues["agent"], "custom_triager")
 
+        res_issues_labeled = handle_issues_event(
+            {"action": "labeled", "label": {"name": "ready-for-pr"}, "issue": {"number": 5}},
+            default_drafter="custom_drafter",
+        )
+        self.assertEqual(res_issues_labeled["status"], "accepted")
+        self.assertEqual(res_issues_labeled["agent"], "custom_drafter")
+
         # handle_issue_comment_event
         res_issue_comment = handle_issue_comment_event(
             {"action": "created", "comment": {"body": "Details"}, "issue": {"number": 5}},
@@ -439,6 +446,13 @@ class TestRouter(unittest.TestCase):
         )
         self.assertEqual(res_issue_comment["status"], "accepted")
         self.assertEqual(res_issue_comment["agent"], "custom_triager")
+
+        res_issue_comment_draft = handle_issue_comment_event(
+            {"action": "created", "comment": {"body": "/draft-pr"}, "issue": {"number": 5}},
+            default_drafter="custom_drafter",
+        )
+        self.assertEqual(res_issue_comment_draft["status"], "accepted")
+        self.assertEqual(res_issue_comment_draft["agent"], "custom_drafter")
 
     def test_router_updates_pr_tracker_on_approval_and_changes_requested(self):
         from lib.pr_tracker import PRTracker

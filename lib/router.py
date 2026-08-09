@@ -251,6 +251,7 @@ def handle_issues_event(
     payload: Dict[str, Any],
     default_triager: str = "issue_triager",
     default_fixer: str = "code_fixer",
+    default_drafter: str = "pr_drafter",
 ) -> Dict[str, Any]:
     """Handle GitHub 'issues' webhook event (Opened, Edited, Labeled)."""
     action = payload.get("action")
@@ -278,7 +279,7 @@ def handle_issues_event(
                 "action": action,
                 "label": label_name,
                 "issue_number": issue_number,
-                "agent": default_fixer,
+                "agent": default_drafter,
                 "prompt": prompt,
             }
         return {
@@ -297,6 +298,7 @@ def handle_issue_comment_event(
     default_reviewer: str = "code_reviewer",
     default_fixer: str = "code_fixer",
     default_triager: str = "issue_triager",
+    default_drafter: str = "pr_drafter",
 ) -> Dict[str, Any]:
     """Handle GitHub 'issue_comment' webhook event."""
     action = payload.get("action")
@@ -346,7 +348,7 @@ def handle_issue_comment_event(
                     "status": "accepted",
                     "action": action,
                     "issue_number": issue_number,
-                    "agent": default_fixer,
+                    "agent": default_drafter,
                     "prompt": prompt,
                 }
             else:
@@ -436,6 +438,7 @@ def route_webhook_event(
     default_reviewer: str = "code_reviewer",
     default_fixer: str = "code_fixer",
     default_triager: str = "issue_triager",
+    default_drafter: str = "pr_drafter",
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
 ) -> Dict[str, Any]:
@@ -447,6 +450,7 @@ def route_webhook_event(
     :param default_reviewer: Name of the reviewer agent.
     :param default_fixer: Name of the fixer agent.
     :param default_triager: Name of the issue triage agent.
+    :param default_drafter: Name of the PR drafter agent.
     :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
     :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
@@ -459,9 +463,15 @@ def route_webhook_event(
         ),
         "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer, pr_tracker=pr_tracker),
         "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(p, default_fixer=default_fixer),
-        "issues": lambda p: handle_issues_event(p, default_triager=default_triager, default_fixer=default_fixer),
+        "issues": lambda p: handle_issues_event(
+            p, default_triager=default_triager, default_fixer=default_fixer, default_drafter=default_drafter
+        ),
         "issue_comment": lambda p: handle_issue_comment_event(
-            p, default_reviewer=default_reviewer, default_fixer=default_fixer, default_triager=default_triager
+            p,
+            default_reviewer=default_reviewer,
+            default_fixer=default_fixer,
+            default_triager=default_triager,
+            default_drafter=default_drafter,
         ),
     }
 

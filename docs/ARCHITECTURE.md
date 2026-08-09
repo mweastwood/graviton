@@ -18,9 +18,9 @@ stateDiagram-v2
         FinalizeDesignSpec --> ApplyReadyLabel: Label: ready-for-pr
     }
 
-    TriagerAgent --> FixerAgent: 2. Webhook: issues (labeled == ready-for-pr)
+    TriagerAgent --> DrafterAgent: 2. Webhook: issues (labeled == ready-for-pr)
 
-    state "Agent B: code_fixer (PR Drafter)" as FixerAgent {
+    state "Agent B: pr_drafter" as DrafterAgent {
         [*] --> CreateFeatureBranch
         CreateFeatureBranch --> ImplementCodeEdits
         ImplementCodeEdits --> RunLocalTests
@@ -48,7 +48,7 @@ stateDiagram-v2
 ### How Graviton Distinguishes Human vs. Agent Comments
 Even with a single GitHub account, Graviton differentiates human comments from automated agent comments using **HTML signature tags**:
 
-- **Agent Comments**: All comments written by `issue_triager`, `code_reviewer`, or `code_fixer` include `<!-- antigravity-auto-reply -->`.
+- **Agent Comments**: All comments written by `issue_triager`, `pr_drafter`, `code_reviewer`, or `code_fixer` include `<!-- antigravity-auto-reply -->`.
 - **Human Comments**: Any comment **without** `<!-- antigravity-auto-reply -->` is recognized as coming from a human.
 
 ### Supported Interaction Modes
@@ -60,7 +60,7 @@ Even with a single GitHub account, Graviton differentiates human comments from a
 
 #### Mode 2: Automated PR Drafting from Labeled Issues
 - **Event**: `issues` (`action: labeled` with `label: ready-for-pr`) or `issue_comment` containing `/draft-pr`.
-- **Behavior**: `code_fixer` creates a new feature branch from `main`, implements the feature, executes unit tests, and opens a new PR (`gh pr create`), transitioning the issue into the PR review cycle.
+- **Behavior**: `pr_drafter` creates a new feature branch from `main`, implements the feature, executes unit tests, and opens a new PR (`gh pr create`), transitioning the issue into the PR review cycle.
 
 #### Mode 3: Automatic Response to Human Review Comments
 - **Event**: `pull_request_review_comment` (inline review comments) or `pull_request_review` (submitted review).
@@ -73,8 +73,8 @@ Even with a single GitHub account, Graviton differentiates human comments from a
 | GitHub Event | Sender / Condition | Triggered Agent | Agent Action |
 | --- | --- | --- | --- |
 | `issues` (`opened`, `edited`) | New issue / issue update | `issue_triager` | Analyzes requirements; posts clarifying questions or applies label `ready-for-pr`. |
-| `issues` (`labeled == ready-for-pr`) | Issue ready for code | `code_fixer` | Implements feature on a new branch, runs tests, and opens initial PR (`gh pr create`). |
-| `issue_comment` (on Issue) | Human comment on Issue | `issue_triager` / `code_fixer` | Continues triage (`issue_triager`) or drafts PR if issue is labeled `ready-for-pr`. |
+| `issues` (`labeled == ready-for-pr`) | Issue ready for code | `pr_drafter` | Implements feature on a new branch, runs tests, and opens initial PR (`gh pr create`). |
+| `issue_comment` (on Issue) | Human comment on Issue | `issue_triager` / `pr_drafter` | Continues triage (`issue_triager`) or drafts PR if issue is labeled `ready-for-pr`. |
 | `pull_request` (`opened`, `synchronize`) | Git Push / PR creation | `code_reviewer` | Performs full code review, runs static analysis, submits GitHub Review (`APPROVE` or `CHANGES_REQUESTED`). |
 | `pull_request_review` | `state == CHANGES_REQUESTED` | `code_fixer` | Parses requested changes, modifies code in `/workspace`, runs tests, commits & pushes. |
 | `pull_request_review_comment` | Line comment (no bot tag) | `code_fixer` | Resolves specific inline code comment, pushes commit, and posts thread reply. |
