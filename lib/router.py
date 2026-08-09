@@ -359,6 +359,71 @@ def handle_issue_comment_event(
     }
 
 
+def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
+    """
+    Format a concise target descriptor summary for a GitHub webhook event payload.
+
+    :param event_type: Header X-GitHub-Event string (e.g. 'pull_request', 'issues', 'issue_comment', 'push', 'ping').
+    :param payload: Parsed JSON dictionary of the webhook payload.
+    :return: String target descriptor (e.g. "PR #12 (action: opened)", "Issue #62 (action: opened)", "Branch 'refs/heads/main'", "Ping").
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+
+    action = payload.get("action")
+
+    if event_type in ("pull_request", "pull_request_review", "pull_request_review_comment"):
+        pr = payload.get("pull_request")
+        pr_dict = pr if isinstance(pr, dict) else {}
+        pr_number = payload.get("number") or pr_dict.get("number")
+        if pr_number is None and pr_dict.get("html_url"):
+            url = str(pr_dict.get("html_url", ""))
+            parts = url.rstrip("/").split("/")
+            if parts and parts[-1].isdigit():
+                pr_number = int(parts[-1])
+
+        target = f"PR #{pr_number}" if pr_number is not None and pr_number != "" else "PR"
+        if action:
+            return f"{target} (action: {action})"
+        return target
+
+    elif event_type == "issues":
+        issue = payload.get("issue")
+        issue_dict = issue if isinstance(issue, dict) else {}
+        issue_number = issue_dict.get("number") or payload.get("number")
+
+        target = f"Issue #{issue_number}" if issue_number is not None and issue_number != "" else "Issue"
+        if action:
+            return f"{target} (action: {action})"
+        return target
+
+    elif event_type == "issue_comment":
+        issue = payload.get("issue")
+        issue_dict = issue if isinstance(issue, dict) else {}
+        issue_number = issue_dict.get("number") or payload.get("number")
+        is_pr = bool(issue_dict.get("pull_request"))
+        prefix = "PR" if is_pr else "Issue"
+
+        target = f"{prefix} #{issue_number}" if issue_number is not None and issue_number != "" else prefix
+        if action:
+            return f"{target} (action: {action})"
+        return target
+
+    elif event_type == "push":
+        ref = payload.get("ref", "")
+        if ref:
+            return f"Branch '{ref}'"
+        return "Push"
+
+    elif event_type == "ping":
+        return "Ping"
+
+    else:
+        if action:
+            return f"{event_type} (action: {action})"
+        return event_type or "Unknown"
+
+
 def route_webhook_event(
     event_type: str,
     payload: Dict[str, Any],
