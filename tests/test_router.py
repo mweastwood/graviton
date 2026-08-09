@@ -30,8 +30,10 @@ class TestRouter(unittest.TestCase):
 
         self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
-        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
-        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
+        self.assertTrue(is_pr_created_by_us({"head": {"ref": "feat/my-feature"}}))
+        self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
 
     def test_ping_event(self):
@@ -227,7 +229,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "PR was not created by us")
 
-    def test_issue_comment_on_external_pr_with_feat_branch_accepted(self):
+    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
         payload = {
             "action": "created",
             "comment": {"body": "Looks suspicious."},
@@ -242,8 +244,8 @@ class TestRouter(unittest.TestCase):
             },
         }
         result = route_webhook_event("issue_comment", payload)
-        self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
 
     def test_issue_comment_on_external_pr_with_fix_command_accepted(self):
         payload = {
