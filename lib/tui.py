@@ -482,7 +482,7 @@ class TerminalDashboard:
 
         if self.active_screen == "jobs":
             # Dedicated Periodic Jobs Screen View
-            banner_text = "Press [Esc] to return to Main Screen"
+            banner_text = "Press [Esc] to return to Main Screen │ Controls: [↑/↓ or j/k] Select │ [Space] Toggle │ [e/d] Enable/Disable │ [r] Run"
             banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
             lines.append(banner_line)
             lines.append("")
@@ -606,7 +606,9 @@ class TerminalDashboard:
         info_line = f"Host: {self.host}:{self.port} │ Branch: {branch} │ Commit: {commit} │ Uptime: {uptime}"
         info_content = fit_to_display_width(info_line, inner_w)
 
-        if self.active_screen in ("jobs", "logs"):
+        if self.active_screen == "jobs":
+            nav_hint = "Nav: [↑/↓] Select │ [Space] Toggle │ [e/d] Enable/Disable │ [Esc] Main Screen"
+        elif self.active_screen == "logs":
             nav_hint = "Nav: [Esc] Main Screen"
         else:
             nav_hint = "Nav: [j] Periodic Jobs │ [e] Event Logs"
@@ -766,7 +768,7 @@ class TerminalDashboard:
         self, width: int, scheduler: Optional[TaskScheduler], mode: str = "card"
     ) -> list:
         inner_w = width - 4
-        panel_title = " SCHEDULED JOBS [(e)nable | (d)isable | (space) toggle | (r)un now] "
+        panel_title = " SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ] "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
         header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"

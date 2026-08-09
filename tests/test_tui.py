@@ -504,7 +504,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered = dashboard.render(width=80)
         scheduler.stop()
 
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (space) toggle | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("test_sweep_1", rendered)
         self.assertIn("Test Bug Sweep Job", rendered)
         self.assertIn("codebase_auditor", rendered)
@@ -542,7 +542,7 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "jobs"
         rendered = dashboard.render(width=80)
 
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (space) toggle | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
 
     def test_scheduled_jobs_selector_rendering(self):
@@ -576,7 +576,7 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "jobs"
 
         rendered = dashboard.render(width=80)
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (space) toggle | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("> ", rendered)
 
         dashboard.select_next_job()
