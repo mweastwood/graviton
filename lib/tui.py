@@ -10,9 +10,11 @@ import sys
 import threading
 import time
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TextIO, Tuple, Union
 
+from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
 
@@ -119,6 +121,7 @@ class TerminalDashboard:
     - Header: host, port, git version, branch, server uptime, hot-reload state.
     - Active Tasks (RUNNING) panel.
     - Task Queue (QUEUED) panel.
+    - Scheduled Jobs panel (periodic TaskScheduler status & upcoming jobs).
     - Task History (COMPLETED/FAILED) panel.
     - Event Logs panel.
     """
@@ -135,6 +138,7 @@ class TerminalDashboard:
         log_file: Optional[Union[str, Path]] = "graviton.log",
         log_handler: Optional[TUILogHandler] = None,
         git_cache_ttl: float = 10.0,
+        scheduler: Optional[TaskScheduler] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -154,6 +158,7 @@ class TerminalDashboard:
             self.log_file = None
 
         self.log_handler = log_handler or TUILogHandler()
+        self.scheduler = scheduler
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -293,12 +298,16 @@ class TerminalDashboard:
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
-        # 4. Task History Panel
+        # 4. Scheduled Jobs Panel
+        lines.extend(self._render_scheduled_jobs(width, self.scheduler))
+        lines.append("")
+
+        # 5. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
         lines.append("")
 
-        # 5. Event Logs Panel
+        # 6. Event Logs Panel
         lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
@@ -396,6 +405,124 @@ class TerminalDashboard:
                 wait_str = fit_to_display_width(f"{t.wait_time:.1f}s", 10)
                 prompt_str = fit_to_display_width(prompt_trunc, 26)
                 row = f"{id_str} {agent_str} {target_str} {wait_str} {prompt_str}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+
+        res.append("└" + "─" * (width - 2) + "┘")
+        return res
+
+    @staticmethod
+    def _format_interval(sec: int) -> str:
+        if sec >= 86400 and sec % 86400 == 0:
+            return f"{sec // 86400}d"
+        elif sec >= 3600 and sec % 3600 == 0:
+            return f"{sec // 3600}h"
+        elif sec >= 60 and sec % 60 == 0:
+            return f"{sec // 60}m"
+        else:
+            return f"{sec}s"
+
+    @staticmethod
+    def _format_timestamp(ts: Optional[str]) -> str:
+        if not ts:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(ts)
+            return dt.strftime("%H:%M:%S")
+        except Exception:
+            return ts[:8]
+
+    @staticmethod
+    def _format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
+        if not job.enabled:
+            return "DISABLED"
+
+        next_dt = None
+        if job.next_run:
+            try:
+                next_dt = datetime.fromisoformat(job.next_run)
+                if next_dt.tzinfo is None:
+                    next_dt = next_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+
+        if next_dt is None and job.last_run:
+            try:
+                last_dt = datetime.fromisoformat(job.last_run)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                next_dt = datetime.fromtimestamp(last_dt.timestamp() + job.interval_seconds, tz=timezone.utc)
+            except Exception:
+                pass
+
+        if next_dt is None:
+            return "DUE"
+
+        rem_sec = (next_dt - now_dt).total_seconds()
+        if rem_sec <= 0:
+            return "DUE"
+
+        if rem_sec >= 86400:
+            d = int(rem_sec // 86400)
+            h = int((rem_sec % 86400) // 3600)
+            return f"in {d}d {h}h"
+        elif rem_sec >= 3600:
+            h = int(rem_sec // 3600)
+            m = int((rem_sec % 3600) // 60)
+            return f"in {h}h {m}m"
+        elif rem_sec >= 60:
+            m = int(rem_sec // 60)
+            return f"in {m}m"
+        else:
+            s = int(rem_sec)
+            return f"in {s}s"
+
+    def _render_scheduled_jobs(self, width: int, scheduler: Optional[TaskScheduler]) -> list:
+        inner_w = width - 4
+        status_enabled = "ENABLED" if scheduler is not None else "DISABLED"
+        status_running = "RUNNING" if (scheduler and scheduler.is_running()) else "STOPPED"
+        panel_title = f" SCHEDULED JOBS [{status_enabled} | {status_running}] "
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+
+        res = [header_bar]
+        if not scheduler or not scheduler.jobs:
+            if not scheduler:
+                msg = "(Scheduler disabled)"
+            else:
+                msg = "(No scheduled jobs configured)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
+        else:
+            col_hdr = f"{fit_to_display_width('JOB ID', 12)} {fit_to_display_width('NAME', 14)} {fit_to_display_width('AGENT', 16)} {fit_to_display_width('INTV', 4)} {fit_to_display_width('LAST RUN', 8)} {fit_to_display_width('NEXT RUN', 8)} {fit_to_display_width('REMAIN', 8)}"
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+
+            now_dt = datetime.now(timezone.utc)
+            for job in list(scheduler.jobs.values()):
+                if get_display_width(job.job_id) > 12:
+                    id_trunc = truncate_to_display_width(job.job_id, 10) + ".."
+                else:
+                    id_trunc = job.job_id
+
+                if get_display_width(job.name) > 14:
+                    name_trunc = truncate_to_display_width(job.name, 12) + ".."
+                else:
+                    name_trunc = job.name
+
+                if get_display_width(job.agent) > 16:
+                    agent_trunc = truncate_to_display_width(job.agent, 14) + ".."
+                else:
+                    agent_trunc = job.agent
+
+                id_str = fit_to_display_width(id_trunc, 12)
+                name_str = fit_to_display_width(name_trunc, 14)
+                agent_str = fit_to_display_width(agent_trunc, 16)
+                interval_str = fit_to_display_width(self._format_interval(job.interval_seconds), 4)
+                last_run_str = fit_to_display_width(self._format_timestamp(job.last_run), 8)
+                next_run_str = fit_to_display_width(self._format_timestamp(job.next_run), 8)
+                rem_str = fit_to_display_width(self._format_remaining(job, now_dt), 8)
+                row = f"{id_str} {name_str} {agent_str} {interval_str} {last_run_str} {next_run_str} {rem_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")

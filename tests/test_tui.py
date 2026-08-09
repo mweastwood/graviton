@@ -3,6 +3,7 @@ Unit tests for lib/tui.py (TerminalDashboard).
 """
 
 import io
+import json
 import logging
 import tempfile
 import time
@@ -10,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui import (
     TerminalDashboard,
@@ -409,6 +411,79 @@ class TestTerminalDashboard(unittest.TestCase):
 
         # Clean up logger handler
         logger.removeHandler(log_handler)
+
+    def test_scheduled_jobs_panel_with_active_scheduler(self):
+        manager = TaskManager(max_workers=2)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(
+                [
+                    {
+                        "job_id": "test_sweep_1",
+                        "name": "Test Bug Sweep Job",
+                        "interval_seconds": 86400,
+                        "agent": "codebase_auditor",
+                        "prompt": "Test prompt",
+                        "enabled": True,
+                        "last_run": "2026-08-09T01:00:00+00:00",
+                        "next_run": "2026-08-10T01:00:00+00:00",
+                    },
+                    {
+                        "job_id": "test_sweep_2",
+                        "name": "Disabled Quality Sweep Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Disabled prompt",
+                        "enabled": False,
+                        "last_run": None,
+                        "next_run": None,
+                    },
+                ],
+                f,
+            )
+            config_path = Path(f.name)
+
+        scheduler = TaskScheduler(config_path=config_path)
+        scheduler.start()
+
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            scheduler=scheduler,
+            host="127.0.0.1",
+            port=8080,
+        )
+
+        rendered = dashboard.render(width=80)
+        scheduler.stop()
+
+        self.assertIn("SCHEDULED JOBS [ENABLED | RUNNING]", rendered)
+        self.assertIn("test_sweep_1", rendered)
+        self.assertIn("Test Bug Swe..", rendered)
+        self.assertIn("codebase_auditor", rendered)
+        self.assertIn("test_sweep_2", rendered)
+        self.assertIn("Disabled Qua..", rendered)
+        self.assertIn("DISABLED", rendered)
+
+        # Verify visual line widths for multiple terminal widths
+        for target_w in [80, 100, 120]:
+            r = dashboard.render(width=target_w)
+            lines = r.split("\n")
+            for i, line in enumerate(lines):
+                if not line:
+                    continue
+                dw = get_display_width(line)
+                self.assertEqual(
+                    dw,
+                    target_w,
+                    f"Line {i} visual width {dw} != {target_w} in scheduler dashboard: {line!r}",
+                )
+
+    def test_scheduled_jobs_panel_disabled(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager, scheduler=None)
+        rendered = dashboard.render(width=80)
+
+        self.assertIn("SCHEDULED JOBS [DISABLED | STOPPED]", rendered)
+        self.assertIn("(Scheduler disabled)", rendered)
 
 
 if __name__ == "__main__":

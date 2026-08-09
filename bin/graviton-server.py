@@ -212,6 +212,7 @@ def main():
             host=args.host,
             port=args.port,
             repo_root=REPO_ROOT,
+            scheduler=scheduler,
         )
         dashboard.start()
 
