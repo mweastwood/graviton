@@ -102,7 +102,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 self.assertTrue(any("Worker task completed successfully" in l for l in logs))
 
                 rendered = dashboard.render(width=80)
-                self.assertIn("Recent Log Events", rendered)
+                self.assertIn("EVENT LOGS", rendered)
                 self.assertIn("Webhook event received", rendered)
 
                 self.assertTrue(log_file.exists())
@@ -203,7 +203,8 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("TASK QUEUE (QUEUED)", rendered)
         self.assertIn("task-2", rendered)
         self.assertIn("code_fixer", rendered)
-        self.assertIn("TASK HISTORY & EVENT LOG", rendered)
+        self.assertIn("TASK HISTORY", rendered)
+        self.assertIn("EVENT LOGS", rendered)
         self.assertIn("task-3", rendered)
         self.assertIn("COMPLETED", rendered)
 
@@ -328,6 +329,86 @@ class TestTerminalDashboard(unittest.TestCase):
             dashboard.render(width=80)
             self.assertEqual(mock_get_git.call_count, 3)
             self.assertEqual(dashboard._git_info_cache, ("e5f6g7h", "feat/test"))
+
+    def test_separate_task_history_and_event_logs_panels(self):
+        manager = TaskManager(max_workers=2)
+        log_handler = TUILogHandler(max_records=10)
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            log_handler=log_handler,
+        )
+
+        # 1. Render when empty
+        history_empty = dashboard._render_history_tasks(80, [], {"completed": 0, "failed": 0})
+        self.assertTrue(history_empty[0].startswith("┌─"))
+        self.assertTrue(history_empty[-1].startswith("└─"))
+        self.assertIn("(No task history recorded yet)", "\n".join(history_empty))
+
+        logs_empty = dashboard._render_event_logs(80)
+        self.assertTrue(logs_empty[0].startswith("┌─"))
+        self.assertTrue(logs_empty[-1].startswith("└─"))
+        self.assertIn("(No event logs recorded yet)", "\n".join(logs_empty))
+
+        # 2. Populate task history and logs
+        t_comp = Task(
+            id="task-10",
+            agent="code_reviewer",
+            prompt="Review PR #25",
+            target_id="#25",
+            status=TaskStatus.COMPLETED,
+            enqueue_time=time.time() - 20,
+            start_time=time.time() - 15,
+            finish_time=time.time() - 10,
+            return_code=0,
+        )
+        t_fail = Task(
+            id="task-11",
+            agent="code_fixer",
+            prompt="Fix issue #25",
+            target_id="#25",
+            status=TaskStatus.FAILED,
+            enqueue_time=time.time() - 10,
+            start_time=time.time() - 8,
+            finish_time=time.time() - 5,
+            return_code=1,
+        )
+        manager._tasks = {"task-10": t_comp, "task-11": t_fail}
+        stats = manager.get_stats()
+
+        logger = logging.getLogger("test_separate_panels")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(log_handler)
+        logger.info("Webhook event: issue_comment received")
+        logger.error("Failed to parse event payload")
+
+        # 3. Test independent panel renderings
+        history_lines = dashboard._render_history_tasks(80, [t_comp, t_fail], stats)
+        history_str = "\n".join(history_lines)
+        self.assertIn("TASK HISTORY", history_str)
+        self.assertIn("task-10", history_str)
+        self.assertIn("task-11", history_str)
+        self.assertNotIn("Webhook event: issue_comment received", history_str)
+        for line in history_lines:
+            self.assertEqual(get_display_width(line), 80)
+
+        logs_lines = dashboard._render_event_logs(80)
+        logs_str = "\n".join(logs_lines)
+        self.assertIn("EVENT LOGS", logs_str)
+        self.assertIn("Webhook event: issue_comment received", logs_str)
+        self.assertIn("Failed to parse event payload", logs_str)
+        self.assertNotIn("task-10", logs_str)
+        for line in logs_lines:
+            self.assertEqual(get_display_width(line), 80)
+
+        # 4. Test full dashboard layout rendering
+        rendered = dashboard.render(width=80)
+        self.assertIn("TASK HISTORY", rendered)
+        self.assertIn("EVENT LOGS", rendered)
+        self.assertIn("task-10", rendered)
+        self.assertIn("Webhook event: issue_comment received", rendered)
+
+        # Clean up logger handler
+        logger.removeHandler(log_handler)
 
 
 if __name__ == "__main__":
