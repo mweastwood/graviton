@@ -4,7 +4,7 @@ Unit tests for lib/quota.py (QuotaTracker, QuotaInfo, and parse_quota_headers).
 
 import time
 import unittest
-from lib.quota import QuotaInfo, QuotaState, QuotaTracker, parse_quota_headers
+from lib.quota import QuotaInfo, QuotaState, QuotaTracker, QuotaWindow, parse_quota_headers
 
 
 class TestQuotaTracker(unittest.TestCase):
@@ -146,6 +146,63 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.reset_time = future_ts
         self.assertTrue(tracker.get_reset_time_str().startswith("in "))
 
+    def test_quota_window_dataclass(self):
+        now = time.time()
+        # 5h window with reset in 11565s (3h 12m 45s) and 65% remaining
+        w5h = QuotaWindow(
+            window_name="5h",
+            total_duration_seconds=18000.0,
+            remaining_percentage=65.0,
+            reset_timestamp=now + 11565.0,
+        )
+        self.assertEqual(w5h.format_reset_countdown(now=now), "03:12:45")
+        self.assertEqual(w5h.quota_fraction, 0.65)
+        self.assertAlmostEqual(w5h.time_fraction(now=now), 11565.0 / 18000.0)
+        self.assertEqual(w5h.pacing_status(now=now), "OK")
+
+        # 1w window with reset in 374400s (4d 08h) and 20% remaining
+        w1w = QuotaWindow(
+            window_name="1w",
+            total_duration_seconds=604800.0,
+            remaining_percentage=20.0,
+            reset_timestamp=now + 374400.0,
+        )
+        self.assertEqual(w1w.format_reset_countdown(now=now), "4d 08h")
+        self.assertEqual(w1w.quota_fraction, 0.20)
+        self.assertAlmostEqual(w1w.time_fraction(now=now), 374400.0 / 604800.0)
+        self.assertEqual(w1w.pacing_status(now=now), "BEHIND_PACING")
+
+    def test_multi_window_header_parsing(self):
+        tracker = QuotaTracker()
+        now = time.time()
+        headers = {
+            "x-quota-remaining-5h": "65.0",
+            "x-quota-reset-5h": str(now + 10000),
+            "x-quota-remaining-1w": "20.0",
+            "x-quota-reset-1w": str(now + 300000),
+        }
+        tracker.parse_quota_headers(headers)
+        self.assertEqual(tracker.window_5h.remaining_percentage, 65.0)
+        self.assertEqual(tracker.window_5h.reset_timestamp, now + 10000)
+        self.assertEqual(tracker.window_1w.remaining_percentage, 20.0)
+        self.assertEqual(tracker.window_1w.reset_timestamp, now + 300000)
+        self.assertEqual(tracker.remaining_percentage, 20.0)
+
+    def test_pacing_backoff_calculation(self):
+        now = time.time()
+        tracker = QuotaTracker(max_backoff_delay=10.0)
+        # 1w window: 20% quota remaining, but 60% time remaining -> deficit = 0.40 -> backoff = 4.0s
+        tracker.update_quota(
+            remaining_percentage=20.0,
+            remaining_percentage_1w=20.0,
+            reset_time_1w=now + 362880.0,  # 362880 / 604800 = 0.60 time fraction
+        )
+        self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
+        backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
+        self.assertAlmostEqual(backoff, 4.0)
+        self.assertAlmostEqual(tracker.get_backoff_delay(now=now), 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
