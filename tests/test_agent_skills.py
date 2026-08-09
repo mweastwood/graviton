@@ -132,7 +132,19 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("--request-changes", system_prompt)
         self.assertIn("never use --comment for actionable findings", system_prompt)
 
+    def test_code_review_guidelines_includes_templates_for_changes_requested_and_approved(self):
+        skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Review Body Templates", content)
+        self.assertIn("Template for CHANGES_REQUESTED", content)
+        self.assertIn("Template for APPROVE / NO_CHANGES_NEEDED", content)
+        self.assertIn("Code Review Summary: Changes Requested", content)
+        self.assertIn("Code Review Summary: Approved", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
