@@ -250,6 +250,7 @@ def main():
         logger.info(f"Restored {restored_count} queued task(s) from persisted state.")
     task_manager.start()
     GravitonHandler.task_manager = task_manager
+    scheduler.task_manager = task_manager
 
     pr_tracker = PRTracker()
     pr_tracker.sync_in_background(repo_root=REPO_ROOT)

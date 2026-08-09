@@ -246,6 +246,18 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler.stop()
         self.assertFalse(scheduler.is_running())
 
+    def test_is_due_running_job(self):
+        job = ScheduledJob(
+            job_id="test_running",
+            name="Test Running Job",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            is_running=True,
+        )
+        self.assertFalse(job.is_due())
+
     def test_scheduler_loop_executes_due_job(self):
         mock_runner = MagicMock()
         # Set a short interval and job due in past
@@ -276,6 +288,35 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler.stop()
 
         mock_runner.assert_called()
+
+    def test_task_manager_routing_and_running_state(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+        self.assertFalse(job.is_running)
+
+        success = scheduler.trigger_job("periodic_bug_sweep")
+        self.assertTrue(success)
+
+        # Verify task was submitted with target_id sched:periodic_bug_sweep
+        queued_or_all = tm.get_all_tasks()
+        self.assertEqual(len(queued_or_all), 1)
+        submitted_task = queued_or_all[0]
+        self.assertEqual(submitted_task.target_id, "sched:periodic_bug_sweep")
+        self.assertEqual(submitted_task.agent, job.agent)
+
+        # Verify job is_running and current_task_id tracking
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+        # Simulate task completion and update running states
+        submitted_task.status = "COMPLETED"
+        scheduler.update_running_states()
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
 
 
 class TestIssueUtilities(unittest.TestCase):
