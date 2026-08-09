@@ -215,6 +215,24 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "PR was not created by us")
 
+    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "Looks suspicious."},
+            "issue": {
+                "number": 19,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/19",
+                    "html_url": "https://github.com/org/repo/pull/19",
+                },
+                "user": {"login": "external_dev", "type": "User"},
+                "head": {"ref": "feat/new-ui-theme"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
+
     def test_issue_comment_on_pure_issue_triggers_triager(self):
         payload = {
             "action": "created",
