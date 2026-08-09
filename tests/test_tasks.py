@@ -150,6 +150,27 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    def test_task_manager_drain_active_tasks_indefinite_default(self):
+        manager = TaskManager(max_workers=2)
+        self.assertFalse(manager.is_draining)
+
+        manager.start()
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
+
+        # Wait for worker thread to pick up/complete task1 before initiating drain
+        for _ in range(50):
+            if task1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        # Initiate drain without parameters (defaulting to timeout=None / indefinite wait)
+        drained = manager.drain_active_tasks()
+        self.assertTrue(drained)
+        self.assertTrue(manager.is_draining)
+        self.assertEqual(task1.status, TaskStatus.COMPLETED)
+
+        manager.stop()
+
     def test_task_manager_dump_and_restore_queue_state(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:

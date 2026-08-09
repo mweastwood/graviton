@@ -161,19 +161,19 @@ class TaskManager:
         self._workers.clear()
         logger.info("TaskManager stopped.")
 
-    def drain_active_tasks(self, timeout: float = 300.0) -> bool:
+    def drain_active_tasks(self, timeout: Optional[float] = None) -> bool:
         """
         Pause worker execution of queued tasks and wait for currently running tasks to complete.
 
-        :param timeout: Maximum seconds to wait for active tasks to complete.
-        :return: True if all active running tasks completed within timeout, False if timed out.
+        :param timeout: Maximum seconds to wait for active tasks to complete. If None, waits indefinitely.
+        :return: True if all active running tasks completed cleanly, False if timed out.
         """
         with self._lock:
             self._draining = True
 
         logger.info("TaskManager entering drain mode. Pausing new active task execution...")
         start_time = time.time()
-        while time.time() - start_time < timeout:
+        while timeout is None or (time.time() - start_time < timeout):
             if not self.get_active_tasks():
                 queued_count = len(self.get_queued_tasks())
                 logger.info(
