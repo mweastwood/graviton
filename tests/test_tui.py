@@ -485,6 +485,12 @@ class TestTerminalDashboard(unittest.TestCase):
             port=8080,
         )
 
+        # Verify main screen excludes scheduled jobs
+        rendered_main = dashboard.render(width=80)
+        self.assertNotIn("SCHEDULED JOBS", rendered_main)
+
+        # Switch to jobs screen and verify panel rendering
+        dashboard.active_screen = "jobs"
         rendered = dashboard.render(width=80)
         scheduler.stop()
 
@@ -513,10 +519,57 @@ class TestTerminalDashboard(unittest.TestCase):
     def test_scheduled_jobs_panel_disabled(self):
         manager = TaskManager(max_workers=2)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=None)
+
+        rendered_main = dashboard.render(width=80)
+        self.assertNotIn("SCHEDULED JOBS", rendered_main)
+
+        dashboard.active_screen = "jobs"
         rendered = dashboard.render(width=80)
 
         self.assertIn("SCHEDULED JOBS [DISABLED | STOPPED]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
+
+    def test_hotkeys_and_screen_navigation(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        # 1. Default active_screen is "main"
+        self.assertEqual(dashboard.active_screen, "main")
+
+        # 2. Main screen render excludes scheduled jobs and displays hotkey hint
+        rendered_main = dashboard.render(width=80)
+        self.assertNotIn("SCHEDULED JOBS", rendered_main)
+        self.assertIn("[j] Periodic Jobs", rendered_main)
+
+        # 3. Toggle to "jobs" screen
+        dashboard.active_screen = "jobs"
+        rendered_jobs = dashboard.render(width=80)
+        self.assertIn("SCHEDULED JOBS", rendered_jobs)
+        self.assertIn("Press [Esc] to return to Main Screen", rendered_jobs)
+
+        # 4. Toggle back to "main" screen
+        dashboard.active_screen = "main"
+        rendered_back = dashboard.render(width=80)
+        self.assertNotIn("SCHEDULED JOBS", rendered_back)
+        self.assertIn("[j] Periodic Jobs", rendered_back)
+
+    def test_jobs_screen_line_widths(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard.active_screen = "jobs"
+
+        for target_w in [80, 100, 120]:
+            rendered = dashboard.render(width=target_w)
+            lines = rendered.split("\n")
+            for i, line in enumerate(lines):
+                if not line:
+                    continue
+                dw = get_display_width(line)
+                self.assertEqual(
+                    dw,
+                    target_w,
+                    f"Line {i} visual width {dw} != {target_w} on jobs screen: {line!r}",
+                )
 
     def test_render_approved_prs_empty_and_populated(self):
         from lib.pr_tracker import PRTracker

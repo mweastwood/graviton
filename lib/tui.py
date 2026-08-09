@@ -14,6 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional, TextIO, Tuple, Union
 
+try:
+    import select
+    import termios
+    import tty
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
+
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
 from lib.quota import QuotaState, QuotaTracker, QuotaWindow, format_quota_badge
@@ -167,8 +175,11 @@ class TerminalDashboard:
 
         self.log_handler = log_handler or TUILogHandler()
 
+        self.active_screen: str = "main"
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stdin_thread: Optional[threading.Thread] = None
+        self._old_term_settings: Optional[Any] = None
         self._log_redirected = False
         self._detached_handlers: list = []
         self._file_handler: Optional[logging.FileHandler] = None
@@ -177,7 +188,7 @@ class TerminalDashboard:
         self._git_info_last_fetch: float = 0.0
 
     def start(self):
-        """Start the background dashboard rendering loop thread."""
+        """Start the background dashboard rendering loop thread and hotkey listener."""
         if self._running:
             return
         if self.enable_log_redirection:
@@ -187,14 +198,91 @@ class TerminalDashboard:
             target=self._refresh_loop, daemon=True, name="DashboardTUI"
         )
         self._thread.start()
+        self._start_stdin_listener()
 
     def stop(self):
-        """Stop the dashboard rendering loop."""
+        """Stop the dashboard rendering loop and stdin listener."""
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
+        if self._stdin_thread and self._stdin_thread.is_alive():
+            self._stdin_thread.join(timeout=1.0)
+        self._restore_termios()
         if self.enable_log_redirection:
             self._detach_log_redirection()
+
+    def _start_stdin_listener(self):
+        """Start background stdin hotkey listener thread if running in an interactive TTY."""
+        if not HAS_TERMIOS:
+            return
+        try:
+            if not sys.stdin.isatty():
+                return
+        except Exception:
+            return
+
+        self._stdin_thread = threading.Thread(
+            target=self._stdin_loop, daemon=True, name="DashboardStdinListener"
+        )
+        self._stdin_thread.start()
+
+    def _stdin_loop(self):
+        """Background thread reading character hotkeys from stdin."""
+        if not HAS_TERMIOS:
+            return
+        try:
+            if not sys.stdin.isatty():
+                return
+            fd = sys.stdin.fileno()
+            self._old_term_settings = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+        except Exception:
+            self._old_term_settings = None
+            return
+
+        try:
+            while self._running:
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if rlist:
+                    try:
+                        ch = sys.stdin.read(1)
+                    except Exception:
+                        break
+                    if not ch:
+                        break
+                    if ch in ("j", "J"):
+                        if self.active_screen != "jobs":
+                            self.active_screen = "jobs"
+                            self._force_refresh()
+                    elif ch == "\x1b":
+                        if self.active_screen != "main":
+                            self.active_screen = "main"
+                            self._force_refresh()
+        except Exception:
+            pass
+        finally:
+            self._restore_termios()
+
+    def _restore_termios(self):
+        """Restore original terminal attributes if previously modified."""
+        if self._old_term_settings is not None and HAS_TERMIOS:
+            try:
+                if sys.stdin.isatty():
+                    fd = sys.stdin.fileno()
+                    termios.tcsetattr(fd, termios.TCSADRAIN, self._old_term_settings)
+            except Exception:
+                pass
+            self._old_term_settings = None
+
+    def _force_refresh(self):
+        """Force an immediate dashboard frame render and output flush."""
+        try:
+            if self._running and self.out_stream:
+                frame = self.render()
+                self.out_stream.write("\033[H\033[2J" + frame + "\n")
+                self.out_stream.flush()
+        except Exception:
+            pass
 
     def invalidate_git_cache(self):
         """Invalidate cached git metadata to force a fresh fetch on next render."""
@@ -268,7 +356,7 @@ class TerminalDashboard:
         self._log_redirected = False
 
     def render(self, width: Optional[int] = None) -> str:
-        """Construct and return the dashboard frame string."""
+        """Construct and return the dashboard frame string for active screen."""
         if width is None:
             try:
                 cols = shutil.get_terminal_size((80, 24)).columns
@@ -295,6 +383,16 @@ class TerminalDashboard:
         lines.extend(self._render_header(width, commit, branch, reload_state, uptime))
         lines.append("")
 
+        if self.active_screen == "jobs":
+            # Dedicated Periodic Jobs Screen View
+            banner_text = "Press [Esc] to return to Main Screen"
+            banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
+            lines.append(banner_line)
+            lines.append("")
+            lines.extend(self._render_scheduled_jobs(width, self.scheduler))
+            return "\n".join(lines)
+
+        # Main Screen Layout
         # 2. Antigravity Quota Panel
         lines.extend(self._render_quota_panel(width))
         lines.append("")
@@ -309,21 +407,17 @@ class TerminalDashboard:
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
-        # 5. Scheduled Jobs Panel
-        lines.extend(self._render_scheduled_jobs(width, self.scheduler))
-        lines.append("")
-
-        # 6. Approved Pull Requests Panel
+        # 5. Approved Pull Requests Panel
         approved_prs = self.pr_tracker.get_approved_prs() if self.pr_tracker else []
         lines.extend(self._render_approved_prs(width, approved_prs))
         lines.append("")
 
-        # 7. Task History Panel
+        # 6. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
         lines.append("")
 
-        # 8. Event Logs Panel
+        # 7. Event Logs Panel
         lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
@@ -409,10 +503,17 @@ class TerminalDashboard:
         info_line = f"Host: {self.host}:{self.port} │ Branch: {branch} │ Commit: {commit} │ Uptime: {uptime}"
         info_content = fit_to_display_width(info_line, inner_w)
 
+        if self.active_screen == "jobs":
+            nav_hint = "Nav: [Esc] Main Screen"
+        else:
+            nav_hint = "Nav: [j] Periodic Jobs"
+        nav_content = fit_to_display_width(f"\033[93m\033[1m{nav_hint}\033[0m", inner_w)
+
         return [
             "┌" + "─" * (width - 2) + "┐",
             f"│ {line1_content} │",
             f"│ \033[2m{info_content}\033[0m │",
+            f"│ {nav_content} │",
             "└" + "─" * (width - 2) + "┘",
         ]
 
