@@ -439,6 +439,26 @@ class TestTranscriptInspector(unittest.TestCase):
         res_comp = subprocess.run(["python3", str(runner_py), str(complete_file)])
         self.assertEqual(res_comp.returncode, 1)
 
+    def test_is_transcript_incomplete_malformed_json(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "malformed.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            'this is invalid json {{{'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_non_dict_json(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "non_dict.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            '[1, 2, 3]'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
 
 if __name__ == "__main__":
     unittest.main()

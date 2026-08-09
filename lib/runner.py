@@ -32,9 +32,11 @@ def is_transcript_incomplete(transcript_path: Union[str, Path]) -> bool:
         if not last_line:
             return False
         last_step = json.loads(last_line)
+        if not isinstance(last_step, dict):
+            return False
         if last_step.get("type") == "PLANNER_RESPONSE":
             tool_calls = last_step.get("tool_calls", [])
-            if tool_calls and len(tool_calls) > 0:
+            if tool_calls:
                 return True
     except Exception as e:
         logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")
