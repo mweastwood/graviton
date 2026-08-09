@@ -179,7 +179,10 @@ class TaskManager:
             return
 
         finished_tasks.sort(
-            key=lambda t: t.finish_time if t.finish_time is not None else t.enqueue_time
+            key=lambda t: (
+                t.enqueue_time,
+                t.finish_time if t.finish_time is not None else t.enqueue_time,
+            )
         )
 
         excess = len(self._tasks) - self.max_tasks

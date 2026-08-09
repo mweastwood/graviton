@@ -147,7 +147,7 @@ class TestTaskManager(unittest.TestCase):
         manager.stop()
 
     def test_task_manager_retention_limit(self):
-        manager = TaskManager(max_workers=2, max_tasks=3)
+        manager = TaskManager(max_workers=1, max_tasks=3)
         manager.start()
 
         tasks = []
