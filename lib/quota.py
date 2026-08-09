@@ -179,7 +179,11 @@ def format_reset_countdown(
         return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
 
-def format_quota_badge(window: QuotaWindow, now_dt: Optional[datetime] = None) -> str:
+def format_quota_badge(
+    window: QuotaWindow,
+    now_dt: Optional[datetime] = None,
+    quota_pool: Optional[str] = None,
+) -> str:
     """Render quota badge string for TUI header/panel."""
     pct = window.remaining_percentage
     pct_str = f"{int(pct)}%" if pct.is_integer() else f"{pct:.1f}%"
@@ -191,7 +195,8 @@ def format_quota_badge(window: QuotaWindow, now_dt: Optional[datetime] = None) -
     else:
         pacing_str = "PACING: OK"
 
-    return f"[ {window.name.upper()} QUOTA: {pct_str} | RESET: {countdown} | {pacing_str} ]"
+    pool_prefix = f"{quota_pool.upper()} " if quota_pool else ""
+    return f"[ {pool_prefix}{window.name.upper()} QUOTA: {pct_str} | RESET: {countdown} | {pacing_str} ]"
 
 
 def _extract_token_from_object(obj) -> Optional[str]:
@@ -284,23 +289,83 @@ def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[s
     return pct, reset_time
 
 
-def parse_antigravity_quota_json(data: dict) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
+def _model_matches_pool(model_id: str, pool: str) -> bool:
+    """Check if model_id belongs to the requested quota pool."""
+    m_id = str(model_id).lower()
+    p = str(pool).lower()
+    if p == "gemini" or "gemini" in p:
+        return "gemini" in m_id
+    elif p == "claude_gpt" or "claude" in p or "gpt" in p:
+        return "claude" in m_id or "gpt" in m_id
+    else:
+        return p in m_id
+
+
+def parse_antigravity_quota_json(
+    data: dict, pool: str = "gemini", quota_pool: Optional[str] = None
+) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
     """
     Parse RPC response JSON body for quota remaining & reset time.
-    Supports models dictionary schema (v1internal:fetchAvailableModels) and flat schemas.
+    Supports models dictionary schema (v1internal:fetchAvailableModels),
+    top-level pool dictionary schemas, and flat schemas.
     Returns None if error response or no quota fields are present.
     """
     if not isinstance(data, dict) or "error" in data:
         logger.warning(f"Invalid or error response in Antigravity RPC payload: {data}")
         return None
 
+    effective_pool = quota_pool if quota_pool is not None else pool
+    if not effective_pool:
+        effective_pool = os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
+
     pct_5h: Optional[float] = None
     reset_5h: Optional[str] = None
     pct_1w: Optional[float] = None
     reset_1w: Optional[str] = None
 
-    # 1. Handle fetchAvailableModels schema with "models" dictionary or list
-    if "models" in data and isinstance(data["models"], (dict, list)):
+    # 1. Handle top-level pool dictionary schema e.g. data["pools"][pool] or data[pool]
+    pool_target = None
+    if "pools" in data and isinstance(data["pools"], dict):
+        pools_dict = data["pools"]
+        if effective_pool in pools_dict and isinstance(pools_dict[effective_pool], dict):
+            pool_target = pools_dict[effective_pool]
+        elif effective_pool.lower() in ("claude_gpt", "claude", "gpt"):
+            for alt in ("claude_gpt", "claude", "gpt"):
+                if alt in pools_dict and isinstance(pools_dict[alt], dict):
+                    pool_target = pools_dict[alt]
+                    break
+
+    if pool_target is None and effective_pool in data and isinstance(data[effective_pool], dict):
+        pool_target = data[effective_pool]
+    elif pool_target is None and effective_pool.lower() in ("claude_gpt", "claude", "gpt"):
+        for alt in ("claude_gpt", "claude", "gpt"):
+            if alt in data and isinstance(data[alt], dict):
+                pool_target = data[alt]
+                break
+
+    if pool_target is not None:
+        if "models" in pool_target and isinstance(pool_target["models"], (dict, list)):
+            data = pool_target
+        else:
+            q_info = pool_target.get("quotaInfo") or pool_target.get("quota_info") or pool_target
+            w_info = pool_target.get("weeklyQuotaInfo") or pool_target.get("weekly_quota_info")
+            if isinstance(q_info, dict):
+                pct_5h, reset_5h = _extract_pct_and_reset(q_info)
+            if isinstance(w_info, dict):
+                pct_1w, reset_1w = _extract_pct_and_reset(w_info)
+
+            val_1w = pool_target.get("weeklyQuotaRemaining", pool_target.get("weekly_quota_remaining", pool_target.get("weeklyRemainingFraction")))
+            reset_1w_direct = pool_target.get("weeklyResetTime", pool_target.get("weekly_reset_time"))
+            if pct_1w is None and val_1w is not None:
+                try:
+                    val_1w_f = float(val_1w)
+                    pct_1w = val_1w_f * 100.0 if val_1w_f <= 1.0 else val_1w_f
+                    reset_1w = str(reset_1w_direct) if reset_1w_direct is not None else reset_1w
+                except (ValueError, TypeError):
+                    pass
+
+    # 2. Handle fetchAvailableModels schema with "models" dictionary or list
+    if pct_5h is None and pct_1w is None and "models" in data and isinstance(data["models"], (dict, list)):
         raw_models = data["models"]
         model_items = (
             raw_models.items()
@@ -311,36 +376,48 @@ def parse_antigravity_quota_json(data: dict) -> Optional[Tuple[QuotaWindow, Quot
         for model_id, m_data in model_items:
             if not isinstance(m_data, dict):
                 continue
-            m_id_lower = str(model_id).lower()
+            if not _model_matches_pool(str(model_id), effective_pool):
+                continue
 
-            # Check explicit weeklyQuotaInfo first
+            # Check explicit weeklyQuotaInfo first for 1W window
             w_info = m_data.get("weeklyQuotaInfo") or m_data.get("weekly_quota_info")
             if isinstance(w_info, dict):
                 w_pct, w_rst = _extract_pct_and_reset(w_info)
-                if w_pct is not None:
+                if w_pct is not None and pct_1w is None:
                     pct_1w, reset_1w = w_pct, w_rst
 
-            # Check standard quotaInfo or model dict itself
+            # Check standard quotaInfo or model dict itself for 5H window
             q_info = m_data.get("quotaInfo") or m_data.get("quota_info") or m_data
             if isinstance(q_info, dict):
                 q_pct, q_rst = _extract_pct_and_reset(q_info)
-                if q_pct is not None:
-                    if "claude" in m_id_lower or "sonnet" in m_id_lower or "1w" in m_id_lower:
-                        if pct_1w is None or "claude" in m_id_lower or "sonnet" in m_id_lower:
-                            pct_1w, reset_1w = q_pct, q_rst
-                    elif "gemini" in m_id_lower or "flash" in m_id_lower or "5h" in m_id_lower:
-                        if pct_5h is None or "flash" in m_id_lower or "gemini-3.6-flash-high" in m_id_lower:
-                            pct_5h, reset_5h = q_pct, q_rst
-                    else:
-                        if pct_5h is None:
-                            pct_5h, reset_5h = q_pct, q_rst
+                if q_pct is not None and pct_5h is None:
+                    pct_5h, reset_5h = q_pct, q_rst
+
+            # Check direct weekly fields in m_data or q_info if pct_1w still None
+            if pct_1w is None:
+                for k in ("weeklyRemainingFraction", "weeklyQuotaRemaining", "weekly_quota_remaining"):
+                    val_w = m_data.get(k) if isinstance(m_data, dict) else None
+                    if val_w is None and isinstance(q_info, dict):
+                        val_w = q_info.get(k)
+                    if val_w is not None:
+                        try:
+                            val_w_f = float(val_w)
+                            pct_1w = val_w_f * 100.0 if val_w_f <= 1.0 else val_w_f
+                            w_rst_direct = m_data.get("weeklyResetTime", m_data.get("weekly_reset_time"))
+                            if w_rst_direct is None and isinstance(q_info, dict):
+                                w_rst_direct = q_info.get("weeklyResetTime", q_info.get("weekly_reset_time"))
+                            if w_rst_direct is not None:
+                                reset_1w = str(w_rst_direct)
+                            break
+                        except (ValueError, TypeError):
+                            pass
 
         if pct_5h is None and pct_1w is not None:
             pct_5h, reset_5h = 100.0, None
         elif pct_1w is None and pct_5h is not None:
             pct_1w, reset_1w = 100.0, None
 
-    # 2. Backwards-compatible flat quota payload parsing
+    # 3. Backwards-compatible flat quota payload parsing
     if pct_5h is None and pct_1w is None:
         target = data
         for k in ("quotaInfo", "userQuota", "quota", "result"):
@@ -376,7 +453,7 @@ def parse_antigravity_quota_json(data: dict) -> Optional[Tuple[QuotaWindow, Quot
         else:
             pct_5h = 100.0
 
-        val_1w = target.get("weeklyQuotaRemaining", target.get("weekly_quota_remaining"))
+        val_1w = target.get("weeklyQuotaRemaining", target.get("weekly_quota_remaining", target.get("weeklyRemainingFraction")))
         reset_1w = target.get("weeklyResetTime", target.get("weekly_reset_time"))
 
         if val_1w is not None:
@@ -412,6 +489,7 @@ def fetch_live_antigravity_quota(
     token: Optional[str] = None,
     api_url: str = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     timeout: float = 10.0,
+    quota_pool: Optional[str] = None,
 ) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
     """
     Query v1internal:fetchAvailableModels to fetch live model quota metrics and reset timestamps.
@@ -423,6 +501,8 @@ def fetch_live_antigravity_quota(
     if not token:
         logger.warning("No OAuth token available for fetching live Antigravity quota.")
         return None
+
+    pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
 
     try:
         project_id = os.getenv("ANTIGRAVITY_PROJECT", "")
@@ -443,7 +523,7 @@ def fetch_live_antigravity_quota(
                 return None
             body = resp.read().decode("utf-8")
             data = json.loads(body)
-            return parse_antigravity_quota_json(data)
+            return parse_antigravity_quota_json(data, pool=pool)
     except Exception as e:
         logger.warning(f"Failed to fetch live Antigravity quota: {e}")
         return None
@@ -459,9 +539,11 @@ class QuotaInfo:
     tokens_remaining: Optional[int] = None
     window_5h: Optional[Union[QuotaWindow, dict]] = None
     window_1w: Optional[Union[QuotaWindow, dict]] = None
+    quota_pool: str = "gemini"
 
     def to_dict(self) -> dict:
         d = {
+            "quota_pool": self.quota_pool,
             "remaining_percentage": round(self.remaining_percentage, 1),
             "state": self.state,
             "reset_time": self.reset_time,
@@ -607,8 +689,10 @@ class QuotaTracker:
         backoff_factor: float = 2.0,
         window_5h: Optional[QuotaWindow] = None,
         window_1w: Optional[QuotaWindow] = None,
+        quota_pool: Optional[str] = None,
     ):
         self._lock = threading.RLock()
+        self.quota_pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
         self._remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
         self._reset_time = reset_time
         self._requests_remaining: Optional[int] = None
@@ -790,9 +874,10 @@ class QuotaTracker:
             f"1W={window_1w.remaining_percentage:.1f}% ({status_1w}), state={current_state}"
         )
 
-    def poll_live_quota(self, token: Optional[str] = None) -> Tuple[QuotaWindow, QuotaWindow]:
+    def poll_live_quota(self, token: Optional[str] = None, quota_pool: Optional[str] = None) -> Tuple[QuotaWindow, QuotaWindow]:
         """Fetch live Antigravity quota and update dual windows."""
-        res = fetch_live_antigravity_quota(token=token)
+        pool = quota_pool if quota_pool is not None else self.quota_pool
+        res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
         if res is not None:
             w_5h, w_1w = res
             self.update_windows(w_5h, w_1w)
@@ -876,6 +961,7 @@ class QuotaTracker:
                 tokens_remaining=self._tokens_remaining,
                 window_5h=self.window_5h,
                 window_1w=self.window_1w,
+                quota_pool=self.quota_pool,
             )
 
     def get_reset_time_str(self) -> str:
