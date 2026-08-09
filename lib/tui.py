@@ -193,6 +193,9 @@ class TerminalDashboard:
             return
         if self.enable_log_redirection:
             self._attach_log_redirection()
+        quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+        if quota_tr and hasattr(quota_tr, "start_background_polling"):
+            quota_tr.start_background_polling()
         self._running = True
         self._thread = threading.Thread(
             target=self._refresh_loop, daemon=True, name="DashboardTUI"
@@ -208,6 +211,9 @@ class TerminalDashboard:
         if self._stdin_thread and self._stdin_thread.is_alive():
             self._stdin_thread.join(timeout=1.0)
         self._restore_termios()
+        quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+        if quota_tr and hasattr(quota_tr, "stop_background_polling"):
+            quota_tr.stop_background_polling()
         if self.enable_log_redirection:
             self._detach_log_redirection()
 
