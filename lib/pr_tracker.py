@@ -99,13 +99,16 @@ class PRTracker:
                         continue
                     review_decision = str(item.get("reviewDecision") or "").upper()
                     is_approved = review_decision == "APPROVED"
-                    if not is_approved:
+                    if not is_approved and review_decision != "CHANGES_REQUESTED":
                         latest_reviews = item.get("latestReviews")
                         if isinstance(latest_reviews, list):
-                            for r in latest_reviews:
-                                if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED":
-                                    is_approved = True
-                                    break
+                            states = [
+                                str(r.get("state") or "").upper()
+                                for r in latest_reviews
+                                if isinstance(r, dict)
+                            ]
+                            if "CHANGES_REQUESTED" not in states and "APPROVED" in states:
+                                is_approved = True
                     if is_approved:
                         try:
                             num = int(item.get("number"))

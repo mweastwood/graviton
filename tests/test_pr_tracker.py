@@ -160,6 +160,33 @@ class TestPRTracker(unittest.TestCase):
         cmd = mock_run.call_args[0][0]
         self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_with_latest_reviews_changes_requested_ignored(self, mock_run):
+        mock_output = [
+            {
+                "number": 60,
+                "title": "PR with mixed reviews",
+                "url": "https://github.com/org/repo/pull/60",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "latestReviews": [
+                    {"state": "APPROVED", "author": {"login": "reviewer1"}},
+                    {"state": "CHANGES_REQUESTED", "author": {"login": "reviewer2"}},
+                ],
+            },
+        ]
+        mock_res = MagicMock()
+        mock_res.stdout = json.dumps(mock_output)
+        mock_res.returncode = 0
+        mock_run.return_value = mock_res
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 0)
+
     @patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "gh"))
     def test_sync_github_prs_handles_exception(self, mock_run):
         tracker = PRTracker()
