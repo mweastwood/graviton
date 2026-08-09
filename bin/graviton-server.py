@@ -180,7 +180,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 else:
                     exec_cwd = REPO_ROOT
                     if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
-                        exec_cwd = self.repos_dir / repo_name
+                        safe_repo_name = Path(repo_name).name
+                        if safe_repo_name:
+                            candidate_cwd = (self.repos_dir / safe_repo_name).resolve()
+                            repos_dir_resolved = self.repos_dir.resolve()
+                            if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
+                                exec_cwd = candidate_cwd
+                            else:
+                                logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
 
                     if exec_cwd and not exec_cwd.exists() and clone_url:
                         logger.info(f"Repository directory '{exec_cwd}' does not exist in direct execution mode. Auto-cloning from {clone_url}...")

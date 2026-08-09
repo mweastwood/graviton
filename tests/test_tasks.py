@@ -620,6 +620,47 @@ class TestTaskManager(unittest.TestCase):
             mock_run_agent.assert_not_called()
             manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_path_traversal_sanitization_in_task_workspace_resolution(self, mock_run_agent):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+            bad_dir = repos_dir / "bad"
+            bad_dir.mkdir()
+
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_run_agent.return_value = mock_proc
+
+            manager.start()
+
+            # Submit task with leading slash path traversal repo_name "/tmp/bad"
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/bad",
+                repo_name="/tmp/bad",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+            mock_run_agent.assert_called_once()
+            called_cwd = mock_run_agent.call_args[0][3]
+            self.assertEqual(called_cwd.resolve(), bad_dir.resolve())
+            manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

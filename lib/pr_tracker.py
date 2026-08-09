@@ -163,7 +163,7 @@ class PRTracker:
                 if git_res.returncode == 0 and git_res.stdout:
                     origin_url = git_res.stdout.strip()
                     if "github.com" in origin_url:
-                        parts = origin_url.rstrip(".git").split("github.com")[-1].lstrip(":/").split("/")
+                        parts = origin_url.removesuffix(".git").split("github.com")[-1].lstrip(":/").split("/")
                         if len(parts) >= 2:
                             repo_full_name = f"{parts[-2]}/{parts[-1]}"
 

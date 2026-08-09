@@ -408,6 +408,40 @@ class TestGravitonHandler(unittest.TestCase):
             self.assertEqual(args[0], 400)
             self.assertIn("does not exist", args[1]["error"])
 
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_path_traversal_sanitized(self, mock_run_async):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+            bad_dir = repos_dir / "bad"
+            bad_dir.mkdir()
+
+            payload = json.dumps({
+                "action": "opened",
+                "number": 12,
+                "repository": {
+                    "name": "/tmp/bad",
+                },
+            }).encode("utf-8")
+
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "pull_request",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.default_reviewer = "code_reviewer"
+            handler.task_manager = None
+            handler.repos_dir = repos_dir
+
+            GravitonHandler.do_POST(handler)
+
+            mock_run_async.assert_called_once()
+            exec_cwd = mock_run_async.call_args[0][3]
+            self.assertEqual(exec_cwd.resolve(), bad_dir.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

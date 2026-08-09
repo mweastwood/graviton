@@ -213,6 +213,39 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["repo_full_name"], "owner/repo-beta")
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_removesuffix_git(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = Path(tmpdir) / "reddit"
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+
+            mock_git_res = MagicMock()
+            mock_git_res.returncode = 0
+            mock_git_res.stdout = "https://github.com/owner/reddit.git\n"
+
+            mock_gh_res = MagicMock()
+            mock_gh_res.returncode = 0
+            mock_gh_res.stdout = json.dumps([{
+                "number": 1,
+                "title": "PR 1",
+                "url": "https://github.com/owner/reddit/pull/1",
+                "author": {"login": "dev"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            }])
+
+            mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            approved = tracker.get_approved_prs()
+            self.assertEqual(len(approved), 1)
+            self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
+            self.assertEqual(approved[0]["number"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
