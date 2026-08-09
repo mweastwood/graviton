@@ -98,13 +98,13 @@ Even with a single GitHub account, Graviton differentiates human comments from a
 
 ## 5. Periodic Task Scheduler & Codebase Auditor
 
-Graviton includes a zero-dependency periodic background task scheduler engine (`lib/scheduler.py`) that runs alongside the HTTP server process when `--enable-scheduler` is passed.
+Graviton includes a zero-dependency periodic background task scheduler engine (`lib/scheduler.py`) that runs alongside the HTTP server process by default.
 
 ### Periodic Maintenance Architecture
 
 ```mermaid
 stateDiagram-v2
-    [*] --> TaskSchedulerDaemon: Server Startup (--enable-scheduler)
+    [*] --> TaskSchedulerDaemon: Server Startup
     TaskSchedulerDaemon --> EvaluateJobs: Interval Timer Check (threading.Event)
 
     state "TaskScheduler Manager" as TaskSchedulerDaemon {
