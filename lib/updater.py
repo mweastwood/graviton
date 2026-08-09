@@ -20,7 +20,7 @@ _HOT_RELOAD_LOCK = threading.Lock()
 
 
 def get_hot_reload_state() -> str:
-    """Return the current hot reload status (IDLE, PULLING_GIT, REBUILDING_CONTAINER, RELOADING)."""
+    """Return the current hot reload status (IDLE, PULLING_GIT, REBUILDING_CONTAINER, DRAINING_TASKS, RELOADING)."""
     with _HOT_RELOAD_LOCK:
         return _HOT_RELOAD_STATE
 
@@ -149,12 +149,19 @@ def rebuild_agent_container(repo_root: Path) -> bool:
         return False
 
 
-def hot_reload_server(httpd=None):
+def hot_reload_server(httpd=None, task_manager=None):
     """
     Hot reload the running Python server process by re-executing sys.executable.
 
     :param httpd: Optional HTTPServer instance to close sockets gracefully before execv.
+    :param task_manager: Optional TaskManager instance to drain active tasks before execv.
     """
+    if task_manager is not None:
+        set_hot_reload_state("DRAINING_TASKS")
+        logger.info("Draining active tasks before hot reload...")
+        task_manager.drain_active_tasks()
+
+    set_hot_reload_state("RELOADING")
     logger.info("Hot reloading Graviton server process (os.execv)...")
 
     if httpd is not None:
@@ -172,13 +179,19 @@ def hot_reload_server(httpd=None):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-def sync_repo_and_reload(repo_root: Path, ref: str = "refs/heads/main", httpd=None):
+def sync_repo_and_reload(
+    repo_root: Path,
+    ref: str = "refs/heads/main",
+    httpd=None,
+    task_manager=None,
+):
     """
     Pull latest git commits for target branch, rebuild Docker image if necessary, and hot-reload server.
 
     :param repo_root: Path to repository root.
     :param ref: Git ref from push webhook payload (e.g. 'refs/heads/main').
     :param httpd: Optional HTTPServer instance.
+    :param task_manager: Optional TaskManager instance to drain active tasks before reload.
     """
     branch = ref.split("/")[-1] if "/" in ref else "main"
     logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
@@ -196,6 +209,5 @@ def sync_repo_and_reload(repo_root: Path, ref: str = "refs/heads/main", httpd=No
         set_hot_reload_state("REBUILDING_CONTAINER")
         rebuild_agent_container(repo_root)
 
-    set_hot_reload_state("RELOADING")
-    hot_reload_server(httpd=httpd)
+    hot_reload_server(httpd=httpd, task_manager=task_manager)
 

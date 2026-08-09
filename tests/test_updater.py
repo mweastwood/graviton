@@ -10,10 +10,20 @@ from lib.updater import (
     perform_git_pull,
     check_if_dockerfile_changed,
     rebuild_agent_container,
+    hot_reload_server,
+    sync_repo_and_reload,
+    get_hot_reload_state,
+    set_hot_reload_state,
 )
 
 
 class TestUpdater(unittest.TestCase):
+
+    def setUp(self):
+        set_hot_reload_state("IDLE")
+
+    def tearDown(self):
+        set_hot_reload_state("IDLE")
 
     def test_check_if_dockerfile_changed_true(self):
         output1 = "Updating 123..456\n Fast-forward\n Dockerfile | 2 +-\n 1 file changed"
@@ -61,6 +71,57 @@ class TestUpdater(unittest.TestCase):
             repo_root = Path("/tmp/fake_repo")
             success = rebuild_agent_container(repo_root)
             self.assertTrue(success)
+
+    @patch("os.execv")
+    def test_hot_reload_server_drains_tasks(self, mock_execv):
+        mock_tm = MagicMock()
+        mock_httpd = MagicMock()
+
+        hot_reload_server(httpd=mock_httpd, task_manager=mock_tm)
+
+        mock_tm.drain_active_tasks.assert_called_once()
+        mock_httpd.server_close.assert_called_once()
+        mock_execv.assert_called_once()
+
+    @patch("os.execv")
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_drains_tasks_before_reload(self, mock_git_pull, mock_execv):
+        mock_git_pull.return_value = (True, "Already up to date.")
+        mock_tm = MagicMock()
+
+        states_during_drain = []
+
+        def side_effect_drain(*args, **kwargs):
+            states_during_drain.append(get_hot_reload_state())
+            return True
+
+        mock_tm.drain_active_tasks.side_effect = side_effect_drain
+
+        sync_repo_and_reload(
+            repo_root=Path("/tmp/fake_repo"),
+            ref="refs/heads/main",
+            task_manager=mock_tm,
+        )
+
+        mock_git_pull.assert_called_once_with(Path("/tmp/fake_repo"), branch="main")
+        mock_tm.drain_active_tasks.assert_called_once()
+        self.assertEqual(states_during_drain, ["DRAINING_TASKS"])
+        mock_execv.assert_called_once()
+
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_git_pull_failure_skips_drain(self, mock_git_pull):
+        mock_git_pull.return_value = (False, "Git merge conflict")
+        mock_tm = MagicMock()
+
+        sync_repo_and_reload(
+            repo_root=Path("/tmp/fake_repo"),
+            ref="refs/heads/main",
+            task_manager=mock_tm,
+        )
+
+        mock_git_pull.assert_called_once()
+        mock_tm.drain_active_tasks.assert_not_called()
+        self.assertEqual(get_hot_reload_state(), "IDLE")
 
 
 if __name__ == "__main__":

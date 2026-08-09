@@ -117,7 +117,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 })
                 threading.Thread(
                     target=sync_repo_and_reload,
-                    args=(REPO_ROOT, ref, self.server),
+                    args=(REPO_ROOT, ref, self.server, self.task_manager),
                     daemon=True,
                 ).start()
                 return
@@ -128,7 +128,12 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
                 if self.task_manager:
-                    self.task_manager.submit_task(agent=agent, prompt=prompt, target_id=target_id)
+                    try:
+                        self.task_manager.submit_task(agent=agent, prompt=prompt, target_id=target_id)
+                    except RuntimeError as e:
+                        logger.warning(f"Could not submit task: {e}")
+                        self._send_json(503, {"error": "Server is draining tasks for update"})
+                        return
                 else:
                     run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, REPO_ROOT)
 

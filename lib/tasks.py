@@ -89,6 +89,13 @@ class TaskManager:
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
         self._running = False
+        self._draining = False
+
+    @property
+    def is_draining(self) -> bool:
+        """Return True if TaskManager is currently draining tasks."""
+        with self._lock:
+            return self._draining
 
     def start(self):
         """Start worker daemon threads."""
@@ -126,11 +133,41 @@ class TaskManager:
         self._workers.clear()
         logger.info("TaskManager stopped.")
 
+    def drain_active_tasks(self, timeout: float = 300.0) -> bool:
+        """
+        Block new incoming tasks and wait for active (running and queued) tasks to complete.
+
+        :param timeout: Maximum seconds to wait for active tasks to complete.
+        :return: True if all active tasks completed within timeout, False if timed out.
+        """
+        with self._lock:
+            self._draining = True
+
+        logger.info("TaskManager entering drain mode. Blocking new task submissions...")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if not self.get_active_tasks() and not self.get_queued_tasks():
+                logger.info("TaskManager drain completed cleanly. No active or queued tasks remain.")
+                return True
+            time.sleep(0.1)
+
+        remaining_active = len(self.get_active_tasks())
+        remaining_queued = len(self.get_queued_tasks())
+        if remaining_active > 0 or remaining_queued > 0:
+            logger.warning(
+                f"TaskManager drain timed out after {timeout}s with "
+                f"{remaining_active} running and {remaining_queued} queued task(s) remaining."
+            )
+            return False
+        return True
+
     def submit_task(
         self, agent: str, prompt: str, target_id: Optional[str] = None
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
+            if self._draining:
+                raise RuntimeError("TaskManager is draining tasks")
             self._task_counter += 1
             task_id = f"task-{self._task_counter}"
             task = Task(

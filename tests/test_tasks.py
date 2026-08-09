@@ -98,6 +98,54 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    def test_task_manager_drain_active_tasks_success(self):
+        manager = TaskManager(max_workers=2)
+        self.assertFalse(manager.is_draining)
+
+        manager.start()
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
+
+        # Initiate drain
+        drained = manager.drain_active_tasks(timeout=5.0)
+        self.assertTrue(drained)
+        self.assertTrue(manager.is_draining)
+        self.assertEqual(task1.status, TaskStatus.COMPLETED)
+
+        # Confirm new tasks are rejected while draining
+        with self.assertRaises(RuntimeError):
+            manager.submit_task("code_fixer", "Fix bug #2")
+
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_manager_drain_active_tasks_timeout(self, mock_run):
+        # Make run_agent_container hang for a moment
+        def slow_run(*args, **kwargs):
+            time.sleep(1.0)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        mock_run.side_effect = slow_run
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        manager.start()
+
+        manager.submit_task("code_fixer", "Fix issue", target_id="#9")
+        # Give worker a split second to transition task to RUNNING
+        time.sleep(0.05)
+
+        # Drain with short timeout (0.1s) while task is still running
+        drained = manager.drain_active_tasks(timeout=0.1)
+        self.assertFalse(drained)
+        self.assertTrue(manager.is_draining)
+
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
