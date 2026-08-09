@@ -3,7 +3,17 @@ Unit tests for lib/router.py
 """
 
 import unittest
-from lib.router import route_webhook_event, is_pr_created_by_us
+from lib.router import (
+    route_webhook_event,
+    is_pr_created_by_us,
+    handle_ping_event,
+    handle_push_event,
+    handle_pull_request_event,
+    handle_pull_request_review_event,
+    handle_pull_request_review_comment_event,
+    handle_issues_event,
+    handle_issue_comment_event,
+)
 from lib.security import BOT_MARKER
 
 
@@ -281,7 +291,60 @@ class TestRouter(unittest.TestCase):
         result = route_webhook_event("unknown_event", {})
         self.assertEqual(result["status"], "ignored")
 
+    def test_modular_event_handlers_direct_invocation(self):
+        """Test calling the individual modular handler functions directly."""
+        # handle_ping_event
+        res_ping = handle_ping_event({"zen": "Keep it simple."})
+        self.assertEqual(res_ping["status"], "accepted")
+        self.assertEqual(res_ping["zen"], "Keep it simple.")
+
+        # handle_push_event
+        res_push = handle_push_event({"ref": "refs/heads/main"})
+        self.assertEqual(res_push["status"], "accepted")
+        self.assertEqual(res_push["action"], "self_update")
+
+        # handle_pull_request_event
+        res_pr = handle_pull_request_event({"action": "opened", "number": 10}, default_reviewer="custom_reviewer")
+        self.assertEqual(res_pr["status"], "accepted")
+        self.assertEqual(res_pr["agent"], "custom_reviewer")
+
+        # handle_pull_request_review_event
+        res_pr_rev = handle_pull_request_review_event(
+            {
+                "action": "submitted",
+                "review": {"state": "CHANGES_REQUESTED", "body": "Needs work"},
+                "pull_request": {"number": 10},
+            },
+            default_fixer="custom_fixer",
+        )
+        self.assertEqual(res_pr_rev["status"], "accepted")
+        self.assertEqual(res_pr_rev["agent"], "custom_fixer")
+
+        # handle_pull_request_review_comment_event
+        res_comment = handle_pull_request_review_comment_event(
+            {
+                "action": "created",
+                "comment": {"body": "Fix typo", "path": "main.py", "line": 1},
+                "pull_request": {"number": 10},
+            },
+            default_fixer="custom_fixer",
+        )
+        self.assertEqual(res_comment["status"], "accepted")
+        self.assertEqual(res_comment["agent"], "custom_fixer")
+
+        # handle_issues_event
+        res_issues = handle_issues_event({"action": "opened", "issue": {"number": 5}}, default_triager="custom_triager")
+        self.assertEqual(res_issues["status"], "accepted")
+        self.assertEqual(res_issues["agent"], "custom_triager")
+
+        # handle_issue_comment_event
+        res_issue_comment = handle_issue_comment_event(
+            {"action": "created", "comment": {"body": "Details"}, "issue": {"number": 5}},
+            default_triager="custom_triager",
+        )
+        self.assertEqual(res_issue_comment["status"], "accepted")
+        self.assertEqual(res_issue_comment["agent"], "custom_triager")
+
 
 if __name__ == "__main__":
     unittest.main()
-
