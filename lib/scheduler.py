@@ -51,7 +51,18 @@ DEFAULT_JOBS = [
         "last_run": None,
         "next_run": None,
     },
+    {
+        "job_id": "periodic_quota_fetch",
+        "name": "Periodic Model Quota Fetch",
+        "interval_seconds": 600,
+        "agent": "quota_fetcher",
+        "prompt": "Fetch live Antigravity model quota metrics and update QuotaTracker",
+        "enabled": True,
+        "last_run": None,
+        "next_run": None,
+    },
 ]
+
 
 
 def parse_iso_timestamp(ts_str: Optional[str], context: str = "") -> Optional[datetime]:
@@ -204,10 +215,15 @@ class TaskScheduler:
         self.check_interval_seconds = check_interval_seconds
 
         self.jobs: Dict[str, ScheduledJob] = {}
+        self.job_handlers: Dict[str, Callable] = {}
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
         self.load_config()
+
+    def register_handler(self, key: str, handler: Callable):
+        """Register a custom handler function for a specific job_id or agent."""
+        self.job_handlers[key] = handler
 
     def load_config(self):
         """
@@ -272,12 +288,27 @@ class TaskScheduler:
 
     def _execute_job(self, job: ScheduledJob):
         """
-        Hand off job prompt to runner and update job state.
+        Hand off job prompt to runner or custom handler and update job state.
         """
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
         job.mark_executed(now_dt)
         self.save_config()
+
+        if job.job_id in self.job_handlers:
+            try:
+                self.job_handlers[job.job_id](job)
+                return
+            except Exception as e:
+                logger.exception(f"Error executing custom handler for job '{job.job_id}': {e}")
+                return
+        elif job.agent in self.job_handlers:
+            try:
+                self.job_handlers[job.agent](job)
+                return
+            except Exception as e:
+                logger.exception(f"Error executing custom handler for agent '{job.agent}': {e}")
+                return
 
         if self.runner:
             try:

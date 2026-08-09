@@ -16,7 +16,7 @@ from typing import Any, List, Optional, TextIO, Tuple, Union
 
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
-from lib.quota import QuotaState, QuotaTracker, QuotaWindow
+from lib.quota import QuotaState, QuotaTracker, QuotaWindow, format_quota_badge
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -333,48 +333,55 @@ class TerminalDashboard:
         quota_tracker = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
 
         if quota_tracker:
-            w5h = quota_tracker.window_5h
-            w1w = quota_tracker.window_1w
+            w_5h = getattr(
+                quota_tracker,
+                "window_5h",
+                QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=quota_tracker.remaining_percentage),
+            )
+            w_1w = getattr(
+                quota_tracker,
+                "window_1w",
+                QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0),
+            )
         else:
-            w5h = QuotaWindow(window_name="5h", total_duration_seconds=18000.0, remaining_percentage=100.0)
-            w1w = QuotaWindow(window_name="1w", total_duration_seconds=604800.0, remaining_percentage=100.0)
+            w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+            w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+
+        badge_5h_text = format_quota_badge(w_5h)
+        badge_1w_text = format_quota_badge(w_1w)
+
+        status_5h, _ = w_5h.get_pacing_status()
+        status_1w, _ = w_1w.get_pacing_status()
+
+        color_5h = (
+            "\033[92m\033[1m"
+            if status_5h == "OK" and w_5h.remaining_percentage > 0
+            else ("\033[91m\033[1m" if w_5h.remaining_percentage == 0 else "\033[93m\033[1m")
+        )
+        color_1w = (
+            "\033[92m\033[1m"
+            if status_1w == "OK" and w_1w.remaining_percentage > 0
+            else ("\033[91m\033[1m" if w_1w.remaining_percentage == 0 else "\033[93m\033[1m")
+        )
 
         panel_title = " ANTIGRAVITY MODEL QUOTA "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
 
-        header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+        header_bar = (
+            "┌─"
+            + f"\033[96m\033[1m{panel_title}\033[0m"
+            + ("─" * pad_len)
+            + "┐"
+        )
 
-        def _format_badge(w: QuotaWindow, window_label: str) -> str:
-            pct_val = w.remaining_percentage
-            pct_str = f"{int(pct_val)}%" if pct_val.is_integer() else f"{pct_val:.1f}%"
-            reset_str = w.format_reset_countdown()
-            p_status = w.pacing_status()
-
-            if p_status == "BEHIND_PACING":
-                backoff_delay = quota_tracker.get_pacing_backoff_delay(w) if quota_tracker else 0.0
-                pacing_str = f"PACING: BEHIND (Backoff: {backoff_delay:.1f}s)"
-                color = "\033[93m"  # Yellow
-            elif pct_val <= 0.0:
-                pacing_str = "PACING: EXHAUSTED"
-                color = "\033[91m"  # Red
-            else:
-                pacing_str = "PACING: OK"
-                color = "\033[92m"  # Green
-
-            badge_text = f"[ {window_label} QUOTA: {pct_str} | RESET: {reset_str} | {pacing_str} ]"
-            return f"{color}{badge_text}\033[0m"
-
-        badge_5h_styled = _format_badge(w5h, "5H")
-        badge_1w_styled = _format_badge(w1w, "1W")
-
-        body_5h = fit_to_display_width(badge_5h_styled, inner_w)
-        body_1w = fit_to_display_width(badge_1w_styled, inner_w)
+        body_line_1 = fit_to_display_width(f"{color_5h}{badge_5h_text}\033[0m", inner_w)
+        body_line_2 = fit_to_display_width(f"{color_1w}{badge_1w_text}\033[0m", inner_w)
 
         return [
             header_bar,
-            f"│ {body_5h} │",
-            f"│ {body_1w} │",
+            f"│ {body_line_1} │",
+            f"│ {body_line_2} │",
             "└" + "─" * (width - 2) + "┘",
         ]
 

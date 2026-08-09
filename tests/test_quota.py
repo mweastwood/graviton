@@ -1,10 +1,24 @@
 """
-Unit tests for lib/quota.py (QuotaTracker, QuotaInfo, and parse_quota_headers).
+Unit tests for lib/quota.py (QuotaTracker, QuotaInfo, parse_quota_headers, QuotaWindow, and fetch_live_antigravity_quota).
 """
 
+import json
 import time
 import unittest
-from lib.quota import QuotaInfo, QuotaState, QuotaTracker, QuotaWindow, parse_quota_headers
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+
+from lib.quota import (
+    QuotaInfo,
+    QuotaState,
+    QuotaTracker,
+    QuotaWindow,
+    fetch_live_antigravity_quota,
+    format_quota_badge,
+    format_reset_countdown,
+    parse_antigravity_quota_json,
+    parse_quota_headers,
+)
 
 
 class TestQuotaTracker(unittest.TestCase):
@@ -23,6 +37,8 @@ class TestQuotaTracker(unittest.TestCase):
         d = info.to_dict()
         self.assertEqual(d["remaining_percentage"], 100.0)
         self.assertEqual(d["state"], "NORMAL")
+        self.assertIn("window_5h", d)
+        self.assertIn("window_1w", d)
 
     def test_quota_state_transitions(self):
         tracker = QuotaTracker()
@@ -146,26 +162,24 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.reset_time = future_ts
         self.assertTrue(tracker.get_reset_time_str().startswith("in "))
 
-    def test_quota_window_dataclass(self):
+    def test_quota_window_dataclass_and_methods(self):
         now = time.time()
-        # 5h window with reset in 11565s (3h 12m 45s) and 65% remaining
         w5h = QuotaWindow(
-            window_name="5h",
-            total_duration_seconds=18000.0,
+            name="5H",
+            duration_seconds=18000.0,
             remaining_percentage=65.0,
-            reset_timestamp=now + 11565.0,
+            reset_time=str(now + 11565.0),
         )
         self.assertEqual(w5h.format_reset_countdown(now=now), "03:12:45")
         self.assertEqual(w5h.quota_fraction, 0.65)
         self.assertAlmostEqual(w5h.time_fraction(now=now), 11565.0 / 18000.0)
         self.assertEqual(w5h.pacing_status(now=now), "OK")
 
-        # 1w window with reset in 374400s (4d 08h) and 20% remaining
         w1w = QuotaWindow(
-            window_name="1w",
-            total_duration_seconds=604800.0,
+            name="1W",
+            duration_seconds=604800.0,
             remaining_percentage=20.0,
-            reset_timestamp=now + 374400.0,
+            reset_time=str(now + 374400.0),
         )
         self.assertEqual(w1w.format_reset_countdown(now=now), "4d 08h")
         self.assertEqual(w1w.quota_fraction, 0.20)
@@ -183,26 +197,134 @@ class TestQuotaTracker(unittest.TestCase):
         }
         tracker.parse_quota_headers(headers)
         self.assertEqual(tracker.window_5h.remaining_percentage, 65.0)
-        self.assertEqual(tracker.window_5h.reset_timestamp, now + 10000)
+        self.assertAlmostEqual(tracker.window_5h.reset_timestamp, now + 10000, places=1)
         self.assertEqual(tracker.window_1w.remaining_percentage, 20.0)
-        self.assertEqual(tracker.window_1w.reset_timestamp, now + 300000)
+        self.assertAlmostEqual(tracker.window_1w.reset_timestamp, now + 300000, places=1)
         self.assertEqual(tracker.remaining_percentage, 20.0)
 
     def test_pacing_backoff_calculation(self):
         now = time.time()
         tracker = QuotaTracker(max_backoff_delay=10.0)
-        # 1w window: 20% quota remaining, but 60% time remaining -> deficit = 0.40 -> backoff = 4.0s
         tracker.update_quota(
             remaining_percentage=20.0,
             remaining_percentage_1w=20.0,
-            reset_time_1w=now + 362880.0,  # 362880 / 604800 = 0.60 time fraction
+            reset_time_1w=now + 362880.0,
         )
         self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
         self.assertAlmostEqual(backoff, 4.0)
         self.assertAlmostEqual(tracker.get_backoff_delay(now=now), 4.0)
 
+    def test_parse_antigravity_quota_json(self):
+        data = {
+            "quotaRemaining": 0.65,
+            "resetTime": "2026-08-09T09:00:00Z",
+            "weeklyQuotaRemaining": 0.20,
+            "weeklyResetTime": "2026-08-16T09:00:00Z",
+        }
+        res = parse_antigravity_quota_json(data)
+        self.assertIsNotNone(res)
+        w_5h, w_1w = res
+        self.assertEqual(w_5h.name, "5H")
+        self.assertEqual(w_5h.duration_seconds, 18000.0)
+        self.assertEqual(w_5h.remaining_percentage, 65.0)
+        self.assertEqual(w_5h.reset_time, "2026-08-09T09:00:00Z")
+
+        self.assertEqual(w_1w.name, "1W")
+        self.assertEqual(w_1w.duration_seconds, 604800.0)
+        self.assertEqual(w_1w.remaining_percentage, 20.0)
+        self.assertEqual(w_1w.reset_time, "2026-08-16T09:00:00Z")
+
+    def test_parse_antigravity_quota_json_error_handling(self):
+        # Error payload returns None
+        error_data = {"error": {"code": 401, "message": "Invalid token"}}
+        self.assertIsNone(parse_antigravity_quota_json(error_data))
+
+        # Payload without quota keys returns None
+        invalid_data = {"result": "success"}
+        self.assertIsNone(parse_antigravity_quota_json(invalid_data))
+
+    def test_format_reset_countdown(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+
+        # 5h window countdown under 24h
+        reset_5h = "2026-08-09T08:18:45Z"
+        self.assertEqual(format_reset_countdown(reset_5h, now_dt=now_dt), "03:12:45")
+
+        # 1w window countdown over 24h
+        reset_1w = "2026-08-13T13:06:00Z"
+        self.assertEqual(format_reset_countdown(reset_1w, now_dt=now_dt), "4d 08h")
+
+        # Stringified numeric timestamp e.g. "1786266000.0"
+        reset_numeric_str = "1786266000.0"
+        cd_num = format_reset_countdown(reset_numeric_str, now_dt=now_dt)
+        self.assertNotEqual(cd_num, "1786266000.0")
+
+        # None -> N/A
+        self.assertEqual(format_reset_countdown(None, now_dt=now_dt), "N/A")
+
+    def test_pacing_ratio_and_badge_formatting(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+
+        # 5H: 65% remaining
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=65.0, reset_time="2026-08-09T08:18:45Z")
+        badge_5h = format_quota_badge(w_5h, now_dt=now_dt)
+        self.assertEqual(badge_5h, "[ 5H QUOTA: 65% | RESET: 03:12:45 | PACING: OK ]")
+
+        # 1W: 20% remaining -> BEHIND
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
+        badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
+        self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
+        self.assertIn("Backoff:", badge_1w)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({
+            "quotaRemaining": 0.65,
+            "resetTime": "2026-08-09T09:00:00Z",
+            "weeklyQuotaRemaining": 0.20,
+            "weeklyResetTime": "2026-08-16T09:00:00Z",
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        res = fetch_live_antigravity_quota(token="test-oauth-token")
+        self.assertIsNotNone(res)
+        w_5h, w_1w = res
+        self.assertEqual(w_5h.remaining_percentage, 65.0)
+        self.assertEqual(w_1w.remaining_percentage, 20.0)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_live_antigravity_quota_error_returns_none(self, mock_urlopen):
+        # Simulated API HTTP error payload
+        mock_resp = MagicMock()
+        mock_resp.status = 401
+        mock_resp.read.return_value = json.dumps({
+            "error": {"code": 401, "message": "Invalid token"}
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        res = fetch_live_antigravity_quota(token="test-oauth-token")
+        self.assertIsNone(res)
+
+    def test_update_windows_and_poll_live_quota(self):
+        tracker = QuotaTracker()
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=65.0, reset_time="2026-08-09T09:00:00Z")
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-16T09:00:00Z")
+
+        tracker.update_windows(w_5h, w_1w)
+        self.assertEqual(tracker.window_5h.remaining_percentage, 65.0)
+        self.assertEqual(tracker.window_1w.remaining_percentage, 20.0)
+        self.assertEqual(tracker.remaining_percentage, 20.0)
+
+        # Test poll_live_quota fallback when fetch returns None
+        with patch("lib.quota.fetch_live_antigravity_quota", return_value=None):
+            polled_5h, polled_1w = tracker.poll_live_quota(token="invalid-token")
+            # Must preserve existing state instead of overwriting with dummy 100%
+            self.assertEqual(polled_5h.remaining_percentage, 65.0)
+            self.assertEqual(polled_1w.remaining_percentage, 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-
