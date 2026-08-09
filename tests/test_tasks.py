@@ -661,6 +661,40 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(called_cwd.resolve(), bad_dir.resolve())
             manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_path_traversal_out_of_repos_dir_marks_task_failed(self, mock_run_agent):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+
+            manager.start()
+
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/bad",
+                repo_name="..",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertIn("attempting path traversal", task.error_message)
+            mock_run_agent.assert_not_called()
+            manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -246,6 +246,16 @@ class TestPRTracker(unittest.TestCase):
             self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
             self.assertEqual(approved[0]["number"], 1)
 
+    def test_remove_approved_pr_cleans_up_empty_repo_name(self):
+        tracker = PRTracker()
+        # Add PR with empty repo_full_name
+        tracker.add_approved_pr(99, "Legacy PR", "charlie", "https://github.com/owner/repo/pull/99", repo_full_name="")
+        self.assertEqual(len(tracker.get_approved_prs()), 1)
+
+        # Removing PR #99 specifying a repo name should clean up the empty repo name entry too
+        tracker.remove_approved_pr(99, repo_full_name="owner/repo")
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

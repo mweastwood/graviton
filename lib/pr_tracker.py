@@ -64,6 +64,7 @@ class PRTracker:
         with self._lock:
             if repo_str:
                 self._approved_prs.pop((repo_str, num_int), None)
+                self._approved_prs.pop(("", num_int), None)
                 self._approved_prs.pop(num_int, None)
             else:
                 to_remove = [k for k in self._approved_prs if k == num_int or (isinstance(k, tuple) and k[1] == num_int)]

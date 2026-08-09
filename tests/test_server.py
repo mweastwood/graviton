@@ -442,6 +442,40 @@ class TestGravitonHandler(unittest.TestCase):
             exec_cwd = mock_run_async.call_args[0][3]
             self.assertEqual(exec_cwd.resolve(), bad_dir.resolve())
 
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_path_traversal_aborted(self, mock_run_async):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+
+            payload = json.dumps({
+                "action": "opened",
+                "number": 12,
+                "repository": {
+                    "name": "..",
+                },
+            }).encode("utf-8")
+
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "pull_request",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.default_reviewer = "code_reviewer"
+            handler.task_manager = None
+            handler.repos_dir = repos_dir
+
+            GravitonHandler.do_POST(handler)
+
+            mock_run_async.assert_not_called()
+            handler._send_json.assert_called_once()
+            args, _ = handler._send_json.call_args
+            self.assertEqual(args[0], 400)
+            self.assertIn("attempting path traversal", args[1]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

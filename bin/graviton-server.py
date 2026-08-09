@@ -188,6 +188,12 @@ class GravitonHandler(BaseHTTPRequestHandler):
                                 exec_cwd = candidate_cwd
                             else:
                                 logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
+                                self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
+                                return
+                        else:
+                            logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
+                            self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
+                            return
 
                     if exec_cwd and not exec_cwd.exists() and clone_url:
                         logger.info(f"Repository directory '{exec_cwd}' does not exist in direct execution mode. Auto-cloning from {clone_url}...")
@@ -237,7 +243,7 @@ def main():
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="Host IP to bind (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=int(os.getenv("PORT", "8000")), help="Port to bind (default: 8000)")
     parser.add_argument("--secret", "-s", default=os.getenv("WEBHOOK_SECRET", os.getenv("GITHUB_WEBHOOK_SECRET", "")), help="GitHub webhook secret for HMAC verification")
-    parser.add_argument("--repos-dir", "--projects-dir", default=os.getenv("REPOS_DIR", os.getenv("PROJECTS_DIR", ".")), help="Base directory for managed repository checkouts (default: current working directory)")
+    parser.add_argument("--repos-dir", "--projects-dir", default=os.getenv("REPOS_DIR", os.getenv("PROJECTS_DIR", ".")), help="Base directory for managed repository checkouts (env: REPOS_DIR or PROJECTS_DIR, default: current working directory)")
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")

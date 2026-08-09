@@ -560,22 +560,26 @@ class TaskManager:
 
             logger.info(f"[{worker_id}] Executing task '{task.id}' ({task.agent}): '{task.prompt}'")
 
-            # Resolve target repository checkout directory
-            exec_cwd = task.repo_dir
-            if not exec_cwd and task.repo_name and self.repos_dir:
-                safe_repo_name = Path(task.repo_name).name
-                if safe_repo_name:
-                    candidate_cwd = (self.repos_dir / safe_repo_name).resolve()
-                    repos_dir_resolved = self.repos_dir.resolve()
-                    if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
-                        exec_cwd = candidate_cwd
+            try:
+                # Resolve target repository checkout directory
+                exec_cwd = task.repo_dir
+                if not exec_cwd and task.repo_name and self.repos_dir:
+                    safe_repo_name = Path(task.repo_name).name
+                    if safe_repo_name:
+                        candidate_cwd = (self.repos_dir / safe_repo_name).resolve()
+                        repos_dir_resolved = self.repos_dir.resolve()
+                        if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
+                            exec_cwd = candidate_cwd
+                        else:
+                            logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
+                            raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
                     else:
                         logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
+                        raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
 
-            if not exec_cwd:
-                exec_cwd = self.cwd
+                if not exec_cwd:
+                    exec_cwd = self.cwd
 
-            try:
                 if exec_cwd and not exec_cwd.exists() and task.clone_url:
                     logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
                     try:
