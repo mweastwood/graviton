@@ -775,6 +775,7 @@ def parse_antigravity_quota_json(
         has_collection = any(k in pool_target and isinstance(pool_target[k], (dict, list)) for k in collection_keys)
         if has_collection:
             data = pool_target
+            search_dicts.insert(0, pool_target)
         else:
             w_pct, w_rst = _extract_1w_from_dict(pool_target)
             if w_pct is not None:

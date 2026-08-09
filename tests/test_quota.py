@@ -740,6 +740,64 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(w5h_fb.remaining_percentage, 40.0)
         self.assertEqual(w1w_fb.remaining_percentage, 70.0)
 
+        # 7. Payload formatted like {"pools": {"gemini": {"models": [...]}}}
+        pools_models_payload = {
+            "pools": {
+                "gemini": {
+                    "models": [
+                        {
+                            "id": "gemini-2.0-flash",
+                            "fiveHourQuota": {
+                                "remainingFraction": 0.80,
+                                "resetTime": "2026-08-10T00:00:00Z",
+                            },
+                            "weeklyQuotaInfo": {
+                                "remainingFraction": 0.90,
+                                "resetTime": "2026-08-17T00:00:00Z",
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+        res_pm = parse_antigravity_quota_json(pools_models_payload, pool="gemini")
+        self.assertIsNotNone(res_pm)
+        w5h_pm, w1w_pm = res_pm
+        self.assertEqual(w5h_pm.remaining_percentage, 80.0)
+        self.assertEqual(w5h_pm.reset_time, "2026-08-10T00:00:00Z")
+        self.assertEqual(w1w_pm.remaining_percentage, 90.0)
+        self.assertEqual(w1w_pm.reset_time, "2026-08-17T00:00:00Z")
+
+        # 8. Payload formatted like {"result": {"pools": {"gemini": {"models": [...]}}}}
+        result_pools_models_payload = {
+            "result": {
+                "pools": {
+                    "gemini": {
+                        "models": [
+                            {
+                                "id": "gemini-2.0-flash",
+                                "fiveHourQuota": {
+                                    "remainingFraction": 0.75,
+                                    "resetTime": "2026-08-10T01:00:00Z",
+                                },
+                                "weeklyQuotaInfo": {
+                                    "remainingFraction": 0.85,
+                                    "resetTime": "2026-08-17T01:00:00Z",
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+        res_rpm = parse_antigravity_quota_json(result_pools_models_payload, pool="gemini")
+        self.assertIsNotNone(res_rpm)
+        w5h_rpm, w1w_rpm = res_rpm
+        self.assertEqual(w5h_rpm.remaining_percentage, 75.0)
+        self.assertEqual(w5h_rpm.reset_time, "2026-08-10T01:00:00Z")
+        self.assertEqual(w1w_rpm.remaining_percentage, 85.0)
+        self.assertEqual(w1w_rpm.reset_time, "2026-08-17T01:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()
