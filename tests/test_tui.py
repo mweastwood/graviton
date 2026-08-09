@@ -3,6 +3,8 @@ Unit tests for lib/tui.py (TerminalDashboard).
 """
 
 import io
+import logging
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from pathlib import Path
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui import (
     TerminalDashboard,
+    TUILogHandler,
     fit_to_display_width,
     get_display_width,
     pad_to_display_width,
@@ -18,6 +21,83 @@ from lib.tui import (
 
 
 class TestTerminalDashboard(unittest.TestCase):
+
+    def test_tui_log_handler(self):
+        handler = TUILogHandler(max_records=3)
+        logger = logging.getLogger("test_tui_logger")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        logger.info("Message 1")
+        logger.info("Message 2")
+        logger.info("Message 3")
+        logger.info("Message 4")
+
+        logs = handler.get_logs(limit=5)
+        self.assertEqual(len(logs), 3)
+        self.assertIn("Message 2", logs[0])
+        self.assertIn("Message 3", logs[1])
+        self.assertIn("Message 4", logs[2])
+
+        recent_2 = handler.get_logs(limit=2)
+        self.assertEqual(len(recent_2), 2)
+        self.assertIn("Message 3", recent_2[0])
+        self.assertIn("Message 4", recent_2[1])
+
+        handler.clear()
+        self.assertEqual(len(handler.get_logs()), 0)
+        logger.removeHandler(handler)
+
+    def test_dashboard_log_redirection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "test_graviton.log"
+            stream = io.StringIO()
+            stderr_capture = io.StringIO()
+
+            root_logger = logging.getLogger()
+            mock_stderr_handler = logging.StreamHandler(stderr_capture)
+            root_logger.addHandler(mock_stderr_handler)
+
+            manager = TaskManager(max_workers=2)
+            dashboard = TerminalDashboard(
+                task_manager=manager,
+                refresh_interval=0.05,
+                out_stream=stream,
+                enable_log_redirection=True,
+                log_file=log_file,
+            )
+
+            test_logger = logging.getLogger("graviton.test")
+            test_logger.setLevel(logging.INFO)
+
+            dashboard.start()
+            try:
+                test_logger.info("Webhook event received: pull_request")
+                test_logger.info("Worker task completed successfully")
+
+                logs = dashboard.log_handler.get_logs()
+                self.assertTrue(any("Webhook event received: pull_request" in l for l in logs))
+                self.assertTrue(any("Worker task completed successfully" in l for l in logs))
+
+                rendered = dashboard.render(width=80)
+                self.assertIn("Recent Log Events", rendered)
+                self.assertIn("Webhook event received", rendered)
+
+                self.assertTrue(log_file.exists())
+                file_content = log_file.read_text(encoding="utf-8")
+                self.assertIn("Webhook event received: pull_request", file_content)
+
+                self.assertEqual(stderr_capture.getvalue(), "")
+
+            finally:
+                dashboard.stop()
+
+            self.assertIn(mock_stderr_handler, root_logger.handlers)
+
+            test_logger.info("Log after dashboard stop")
+            self.assertIn("Log after dashboard stop", stderr_capture.getvalue())
+
+            root_logger.removeHandler(mock_stderr_handler)
 
     def test_display_width_helpers(self):
         # 1. get_display_width

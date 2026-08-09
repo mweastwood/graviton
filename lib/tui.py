@@ -2,6 +2,8 @@
 Terminal UI Dashboard for Graviton Server.
 """
 
+import collections
+import logging
 import re
 import shutil
 import sys
@@ -9,12 +11,42 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import Optional, TextIO, Union
 
 from lib.tasks import TaskManager, TaskStatus
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+class TUILogHandler(logging.Handler):
+    """Log handler that buffers log records in a ring buffer for TUI display."""
+
+    def __init__(self, max_records: int = 50, level=logging.NOTSET):
+        super().__init__(level=level)
+        self.records: collections.deque = collections.deque(maxlen=max_records)
+        self.setFormatter(
+            logging.Formatter(
+                fmt="[%(asctime)s] %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            with self.lock:
+                self.records.append(msg)
+        except Exception:
+            self.handleError(record)
+
+    def get_logs(self, limit: int = 5) -> list:
+        with self.lock:
+            return list(self.records)[-limit:]
+
+    def clear(self):
+        with self.lock:
+            self.records.clear()
 
 
 def get_display_width(s: str) -> int:
@@ -96,6 +128,9 @@ class TerminalDashboard:
         repo_root: Optional[Path] = None,
         refresh_interval: float = 0.5,
         out_stream: Optional[TextIO] = None,
+        enable_log_redirection: bool = True,
+        log_file: Optional[Union[str, Path]] = "graviton.log",
+        log_handler: Optional[TUILogHandler] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -103,14 +138,30 @@ class TerminalDashboard:
         self.repo_root = repo_root
         self.refresh_interval = refresh_interval
         self.out_stream = out_stream or sys.stdout
+        self.enable_log_redirection = enable_log_redirection
+
+        if log_file is not None:
+            log_path = Path(log_file)
+            if not log_path.is_absolute() and repo_root:
+                log_path = repo_root / log_path
+            self.log_file: Optional[Path] = log_path
+        else:
+            self.log_file = (repo_root / "graviton.log") if repo_root else Path("graviton.log")
+
+        self.log_handler = log_handler or TUILogHandler()
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._log_redirected = False
+        self._detached_handlers: list = []
+        self._file_handler: Optional[logging.FileHandler] = None
 
     def start(self):
         """Start the background dashboard rendering loop thread."""
         if self._running:
             return
+        if self.enable_log_redirection:
+            self._attach_log_redirection()
         self._running = True
         self._thread = threading.Thread(
             target=self._refresh_loop, daemon=True, name="DashboardTUI"
@@ -122,6 +173,74 @@ class TerminalDashboard:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
+        if self.enable_log_redirection:
+            self._detach_log_redirection()
+
+    def _attach_log_redirection(self):
+        if self._log_redirected:
+            return
+
+        loggers_to_check = [logging.getLogger()] + [
+            logging.getLogger(name)
+            for name in logging.Logger.manager.loggerDict
+            if isinstance(logging.Logger.manager.loggerDict[name], logging.Logger)
+        ]
+
+        self._detached_handlers = []
+        for logger_obj in loggers_to_check:
+            for handler in list(logger_obj.handlers):
+                if (
+                    isinstance(handler, logging.StreamHandler)
+                    and not isinstance(handler, logging.FileHandler)
+                    and handler is not self.log_handler
+                    and handler is not self._file_handler
+                ):
+                    logger_obj.removeHandler(handler)
+                    self._detached_handlers.append((logger_obj, handler))
+
+        root_logger = logging.getLogger()
+        if self.log_handler not in root_logger.handlers:
+            root_logger.addHandler(self.log_handler)
+
+        if self.log_file and self._file_handler is None:
+            try:
+                self.log_file.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(str(self.log_file), encoding="utf-8")
+                file_handler.setFormatter(
+                    logging.Formatter(
+                        fmt="[%(asctime)s] %(levelname)s - %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S",
+                    )
+                )
+                self._file_handler = file_handler
+                if self._file_handler not in root_logger.handlers:
+                    root_logger.addHandler(self._file_handler)
+            except Exception:
+                pass
+
+        self._log_redirected = True
+
+    def _detach_log_redirection(self):
+        if not self._log_redirected:
+            return
+
+        root_logger = logging.getLogger()
+
+        if self.log_handler and self.log_handler in root_logger.handlers:
+            root_logger.removeHandler(self.log_handler)
+
+        if self._file_handler:
+            if self._file_handler in root_logger.handlers:
+                root_logger.removeHandler(self._file_handler)
+            self._file_handler.close()
+            self._file_handler = None
+
+        for logger_obj, handler in self._detached_handlers:
+            if handler not in logger_obj.handlers:
+                logger_obj.addHandler(handler)
+        self._detached_handlers = []
+
+        self._log_redirected = False
 
     def render(self, width: Optional[int] = None) -> str:
         """Construct and return the dashboard frame string."""
@@ -286,6 +405,14 @@ class TerminalDashboard:
                 target_str = fit_to_display_width(t.target_id or "-", 8)
                 row = f"{id_str} {status_str} {agent_str} {ret_str} {dur_str} {target_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+
+        recent_logs = self.log_handler.get_logs(limit=5) if self.log_handler else []
+        if recent_logs:
+            sub_hdr = "─ Recent Log Events ─"
+            res.append(f"│ {fit_to_display_width(f'\033[1m{sub_hdr}\033[0m', inner_w)} │")
+            for log_entry in recent_logs:
+                log_styled = f"\033[2m{log_entry}\033[0m"
+                res.append(f"│ {fit_to_display_width(log_styled, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
         return res
