@@ -76,10 +76,12 @@ class TaskManager:
     def __init__(
         self,
         max_workers: int = 2,
+        max_tasks: int = 1000,
         script_path: Optional[Path] = None,
         cwd: Optional[Path] = None,
     ):
         self.max_workers = max_workers
+        self.max_tasks = max_tasks
         self.script_path = script_path
         self.cwd = cwd
 
@@ -161,6 +163,48 @@ class TaskManager:
             return False
         return True
 
+    def _prune_tasks_locked(self):
+        """
+        Evict oldest finished tasks (COMPLETED or FAILED) if total tasks exceed max_tasks limit.
+        Must be called while holding self._lock.
+        """
+        if self.max_tasks <= 0 or len(self._tasks) <= self.max_tasks:
+            return
+
+        finished_tasks = [
+            t for t in self._tasks.values()
+            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        ]
+        if not finished_tasks:
+            return
+
+        finished_tasks.sort(
+            key=lambda t: (
+                t.enqueue_time,
+                t.finish_time if t.finish_time is not None else t.enqueue_time,
+            )
+        )
+
+        excess = len(self._tasks) - self.max_tasks
+        to_remove = finished_tasks[:excess]
+        for task in to_remove:
+            del self._tasks[task.id]
+
+    def clear_completed_tasks(self) -> int:
+        """
+        Remove all COMPLETED and FAILED tasks from memory.
+        Returns the number of tasks removed.
+        """
+        with self._lock:
+            to_remove = [
+                task_id
+                for task_id, t in self._tasks.items()
+                if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+            ]
+            for task_id in to_remove:
+                del self._tasks[task_id]
+            return len(to_remove)
+
     def submit_task(
         self, agent: str, prompt: str, target_id: Optional[str] = None
     ) -> Task:
@@ -179,6 +223,7 @@ class TaskManager:
                 enqueue_time=time.time(),
             )
             self._tasks[task_id] = task
+            self._prune_tasks_locked()
 
         self._queue.put(task)
         logger.info(f"Task '{task_id}' submitted (agent: {agent}, target: {target_id}).")
@@ -231,6 +276,7 @@ class TaskManager:
                 "completed": completed,
                 "failed": failed,
                 "max_workers": self.max_workers,
+                "max_tasks": self.max_tasks,
             }
 
     def _worker_loop(self, worker_id: str):
@@ -273,6 +319,7 @@ class TaskManager:
                         task.status = TaskStatus.FAILED
                         task.error_message = stderr_output or f"Process exited with code {return_code}"
                         logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
+                    self._prune_tasks_locked()
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")
                 with self._lock:
@@ -280,5 +327,6 @@ class TaskManager:
                     task.return_code = -1
                     task.error_message = str(e)
                     task.status = TaskStatus.FAILED
+                    self._prune_tasks_locked()
             finally:
                 self._queue.task_done()
