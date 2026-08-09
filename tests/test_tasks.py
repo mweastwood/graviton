@@ -540,7 +540,8 @@ class TestTaskManager(unittest.TestCase):
             mock_proc.returncode = 0
             mock_run_agent.return_value = mock_proc
 
-            mock_sub_run.return_value = MagicMock(returncode=0)
+            expected_repo_dir = repos_dir / "repo-alpha"
+            mock_sub_run.side_effect = lambda *args, **kwargs: (expected_repo_dir.mkdir(parents=True, exist_ok=True), MagicMock(returncode=0))[1]
 
             manager.start()
 
@@ -560,7 +561,6 @@ class TestTaskManager(unittest.TestCase):
                 time.sleep(0.05)
 
             self.assertEqual(task.status, TaskStatus.COMPLETED)
-            expected_repo_dir = repos_dir / "repo-alpha"
 
             # Check that git clone was invoked for non-existent repo_dir
             mock_sub_run.assert_called_once_with(
@@ -581,6 +581,44 @@ class TestTaskManager(unittest.TestCase):
 
             manager.stop()
 >>>>>>> 1d6c5c1 (feat: manage multiple repositories under single server instance (Issue #96))
+
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_multi_repo_auto_clone_failure_marks_task_failed(self, mock_run_agent, mock_sub_run):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_sub_run.side_effect = subprocess.CalledProcessError(1, ["git", "clone"], stderr="Repository not found")
+
+            manager.start()
+
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/repo-alpha",
+                repo_name="repo-alpha",
+                clone_url="https://github.com/owner/repo-alpha.git",
+            )
+
+            for _ in range(100):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertEqual(task.return_code, -1)
+            self.assertIn("Failed to auto-clone repository", task.error_message)
+
+            mock_run_agent.assert_not_called()
+            manager.stop()
 
 
 if __name__ == "__main__":

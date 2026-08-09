@@ -181,6 +181,29 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     exec_cwd = REPO_ROOT
                     if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
                         exec_cwd = self.repos_dir / repo_name
+
+                    if exec_cwd and not exec_cwd.exists() and clone_url:
+                        logger.info(f"Repository directory '{exec_cwd}' does not exist in direct execution mode. Auto-cloning from {clone_url}...")
+                        try:
+                            import subprocess
+                            exec_cwd.parent.mkdir(parents=True, exist_ok=True)
+                            subprocess.run(
+                                ["git", "clone", clone_url, str(exec_cwd)],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                            )
+                            logger.info(f"Successfully auto-cloned repository to '{exec_cwd}'.")
+                        except Exception as clone_err:
+                            logger.error(f"Failed to auto-clone repository '{clone_url}' into '{exec_cwd}': {clone_err}")
+                            self._send_json(500, {"error": f"Failed to auto-clone repository '{clone_url}': {clone_err}"})
+                            return
+
+                    if exec_cwd and not exec_cwd.exists():
+                        logger.error(f"Repository directory '{exec_cwd}' does not exist.")
+                        self._send_json(400, {"error": f"Repository directory '{exec_cwd}' does not exist"})
+                        return
+
                     run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
 
             # Omit internal prompt from HTTP response output

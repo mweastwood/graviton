@@ -293,8 +293,123 @@ class TestGravitonHandler(unittest.TestCase):
 
         self.assertEqual(GravitonHandler.repos_dir, Path("/tmp/custom_projects").resolve())
 
+    @patch("subprocess.run")
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_auto_clones_missing_repo(self, mock_run_async, mock_sub_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            expected_repo_dir = repos_dir / "repo-alpha"
+            mock_sub_run.side_effect = lambda *args, **kwargs: (expected_repo_dir.mkdir(parents=True, exist_ok=True), MagicMock(returncode=0))[1]
+
+            payload = json.dumps({
+                "action": "opened",
+                "number": 12,
+                "repository": {
+                    "name": "repo-alpha",
+                    "full_name": "owner/repo-alpha",
+                    "clone_url": "https://github.com/owner/repo-alpha.git",
+                },
+            }).encode("utf-8")
+
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "pull_request",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.default_reviewer = "code_reviewer"
+            handler.task_manager = None
+            handler.repos_dir = repos_dir
+
+            GravitonHandler.do_POST(handler)
+
+            mock_sub_run.assert_called_once_with(
+                ["git", "clone", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            mock_run_async.assert_called_once()
+            handler._send_json.assert_called_once()
+            args, _ = handler._send_json.call_args
+            self.assertEqual(args[0], 200)
+
+    @patch("subprocess.run")
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_clone_failure_returns_500(self, mock_run_async, mock_sub_run):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            mock_sub_run.side_effect = subprocess.CalledProcessError(1, ["git", "clone"], stderr="Clone error")
+
+            payload = json.dumps({
+                "action": "opened",
+                "number": 12,
+                "repository": {
+                    "name": "repo-alpha",
+                    "full_name": "owner/repo-alpha",
+                    "clone_url": "https://github.com/owner/repo-alpha.git",
+                },
+            }).encode("utf-8")
+
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "pull_request",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.default_reviewer = "code_reviewer"
+            handler.task_manager = None
+            handler.repos_dir = repos_dir
+
+            GravitonHandler.do_POST(handler)
+
+            mock_run_async.assert_not_called()
+            handler._send_json.assert_called_once()
+            args, _ = handler._send_json.call_args
+            self.assertEqual(args[0], 500)
+            self.assertIn("Failed to auto-clone repository", args[1]["error"])
+
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_non_existent_repo_returns_400(self, mock_run_async):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+
+            payload = json.dumps({
+                "action": "opened",
+                "number": 12,
+                "repository": {
+                    "name": "repo-alpha",
+                },
+            }).encode("utf-8")
+
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "pull_request",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.default_reviewer = "code_reviewer"
+            handler.task_manager = None
+            handler.repos_dir = repos_dir
+
+            GravitonHandler.do_POST(handler)
+
+            mock_run_async.assert_not_called()
+            handler._send_json.assert_called_once()
+            args, _ = handler._send_json.call_args
+            self.assertEqual(args[0], 400)
+            self.assertIn("does not exist", args[1]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
