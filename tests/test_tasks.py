@@ -348,6 +348,36 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    def test_task_manager_deduplicate_tasks(self):
+        manager = TaskManager(max_workers=2)
+
+        # 1. Submit initial task with target_id (manager workers not started -> stays QUEUED)
+        t1 = manager.submit_task("code_reviewer", "Review PR #50", target_id="#50")
+        self.assertEqual(t1.id, "task-1")
+        self.assertEqual(t1.status, TaskStatus.QUEUED)
+
+        # 2. Submit duplicate task for same agent and target_id while t1 is QUEUED
+        t2 = manager.submit_task("code_reviewer", "Review PR #50 again", target_id="#50")
+        self.assertIs(t2, t1)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
+
+        # 3. Simulate t1 moving to RUNNING
+        t1.status = TaskStatus.RUNNING
+        t3 = manager.submit_task("code_reviewer", "Review PR #50 concurrent", target_id="#50")
+        self.assertIs(t3, t1)
+
+        # 4. Submit task for different agent or target_id -> should NOT deduplicate
+        t_diff_agent = manager.submit_task("code_fixer", "Fix PR #50", target_id="#50")
+        self.assertEqual(t_diff_agent.id, "task-2")
+
+        t_diff_target = manager.submit_task("code_reviewer", "Review PR #51", target_id="#51")
+        self.assertEqual(t_diff_target.id, "task-3")
+
+        # 5. When task completes, subsequent submission for same target_id creates a new task
+        t1.status = TaskStatus.COMPLETED
+        t4 = manager.submit_task("code_reviewer", "Review PR #50 after completion", target_id="#50")
+        self.assertEqual(t4.id, "task-4")
+
 
 if __name__ == "__main__":
     unittest.main()

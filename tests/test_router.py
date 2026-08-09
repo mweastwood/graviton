@@ -2,6 +2,7 @@
 Unit tests for lib/router.py
 """
 
+import time
 import unittest
 from lib.router import (
     route_webhook_event,
@@ -14,6 +15,7 @@ from lib.router import (
     handle_pull_request_review_comment_event,
     handle_issues_event,
     handle_issue_comment_event,
+    clear_pr_review_cache,
 )
 from lib.security import BOT_MARKER
 
@@ -498,6 +500,36 @@ class TestRouter(unittest.TestCase):
         }
         route_webhook_event("pull_request", payload_closed, pr_tracker=tracker)
         self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    def test_pull_request_event_debouncing(self):
+        clear_pr_review_cache()
+
+        # 1. First event PR #77 'opened' -> accepted
+        payload_opened = {"action": "opened", "number": 77}
+        res1 = route_webhook_event("pull_request", payload_opened)
+        self.assertEqual(res1["status"], "accepted")
+        self.assertEqual(res1["action"], "opened")
+
+        # 2. Rapid 'synchronize' event for PR #77 immediately following -> ignored / debounced
+        payload_sync = {"action": "synchronize", "number": 77}
+        res2 = route_webhook_event("pull_request", payload_sync)
+        self.assertEqual(res2["status"], "ignored")
+        self.assertIn("debounced", res2.get("reason", ""))
+
+        # 3. 'synchronize' for a different PR #78 -> accepted
+        payload_sync_other = {"action": "synchronize", "number": 78}
+        res3 = route_webhook_event("pull_request", payload_sync_other)
+        self.assertEqual(res3["status"], "accepted")
+
+        # 4. Rapid second 'synchronize' for PR #78 -> debounced
+        res4 = route_webhook_event("pull_request", payload_sync_other)
+        self.assertEqual(res4["status"], "ignored")
+
+        # 5. After debounce_window expires (using small window), synchronize should be accepted
+        handle_pull_request_event(payload_sync, debounce_window=0.01)
+        time.sleep(0.02)
+        res6 = handle_pull_request_event(payload_sync, debounce_window=0.01)
+        self.assertEqual(res6["status"], "accepted")
 
 
 if __name__ == "__main__":
