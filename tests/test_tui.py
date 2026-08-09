@@ -684,6 +684,28 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("PACING: BEHIND", rendered)
         self.assertIn("Backoff:", rendered)
 
+    def test_quota_fetch_latency_does_not_stall_tui_render(self):
+        quota = QuotaTracker(remaining_percentage=90.0, quota_pool="gemini")
+        manager = TaskManager(max_workers=2, quota_tracker=quota)
+        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
+
+        def slow_fetch(*args, **kwargs):
+            time.sleep(0.5)  # Simulate network latency
+            return None
+
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+            dashboard.start()
+            t0 = time.time()
+            rendered = dashboard.render(width=80)
+            render_duration = time.time() - t0
+
+            # Rendering frame should complete almost instantaneously (< 0.1s), not blocked by network latency
+            self.assertLess(render_duration, 0.1)
+            self.assertIn("ANTIGRAVITY MODEL QUOTA (GEMINI)", rendered)
+
+            dashboard.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -54,7 +54,7 @@ DEFAULT_JOBS = [
     {
         "job_id": "periodic_quota_fetch",
         "name": "Periodic Model Quota Fetch",
-        "interval_seconds": 600,
+        "interval_seconds": 10,
         "agent": "quota_fetcher",
         "prompt": "Fetch live Antigravity model quota metrics and update QuotaTracker",
         "enabled": True,
