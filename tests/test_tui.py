@@ -44,9 +44,30 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("Message 3", recent_2[0])
         self.assertIn("Message 4", recent_2[1])
 
+        self.assertEqual(handler.get_logs(limit=0), [])
+        self.assertEqual(handler.get_logs(limit=-1), [])
+
         handler.clear()
         self.assertEqual(len(handler.get_logs()), 0)
         logger.removeHandler(handler)
+
+    def test_disable_file_logging_with_none(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            log_file=None,
+        )
+        self.assertIsNone(dashboard.log_file)
+
+    def test_multiline_log_sanitization(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard.log_handler.records.append("Line 1\nLine 2\nLine 3")
+        rendered = dashboard.render(width=80)
+        for line in rendered.split("\n"):
+            if line:
+                self.assertEqual(get_display_width(line), 80)
+        self.assertIn("Line 1 Line 2 Line 3", rendered)
 
     def test_dashboard_log_redirection(self):
         with tempfile.TemporaryDirectory() as tmpdir:

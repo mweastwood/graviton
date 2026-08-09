@@ -42,6 +42,8 @@ class TUILogHandler(logging.Handler):
 
     def get_logs(self, limit: int = 5) -> list:
         with self.lock:
+            if limit <= 0:
+                return []
             return list(self.records)[-limit:]
 
     def clear(self):
@@ -146,7 +148,7 @@ class TerminalDashboard:
                 log_path = repo_root / log_path
             self.log_file: Optional[Path] = log_path
         else:
-            self.log_file = (repo_root / "graviton.log") if repo_root else Path("graviton.log")
+            self.log_file = None
 
         self.log_handler = log_handler or TUILogHandler()
 
@@ -409,9 +411,11 @@ class TerminalDashboard:
         recent_logs = self.log_handler.get_logs(limit=5) if self.log_handler else []
         if recent_logs:
             sub_hdr = "─ Recent Log Events ─"
-            res.append(f"│ {fit_to_display_width(f'\033[1m{sub_hdr}\033[0m', inner_w)} │")
+            hdr_text = f"\033[1m{sub_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_text, inner_w)} │")
             for log_entry in recent_logs:
-                log_styled = f"\033[2m{log_entry}\033[0m"
+                clean_entry = log_entry.replace("\r\n", " ").replace("\n", " ")
+                log_styled = f"\033[2m{clean_entry}\033[0m"
                 res.append(f"│ {fit_to_display_width(log_styled, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
