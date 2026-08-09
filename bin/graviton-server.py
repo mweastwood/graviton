@@ -191,7 +191,6 @@ def main():
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
-    parser.add_argument("--enable-scheduler", action="store_true", default=os.getenv("ENABLE_SCHEDULER", "false").lower() in ("true", "1", "yes"), help="Enable periodic task scheduler on server startup")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
@@ -219,21 +218,18 @@ def main():
     except Exception as e:
         logger.warning(f"Initial live quota poll failed: {e}")
 
-    scheduler: Optional[TaskScheduler] = None
-    if args.enable_scheduler:
-        config_path = Path(args.schedules_config)
-        logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
-        scheduler = TaskScheduler(
-            config_path=config_path,
-            runner=run_agent_async,
-            script_path=RUN_CONTAINER_SCRIPT,
-            cwd=REPO_ROOT,
-        )
-        scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
-        scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
-        scheduler.start()
-        GravitonHandler.scheduler = scheduler
-
+    config_path = Path(args.schedules_config)
+    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
+    scheduler = TaskScheduler(
+        config_path=config_path,
+        runner=run_agent_async,
+        script_path=RUN_CONTAINER_SCRIPT,
+        cwd=REPO_ROOT,
+    )
+    scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
+    scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
+    scheduler.start()
+    GravitonHandler.scheduler = scheduler
 
     task_manager = TaskManager(
         max_workers=args.max_workers,
@@ -267,7 +263,6 @@ def main():
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
-    logger.info(f"Scheduler enabled: {args.enable_scheduler}")
     logger.info("Live Terminal UI Dashboard ENABLED.")
 
     try:
