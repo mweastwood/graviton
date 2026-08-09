@@ -504,7 +504,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered = dashboard.render(width=80)
         scheduler.stop()
 
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("test_sweep_1", rendered)
         self.assertIn("Test Bug Sweep Job", rendered)
         self.assertIn("codebase_auditor", rendered)
@@ -542,7 +542,7 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "jobs"
         rendered = dashboard.render(width=80)
 
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
 
     def test_scheduled_jobs_selector_rendering(self):
@@ -576,7 +576,7 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "jobs"
 
         rendered = dashboard.render(width=80)
-        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
+        self.assertIn("SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]", rendered)
         self.assertIn("> ", rendered)
 
         dashboard.select_next_job()
@@ -617,6 +617,16 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "jobs")
         self.assertEqual(dashboard.selected_job_index, 0)
 
+        toggled_job = dashboard.toggle_selected_job()
+        self.assertIsNotNone(toggled_job)
+        self.assertFalse(toggled_job.enabled)
+        self.assertFalse(scheduler.jobs["job_1"].enabled)
+
+        toggled_job_2 = dashboard.toggle_selected_job()
+        self.assertIsNotNone(toggled_job_2)
+        self.assertTrue(toggled_job_2.enabled)
+        self.assertTrue(scheduler.jobs["job_1"].enabled)
+
         disabled_job = dashboard.disable_selected_job()
         self.assertIsNotNone(disabled_job)
         self.assertFalse(disabled_job.enabled)
@@ -634,6 +644,12 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.selected_job_index, 1)
 
         dashboard.handle_key("d")
+        self.assertFalse(scheduler.jobs["job_2"].enabled)
+
+        dashboard.handle_key(" ")
+        self.assertTrue(scheduler.jobs["job_2"].enabled)
+
+        dashboard.handle_key(" ")
         self.assertFalse(scheduler.jobs["job_2"].enabled)
 
         dashboard.handle_key("e")
