@@ -310,6 +310,18 @@ class TerminalDashboard:
             return job
         return None
 
+    def toggle_selected_job(self) -> Optional[ScheduledJob]:
+        """Toggle enable/disable state for the currently selected scheduled job and save config."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return None
+        jobs_list = list(self.scheduler.jobs.values())
+        if 0 <= self.selected_job_index < len(jobs_list):
+            job = jobs_list[self.selected_job_index]
+            job.enabled = not job.enabled
+            self.scheduler.save_config()
+            return job
+        return None
+
     def run_selected_job_now(self) -> bool:
         """Immediately execute the currently selected scheduled job."""
         if not self.scheduler or not self.scheduler.jobs:
@@ -331,6 +343,8 @@ class TerminalDashboard:
                 self.enable_selected_job()
             elif key in ("d", "D"):
                 self.disable_selected_job()
+            elif key == " ":
+                self.toggle_selected_job()
             elif key in ("r", "R"):
                 self.run_selected_job_now()
             elif key in ("\x1b", "esc", "ESC"):
@@ -752,7 +766,7 @@ class TerminalDashboard:
         self, width: int, scheduler: Optional[TaskScheduler], mode: str = "card"
     ) -> list:
         inner_w = width - 4
-        panel_title = " SCHEDULED JOBS [(e)nable | (d)isable | (r)un now] "
+        panel_title = " SCHEDULED JOBS [(e)nable | (d)isable | (space) toggle | (r)un now] "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
         header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
