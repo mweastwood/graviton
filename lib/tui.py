@@ -669,7 +669,9 @@ class TerminalDashboard:
             s = int(rem_sec)
             return f"in {s}s"
 
-    def _render_scheduled_jobs(self, width: int, scheduler: Optional[TaskScheduler]) -> list:
+    def _render_scheduled_jobs(
+        self, width: int, scheduler: Optional[TaskScheduler], mode: str = "card"
+    ) -> list:
         inner_w = width - 4
         status_enabled = "ENABLED" if scheduler is not None else "DISABLED"
         status_running = "RUNNING" if (scheduler and scheduler.is_running()) else "STOPPED"
@@ -686,35 +688,82 @@ class TerminalDashboard:
                 msg = "(No scheduled jobs configured)"
             msg_styled = f"\033[2m{msg}\033[0m"
             res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
+        elif mode == "card":
+            now_dt = datetime.now(timezone.utc)
+            jobs_list = list(scheduler.jobs.values())
+            for idx, job in enumerate(jobs_list):
+                if job.enabled:
+                    status_badge = "\033[92m\033[1m[● ENABLED]\033[0m"
+                else:
+                    status_badge = "\033[90m[○ DISABLED]\033[0m"
+
+                header_line = f"{status_badge} \033[1m{job.job_id}\033[0m  \033[96m[Agent: {job.agent}]\033[0m"
+                res.append(f"│ {fit_to_display_width(header_line, inner_w)} │")
+
+                interval_str = self._format_interval(job.interval_seconds)
+                last_run_str = self._format_timestamp(job.last_run)
+                next_run_str = self._format_timestamp(job.next_run)
+                rem_str = self._format_remaining(job, now_dt)
+                sched_line = (
+                    f"Name: {job.name} │ Interval: {interval_str} │ "
+                    f"Last Run: {last_run_str} │ Next Run: {next_run_str} │ "
+                    f"Remaining: {rem_str}"
+                )
+                res.append(f"│ {fit_to_display_width(sched_line, inner_w)} │")
+
+                prompt_line = f"\033[2mPrompt: {job.prompt}\033[0m"
+                res.append(f"│ {fit_to_display_width(prompt_line, inner_w)} │")
+
+                if idx < len(jobs_list) - 1:
+                    sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
+                    res.append(f"│ {fit_to_display_width(sep_line, inner_w)} │")
         else:
-            col_hdr = f"{fit_to_display_width('JOB ID', 12)} {fit_to_display_width('NAME', 14)} {fit_to_display_width('AGENT', 16)} {fit_to_display_width('INTV', 4)} {fit_to_display_width('LAST RUN', 8)} {fit_to_display_width('NEXT RUN', 8)} {fit_to_display_width('REMAIN', 8)}"
+            fixed_w = 6 + 10 + 10 + 10  # INTV, LAST RUN, NEXT RUN, REMAIN
+            num_cols = 7
+            spacers = num_cols - 1  # 6 spaces
+            flex_avail = max(15, inner_w - fixed_w - spacers)
+
+            # Distribute remaining width (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
+            id_w = max(8, int(flex_avail * (12 / 52)))
+            name_w = max(12, int(flex_avail * (24 / 52)))
+            agent_w = max(10, flex_avail - id_w - name_w)
+
+            col_hdr = (
+                f"{fit_to_display_width('JOB ID', id_w)} "
+                f"{fit_to_display_width('NAME', name_w)} "
+                f"{fit_to_display_width('AGENT', agent_w)} "
+                f"{fit_to_display_width('INTV', 6)} "
+                f"{fit_to_display_width('LAST RUN', 10)} "
+                f"{fit_to_display_width('NEXT RUN', 10)} "
+                f"{fit_to_display_width('REMAIN', 10)}"
+            )
             hdr_styled = f"\033[1m{col_hdr}\033[0m"
             res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
 
             now_dt = datetime.now(timezone.utc)
             for job in list(scheduler.jobs.values()):
-                if get_display_width(job.job_id) > 12:
-                    id_trunc = truncate_to_display_width(job.job_id, 10) + ".."
+                if get_display_width(job.job_id) > id_w:
+                    id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".."
                 else:
                     id_trunc = job.job_id
 
-                if get_display_width(job.name) > 14:
-                    name_trunc = truncate_to_display_width(job.name, 12) + ".."
+                if get_display_width(job.name) > name_w:
+                    name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".."
                 else:
                     name_trunc = job.name
 
-                if get_display_width(job.agent) > 16:
-                    agent_trunc = truncate_to_display_width(job.agent, 14) + ".."
+                if get_display_width(job.agent) > agent_w:
+                    agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".."
                 else:
                     agent_trunc = job.agent
 
-                id_str = fit_to_display_width(id_trunc, 12)
-                name_str = fit_to_display_width(name_trunc, 14)
-                agent_str = fit_to_display_width(agent_trunc, 16)
-                interval_str = fit_to_display_width(self._format_interval(job.interval_seconds), 4)
-                last_run_str = fit_to_display_width(self._format_timestamp(job.last_run), 8)
-                next_run_str = fit_to_display_width(self._format_timestamp(job.next_run), 8)
-                rem_str = fit_to_display_width(self._format_remaining(job, now_dt), 8)
+                id_str = fit_to_display_width(id_trunc, id_w)
+                name_str = fit_to_display_width(name_trunc, name_w)
+                agent_str = fit_to_display_width(agent_trunc, agent_w)
+                interval_str = fit_to_display_width(self._format_interval(job.interval_seconds), 6)
+                last_run_str = fit_to_display_width(self._format_timestamp(job.last_run), 10)
+                next_run_str = fit_to_display_width(self._format_timestamp(job.next_run), 10)
+                rem_str = fit_to_display_width(self._format_remaining(job, now_dt), 10)
                 row = f"{id_str} {name_str} {agent_str} {interval_str} {last_run_str} {next_run_str} {rem_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
