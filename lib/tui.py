@@ -2,15 +2,81 @@
 Terminal UI Dashboard for Graviton Server.
 """
 
+import re
 import shutil
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional, TextIO
 
 from lib.tasks import TaskManager, TaskStatus
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
+
+ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def get_display_width(s: str) -> int:
+    """Return visual display width of string, stripping ANSI escape codes and accounting for wide characters."""
+    clean_str = ANSI_REGEX.sub("", s)
+    return sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in clean_str)
+
+
+def truncate_to_display_width(s: str, max_w: int) -> str:
+    """Truncate string so its visual display width does not exceed max_w."""
+    if get_display_width(s) <= max_w:
+        return s
+
+    res = []
+    cur_w = 0
+    i = 0
+    n = len(s)
+    has_ansi = False
+
+    while i < n:
+        match = ANSI_REGEX.match(s, i)
+        if match:
+            has_ansi = True
+            res.append(match.group(0))
+            i = match.end()
+        else:
+            c = s[i]
+            w_c = 2 if unicodedata.east_asian_width(c) in ("F", "W") else 1
+            if cur_w + w_c > max_w:
+                if cur_w < max_w:
+                    res.append(" ")
+                    cur_w += 1
+                break
+            res.append(c)
+            cur_w += w_c
+            i += 1
+
+    if has_ansi and (not res or not res[-1].endswith("\033[0m")):
+        res.append("\033[0m")
+
+    return "".join(res)
+
+
+def pad_to_display_width(s: str, target_w: int, align: str = "left") -> str:
+    """Pad string with spaces so its visual display width matches target_w."""
+    cur_w = get_display_width(s)
+    if cur_w >= target_w:
+        return s
+    pad_len = target_w - cur_w
+    if align == "left":
+        return s + (" " * pad_len)
+    elif align == "right":
+        return (" " * pad_len) + s
+    else:
+        left_pad = pad_len // 2
+        right_pad = pad_len - left_pad
+        return (" " * left_pad) + s + (" " * right_pad)
+
+
+def fit_to_display_width(s: str, target_w: int, align: str = "left") -> str:
+    """Truncate and pad string so its visual display width is exactly target_w."""
+    return pad_to_display_width(truncate_to_display_width(s, target_w), target_w, align=align)
 
 
 class TerminalDashboard:
@@ -107,19 +173,20 @@ class TerminalDashboard:
 
         inner_w = width - 4
         title = "\033[96m\033[1m⚡ GRAVITON SERVER DASHBOARD ⚡\033[0m"
-        raw_title = "⚡ GRAVITON SERVER DASHBOARD ⚡"
-        raw_badge = f"[ HOT-RELOAD: {reload_state} ]"
 
-        pad_len = max(1, inner_w - len(raw_title) - len(raw_badge))
-        line1_content = f"{title}{' ' * pad_len}{reload_badge}"
+        title_dw = get_display_width(title)
+        badge_dw = get_display_width(reload_badge)
+        pad_len = max(1, inner_w - title_dw - badge_dw)
+        line1_raw = f"{title}{' ' * pad_len}{reload_badge}"
+        line1_content = fit_to_display_width(line1_raw, inner_w)
 
         info_line = f"Host: {self.host}:{self.port} │ Branch: {branch} │ Commit: {commit} │ Uptime: {uptime}"
-        info_padded = info_line[:inner_w].ljust(inner_w)
+        info_content = fit_to_display_width(info_line, inner_w)
 
         return [
             "┌" + "─" * (width - 2) + "┐",
             f"│ {line1_content} │",
-            f"│ \033[2m{info_padded}\033[0m │",
+            f"│ \033[2m{info_content}\033[0m │",
             "└" + "─" * (width - 2) + "┘",
         ]
 
@@ -127,23 +194,32 @@ class TerminalDashboard:
         inner_w = width - 4
         active_cnt = len(tasks)
         panel_title = f" ACTIVE TASKS (RUNNING) [{active_cnt}/{max_workers} Workers Active] "
-        header_bar = "┌─" + f"\033[94m\033[1m{panel_title}\033[0m" + "─" * max(0, width - 3 - len(panel_title)) + "┐"
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[94m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
         res = [header_bar]
         if not tasks:
-            msg = "\033[2m(No active tasks currently running)\033[0m"
-            pad = max(0, inner_w - len("(No active tasks currently running)"))
-            res.append(f"│ {msg}{' ' * pad} │")
+            msg = "(No active tasks currently running)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
         else:
-            col_hdr = f"{'ID':<8} {'AGENT':<15} {'TARGET':<10} {'WORKER':<10} {'ELAPSED':<10} {'PROMPT':<18}"
-            res.append(f"│ \033[1m{col_hdr[:inner_w].ljust(inner_w)}\033[0m │")
+            col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('TARGET', 10)} {fit_to_display_width('WORKER', 10)} {fit_to_display_width('ELAPSED', 10)} {fit_to_display_width('PROMPT', 18)}"
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
             for t in tasks:
-                prompt_trunc = (t.prompt[:16] + "..") if len(t.prompt) > 18 else t.prompt
-                target_str = t.target_id or "-"
-                worker_str = t.worker_thread_id or "-"
-                elapsed_str = f"{t.elapsed_time:.1f}s"
-                row = f"{t.id:<8} {t.agent:<15} {target_str:<10} {worker_str:<10} {elapsed_str:<10} {prompt_trunc:<18}"
-                res.append(f"│ {row[:inner_w].ljust(inner_w)} │")
+                if get_display_width(t.prompt) > 18:
+                    prompt_trunc = truncate_to_display_width(t.prompt, 16) + ".."
+                else:
+                    prompt_trunc = t.prompt
+                id_str = fit_to_display_width(t.id, 8)
+                agent_str = fit_to_display_width(t.agent, 15)
+                target_str = fit_to_display_width(t.target_id or "-", 10)
+                worker_str = fit_to_display_width(t.worker_thread_id or "-", 10)
+                elapsed_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 10)
+                prompt_str = fit_to_display_width(prompt_trunc, 18)
+                row = f"{id_str} {agent_str} {target_str} {worker_str} {elapsed_str} {prompt_str}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
         return res
@@ -152,22 +228,31 @@ class TerminalDashboard:
         inner_w = width - 4
         queued_cnt = len(tasks)
         panel_title = f" TASK QUEUE (QUEUED) [{queued_cnt} Pending] "
-        header_bar = "┌─" + f"\033[93m\033[1m{panel_title}\033[0m" + "─" * max(0, width - 3 - len(panel_title)) + "┐"
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[93m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
         res = [header_bar]
         if not tasks:
-            msg = "\033[2m(Task queue is empty)\033[0m"
-            pad = max(0, inner_w - len("(Task queue is empty)"))
-            res.append(f"│ {msg}{' ' * pad} │")
+            msg = "(Task queue is empty)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
         else:
-            col_hdr = f"{'ID':<8} {'AGENT':<15} {'TARGET':<10} {'WAIT':<10} {'PROMPT':<26}"
-            res.append(f"│ \033[1m{col_hdr[:inner_w].ljust(inner_w)}\033[0m │")
+            col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('TARGET', 10)} {fit_to_display_width('WAIT', 10)} {fit_to_display_width('PROMPT', 26)}"
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
             for t in tasks:
-                prompt_trunc = (t.prompt[:24] + "..") if len(t.prompt) > 26 else t.prompt
-                target_str = t.target_id or "-"
-                wait_str = f"{t.wait_time:.1f}s"
-                row = f"{t.id:<8} {t.agent:<15} {target_str:<10} {wait_str:<10} {prompt_trunc:<26}"
-                res.append(f"│ {row[:inner_w].ljust(inner_w)} │")
+                if get_display_width(t.prompt) > 26:
+                    prompt_trunc = truncate_to_display_width(t.prompt, 24) + ".."
+                else:
+                    prompt_trunc = t.prompt
+                id_str = fit_to_display_width(t.id, 8)
+                agent_str = fit_to_display_width(t.agent, 15)
+                target_str = fit_to_display_width(t.target_id or "-", 10)
+                wait_str = fit_to_display_width(f"{t.wait_time:.1f}s", 10)
+                prompt_str = fit_to_display_width(prompt_trunc, 26)
+                row = f"{id_str} {agent_str} {target_str} {wait_str} {prompt_str}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
         return res
@@ -177,27 +262,30 @@ class TerminalDashboard:
         passed = stats.get("completed", 0)
         failed = stats.get("failed", 0)
         panel_title = f" TASK HISTORY & EVENT LOG [Passed: {passed} | Failed: {failed}] "
-        header_bar = "┌─" + f"\033[95m\033[1m{panel_title}\033[0m" + "─" * max(0, width - 3 - len(panel_title)) + "┐"
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[95m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
         res = [header_bar]
         if not tasks:
-            msg = "\033[2m(No task history recorded yet)\033[0m"
-            pad = max(0, inner_w - len("(No task history recorded yet)"))
-            res.append(f"│ {msg}{' ' * pad} │")
+            msg = "(No task history recorded yet)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
         else:
-            col_hdr = f"{'ID':<8} {'STATUS':<11} {'AGENT':<15} {'RETURN':<8} {'DURATION':<10} {'TARGET':<8}"
-            res.append(f"│ \033[1m{col_hdr[:inner_w].ljust(inner_w)}\033[0m │")
+            col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('STATUS', 11)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('RETURN', 8)} {fit_to_display_width('DURATION', 10)} {fit_to_display_width('TARGET', 8)}"
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
             for t in tasks:
                 status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
-                ret_str = str(t.return_code) if t.return_code is not None else "-"
-                dur_str = f"{t.elapsed_time:.1f}s"
-                target_str = t.target_id or "-"
-                # Render line with ANSI status color
-                line_plain = f"{t.id:<8} {t.status:<11} {t.agent:<15} {ret_str:<8} {dur_str:<10} {target_str:<8}"
-                line_plain_trunc = line_plain[:inner_w].ljust(inner_w)
-                # Apply status color to status column
-                line_colored = line_plain_trunc.replace(t.status, f"{status_color}{t.status}\033[0m", 1)
-                res.append(f"│ {line_colored} │")
+                id_str = fit_to_display_width(t.id, 8)
+                status_str = fit_to_display_width(f"{status_color}{t.status}\033[0m", 11)
+                agent_str = fit_to_display_width(t.agent, 15)
+                ret_val = str(t.return_code) if t.return_code is not None else "-"
+                ret_str = fit_to_display_width(ret_val, 8)
+                dur_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 10)
+                target_str = fit_to_display_width(t.target_id or "-", 8)
+                row = f"{id_str} {status_str} {agent_str} {ret_str} {dur_str} {target_str}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
         return res
