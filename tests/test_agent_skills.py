@@ -100,6 +100,16 @@ class TestAgentSkillsMapping(unittest.TestCase):
             self.assertIn("gh pr create", content, f"Skill file {skill_path} must reference gh pr create")
             self.assertIn("gh pr review", content, f"Skill file {skill_path} must reference gh pr review")
 
+    def test_code_review_guidelines_enforces_formal_pr_reviews(self):
+        skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("gh pr review <pr_number> --request-changes", content)
+        self.assertIn("gh pr review <pr_number> --approve", content)
+        self.assertIn("gh pr review <pr_number> --comment", content)
+        self.assertIn("Do **NOT** use `gh pr comment` or `gh issue comment`", content)
+
 
 if __name__ == "__main__":
     unittest.main()
