@@ -128,6 +128,38 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(approved[0]["number"], 42)
         self.assertEqual(approved[0]["author"], "alice")
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_with_latest_reviews_approval(self, mock_run):
+        mock_output = [
+            {
+                "number": 59,
+                "title": "Approved PR via latestReviews",
+                "url": "https://github.com/org/repo/pull/59",
+                "author": {"login": "bot_reviewer"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "latestReviews": [
+                    {"state": "APPROVED", "author": {"login": "bot_reviewer"}}
+                ],
+            },
+        ]
+        mock_res = MagicMock()
+        mock_res.stdout = json.dumps(mock_output)
+        mock_res.returncode = 0
+        mock_run.return_value = mock_res
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 59)
+        self.assertEqual(approved[0]["author"], "bot_reviewer")
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
+
     @patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "gh"))
     def test_sync_github_prs_handles_exception(self, mock_run):
         tracker = PRTracker()

@@ -70,7 +70,7 @@ class PRTracker:
     def sync_github_prs(self, repo_root: Optional[Path] = None) -> None:
         """
         Synchronize approved PRs state using `gh pr list`.
-        Fetch open PRs with json fields: number,title,url,author,reviewDecision,isDraft.
+        Fetch open PRs with json fields: number,title,url,author,reviewDecision,isDraft,latestReviews.
         """
         try:
             cmd = [
@@ -78,7 +78,7 @@ class PRTracker:
                 "pr",
                 "list",
                 "--json",
-                "number,title,url,author,reviewDecision,isDraft",
+                "number,title,url,author,reviewDecision,isDraft,latestReviews",
             ]
             cwd = str(repo_root) if repo_root else None
             res = subprocess.run(
@@ -98,7 +98,15 @@ class PRTracker:
                     if item.get("isDraft") is True:
                         continue
                     review_decision = str(item.get("reviewDecision") or "").upper()
-                    if review_decision == "APPROVED":
+                    is_approved = review_decision == "APPROVED"
+                    if not is_approved:
+                        latest_reviews = item.get("latestReviews")
+                        if isinstance(latest_reviews, list):
+                            for r in latest_reviews:
+                                if isinstance(r, dict) and str(r.get("state") or "").upper() == "APPROVED":
+                                    is_approved = True
+                                    break
+                    if is_approved:
                         try:
                             num = int(item.get("number"))
                         except (ValueError, TypeError):
