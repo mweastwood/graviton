@@ -2,6 +2,7 @@
 Unit tests for lib/tasks.py (TaskManager and Task model).
 """
 
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -399,6 +400,33 @@ class TestTaskManager(unittest.TestCase):
         t4 = manager.submit_task("code_reviewer", "Review PR #50 after completion", target_id="#50")
         self.assertEqual(t4.id, "task-4")
 
+    def test_task_manager_dump_queue_state_paused_for_quota(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "test_paused_queue_state.json"
+            manager1 = TaskManager(max_workers=2)
+
+            t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
+            t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
+            t2.status = TaskStatus.PAUSED_FOR_QUOTA
+
+            dumped_count = manager1.dump_queue_state(filepath=state_file)
+            self.assertEqual(dumped_count, 2)
+            self.assertTrue(state_file.exists())
+            manager1.stop()
+
+            # Restore into new manager instance
+            manager2 = TaskManager(max_workers=2)
+            restored_count = manager2.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored_count, 2)
+            self.assertFalse(state_file.exists())
+
+            restored_queued = manager2.get_queued_tasks()
+            self.assertEqual(len(restored_queued), 2)
+            restored_ids = {t.id for t in restored_queued}
+            self.assertEqual(restored_ids, {t1.id, t2.id})
+            manager2.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+

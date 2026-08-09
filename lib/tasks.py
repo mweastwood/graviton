@@ -209,7 +209,7 @@ class TaskManager:
         path = self._get_default_state_path(filepath)
         with self._lock:
             queued_tasks = [
-                t for t in self._tasks.values() if t.status == TaskStatus.QUEUED
+                t for t in self._tasks.values() if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
             ]
             if not queued_tasks:
                 if path.exists():
