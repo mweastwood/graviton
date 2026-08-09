@@ -54,6 +54,24 @@ DEFAULT_JOBS = [
 ]
 
 
+def parse_iso_timestamp(ts_str: Optional[str], context: str = "") -> Optional[datetime]:
+    """
+    Parse an ISO format timestamp string into a UTC-aware datetime object.
+    Logs a diagnostic warning if parsing fails due to invalid format or type errors.
+    """
+    if not ts_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError) as e:
+        ctx_msg = f" for {context}" if context else ""
+        logger.warning(f"Failed to parse ISO timestamp '{ts_str}'{ctx_msg}: {e}")
+        return None
+
+
 class ScheduledJob:
     """
     Data structure representing a periodic scheduled task.
@@ -90,23 +108,15 @@ class ScheduledJob:
             now_dt = datetime.now(timezone.utc)
 
         if self.next_run:
-            try:
-                next_dt = datetime.fromisoformat(self.next_run)
-                if next_dt.tzinfo is None:
-                    next_dt = next_dt.replace(tzinfo=timezone.utc)
+            next_dt = parse_iso_timestamp(self.next_run, context=f"job '{self.job_id}' next_run")
+            if next_dt is not None:
                 return now_dt >= next_dt
-            except ValueError:
-                pass
 
         if self.last_run:
-            try:
-                last_dt = datetime.fromisoformat(self.last_run)
-                if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+            last_dt = parse_iso_timestamp(self.last_run, context=f"job '{self.job_id}' last_run")
+            if last_dt is not None:
                 elapsed = (now_dt - last_dt).total_seconds()
                 return elapsed >= self.interval_seconds
-            except ValueError:
-                pass
 
         # If no last_run or next_run, it's due immediately
         return True

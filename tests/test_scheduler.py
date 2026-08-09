@@ -14,6 +14,7 @@ from lib.scheduler import (
     TaskScheduler,
     fetch_open_issues,
     is_duplicate_issue,
+    parse_iso_timestamp,
 )
 
 
@@ -100,6 +101,68 @@ class TestScheduledJob(unittest.TestCase):
         self.assertIsNotNone(job.last_run)
         self.assertIsNotNone(job.next_run)
         self.assertEqual(job.last_run, now_dt.isoformat())
+
+    def test_is_due_invalid_next_run_logs_warning(self):
+        job = ScheduledJob(
+            job_id="test_invalid_next",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            next_run="bad-timestamp",
+        )
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            self.assertTrue(job.is_due())
+        self.assertTrue(any("job 'test_invalid_next' next_run" in log for log in cm.output))
+
+    def test_is_due_invalid_last_run_logs_warning(self):
+        job = ScheduledJob(
+            job_id="test_invalid_last",
+            name="Test",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            last_run="bad-timestamp",
+        )
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            self.assertTrue(job.is_due())
+        self.assertTrue(any("job 'test_invalid_last' last_run" in log for log in cm.output))
+
+
+class TestParseIsoTimestamp(unittest.TestCase):
+
+    def test_parse_none_or_empty(self):
+        self.assertIsNone(parse_iso_timestamp(None))
+        self.assertIsNone(parse_iso_timestamp(""))
+
+    def test_parse_valid_utc_aware(self):
+        ts = "2026-08-09T02:00:00+00:00"
+        dt = parse_iso_timestamp(ts)
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt.year, 2026)
+        self.assertEqual(dt.tzinfo, timezone.utc)
+
+    def test_parse_valid_naive(self):
+        ts = "2026-08-09T02:00:00"
+        dt = parse_iso_timestamp(ts)
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt.year, 2026)
+        self.assertEqual(dt.tzinfo, timezone.utc)
+
+    def test_parse_invalid_string_logs_warning(self):
+        invalid_ts = "invalid-iso-date"
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            res = parse_iso_timestamp(invalid_ts, context="test_context")
+            self.assertIsNone(res)
+        self.assertTrue(any("Failed to parse ISO timestamp 'invalid-iso-date' for test_context" in log for log in cm.output))
+
+    def test_parse_invalid_type_logs_warning(self):
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            res = parse_iso_timestamp(12345, context="type_context")  # type: ignore
+            self.assertIsNone(res)
+        self.assertTrue(any("Failed to parse ISO timestamp '12345' for type_context" in log for log in cm.output))
 
 
 class TestTaskScheduler(unittest.TestCase):
