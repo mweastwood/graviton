@@ -499,7 +499,7 @@ class TerminalDashboard:
             res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
 
             now_dt = datetime.now(timezone.utc)
-            for job in scheduler.jobs.values():
+            for job in list(scheduler.jobs.values()):
                 if get_display_width(job.job_id) > 12:
                     id_trunc = truncate_to_display_width(job.job_id, 10) + ".."
                 else:
