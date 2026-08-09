@@ -506,10 +506,10 @@ class TestTerminalDashboard(unittest.TestCase):
 
         self.assertIn("SCHEDULED JOBS [ENABLED | RUNNING]", rendered)
         self.assertIn("test_sweep_1", rendered)
-        self.assertIn("Test Bug Swe..", rendered)
+        self.assertIn("Test Bug Sweep Job", rendered)
         self.assertIn("codebase_auditor", rendered)
         self.assertIn("test_sweep_2", rendered)
-        self.assertIn("Disabled Qua..", rendered)
+        self.assertIn("Disabled Quality Sweep Job", rendered)
         self.assertIn("DISABLED", rendered)
 
         # Verify visual line widths for multiple terminal widths
@@ -525,6 +525,12 @@ class TestTerminalDashboard(unittest.TestCase):
                     target_w,
                     f"Line {i} visual width {dw} != {target_w} in scheduler dashboard: {line!r}",
                 )
+
+        # Verify table mode with dynamic column width allocation
+        table_rendered_lines = dashboard._render_scheduled_jobs(width=120, scheduler=scheduler, mode="table")
+        table_text = "\n".join(table_rendered_lines)
+        self.assertIn("Test Bug Sweep Job", table_text)
+        self.assertIn("Disabled Quality Sweep Job", table_text)
 
     def test_scheduled_jobs_panel_disabled(self):
         manager = TaskManager(max_workers=2)
