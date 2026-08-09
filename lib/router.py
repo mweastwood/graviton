@@ -171,12 +171,6 @@ def handle_pull_request_review_event(
             "reason": "PR was not created by us",
         }
 
-    if contains_bot_marker(review_body) and review_state != "CHANGES_REQUESTED":
-        return {
-            "status": "ignored",
-            "reason": "Bot self-review event dropped",
-        }
-
     if action == "submitted" and review_state == "CHANGES_REQUESTED":
         prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
         return {
