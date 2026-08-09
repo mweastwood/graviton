@@ -121,6 +121,16 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("docstrings", content)
         self.assertIn("CHANGES_REQUESTED", content)
         self.assertIn("no code changes at all", content.lower())
+        self.assertIn("ignored by the webhook router", content)
+        self.assertIn("never** use `--comment`", content)
+
+    def test_code_reviewer_system_prompt_directs_request_changes(self):
+        spec_file = AGENTS_DIR / "code_reviewer.json"
+        with open(spec_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        system_prompt = data["system_prompt"]
+        self.assertIn("--request-changes", system_prompt)
+        self.assertIn("never use --comment for actionable findings", system_prompt)
 
 
 if __name__ == "__main__":

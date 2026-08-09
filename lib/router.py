@@ -122,7 +122,7 @@ def handle_pull_request_event(
                     }
                 _pr_review_timestamps[pr_key] = now
 
-        prompt = f"Review PR #{pr_number}"
+        prompt = f"Review PR #{pr_number}. Use --request-changes for any findings or code fixes."
         return {
             "status": "accepted",
             "action": action,
