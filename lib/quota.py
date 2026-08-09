@@ -261,12 +261,12 @@ def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
     return os.getenv("ANTIGRAVITY_TOKEN")
 
 
-def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[str]]:
+def _extract_pct_and_reset(info_dict: dict, include_weekly: bool = True) -> Tuple[Optional[float], Optional[str]]:
     """Extract remaining_percentage (0.0 to 100.0) and reset_time string from quota dict."""
     if not isinstance(info_dict, dict):
         return None, None
     pct = None
-    pct_keys = (
+    pct_keys = [
         "remainingFraction",
         "remaining_fraction",
         "quotaRemaining",
@@ -276,16 +276,21 @@ def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[s
         "remainingPercentage",
         "quotaRemainingFraction",
         "quota_remaining_fraction",
-        "weekly_remaining_fraction",
-        "weeklyRemainingFraction",
-        "weekly_remaining",
-        "weeklyRemaining",
-        "weekly_percentage",
-        "weeklyPercentage",
+    ]
+    if include_weekly:
+        pct_keys.extend([
+            "weekly_remaining_fraction",
+            "weeklyRemainingFraction",
+            "weekly_remaining",
+            "weeklyRemaining",
+            "weekly_percentage",
+            "weeklyPercentage",
+        ])
+    pct_keys.extend([
         "quota",
         "remaining",
         "percentage",
-    )
+    ])
     for k in pct_keys:
         if k in info_dict and info_dict[k] is not None and not isinstance(info_dict[k], (dict, list)):
             try:
@@ -296,15 +301,21 @@ def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[s
                 pass
 
     reset_time = None
-    reset_keys = (
+    reset_keys = [
         "resetTime",
         "reset_time",
-        "weeklyResetTime",
-        "weekly_reset_time",
-        "reset",
-        "weeklyReset",
-        "weekly_reset",
-    )
+    ]
+    if include_weekly:
+        reset_keys.extend([
+            "weeklyResetTime",
+            "weekly_reset_time",
+        ])
+    reset_keys.append("reset")
+    if include_weekly:
+        reset_keys.extend([
+            "weeklyReset",
+            "weekly_reset",
+        ])
     for k in reset_keys:
         if k in info_dict and info_dict[k] is not None and not isinstance(info_dict[k], (dict, list)):
             reset_time = str(info_dict[k])
@@ -312,21 +323,26 @@ def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[s
 
     # If missing pct or reset_time, check nested container dictionaries
     if pct is None or reset_time is None:
-        for sub_key in (
-            "weeklyQuotaInfo",
-            "weekly_quota_info",
-            "weeklyQuota",
-            "weekly_quota",
-            "weekly",
-            "weeklyQuotaDetails",
-            "weekly_quota_details",
+        sub_keys = []
+        if include_weekly:
+            sub_keys.extend([
+                "weeklyQuotaInfo",
+                "weekly_quota_info",
+                "weeklyQuota",
+                "weekly_quota",
+                "weekly",
+                "weeklyQuotaDetails",
+                "weekly_quota_details",
+            ])
+        sub_keys.extend([
             "quotaInfo",
             "quota_info",
             "quota",
             "remaining",
-        ):
+        ])
+        for sub_key in sub_keys:
             if sub_key in info_dict and isinstance(info_dict[sub_key], dict):
-                sub_pct, sub_reset = _extract_pct_and_reset(info_dict[sub_key])
+                sub_pct, sub_reset = _extract_pct_and_reset(info_dict[sub_key], include_weekly=include_weekly)
                 if pct is None and sub_pct is not None:
                     pct = sub_pct
                 if reset_time is None and sub_reset is not None:
@@ -367,7 +383,7 @@ def _extract_from_windows_or_limits(
                         or item.get("label")
                         or ""
                     ).upper()
-                    p, r = _extract_pct_and_reset(item)
+                    p, r = _extract_pct_and_reset(item, include_weekly=True)
                     if p is not None:
                         if any(w in ident for w in ("1W", "WEEKLY", "7D", "1WEEK", "WEEK")):
                             if res_1w is None:
@@ -396,7 +412,7 @@ def _extract_1w_from_dict(d: dict) -> Tuple[Optional[float], Optional[str]]:
     )
     for k in weekly_container_keys:
         if k in d and isinstance(d[k], dict):
-            w_pct, w_rst = _extract_pct_and_reset(d[k])
+            w_pct, w_rst = _extract_pct_and_reset(d[k], include_weekly=True)
             if w_pct is not None:
                 return w_pct, w_rst
 
@@ -466,12 +482,12 @@ def _extract_5h_from_dict(d: dict) -> Tuple[Optional[float], Optional[str]]:
     # 2. Check quotaInfo or quota_info container in d
     q_info = d.get("quotaInfo") or d.get("quota_info")
     if isinstance(q_info, dict):
-        q_pct, q_rst = _extract_pct_and_reset(q_info)
+        q_pct, q_rst = _extract_pct_and_reset(q_info, include_weekly=False)
         if q_pct is not None:
             return q_pct, q_rst
 
     # 3. Direct extraction on d itself
-    return _extract_pct_and_reset(d)
+    return _extract_pct_and_reset(d, include_weekly=False)
 
 
 def _model_matches_pool(model_id: str, pool: str) -> bool:

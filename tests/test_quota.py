@@ -563,6 +563,44 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(w5h_lim.remaining_percentage, 10.5)
         self.assertAlmostEqual(w1w_lim.remaining_percentage, 71.05, places=2)
 
+        # 6. Test payload with ONLY weeklyQuota nested in quotaInfo (verify 5H defaults to 100.0% / reset None)
+        payload_weekly_only_nested = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "quotaInfo": {
+                        "weeklyQuota": {
+                            "remainingFraction": 0.80,
+                            "resetTime": "2026-08-15T00:00:00Z",
+                        }
+                    }
+                }
+            }
+        }
+        res_weekly_only = parse_antigravity_quota_json(payload_weekly_only_nested, pool="gemini")
+        self.assertIsNotNone(res_weekly_only)
+        w5h_wo, w1w_wo = res_weekly_only
+        self.assertEqual(w5h_wo.remaining_percentage, 100.0)
+        self.assertIsNone(w5h_wo.reset_time)
+        self.assertEqual(w1w_wo.remaining_percentage, 80.0)
+        self.assertEqual(w1w_wo.reset_time, "2026-08-15T00:00:00Z")
+
+        # 7. Test payload with ONLY direct weekly_remaining_fraction fields
+        payload_weekly_only_direct = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "weekly_remaining_fraction": 0.75,
+                    "weekly_reset_time": "2026-08-15T00:00:00Z",
+                }
+            }
+        }
+        res_direct_weekly = parse_antigravity_quota_json(payload_weekly_only_direct, pool="gemini")
+        self.assertIsNotNone(res_direct_weekly)
+        w5h_dir, w1w_dir = res_direct_weekly
+        self.assertEqual(w5h_dir.remaining_percentage, 100.0)
+        self.assertIsNone(w5h_dir.reset_time)
+        self.assertEqual(w1w_dir.remaining_percentage, 75.0)
+        self.assertEqual(w1w_dir.reset_time, "2026-08-15T00:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()
