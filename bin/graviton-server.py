@@ -50,6 +50,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_reviewer: str = "code_reviewer"
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
+    default_drafter: str = "pr_drafter"
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
@@ -67,6 +68,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "reviewer_agent": self.default_reviewer,
                 "fixer_agent": self.default_fixer,
                 "triager_agent": self.default_triager,
+                "drafter_agent": self.default_drafter,
                 "scheduler_enabled": sched is not None,
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
@@ -108,6 +110,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_reviewer=self.default_reviewer,
             default_fixer=self.default_fixer,
             default_triager=self.default_triager,
+            default_drafter=self.default_drafter,
             pr_tracker=self.pr_tracker,
         )
 
@@ -191,6 +194,7 @@ def main():
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
+    parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
@@ -201,6 +205,7 @@ def main():
     GravitonHandler.default_reviewer = args.reviewer
     GravitonHandler.default_fixer = args.fixer
     GravitonHandler.default_triager = args.triager
+    GravitonHandler.default_drafter = args.drafter
 
     if not args.secret:
         logger.warning("No WEBHOOK_SECRET specified. HMAC signature verification is DISABLED.")
@@ -262,7 +267,7 @@ def main():
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
-    logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
+    logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
     logger.info("Live Terminal UI Dashboard ENABLED.")
 
     try:

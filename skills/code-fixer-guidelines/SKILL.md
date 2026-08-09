@@ -1,17 +1,17 @@
 ---
 name: code-fixer-guidelines
 description: >-
-  Use this skill when resolving PR review feedback, executing local unit tests, drafting initial PRs from ready issues, and pushing code fixes.
+  Use this skill when resolving PR review feedback, executing local unit tests, and pushing code fixes.
 ---
 
-# Code Fixer & PR Drafter Guidelines
+# Code Fixer Guidelines
 
-This skill provides comprehensive instructions for the `code_fixer` agent to resolve pull request review feedback and draft initial PRs for ready issues.
+This skill provides comprehensive instructions for the `code_fixer` agent to resolve pull request review feedback and inline code review comments.
 
 ## 1. Remediation & Code Modification Workflow
 
 1. **Base Branch & Remote Synchronization**:
-   - Run `git fetch origin` and ensure the target base branch is synchronized with remote changes (`git checkout main && git pull origin main` or reset to `origin/main`) before creating feature branches or making modifications.
+   - Run `git fetch origin` and ensure the target base branch is synchronized with remote changes before making modifications.
 
 2. **Review Feedback Analysis**:
    - Read the requested changes from GitHub PR review comments or review submissions.
@@ -29,14 +29,7 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
    - Stage modified files and create a clean git commit with a descriptive message.
    - Push changes to the target remote branch (`git push origin <branch>`).
 
-## 5. PR Drafting from Ready Issues
+## 2. Safety & Loop Protection
 
-- When triggered on issues labeled `ready-for-pr` or receiving `/draft-pr`:
-  - Fetch remote changes (`git fetch origin`) and ensure the base branch is updated with the latest remote copy (`git checkout main && git pull origin main` or branch off `origin/main`).
-  - Create a new feature branch from `main` (or `origin/main`).
-  - Implement the required changes and run unit tests.
-  - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` appended to the PR body description.
-
-6. **Safety & Loop Protection**:
-   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
-   - Track iteration count using `<!-- agy-cycle: X/3 -->` to enforce maximum cycle limits.
+- **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+- Track iteration count using `<!-- agy-cycle: X/3 -->` to enforce maximum cycle limits.

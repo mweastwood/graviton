@@ -74,7 +74,7 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("mergeable", content.lower())
 
     def test_agent_system_prompts_enforce_bot_marker_signature(self):
-        for agent_name in ["code_fixer", "code_reviewer", "issue_triager"]:
+        for agent_name in ["code_fixer", "code_reviewer", "issue_triager", "pr_drafter"]:
             spec_file = AGENTS_DIR / f"{agent_name}.json"
             with open(spec_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -86,7 +86,7 @@ class TestAgentSkillsMapping(unittest.TestCase):
             )
 
     def test_agent_skills_require_bot_marker_signature(self):
-        skill_dirs = ["code-fixer-guidelines", "code-review-guidelines", "issue-triager-guidelines"]
+        skill_dirs = ["code-fixer-guidelines", "code-review-guidelines", "issue-triager-guidelines", "pr-drafter-guidelines"]
         for skill_dir_name in skill_dirs:
             skill_path = SKILLS_DIR / skill_dir_name / "SKILL.md"
             with open(skill_path, "r", encoding="utf-8") as f:

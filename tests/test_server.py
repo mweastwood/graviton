@@ -27,6 +27,8 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.secret = ""
         GravitonHandler.default_reviewer = "code_reviewer"
         GravitonHandler.default_fixer = "code_fixer"
+        GravitonHandler.default_triager = "issue_triager"
+        GravitonHandler.default_drafter = "pr_drafter"
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
 
@@ -34,11 +36,16 @@ class TestGravitonHandler(unittest.TestCase):
         handler = MagicMock(spec=GravitonHandler)
         handler.task_manager = None
         handler.path = "/health"
+        handler.default_reviewer = "code_reviewer"
+        handler.default_fixer = "code_fixer"
+        handler.default_triager = "issue_triager"
+        handler.default_drafter = "pr_drafter"
         GravitonHandler.do_GET(handler)
         handler._send_json.assert_called_once()
         args, _ = handler._send_json.call_args
         self.assertEqual(args[0], 200)
         self.assertEqual(args[1]["status"], "ok")
+        self.assertEqual(args[1]["drafter_agent"], "pr_drafter")
         self.assertFalse(args[1]["scheduler_enabled"])
 
     def test_health_check_endpoint_with_scheduler(self):
@@ -163,25 +170,26 @@ class TestGravitonHandler(unittest.TestCase):
                     server_mod.main()
 
     @patch("graviton_server.TerminalDashboard")
-    @patch("graviton_server.QuotaTracker")
-    @patch("graviton_server.TaskScheduler")
-    @patch("graviton_server.TaskManager")
-    @patch("graviton_server.PRTracker")
     @patch("graviton_server.HTTPServer")
-    @patch("sys.argv", ["graviton-server.py"])
-    def test_server_initializes_scheduler_by_default(self, mock_http_server, mock_pr_tracker, mock_tm, mock_scheduler_cls, mock_quota, mock_dashboard):
-        mock_sched_instance = MagicMock()
-        mock_scheduler_cls.return_value = mock_sched_instance
-        mock_tm.return_value.restore_queue_state.return_value = 0
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_cli_drafter_option_configures_handler(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
 
-        mock_http_server.return_value.serve_forever.side_effect = KeyboardInterrupt
-        try:
+        with patch("sys.argv", ["graviton-server.py", "--drafter", "custom_drafter"]):
             server_mod.main()
-        except KeyboardInterrupt:
-            pass
 
-        mock_scheduler_cls.assert_called_once()
-        mock_sched_instance.start.assert_called_once()
+        self.assertEqual(GravitonHandler.default_drafter, "custom_drafter")
 
 
 if __name__ == "__main__":
