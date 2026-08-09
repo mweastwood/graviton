@@ -159,15 +159,29 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 post_emoji_reaction_async(event_type, payload)
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
+                repo_full_name = decision.get("repo_full_name")
+                repo_name = decision.get("repo_name")
+                clone_url = decision.get("clone_url")
+
                 if self.task_manager:
                     try:
-                        self.task_manager.submit_task(agent=agent, prompt=prompt, target_id=target_id)
+                        self.task_manager.submit_task(
+                            agent=agent,
+                            prompt=prompt,
+                            target_id=target_id,
+                            repo_full_name=repo_full_name,
+                            repo_name=repo_name,
+                            clone_url=clone_url,
+                        )
                     except RuntimeError as e:
                         logger.warning(f"Could not submit task: {e}")
                         self._send_json(503, {"error": "Server is draining tasks for update"})
                         return
                 else:
-                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, REPO_ROOT)
+                    exec_cwd = REPO_ROOT
+                    if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
+                        exec_cwd = self.repos_dir / repo_name
+                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
 
             # Omit internal prompt from HTTP response output
             response_payload = {k: v for k, v in decision.items() if k != "prompt"}
@@ -193,6 +207,7 @@ def main():
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="Host IP to bind (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=int(os.getenv("PORT", "8000")), help="Port to bind (default: 8000)")
     parser.add_argument("--secret", "-s", default=os.getenv("WEBHOOK_SECRET", os.getenv("GITHUB_WEBHOOK_SECRET", "")), help="GitHub webhook secret for HMAC verification")
+    parser.add_argument("--repos-dir", default=os.getenv("REPOS_DIR", "~/graviton-repos"), help="Base directory for managed repository checkouts (default: ~/graviton-repos)")
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
@@ -204,11 +219,13 @@ def main():
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
     args = parser.parse_args()
 
+    repos_dir = Path(args.repos_dir).expanduser().resolve()
     GravitonHandler.secret = args.secret
     GravitonHandler.default_reviewer = args.reviewer
     GravitonHandler.default_fixer = args.fixer
     GravitonHandler.default_triager = args.triager
     GravitonHandler.default_drafter = args.drafter
+    GravitonHandler.repos_dir = repos_dir
 
     if not args.secret:
         logger.warning("No WEBHOOK_SECRET specified. HMAC signature verification is DISABLED.")
@@ -232,6 +249,7 @@ def main():
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
         quota_tracker=quota_tracker,
+        repos_dir=repos_dir,
     )
     restored_count = task_manager.restore_queue_state()
     if restored_count > 0:
@@ -256,7 +274,7 @@ def main():
     GravitonHandler.scheduler = scheduler
 
     pr_tracker = PRTracker()
-    pr_tracker.sync_in_background(repo_root=REPO_ROOT)
+    pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
     GravitonHandler.pr_tracker = pr_tracker
 
     dashboard = TerminalDashboard(

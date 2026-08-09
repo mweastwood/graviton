@@ -807,6 +807,54 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(format_event_summary("custom_event", {}), "custom_event")
         self.assertEqual(format_event_summary("custom_event", None), "custom_event")
 
+    def test_multi_repo_pull_request_routing(self):
+        payload = {
+            "action": "opened",
+            "number": 42,
+            "repository": {
+                "name": "repo-alpha",
+                "full_name": "owner/repo-alpha",
+                "clone_url": "https://github.com/owner/repo-alpha.git",
+            },
+        }
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_reviewer")
+        self.assertEqual(res["repo_full_name"], "owner/repo-alpha")
+        self.assertEqual(res["repo_name"], "repo-alpha")
+        self.assertEqual(res["clone_url"], "https://github.com/owner/repo-alpha.git")
+        self.assertIn("Review PR #42 in owner/repo-alpha", res["prompt"])
+        self.assertEqual(format_event_summary("pull_request", payload), "owner/repo-alpha PR #42 (action: opened)")
+
+    def test_multi_repo_push_event_filtering(self):
+        payload_other = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "repo-alpha", "full_name": "owner/repo-alpha"},
+        }
+        res_other = route_webhook_event("push", payload_other)
+        self.assertEqual(res_other["status"], "ignored")
+        self.assertIn("not graviton server repository", res_other["reason"])
+
+        payload_self = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "graviton", "full_name": "mweastwood/graviton"},
+        }
+        res_self = route_webhook_event("push", payload_self)
+        self.assertEqual(res_self["status"], "accepted")
+        self.assertEqual(res_self["action"], "self_update")
+
+    def test_multi_repo_issues_routing(self):
+        payload = {
+            "action": "opened",
+            "issue": {"number": 96, "title": "Multi repo support", "body": "Details"},
+            "repository": {"name": "repo-beta", "full_name": "owner/repo-beta"},
+        }
+        res = route_webhook_event("issues", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["repo_full_name"], "owner/repo-beta")
+        self.assertEqual(res["clone_url"], "https://github.com/owner/repo-beta.git")
+        self.assertIn("Triage Issue #96 in owner/repo-beta", res["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

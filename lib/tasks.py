@@ -31,6 +31,10 @@ class Task:
     agent: str
     prompt: str
     target_id: Optional[str] = None
+    repo_full_name: Optional[str] = None
+    repo_name: Optional[str] = None
+    clone_url: Optional[str] = None
+    repo_dir: Optional[Path] = None
     status: str = TaskStatus.QUEUED
     enqueue_time: float = field(default_factory=time.time)
     start_time: Optional[float] = None
@@ -78,6 +82,10 @@ class Task:
             "agent": self.agent,
             "prompt": self.prompt,
             "target_id": self.target_id,
+            "repo_full_name": self.repo_full_name,
+            "repo_name": self.repo_name,
+            "clone_url": self.clone_url,
+            "repo_dir": str(self.repo_dir) if self.repo_dir else None,
             "status": self.status,
             "enqueue_time": self.enqueue_time,
             "start_time": self.start_time,
@@ -94,7 +102,7 @@ class Task:
 class TaskManager:
     """
     Thread-safe Task Manager managing pending queued tasks, active workers,
-    and task execution history with QuotaTracker back-off support.
+    and task execution history with QuotaTracker back-off support and multi-repo support.
     """
 
     def __init__(
@@ -104,12 +112,14 @@ class TaskManager:
         script_path: Optional[Path] = None,
         cwd: Optional[Path] = None,
         quota_tracker: Optional[QuotaTracker] = None,
+        repos_dir: Optional[Path] = None,
     ):
         self.max_workers = max_workers
         self.max_tasks = max_tasks
         self.script_path = script_path
         self.cwd = cwd
         self.quota_tracker = quota_tracker
+        self.repos_dir = Path(repos_dir).expanduser().resolve() if repos_dir else None
 
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
@@ -300,13 +310,22 @@ class TaskManager:
                         TaskStatus.PAUSED_FOR_QUOTA,
                     ):
                         restored_status = TaskStatus.QUEUED
+                    repo_dir_val = Path(td["repo_dir"]) if td.get("repo_dir") else None
 
                     task = Task(
                         id=str(task_id),
                         agent=str(agent),
                         prompt=str(prompt),
                         target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
+                        repo_full_name=td.get("repo_full_name"),
+                        repo_name=td.get("repo_name"),
+                        clone_url=td.get("clone_url"),
+                        repo_dir=repo_dir_val,
                         status=restored_status,
+                        enqueue_time=float(td.get("enqueue_time", time.time())),
+                        attempt=int(td.get("attempt", 1)),
+                        max_attempts=int(td.get("max_attempts", 3)),
+                    )
                         enqueue_time=float(td.get("enqueue_time", time.time())),
                         attempt=int(td.get("attempt", 1)),
                         max_attempts=int(td.get("max_attempts", 3)),
@@ -369,18 +388,31 @@ class TaskManager:
         prompt: str,
         target_id: Optional[str] = None,
         max_attempts: Optional[int] = None,
+        repo_full_name: Optional[str] = None,
+        repo_name: Optional[str] = None,
+        clone_url: Optional[str] = None,
+        repo_dir: Optional[Path] = None,
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
-            if target_id is not None:
+            if repo_full_name and target_id:
+                if not target_id.startswith(repo_full_name):
+                    target_num_str = target_id.lstrip("#")
+                    formatted_target_id = f"{repo_full_name}#{target_num_str}"
+                else:
+                    formatted_target_id = target_id
+            else:
+                formatted_target_id = target_id
+
+            if formatted_target_id is not None:
                 for existing_task in self._tasks.values():
                     if (
                         existing_task.agent == agent
-                        and existing_task.target_id == target_id
+                        and existing_task.target_id == formatted_target_id
                         and existing_task.status in (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.PAUSED_FOR_QUOTA)
                     ):
                         logger.info(
-                            f"Skipping duplicate task submission for agent '{agent}' target '{target_id}'. "
+                            f"Skipping duplicate task submission for agent '{agent}' target '{formatted_target_id}'. "
                             f"Existing task '{existing_task.id}' is {existing_task.status}."
                         )
                         return existing_task
@@ -391,7 +423,11 @@ class TaskManager:
                 id=task_id,
                 agent=agent,
                 prompt=prompt,
-                target_id=target_id,
+                target_id=formatted_target_id,
+                repo_full_name=repo_full_name,
+                repo_name=repo_name,
+                clone_url=clone_url,
+                repo_dir=Path(repo_dir) if repo_dir else None,
                 status=TaskStatus.QUEUED,
                 enqueue_time=time.time(),
                 max_attempts=max_attempts if max_attempts is not None else 3,
@@ -400,7 +436,7 @@ class TaskManager:
             self._prune_tasks_locked()
 
         self._queue.put(task)
-        logger.info(f"Task '{task_id}' submitted (agent: {agent}, target: {target_id}).")
+        logger.info(f"Task '{task_id}' submitted (agent: {agent}, target: {formatted_target_id}).")
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -524,13 +560,36 @@ class TaskManager:
 
             logger.info(f"[{worker_id}] Executing task '{task.id}' ({task.agent}): '{task.prompt}'")
 
+            # Resolve target repository checkout directory
+            exec_cwd = task.repo_dir
+            if not exec_cwd and task.repo_name and self.repos_dir:
+                exec_cwd = self.repos_dir / task.repo_name
+
+            if not exec_cwd:
+                exec_cwd = self.cwd
+
+            if exec_cwd and not exec_cwd.exists() and task.clone_url:
+                logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
+                try:
+                    import subprocess
+                    exec_cwd.parent.mkdir(parents=True, exist_ok=True)
+                    subprocess.run(
+                        ["git", "clone", task.clone_url, str(exec_cwd)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    logger.info(f"[{worker_id}] Successfully auto-cloned repository to '{exec_cwd}'.")
+                except Exception as clone_err:
+                    logger.error(f"[{worker_id}] Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}")
+
             try:
-                if self.script_path and self.cwd:
+                if self.script_path and exec_cwd:
                     res = run_agent_container(
                         task.agent,
                         task.prompt,
                         self.script_path,
-                        self.cwd,
+                        exec_cwd,
                         on_output=task.update_attempt_from_line,
                         max_attempts=task.max_attempts,
                     )

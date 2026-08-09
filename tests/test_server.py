@@ -114,6 +114,9 @@ class TestGravitonHandler(unittest.TestCase):
             agent="code_reviewer",
             prompt="Review PR #7. Use --request-changes for any findings or code fixes.",
             target_id="#7",
+            repo_full_name=None,
+            repo_name=None,
+            clone_url=None,
         )
         handler._send_json.assert_called_once()
 
@@ -212,6 +215,39 @@ class TestGravitonHandler(unittest.TestCase):
             server_mod.main()
 
         self.assertEqual(GravitonHandler.default_drafter, "custom_drafter")
+
+    def test_do_post_with_multi_repo_task_manager(self):
+        mock_tm = MagicMock()
+        payload = json.dumps({
+            "action": "opened",
+            "number": 12,
+            "repository": {
+                "name": "repo-alpha",
+                "full_name": "owner/repo-alpha",
+                "clone_url": "https://github.com/owner/repo-alpha.git",
+            },
+        }).encode("utf-8")
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+
+        mock_tm.submit_task.assert_called_once_with(
+            agent="code_reviewer",
+            prompt="Review PR #12 in owner/repo-alpha. Use --request-changes for any findings or code fixes.",
+            target_id="#12",
+            repo_full_name="owner/repo-alpha",
+            repo_name="repo-alpha",
+            clone_url="https://github.com/owner/repo-alpha.git",
+        )
 
 
 if __name__ == "__main__":

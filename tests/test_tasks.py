@@ -510,6 +510,78 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.COMPLETED)
             manager2.stop()
 
+    def test_multi_repo_task_target_id_formatting(self):
+        manager = TaskManager()
+        t = manager.submit_task(
+            "code_reviewer",
+            "Review PR #42 in owner/repo-alpha",
+            target_id="#42",
+            repo_full_name="owner/repo-alpha",
+            repo_name="repo-alpha",
+            clone_url="https://github.com/owner/repo-alpha.git",
+        )
+        self.assertEqual(t.target_id, "owner/repo-alpha#42")
+        self.assertEqual(t.repo_full_name, "owner/repo-alpha")
+        self.assertEqual(t.repo_name, "repo-alpha")
+
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_multi_repo_workspace_resolution_and_auto_clone(self, mock_run_agent, mock_sub_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_run_agent.return_value = mock_proc
+
+            mock_sub_run.return_value = MagicMock(returncode=0)
+
+            manager.start()
+
+            # Submit task for repo-alpha which does NOT exist locally yet
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/repo-alpha",
+                repo_name="repo-alpha",
+                clone_url="https://github.com/owner/repo-alpha.git",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+            expected_repo_dir = repos_dir / "repo-alpha"
+
+            # Check that git clone was invoked for non-existent repo_dir
+            mock_sub_run.assert_called_once_with(
+                ["git", "clone", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Check that run_agent_container was called with cwd set to expected_repo_dir
+            mock_run_agent.assert_called_once_with(
+                "code_reviewer",
+                "Review PR #1",
+                Path("/tmp/fake_script.sh"),
+                expected_repo_dir,
+                on_output=task.update_attempt_from_line,
+            )
+
+            manager.stop()
+>>>>>>> 1d6c5c1 (feat: manage multiple repositories under single server instance (Issue #96))
+
 
 if __name__ == "__main__":
     unittest.main()

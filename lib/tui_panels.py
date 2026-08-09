@@ -491,44 +491,90 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        spacing = 3
-        if inner_w < 26:
-            avail = max(1, inner_w - spacing)
-            pr_col_w = max(4, min(8, int(avail * 0.2)))
-            author_col_w = max(6, min(15, int(avail * 0.3)))
+        has_repo = any(bool(pr.get("repo_full_name")) for pr in approved_prs)
+        if has_repo:
+            spacing = 4
+            if inner_w < 36:
+                avail = max(1, inner_w - spacing)
+                pr_col_w = max(4, min(8, int(avail * 0.15)))
+                repo_col_w = max(8, min(16, int(avail * 0.25)))
+                author_col_w = max(6, min(14, int(avail * 0.2)))
+            else:
+                pr_col_w = 8
+                repo_col_w = 16
+                author_col_w = 14
+
+            remaining = max(2, inner_w - pr_col_w - repo_col_w - author_col_w - spacing)
+            if remaining >= 8:
+                title_col_w = max(1, remaining // 2 - 2)
+            else:
+                title_col_w = max(1, min(remaining - 1, remaining // 2))
+            url_col_w = remaining - title_col_w
+
+            col_hdr = (
+                f"{fit_to_display_width('PR #', pr_col_w)} "
+                f"{fit_to_display_width('REPO', repo_col_w)} "
+                f"{fit_to_display_width('TITLE', title_col_w)} "
+                f"{fit_to_display_width('AUTHOR', author_col_w)} "
+                f"{fit_to_display_width('URL', url_col_w)}"
+            )
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+
+            for pr in approved_prs:
+                num_str = f"#{pr.get('number', '')}"
+                repo_str = pr.get("repo_full_name", "") or "-"
+                title_str = pr.get("title", "")
+                author_str = pr.get("author", "")
+                url_str = pr.get("url", "")
+
+                pr_formatted = fit_to_display_width(num_str, pr_col_w)
+                repo_formatted = fit_to_display_width(repo_str, repo_col_w)
+                title_formatted = fit_to_display_width(title_str, title_col_w)
+                author_formatted = fit_to_display_width(author_str, author_col_w)
+                url_formatted = fit_to_display_width(url_str, url_col_w)
+
+                row = f"{pr_formatted} {repo_formatted} {title_formatted} {author_formatted} {url_formatted}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
         else:
-            pr_col_w = 8
-            author_col_w = 15
+            spacing = 3
+            if inner_w < 26:
+                avail = max(1, inner_w - spacing)
+                pr_col_w = max(4, min(8, int(avail * 0.2)))
+                author_col_w = max(6, min(15, int(avail * 0.3)))
+            else:
+                pr_col_w = 8
+                author_col_w = 15
 
-        remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
-        if remaining >= 8:
-            title_col_w = max(1, remaining // 2 - 2)
-        else:
-            title_col_w = max(1, min(remaining - 1, remaining // 2))
-        url_col_w = remaining - title_col_w
+            remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
+            if remaining >= 8:
+                title_col_w = max(1, remaining // 2 - 2)
+            else:
+                title_col_w = max(1, min(remaining - 1, remaining // 2))
+            url_col_w = remaining - title_col_w
 
-        col_hdr = (
-            f"{fit_to_display_width('PR #', pr_col_w)} "
-            f"{fit_to_display_width('TITLE', title_col_w)} "
-            f"{fit_to_display_width('AUTHOR', author_col_w)} "
-            f"{fit_to_display_width('URL', url_col_w)}"
-        )
-        hdr_styled = f"\033[1m{col_hdr}\033[0m"
-        res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+            col_hdr = (
+                f"{fit_to_display_width('PR #', pr_col_w)} "
+                f"{fit_to_display_width('TITLE', title_col_w)} "
+                f"{fit_to_display_width('AUTHOR', author_col_w)} "
+                f"{fit_to_display_width('URL', url_col_w)}"
+            )
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
 
-        for pr in approved_prs:
-            num_str = f"#{pr.get('number', '')}"
-            title_str = pr.get("title", "")
-            author_str = pr.get("author", "")
-            url_str = pr.get("url", "")
+            for pr in approved_prs:
+                num_str = f"#{pr.get('number', '')}"
+                title_str = pr.get("title", "")
+                author_str = pr.get("author", "")
+                url_str = pr.get("url", "")
 
-            pr_formatted = fit_to_display_width(num_str, pr_col_w)
-            title_formatted = fit_to_display_width(title_str, title_col_w)
-            author_formatted = fit_to_display_width(author_str, author_col_w)
-            url_formatted = fit_to_display_width(url_str, url_col_w)
+                pr_formatted = fit_to_display_width(num_str, pr_col_w)
+                title_formatted = fit_to_display_width(title_str, title_col_w)
+                author_formatted = fit_to_display_width(author_str, author_col_w)
+                url_formatted = fit_to_display_width(url_str, url_col_w)
 
-            row = f"{pr_formatted} {title_formatted} {author_formatted} {url_formatted}"
-            res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+                row = f"{pr_formatted} {title_formatted} {author_formatted} {url_formatted}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
     return res

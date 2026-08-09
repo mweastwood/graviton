@@ -156,8 +156,7 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(approved[0]["number"], 59)
         self.assertEqual(approved[0]["author"], "bot_reviewer")
 
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[-1][0][0]
         self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
 
     @patch("subprocess.run")
@@ -195,6 +194,24 @@ class TestPRTracker(unittest.TestCase):
         # Sync fails, existing state should not crash
         tracker.sync_github_prs()
         self.assertEqual(len(tracker.get_approved_prs()), 1)
+
+    def test_multi_repo_approved_prs_tracking(self):
+        tracker = PRTracker()
+        tracker.add_approved_pr(42, "Feature Alpha", "alice", "https://github.com/owner/repo-alpha/pull/42", repo_full_name="owner/repo-alpha")
+        tracker.add_approved_pr(42, "Feature Beta", "bob", "https://github.com/owner/repo-beta/pull/42", repo_full_name="owner/repo-beta")
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 2)
+        self.assertEqual(approved[0]["repo_full_name"], "owner/repo-alpha")
+        self.assertEqual(approved[0]["number"], 42)
+        self.assertEqual(approved[1]["repo_full_name"], "owner/repo-beta")
+        self.assertEqual(approved[1]["number"], 42)
+
+        # Remove PR #42 specifically for owner/repo-alpha
+        tracker.remove_approved_pr(42, repo_full_name="owner/repo-alpha")
+        remaining = tracker.get_approved_prs()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["repo_full_name"], "owner/repo-beta")
 
 
 if __name__ == "__main__":
