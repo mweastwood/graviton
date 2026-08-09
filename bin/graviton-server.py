@@ -32,6 +32,7 @@ from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
 from lib.pr_tracker import PRTracker
+from lib.quota import QuotaTracker
 
 # Setup logging
 logging.basicConfig(
@@ -52,12 +53,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
+    quota_tracker: Optional[QuotaTracker] = None
 
     def do_GET(self):
         """Health check endpoint."""
         if self.path in ("/", "/health"):
             sched = GravitonHandler.scheduler
             tasks_info = self.task_manager.get_stats() if self.task_manager else {}
+            quota_info = self.quota_tracker.get_info().to_dict() if self.quota_tracker else {}
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
@@ -68,6 +71,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
                 "tasks": tasks_info,
+                "quota": quota_info,
             })
         else:
             self._send_json(404, {"error": "Not Found"})
@@ -201,11 +205,15 @@ def main():
         scheduler.start()
         GravitonHandler.scheduler = scheduler
 
+    quota_tracker = QuotaTracker()
+    GravitonHandler.quota_tracker = quota_tracker
+
     task_manager = TaskManager(
         max_workers=args.max_workers,
         max_tasks=args.max_tasks,
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
+        quota_tracker=quota_tracker,
     )
     restored_count = task_manager.restore_queue_state()
     if restored_count > 0:
@@ -226,6 +234,7 @@ def main():
             repo_root=REPO_ROOT,
             scheduler=scheduler,
             pr_tracker=pr_tracker,
+            quota_tracker=quota_tracker,
         )
         dashboard.start()
 

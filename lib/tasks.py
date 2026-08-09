@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from lib.runner import run_agent_container
+from lib.quota import QuotaState, QuotaTracker
 
 logger = logging.getLogger("graviton.tasks")
 
@@ -21,6 +22,7 @@ class TaskStatus:
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    PAUSED_FOR_QUOTA = "PAUSED_FOR_QUOTA"
 
 
 @dataclass
@@ -92,7 +94,7 @@ class Task:
 class TaskManager:
     """
     Thread-safe Task Manager managing pending queued tasks, active workers,
-    and task execution history.
+    and task execution history with QuotaTracker back-off support.
     """
 
     def __init__(
@@ -101,11 +103,13 @@ class TaskManager:
         max_tasks: int = 1000,
         script_path: Optional[Path] = None,
         cwd: Optional[Path] = None,
+        quota_tracker: Optional[QuotaTracker] = None,
     ):
         self.max_workers = max_workers
         self.max_tasks = max_tasks
         self.script_path = script_path
         self.cwd = cwd
+        self.quota_tracker = quota_tracker
 
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
@@ -379,7 +383,7 @@ class TaskManager:
     def get_queued_tasks(self) -> List[Task]:
         with self._lock:
             return [
-                t for t in self._tasks.values() if t.status == TaskStatus.QUEUED
+                t for t in self._tasks.values() if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
             ]
 
     def get_active_tasks(self) -> List[Task]:
@@ -412,14 +416,31 @@ class TaskManager:
             running = sum(1 for t in self._tasks.values() if t.status == TaskStatus.RUNNING)
             completed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.COMPLETED)
             failed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.FAILED)
+            paused = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PAUSED_FOR_QUOTA)
+
+            quota_state = self.quota_tracker.state if self.quota_tracker else QuotaState.NORMAL
+            if quota_state == QuotaState.EXHAUSTED:
+                queue_status = "PAUSED_FOR_QUOTA"
+                status_str = "PAUSED_FOR_QUOTA"
+            elif quota_state == QuotaState.LOW_QUOTA:
+                queue_status = "BACKING_OFF"
+                status_str = "RUNNING"
+            else:
+                queue_status = "ACTIVE"
+                status_str = "RUNNING"
+
             return {
                 "total": total,
                 "queued": queued,
                 "running": running,
                 "completed": completed,
                 "failed": failed,
+                "paused": paused,
                 "max_workers": self.max_workers,
                 "max_tasks": self.max_tasks,
+                "quota_state": quota_state,
+                "queue_status": queue_status,
+                "status": status_str,
             }
 
     def _worker_loop(self, worker_id: str):
@@ -431,6 +452,11 @@ class TaskManager:
                 time.sleep(0.1)
                 continue
 
+            if self.quota_tracker:
+                if self.quota_tracker.state == QuotaState.EXHAUSTED:
+                    time.sleep(0.1)
+                    continue
+
             try:
                 task = self._queue.get(timeout=0.5)
             except queue.Empty:
@@ -439,6 +465,24 @@ class TaskManager:
             if task is None or not self._running:
                 self._queue.task_done()
                 break
+
+            if self.quota_tracker:
+                state = self.quota_tracker.state
+                if state == QuotaState.EXHAUSTED:
+                    with self._lock:
+                        task.status = TaskStatus.PAUSED_FOR_QUOTA
+                    self._queue.put(task)
+                    self._queue.task_done()
+                    time.sleep(0.1)
+                    continue
+                elif state == QuotaState.LOW_QUOTA:
+                    delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)
+                    if delay > 0:
+                        logger.info(
+                            f"[{worker_id}] LOW_QUOTA ({self.quota_tracker.remaining_percentage:.1f}%). "
+                            f"Applying back-off delay of {delay:.2f}s..."
+                        )
+                        time.sleep(delay)
 
             # Double-check draining under lock before transitioning task to RUNNING
             with self._lock:
@@ -493,4 +537,3 @@ class TaskManager:
                     self._prune_tasks_locked()
             finally:
                 self._queue.task_done()
-
