@@ -194,109 +194,214 @@ def format_quota_badge(window: QuotaWindow, now_dt: Optional[datetime] = None) -
     return f"[ {window.name.upper()} QUOTA: {pct_str} | RESET: {countdown} | {pacing_str} ]"
 
 
+def _extract_token_from_object(obj) -> Optional[str]:
+    """Helper to extract access token string from JSON dict or primitive."""
+    if isinstance(obj, str):
+        s = obj.strip()
+        if s and not (s.startswith("{") and s.endswith("}")):
+            return s
+        return None
+
+    if isinstance(obj, dict):
+        for key in ("access_token", "oauth_token", "auth_token", "token"):
+            if key in obj and obj[key]:
+                extracted = _extract_token_from_object(obj[key])
+                if extracted:
+                    return extracted
+
+        for val in obj.values():
+            if isinstance(val, dict):
+                extracted = _extract_token_from_object(val)
+                if extracted:
+                    return extracted
+
+    return None
+
+
 def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
     """Load OAuth access token from stored token file or environment."""
-    if token_file is None:
-        token_file = Path.home() / ".gemini" / "antigravity-cli" / "token.json"
+    candidate_files = []
+    if token_file is not None:
+        candidate_files.append(Path(token_file))
 
-    if token_file.exists():
-        try:
-            with open(token_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
+    default_token_file = Path.home() / ".gemini" / "antigravity-cli" / "token.json"
+    alt_token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+
+    if default_token_file not in candidate_files:
+        candidate_files.append(default_token_file)
+    if alt_token_file not in candidate_files:
+        candidate_files.append(alt_token_file)
+
+    for path in candidate_files:
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if not content:
+                    continue
+
                 try:
                     data = json.loads(content)
-                    if isinstance(data, dict):
-                        for k in ("access_token", "token", "oauth_token", "auth_token"):
-                            if k in data and data[k]:
-                                return str(data[k])
+                    token = _extract_token_from_object(data)
+                    if token:
+                        return token
                 except json.JSONDecodeError:
-                    if content:
-                        return content
-        except Exception as e:
-            logger.warning(f"Failed to read token file {token_file}: {e}")
+                    pass
 
-    alt_token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    if alt_token_file.exists():
-        try:
-            with open(alt_token_file, "r", encoding="utf-8") as f:
-                t = f.read().strip()
-                if t:
-                    return t
-        except Exception:
-            pass
+                if content and not content.startswith("{"):
+                    return content
+            except Exception as e:
+                logger.warning(f"Failed to read token file {path}: {e}")
 
     return os.getenv("ANTIGRAVITY_TOKEN")
+
+
+def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[str]]:
+    """Extract remaining_percentage (0.0 to 100.0) and reset_time string from quota dict."""
+    if not isinstance(info_dict, dict):
+        return None, None
+    pct = None
+    if "remainingFraction" in info_dict and info_dict["remainingFraction"] is not None:
+        try:
+            val = float(info_dict["remainingFraction"])
+            pct = val * 100.0 if val <= 1.0 else val
+        except (ValueError, TypeError):
+            pass
+    if pct is None:
+        for k in ("quotaRemaining", "remainingQuota", "quota_remaining", "remaining_percentage", "quota"):
+            if k in info_dict and info_dict[k] is not None:
+                try:
+                    val = float(info_dict[k])
+                    pct = val * 100.0 if val <= 1.0 else val
+                    break
+                except (ValueError, TypeError):
+                    pass
+    reset_time = None
+    for k in ("resetTime", "reset_time", "weeklyResetTime", "weekly_reset_time"):
+        if k in info_dict and info_dict[k] is not None:
+            reset_time = str(info_dict[k])
+            break
+    return pct, reset_time
 
 
 def parse_antigravity_quota_json(data: dict) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
     """
     Parse RPC response JSON body for quota remaining & reset time.
-    Supports 5h (quotaRemaining, resetTime) and 1w (weeklyQuotaRemaining, weeklyResetTime) windows.
+    Supports models dictionary schema (v1internal:fetchAvailableModels) and flat schemas.
     Returns None if error response or no quota fields are present.
     """
     if not isinstance(data, dict) or "error" in data:
         logger.warning(f"Invalid or error response in Antigravity RPC payload: {data}")
         return None
 
-    target = data
-    for k in ("quotaInfo", "userQuota", "quota", "result"):
-        if isinstance(target.get(k), dict):
-            target = target[k]
-            break
+    pct_5h: Optional[float] = None
+    reset_5h: Optional[str] = None
+    pct_1w: Optional[float] = None
+    reset_1w: Optional[str] = None
 
-    # Validate that at least one recognizable quota field exists
-    quota_keys = (
-        "quotaRemaining",
-        "remainingQuota",
-        "quota_remaining",
-        "weeklyQuotaRemaining",
-        "weekly_quota_remaining",
-        "resetTime",
-        "reset_time",
-        "weeklyResetTime",
-        "weekly_reset_time",
-    )
-    if not any(k in target for k in quota_keys):
-        logger.warning(f"No valid quota keys found in Antigravity RPC payload target: {target}")
-        return None
+    # 1. Handle fetchAvailableModels schema with "models" dictionary or list
+    if "models" in data and isinstance(data["models"], (dict, list)):
+        raw_models = data["models"]
+        model_items = (
+            raw_models.items()
+            if isinstance(raw_models, dict)
+            else [(m.get("name") or m.get("model") or "", m) for m in raw_models if isinstance(m, dict)]
+        )
 
-    # 5-Hour Quota Window
-    val_5h = target.get("quotaRemaining", target.get("remainingQuota", target.get("quota_remaining")))
-    reset_5h = target.get("resetTime", target.get("reset_time"))
+        for model_id, m_data in model_items:
+            if not isinstance(m_data, dict):
+                continue
+            m_id_lower = str(model_id).lower()
 
-    if val_5h is not None:
-        try:
-            val_5h_f = float(val_5h)
-            pct_5h = val_5h_f * 100.0 if val_5h_f <= 1.0 else val_5h_f
-        except (ValueError, TypeError):
+            # Check explicit weeklyQuotaInfo first
+            w_info = m_data.get("weeklyQuotaInfo") or m_data.get("weekly_quota_info")
+            if isinstance(w_info, dict):
+                w_pct, w_rst = _extract_pct_and_reset(w_info)
+                if w_pct is not None:
+                    pct_1w, reset_1w = w_pct, w_rst
+
+            # Check standard quotaInfo or model dict itself
+            q_info = m_data.get("quotaInfo") or m_data.get("quota_info") or m_data
+            if isinstance(q_info, dict):
+                q_pct, q_rst = _extract_pct_and_reset(q_info)
+                if q_pct is not None:
+                    if "claude" in m_id_lower or "sonnet" in m_id_lower or "1w" in m_id_lower:
+                        if pct_1w is None or "claude" in m_id_lower or "sonnet" in m_id_lower:
+                            pct_1w, reset_1w = q_pct, q_rst
+                    elif "gemini" in m_id_lower or "flash" in m_id_lower or "5h" in m_id_lower:
+                        if pct_5h is None or "flash" in m_id_lower or "gemini-3.6-flash-high" in m_id_lower:
+                            pct_5h, reset_5h = q_pct, q_rst
+                    else:
+                        if pct_5h is None:
+                            pct_5h, reset_5h = q_pct, q_rst
+
+        if pct_5h is None and pct_1w is not None:
+            pct_5h, reset_5h = 100.0, None
+        elif pct_1w is None and pct_5h is not None:
+            pct_1w, reset_1w = 100.0, None
+
+    # 2. Backwards-compatible flat quota payload parsing
+    if pct_5h is None and pct_1w is None:
+        target = data
+        for k in ("quotaInfo", "userQuota", "quota", "result"):
+            if isinstance(target.get(k), dict):
+                target = target[k]
+                break
+
+        quota_keys = (
+            "quotaRemaining",
+            "remainingQuota",
+            "quota_remaining",
+            "weeklyQuotaRemaining",
+            "weekly_quota_remaining",
+            "resetTime",
+            "reset_time",
+            "weeklyResetTime",
+            "weekly_reset_time",
+            "remainingFraction",
+        )
+        if not any(k in target for k in quota_keys):
+            logger.warning(f"No valid quota keys found in Antigravity RPC payload target: {target}")
+            return None
+
+        val_5h = target.get("quotaRemaining", target.get("remainingQuota", target.get("quota_remaining", target.get("remainingFraction"))))
+        reset_5h = target.get("resetTime", target.get("reset_time"))
+
+        if val_5h is not None:
+            try:
+                val_5h_f = float(val_5h)
+                pct_5h = val_5h_f * 100.0 if val_5h_f <= 1.0 else val_5h_f
+            except (ValueError, TypeError):
+                pct_5h = 100.0
+        else:
             pct_5h = 100.0
-    else:
-        pct_5h = 100.0
 
-    # 1-Week Quota Window
-    val_1w = target.get("weeklyQuotaRemaining", target.get("weekly_quota_remaining"))
-    reset_1w = target.get("weeklyResetTime", target.get("weekly_reset_time"))
+        val_1w = target.get("weeklyQuotaRemaining", target.get("weekly_quota_remaining"))
+        reset_1w = target.get("weeklyResetTime", target.get("weekly_reset_time"))
 
-    if val_1w is not None:
-        try:
-            val_1w_f = float(val_1w)
-            pct_1w = val_1w_f * 100.0 if val_1w_f <= 1.0 else val_1w_f
-        except (ValueError, TypeError):
+        if val_1w is not None:
+            try:
+                val_1w_f = float(val_1w)
+                pct_1w = val_1w_f * 100.0 if val_1w_f <= 1.0 else val_1w_f
+            except (ValueError, TypeError):
+                pct_1w = 100.0
+        else:
             pct_1w = 100.0
-    else:
-        pct_1w = 100.0
+
+    if pct_5h is None and pct_1w is None:
+        return None
 
     w_5h = QuotaWindow(
         name="5H",
         duration_seconds=18000.0,
-        remaining_percentage=max(0.0, min(100.0, pct_5h)),
+        remaining_percentage=max(0.0, min(100.0, pct_5h if pct_5h is not None else 100.0)),
         reset_time=str(reset_5h) if reset_5h is not None else None,
     )
 
     w_1w = QuotaWindow(
         name="1W",
         duration_seconds=604800.0,
-        remaining_percentage=max(0.0, min(100.0, pct_1w)),
+        remaining_percentage=max(0.0, min(100.0, pct_1w if pct_1w is not None else 100.0)),
         reset_time=str(reset_1w) if reset_1w is not None else None,
     )
 
@@ -305,11 +410,11 @@ def parse_antigravity_quota_json(data: dict) -> Optional[Tuple[QuotaWindow, Quot
 
 def fetch_live_antigravity_quota(
     token: Optional[str] = None,
-    api_url: str = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    api_url: str = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     timeout: float = 10.0,
 ) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
     """
-    Query v1internal:loadCodeAssist to fetch live model quota metrics and reset timestamps.
+    Query v1internal:fetchAvailableModels to fetch live model quota metrics and reset timestamps.
     Returns (QuotaWindow_5h, QuotaWindow_1w) or None if fetch fails.
     """
     if not token:
@@ -320,9 +425,11 @@ def fetch_live_antigravity_quota(
         return None
 
     try:
+        project_id = os.getenv("ANTIGRAVITY_PROJECT", "")
+        payload = json.dumps({"project": project_id}).encode("utf-8")
         req = urllib.request.Request(
             api_url,
-            data=json.dumps({}).encode("utf-8"),
+            data=payload,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",

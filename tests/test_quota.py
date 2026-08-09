@@ -277,15 +277,86 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
         self.assertIn("Backoff:", badge_1w)
 
+    def test_load_oauth_token_nested_json(self):
+        import tempfile
+        from pathlib import Path
+        from lib.quota import load_oauth_token
+
+        # Test nested token dict {"token": {"access_token": "ya29.nested"}}
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
+            tf.write(json.dumps({"token": {"access_token": "ya29.nested"}}))
+            tf.flush()
+            tmp_path = Path(tf.name)
+
+        try:
+            token = load_oauth_token(token_file=tmp_path)
+            self.assertEqual(token, "ya29.nested")
+        finally:
+            tmp_path.unlink()
+
+        # Test plain text token string
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
+            tf.write("ya29.raw_token")
+            tf.flush()
+            tmp_path = Path(tf.name)
+
+        try:
+            token = load_oauth_token(token_file=tmp_path)
+            self.assertEqual(token, "ya29.raw_token")
+        finally:
+            tmp_path.unlink()
+
+    def test_parse_antigravity_quota_json_models_schema(self):
+        data = {
+            "models": {
+                "gemini-3.6-flash-high": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.85,
+                        "resetTime": "2026-08-09T10:00:00Z",
+                    }
+                },
+                "claude-sonnet-4-6": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.40,
+                        "resetTime": "2026-08-16T10:00:00Z",
+                    },
+                    "weeklyQuotaInfo": {
+                        "remainingFraction": 0.40,
+                        "resetTime": "2026-08-16T10:00:00Z",
+                    },
+                },
+            }
+        }
+        res = parse_antigravity_quota_json(data)
+        self.assertIsNotNone(res)
+        w_5h, w_1w = res
+        self.assertEqual(w_5h.name, "5H")
+        self.assertEqual(w_5h.remaining_percentage, 85.0)
+        self.assertEqual(w_5h.reset_time, "2026-08-09T10:00:00Z")
+
+        self.assertEqual(w_1w.name, "1W")
+        self.assertEqual(w_1w.remaining_percentage, 40.0)
+        self.assertEqual(w_1w.reset_time, "2026-08-16T10:00:00Z")
+
     @patch("lib.quota.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.read.return_value = json.dumps({
-            "quotaRemaining": 0.65,
-            "resetTime": "2026-08-09T09:00:00Z",
-            "weeklyQuotaRemaining": 0.20,
-            "weeklyResetTime": "2026-08-16T09:00:00Z",
+            "models": {
+                "gemini-3.6-flash-high": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.65,
+                        "resetTime": "2026-08-09T09:00:00Z",
+                    }
+                },
+                "claude-sonnet-4-6": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.20,
+                        "resetTime": "2026-08-16T09:00:00Z",
+                    }
+                },
+            }
         }).encode("utf-8")
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
@@ -294,6 +365,13 @@ class TestQuotaTracker(unittest.TestCase):
         w_5h, w_1w = res
         self.assertEqual(w_5h.remaining_percentage, 65.0)
         self.assertEqual(w_1w.remaining_percentage, 20.0)
+
+        # Verify request parameters
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.full_url, "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels")
+        self.assertEqual(req.headers.get("User-agent"), "antigravity-cli")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertIn("project", payload)
 
     @patch("lib.quota.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_error_returns_none(self, mock_urlopen):
@@ -328,3 +406,4 @@ class TestQuotaTracker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
