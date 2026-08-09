@@ -10,27 +10,32 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
 
 ## 1. Remediation & Code Modification Workflow
 
-1. **Review Feedback Analysis**:
+1. **Base Branch & Remote Synchronization**:
+   - Run `git fetch origin` and ensure the target base branch is synchronized with remote changes (`git checkout main && git pull origin main` or reset to `origin/main`) before creating feature branches or making modifications.
+
+2. **Review Feedback Analysis**:
    - Read the requested changes from GitHub PR review comments or review submissions.
    - Locate the target files and lines needing modifications in `/workspace`.
 
-2. **Code Edits & Fix Application**:
+3. **Code Edits & Fix Application**:
    - Make precise edits to address all feedback items without introducing side effects.
    - Preserve existing API contracts and coding standards.
 
-3. **Local Test Execution (Test Gate)**:
+4. **Local Test Execution (Test Gate)**:
    - Execute local unit tests (e.g. `python3 -m unittest discover tests`) before committing code.
    - If tests fail, diagnose and fix the failure. Do NOT push broken code to remote branches.
 
-4. **Git Operations & Remote Push**:
+5. **Git Operations & Remote Push**:
    - Stage modified files and create a clean git commit with a descriptive message.
    - Push changes to the target remote branch (`git push origin <branch>`).
 
-5. **PR Drafting from Ready Issues**:
-   - When triggered on issues labeled `ready-for-pr` or receiving `/draft-pr`:
-     - Create a new feature branch from `main`.
-     - Implement the required changes and run unit tests.
-     - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` appended to the PR body description.
+## 5. PR Drafting from Ready Issues
+
+- When triggered on issues labeled `ready-for-pr` or receiving `/draft-pr`:
+  - Fetch remote changes (`git fetch origin`) and ensure the base branch is updated with the latest remote copy (`git checkout main && git pull origin main` or branch off `origin/main`).
+  - Create a new feature branch from `main` (or `origin/main`).
+  - Implement the required changes and run unit tests.
+  - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` appended to the PR body description.
 
 6. **Safety & Loop Protection**:
    - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.

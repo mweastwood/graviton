@@ -205,6 +205,64 @@ fi
         self.assertIn("run --rm", log_content)
         self.assertIn("Resume from your existing work in /workspace and complete the commit/PR drafting", log_content)
 
+    def test_remote_origin_synchronization(self):
+        import os
+        # 1. Create a remote bare repository
+        remote_dir = self.test_dir / "remote_repo.git"
+        subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True, capture_output=True)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=str(remote_dir), check=True)
+        # Ensure self.repo_dir is on main branch
+        subprocess.run(["git", "branch", "-M", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        # Point self.repo_dir origin to remote_dir
+        subprocess.run(["git", "remote", "add", "origin", str(remote_dir)], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "push", "-u", "origin", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+
+        # 2. Add a new commit to origin via a secondary clone
+        other_clone = self.test_dir / "other_clone"
+        subprocess.run(["git", "clone", str(remote_dir), str(other_clone)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(other_clone), check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(other_clone), check=True)
+        (other_clone / "new_remote_file.txt").write_text("Remote changes")
+        subprocess.run(["git", "add", "new_remote_file.txt"], cwd=str(other_clone), check=True)
+        subprocess.run(["git", "commit", "-m", "Remote update commit"], cwd=str(other_clone), check=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=str(other_clone), check=True, capture_output=True)
+
+        # At this point self.repo_dir does NOT have new_remote_file.txt, but origin/main does.
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        mock_docker = bin_dir / "docker"
+        sync_verified_file = self.test_dir / "sync_verified.txt"
+        mock_docker_content = f"""#!/usr/bin/env bash
+HOST_WS=""
+for arg in "$@"; do
+    if [[ "$arg" == *":/workspace"* ]]; then
+        HOST_WS="${{arg%%:/workspace*}}"
+    fi
+done
+
+if [ -n "$HOST_WS" ] && [ -f "$HOST_WS/new_remote_file.txt" ]; then
+    echo "synced" > "{sync_verified_file}"
+fi
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Test sync"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(sync_verified_file.exists())
+        self.assertEqual(sync_verified_file.read_text().strip(), "synced")
+
 
 if __name__ == "__main__":
     unittest.main()

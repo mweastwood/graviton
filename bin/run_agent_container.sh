@@ -36,6 +36,13 @@ git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "$
 ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
 if [ -n "${ORIGIN_URL}" ]; then
   git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
+  git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
+  BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+  if [ "${BASE_BRANCH}" = "HEAD" ]; then
+    BASE_BRANCH="main"
+  fi
+  git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
+  git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
 fi
 
 # Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
