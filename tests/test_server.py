@@ -293,9 +293,10 @@ class TestGravitonHandler(unittest.TestCase):
 
         self.assertEqual(GravitonHandler.repos_dir, Path("/tmp/custom_projects").resolve())
 
+    @patch("graviton_server.post_emoji_reaction_async")
     @patch("subprocess.run")
     @patch("graviton_server.run_agent_async")
-    def test_do_post_direct_execution_auto_clones_missing_repo(self, mock_run_async, mock_sub_run):
+    def test_do_post_direct_execution_auto_clones_missing_repo(self, mock_run_async, mock_sub_run, mock_post_reaction):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             repos_dir = Path(tmpdir) / "repos"
