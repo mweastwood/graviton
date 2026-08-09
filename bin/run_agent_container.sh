@@ -68,6 +68,10 @@ if [ -d "${HOME}/.gemini/antigravity-cli" ]; then
   CLI_DIR_MOUNT=(-v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli")
 fi
 
+# Extract host git identity or environment overrides to inherit commit author details
+GIT_USER_NAME="$(git config user.name 2>/dev/null || echo "${GIT_AUTHOR_NAME:-Graviton Bot}")"
+GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "${GIT_AUTHOR_EMAIL:-graviton-bot@users.noreply.github.com}")"
+
 echo "Starting sandboxed Antigravity Agent container (Agent: ${AGENT_NAME}, Run ID: ${RUN_ID})..."
 
 # Launch container with retry / continuation loop for turn & timeout limits
@@ -95,6 +99,10 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     -v "${TEMP_WORKSPACE}:/workspace" \
     -w /workspace \
     -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+    -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
+    -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
+    -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
+    -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
     --security-opt=no-new-privileges \
     "${IMAGE_NAME}" \
     "${AGY_ARGS[@]}"
