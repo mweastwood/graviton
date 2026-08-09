@@ -485,6 +485,46 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("SCHEDULED JOBS [DISABLED | STOPPED]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
 
+    def test_render_approved_prs_empty_and_populated(self):
+        from lib.pr_tracker import PRTracker
+        manager = TaskManager(max_workers=2)
+        tracker = PRTracker()
+
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            pr_tracker=tracker,
+        )
+
+        # 1. Empty state
+        rendered_empty = dashboard.render(width=80)
+        self.assertIn("APPROVED PULL REQUESTS (READY TO MERGE)", rendered_empty)
+        self.assertIn("(No approved PRs awaiting merge)", rendered_empty)
+
+        # 2. Populated state
+        tracker.add_approved_pr(
+            number=42,
+            title="Add feature for PR tracking 🚀",
+            author="mweastwood",
+            url="https://github.com/mweastwood/graviton/pull/42",
+        )
+
+        rendered_populated = dashboard.render(width=120)
+        self.assertIn("#42", rendered_populated)
+        self.assertIn("mweastwood", rendered_populated)
+        self.assertIn("https://github.com/mweastwood/graviton/pull/42", rendered_populated)
+
+        # Verify line display widths for 80, 100, 120 width frames
+        for target_w in [80, 100, 120]:
+            frame = dashboard.render(width=target_w)
+            for i, line in enumerate(frame.split("\n")):
+                if not line:
+                    continue
+                dw = get_display_width(line)
+                self.assertEqual(
+                    dw,
+                    target_w,
+                    f"Line {i} visual width {dw} != {target_w} in approved PRs dashboard frame: {line!r}",
+                )
 
 if __name__ == "__main__":
     unittest.main()
