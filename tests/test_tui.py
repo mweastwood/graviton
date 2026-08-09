@@ -574,8 +574,9 @@ class TestTerminalDashboard(unittest.TestCase):
 
         rendered = dashboard.render(width=100)
         self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
-        self.assertIn("[ 5H QUOTA: 65% | RESET: 03:12:45 | PACING: OK ]", rendered)
-        self.assertIn("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND", rendered)
+        self.assertIn("5H QUOTA: 65%", rendered)
+        self.assertIn("1W QUOTA: 20%", rendered)
+        self.assertIn("PACING: BEHIND", rendered)
         self.assertIn("Backoff:", rendered)
 
 

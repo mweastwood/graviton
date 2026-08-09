@@ -192,6 +192,13 @@ def main():
         logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
         sys.exit(1)
 
+    quota_tracker = QuotaTracker()
+    GravitonHandler.quota_tracker = quota_tracker
+    try:
+        quota_tracker.poll_live_quota()
+    except Exception as e:
+        logger.warning(f"Initial live quota poll failed: {e}")
+
     scheduler: Optional[TaskScheduler] = None
     if args.enable_scheduler:
         config_path = Path(args.schedules_config)
@@ -202,11 +209,11 @@ def main():
             script_path=RUN_CONTAINER_SCRIPT,
             cwd=REPO_ROOT,
         )
+        scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
+        scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
         scheduler.start()
         GravitonHandler.scheduler = scheduler
 
-    quota_tracker = QuotaTracker()
-    GravitonHandler.quota_tracker = quota_tracker
 
     task_manager = TaskManager(
         max_workers=args.max_workers,
