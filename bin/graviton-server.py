@@ -193,7 +193,6 @@ def main():
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
     parser.add_argument("--enable-scheduler", action="store_true", default=os.getenv("ENABLE_SCHEDULER", "false").lower() in ("true", "1", "yes"), help="Enable periodic task scheduler on server startup")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
-    parser.add_argument("--dashboard", "-d", action="store_true", help="Enable live terminal UI dashboard")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
@@ -253,26 +252,23 @@ def main():
     pr_tracker.sync_in_background(repo_root=REPO_ROOT)
     GravitonHandler.pr_tracker = pr_tracker
 
-    dashboard = None
-    if args.dashboard:
-        dashboard = TerminalDashboard(
-            task_manager=task_manager,
-            host=args.host,
-            port=args.port,
-            repo_root=REPO_ROOT,
-            scheduler=scheduler,
-            pr_tracker=pr_tracker,
-            quota_tracker=quota_tracker,
-        )
-        dashboard.start()
+    dashboard = TerminalDashboard(
+        task_manager=task_manager,
+        host=args.host,
+        port=args.port,
+        repo_root=REPO_ROOT,
+        scheduler=scheduler,
+        pr_tracker=pr_tracker,
+        quota_tracker=quota_tracker,
+    )
+    dashboard.start()
 
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
     logger.info(f"Scheduler enabled: {args.enable_scheduler}")
-    if args.dashboard:
-        logger.info("Live Terminal UI Dashboard ENABLED.")
+    logger.info("Live Terminal UI Dashboard ENABLED.")
 
     try:
         httpd.serve_forever()
@@ -281,8 +277,7 @@ def main():
     finally:
         if scheduler:
             scheduler.stop()
-        if dashboard:
-            dashboard.stop()
+        dashboard.stop()
         task_manager.stop()
         httpd.shutdown()
 
