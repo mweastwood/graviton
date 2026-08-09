@@ -146,6 +146,56 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    def test_task_manager_retention_limit(self):
+        manager = TaskManager(max_workers=2, max_tasks=3)
+        manager.start()
+
+        tasks = []
+        for i in range(5):
+            t = manager.submit_task("code_reviewer", f"Task {i+1}")
+            tasks.append(t)
+
+        # Wait for all tasks to complete
+        for _ in range(50):
+            if all(t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for t in tasks):
+                break
+            time.sleep(0.05)
+
+        stats = manager.get_stats()
+        self.assertEqual(stats["max_tasks"], 3)
+        all_tasks = manager.get_all_tasks()
+        self.assertEqual(len(all_tasks), 3)
+
+        # Oldest tasks (task-1, task-2) should have been evicted, retaining task-3, task-4, task-5
+        retained_ids = {t.id for t in all_tasks}
+        self.assertNotIn("task-1", retained_ids)
+        self.assertNotIn("task-2", retained_ids)
+        self.assertIn("task-3", retained_ids)
+        self.assertIn("task-4", retained_ids)
+        self.assertIn("task-5", retained_ids)
+
+        manager.stop()
+
+    def test_clear_completed_tasks(self):
+        manager = TaskManager(max_workers=2)
+        manager.start()
+
+        tasks = []
+        for i in range(3):
+            t = manager.submit_task("code_reviewer", f"Task {i+1}")
+            tasks.append(t)
+
+        for _ in range(50):
+            if all(t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for t in tasks):
+                break
+            time.sleep(0.05)
+
+        cleared = manager.clear_completed_tasks()
+        self.assertEqual(cleared, 3)
+        self.assertEqual(len(manager.get_all_tasks()), 0)
+
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

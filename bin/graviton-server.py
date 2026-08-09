@@ -168,6 +168,7 @@ def main():
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--dashboard", "-d", action="store_true", help="Enable live terminal UI dashboard")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
+    parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     args = parser.parse_args()
 
     GravitonHandler.secret = args.secret
@@ -199,6 +200,7 @@ def main():
 
     task_manager = TaskManager(
         max_workers=args.max_workers,
+        max_tasks=args.max_tasks,
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
     )
