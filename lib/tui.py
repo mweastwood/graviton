@@ -11,7 +11,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Optional, TextIO, Union
+from typing import Optional, TextIO, Tuple, Union
 
 from lib.tasks import TaskManager, TaskStatus
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
@@ -133,6 +133,7 @@ class TerminalDashboard:
         enable_log_redirection: bool = True,
         log_file: Optional[Union[str, Path]] = "graviton.log",
         log_handler: Optional[TUILogHandler] = None,
+        git_cache_ttl: float = 10.0,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -141,6 +142,7 @@ class TerminalDashboard:
         self.refresh_interval = refresh_interval
         self.out_stream = out_stream or sys.stdout
         self.enable_log_redirection = enable_log_redirection
+        self.git_cache_ttl = git_cache_ttl
 
         if log_file is not None:
             log_path = Path(log_file)
@@ -157,6 +159,9 @@ class TerminalDashboard:
         self._log_redirected = False
         self._detached_handlers: list = []
         self._file_handler: Optional[logging.FileHandler] = None
+
+        self._git_info_cache: Optional[Tuple[str, str]] = None
+        self._git_info_last_fetch: float = 0.0
 
     def start(self):
         """Start the background dashboard rendering loop thread."""
@@ -177,6 +182,11 @@ class TerminalDashboard:
             self._thread.join(timeout=1.0)
         if self.enable_log_redirection:
             self._detach_log_redirection()
+
+    def invalidate_git_cache(self):
+        """Invalidate cached git metadata to force a fresh fetch on next render."""
+        self._git_info_cache = None
+        self._git_info_last_fetch = 0.0
 
     def _attach_log_redirection(self):
         if self._log_redirected:
@@ -255,7 +265,15 @@ class TerminalDashboard:
 
         lines = []
 
-        commit, branch = get_git_info(self.repo_root)
+        now = time.time()
+        if (
+            self._git_info_cache is None
+            or (now - self._git_info_last_fetch) >= self.git_cache_ttl
+        ):
+            self._git_info_cache = get_git_info(self.repo_root)
+            self._git_info_last_fetch = now
+
+        commit, branch = self._git_info_cache
         reload_state = get_hot_reload_state()
         uptime = get_uptime_str()
         stats = self.task_manager.get_stats()

@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui import (
@@ -296,6 +297,37 @@ class TestTerminalDashboard(unittest.TestCase):
 
         output = stream.getvalue()
         self.assertIn("GRAVITON SERVER DASHBOARD", output)
+
+    def test_git_metadata_caching(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            git_cache_ttl=0.2,
+        )
+
+        with patch("lib.tui.get_git_info", return_value=("a1b2c3d", "main")) as mock_get_git:
+            # 1. Initial render populates cache
+            self.assertIsNone(dashboard._git_info_cache)
+            dashboard.render(width=80)
+            self.assertEqual(dashboard._git_info_cache, ("a1b2c3d", "main"))
+            self.assertEqual(mock_get_git.call_count, 1)
+
+            # 2. Subsequent render within TTL uses cached metadata
+            dashboard.render(width=80)
+            self.assertEqual(mock_get_git.call_count, 1)
+
+            # 3. Cache invalidation forces immediate refetch
+            dashboard.invalidate_git_cache()
+            self.assertIsNone(dashboard._git_info_cache)
+            dashboard.render(width=80)
+            self.assertEqual(mock_get_git.call_count, 2)
+
+            # 4. Render after TTL expiration fetches fresh metadata
+            mock_get_git.return_value = ("e5f6g7h", "feat/test")
+            time.sleep(0.25)
+            dashboard.render(width=80)
+            self.assertEqual(mock_get_git.call_count, 3)
+            self.assertEqual(dashboard._git_info_cache, ("e5f6g7h", "feat/test"))
 
 
 if __name__ == "__main__":
