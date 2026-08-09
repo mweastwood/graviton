@@ -119,7 +119,8 @@ class TerminalDashboard:
     - Header: host, port, git version, branch, server uptime, hot-reload state.
     - Active Tasks (RUNNING) panel.
     - Task Queue (QUEUED) panel.
-    - Task History & Event Log (COMPLETED/FAILED) panel.
+    - Task History (COMPLETED/FAILED) panel.
+    - Event Logs panel.
     """
 
     def __init__(
@@ -292,9 +293,13 @@ class TerminalDashboard:
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
-        # 4. Task History & Event Log Panel
+        # 4. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
+        lines.append("")
+
+        # 5. Event Logs Panel
+        lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
 
@@ -400,7 +405,7 @@ class TerminalDashboard:
         inner_w = width - 4
         passed = stats.get("completed", 0)
         failed = stats.get("failed", 0)
-        panel_title = f" TASK HISTORY & EVENT LOG [Passed: {passed} | Failed: {failed}] "
+        panel_title = f" TASK HISTORY (COMPLETED & FAILED) [Passed: {passed} | Failed: {failed}] "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
         header_bar = "┌─" + f"\033[95m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
@@ -426,11 +431,23 @@ class TerminalDashboard:
                 row = f"{id_str} {status_str} {agent_str} {ret_str} {dur_str} {target_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
+        res.append("└" + "─" * (width - 2) + "┘")
+        return res
+
+    def _render_event_logs(self, width: int) -> list:
+        inner_w = width - 4
+        panel_title = " EVENT LOGS "
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+
+        res = [header_bar]
         recent_logs = self.log_handler.get_logs(limit=5) if self.log_handler else []
-        if recent_logs:
-            sub_hdr = "─ Recent Log Events ─"
-            hdr_text = f"\033[1m{sub_hdr}\033[0m"
-            res.append(f"│ {fit_to_display_width(hdr_text, inner_w)} │")
+        if not recent_logs:
+            msg = "(No event logs recorded yet)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
+        else:
             for log_entry in recent_logs:
                 clean_entry = log_entry.replace("\r\n", " ").replace("\n", " ")
                 log_styled = f"\033[2m{clean_entry}\033[0m"
