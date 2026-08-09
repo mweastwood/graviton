@@ -4,6 +4,8 @@ Terminal UI Dashboard for Graviton Server.
 
 import collections
 import logging
+import os
+import re
 import shutil
 import sys
 import threading
@@ -201,22 +203,23 @@ class TerminalDashboard:
 
         try:
             while self._running:
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+                rlist, _, _ = select.select([fd], [], [], 0.1)
                 if rlist:
                     try:
-                        ch = sys.stdin.read(1)
+                        raw_bytes = os.read(fd, 32)
                     except Exception:
                         break
-                    if not ch:
+                    if not raw_bytes:
                         break
-                    if ch == "\x1b":
-                        rlist_seq, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if raw_bytes == b"\x1b":
+                        rlist_seq, _, _ = select.select([fd], [], [], 0.05)
                         if rlist_seq:
                             try:
-                                seq = sys.stdin.read(2)
-                                ch = ch + seq
+                                seq_bytes = os.read(fd, 31)
+                                raw_bytes = raw_bytes + seq_bytes
                             except Exception:
                                 pass
+                    ch = raw_bytes.decode("utf-8", errors="ignore")
                     self.handle_key(ch)
         except Exception:
             pass

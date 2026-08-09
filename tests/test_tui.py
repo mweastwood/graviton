@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -828,7 +829,79 @@ class TestTerminalDashboard(unittest.TestCase):
 
             dashboard.stop()
 
+    def test_stdin_arrow_keys_navigation(self):
+        import os
+        import pty
+        from unittest.mock import patch
+
+        master, slave = pty.openpty()
+
+        try:
+            manager = TaskManager(max_workers=2)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(
+                    [
+                        {"job_id": "job_1", "name": "First Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P1", "enabled": True},
+                        {"job_id": "job_2", "name": "Second Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P2", "enabled": True},
+                        {"job_id": "job_3", "name": "Third Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P3", "enabled": True},
+                    ],
+                    f,
+                )
+                config_path = Path(f.name)
+
+            scheduler = TaskScheduler(config_path=config_path)
+            stream = io.StringIO()
+            dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler, out_stream=stream)
+            dashboard.active_screen = "jobs"
+            dashboard.selected_job_index = 0
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+
+            with patch("sys.stdin", mock_stdin):
+                dashboard._running = True
+                stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
+                stdin_thread.start()
+                time.sleep(0.05)
+
+                try:
+                    # Send Down arrow sequence
+                    os.write(master, b"\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Send Down arrow sequence again
+                    os.write(master, b"\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Send Up arrow sequence
+                    os.write(master, b"\x1b[A")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Send standalone ESC key
+                    os.write(master, b"\x1b")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.active_screen, "main")
+
+                finally:
+                    dashboard._running = False
+                    stdin_thread.join(timeout=1.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
