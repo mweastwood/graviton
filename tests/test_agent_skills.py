@@ -73,6 +73,33 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("gh pr view", content)
         self.assertIn("mergeable", content.lower())
 
+    def test_agent_system_prompts_enforce_bot_marker_signature(self):
+        for agent_name in ["code_fixer", "code_reviewer", "issue_triager"]:
+            spec_file = AGENTS_DIR / f"{agent_name}.json"
+            with open(spec_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            system_prompt = data["system_prompt"]
+            self.assertIn(
+                "<!-- antigravity-auto-reply -->",
+                system_prompt,
+                f"Agent '{agent_name}' system prompt must require bot signature tag",
+            )
+
+    def test_agent_skills_require_bot_marker_signature(self):
+        skill_dirs = ["code-fixer-guidelines", "code-review-guidelines", "issue-triager-guidelines"]
+        for skill_dir_name in skill_dirs:
+            skill_path = SKILLS_DIR / skill_dir_name / "SKILL.md"
+            with open(skill_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self.assertIn(
+                "<!-- antigravity-auto-reply -->",
+                content,
+                f"Skill file {skill_path} must contain bot signature tag",
+            )
+            self.assertIn("gh pr create", content, f"Skill file {skill_path} must reference gh pr create")
+            self.assertIn("gh pr review", content, f"Skill file {skill_path} must reference gh pr review")
+
 
 if __name__ == "__main__":
     unittest.main()

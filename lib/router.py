@@ -27,7 +27,14 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     if contains_bot_marker(body):
         return True
 
-    # 3. Check user author details
+    # 3. Check head branch name ref prefix
+    head = pr.get("head")
+    if isinstance(head, dict):
+        head_ref = head.get("ref", "").lower()
+        if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
+            return True
+
+    # 4. Check user author details
     user = pr.get("user")
     if isinstance(user, dict) and user:
         login = user.get("login", "").lower()
@@ -37,14 +44,20 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         # Explicit user object given that is a human and not a bot / antigravity
         return False
 
-    # 4. Check head branch name ref prefix
-    head = pr.get("head")
-    if isinstance(head, dict):
-        head_ref = head.get("ref", "").lower()
-        if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
-            return True
-
     return True
+
+
+def has_explicit_command(text: str) -> bool:
+    """
+    Check whether a comment or review body contains an explicit human command.
+
+    :param text: Comment or review text body.
+    :return: True if text contains explicit commands like '/fix' or '@antigravity', False otherwise.
+    """
+    if not text:
+        return False
+    text_lower = text.lower()
+    return "/fix" in text_lower or "@antigravity" in text_lower
 
 
 def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -122,7 +135,7 @@ def handle_pull_request_review_event(
         elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
             pr_tracker.remove_approved_pr(pr_number)
 
-    if not is_pr_created_by_us(pr):
+    if not is_pr_created_by_us(pr) and not has_explicit_command(review_body):
         return {
             "status": "ignored",
             "reason": "PR was not created by us",
@@ -181,7 +194,7 @@ def handle_pull_request_review_comment_event(
             "reason": "Bot comment dropped",
         }
 
-    if not is_pr_created_by_us(pr):
+    if not is_pr_created_by_us(pr) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "PR was not created by us",
@@ -273,7 +286,7 @@ def handle_issue_comment_event(
         # 1. Comment on a Pull Request
         if pr:
             pr_data = {**issue, **(pr if isinstance(pr, dict) else {})}
-            if not is_pr_created_by_us(pr_data):
+            if not is_pr_created_by_us(pr_data) and not has_explicit_command(comment_body):
                 return {
                     "status": "ignored",
                     "reason": "PR was not created by us",
