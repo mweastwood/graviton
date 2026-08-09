@@ -162,6 +162,27 @@ class TestGravitonHandler(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     server_mod.main()
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.TaskScheduler")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.PRTracker")
+    @patch("graviton_server.HTTPServer")
+    @patch("sys.argv", ["graviton-server.py"])
+    def test_server_initializes_scheduler_by_default(self, mock_http_server, mock_pr_tracker, mock_tm, mock_scheduler_cls, mock_quota, mock_dashboard):
+        mock_sched_instance = MagicMock()
+        mock_scheduler_cls.return_value = mock_sched_instance
+        mock_tm.return_value.restore_queue_state.return_value = 0
+
+        mock_http_server.return_value.serve_forever.side_effect = KeyboardInterrupt
+        try:
+            server_mod.main()
+        except KeyboardInterrupt:
+            pass
+
+        mock_scheduler_cls.assert_called_once()
+        mock_sched_instance.start.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

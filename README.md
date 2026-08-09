@@ -78,7 +78,7 @@ graviton/
 
 ### 2. Start the Graviton Webhook Server
 ```bash
-python3 bin/graviton-server.py --port 8000 --enable-scheduler
+python3 bin/graviton-server.py --port 8000
 ```
 *Options:*
 - `--port` / `-p`: Port to bind (default: `8000`).
@@ -86,7 +86,6 @@ python3 bin/graviton-server.py --port 8000 --enable-scheduler
 - `--reviewer`: Custom reviewer agent name (default: `code_reviewer`).
 - `--fixer`: Custom fixer agent name (default: `code_fixer`).
 - `--triager`: Custom triager agent name (default: `issue_triager`).
-- `--enable-scheduler`: Enables periodic task scheduler for automated bug and quality sweeps.
 - `--schedules-config`: Path to custom schedule JSON configuration file (default: `config/schedules.json`).
 
 ### 3. Connect Webhook via Smee.io (Local Development)

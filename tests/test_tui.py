@@ -504,7 +504,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered = dashboard.render(width=80)
         scheduler.stop()
 
-        self.assertIn("SCHEDULED JOBS [ENABLED | RUNNING]", rendered)
+        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
         self.assertIn("test_sweep_1", rendered)
         self.assertIn("Test Bug Sweep Job", rendered)
         self.assertIn("codebase_auditor", rendered)
@@ -542,8 +542,115 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "jobs"
         rendered = dashboard.render(width=80)
 
-        self.assertIn("SCHEDULED JOBS [DISABLED | STOPPED]", rendered)
+        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
+
+    def test_scheduled_jobs_selector_rendering(self):
+        manager = TaskManager(max_workers=2)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(
+                [
+                    {
+                        "job_id": "job_1",
+                        "name": "First Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Prompt 1",
+                        "enabled": True,
+                    },
+                    {
+                        "job_id": "job_2",
+                        "name": "Second Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Prompt 2",
+                        "enabled": False,
+                    },
+                ],
+                f,
+            )
+            config_path = Path(f.name)
+
+        scheduler = TaskScheduler(config_path=config_path)
+        dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
+        dashboard.active_screen = "jobs"
+
+        rendered = dashboard.render(width=80)
+        self.assertIn("SCHEDULED JOBS [(e)nable | (d)isable | (r)un now]", rendered)
+        self.assertIn("> ", rendered)
+
+        dashboard.select_next_job()
+        self.assertEqual(dashboard.selected_job_index, 1)
+        rendered_2 = dashboard.render(width=80)
+        self.assertIn("> ", rendered_2)
+
+    def test_scheduled_jobs_interactive_controls(self):
+        manager = TaskManager(max_workers=2)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(
+                [
+                    {
+                        "job_id": "job_1",
+                        "name": "First Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Prompt 1",
+                        "enabled": True,
+                    },
+                    {
+                        "job_id": "job_2",
+                        "name": "Second Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Prompt 2",
+                        "enabled": False,
+                    },
+                ],
+                f,
+            )
+            config_path = Path(f.name)
+
+        scheduler = TaskScheduler(config_path=config_path)
+        dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
+
+        dashboard.handle_key("j")
+        self.assertEqual(dashboard.active_screen, "jobs")
+        self.assertEqual(dashboard.selected_job_index, 0)
+
+        disabled_job = dashboard.disable_selected_job()
+        self.assertIsNotNone(disabled_job)
+        self.assertFalse(disabled_job.enabled)
+        self.assertFalse(scheduler.jobs["job_1"].enabled)
+
+        enabled_job = dashboard.enable_selected_job()
+        self.assertIsNotNone(enabled_job)
+        self.assertTrue(enabled_job.enabled)
+        self.assertTrue(scheduler.jobs["job_1"].enabled)
+
+        dashboard.handle_key("j")
+        self.assertEqual(dashboard.selected_job_index, 1)
+
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.selected_job_index, 1)
+
+        dashboard.handle_key("d")
+        self.assertFalse(scheduler.jobs["job_2"].enabled)
+
+        dashboard.handle_key("e")
+        self.assertTrue(scheduler.jobs["job_2"].enabled)
+
+        with patch.object(scheduler, "trigger_job", return_value=True) as mock_trigger:
+            dashboard.handle_key("r")
+            mock_trigger.assert_called_once_with("job_2")
+
+        dashboard.handle_key("k")
+        self.assertEqual(dashboard.selected_job_index, 0)
+
+        dashboard.handle_key("\x1b[A")
+        self.assertEqual(dashboard.selected_job_index, 0)
+
+        dashboard.handle_key("\x1b")
+        self.assertEqual(dashboard.active_screen, "main")
 
     def test_hotkeys_and_screen_navigation(self):
         manager = TaskManager(max_workers=2)

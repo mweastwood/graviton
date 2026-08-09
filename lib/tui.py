@@ -176,6 +176,7 @@ class TerminalDashboard:
         self.log_handler = log_handler or TUILogHandler()
 
         self.active_screen: str = "main"
+        self.selected_job_index: int = 0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stdin_thread: Optional[threading.Thread] = None
@@ -256,22 +257,94 @@ class TerminalDashboard:
                         break
                     if not ch:
                         break
-                    if ch in ("j", "J"):
-                        if self.active_screen != "jobs":
-                            self.active_screen = "jobs"
-                            self._force_refresh()
-                    elif ch in ("e", "E"):
-                        if self.active_screen != "logs":
-                            self.active_screen = "logs"
-                            self._force_refresh()
-                    elif ch == "\x1b":
-                        if self.active_screen != "main":
-                            self.active_screen = "main"
-                            self._force_refresh()
+                    if ch == "\x1b":
+                        rlist_seq, _, _ = select.select([sys.stdin], [], [], 0.05)
+                        if rlist_seq:
+                            try:
+                                seq = sys.stdin.read(2)
+                                ch = ch + seq
+                            except Exception:
+                                pass
+                    self.handle_key(ch)
         except Exception:
             pass
         finally:
             self._restore_termios()
+
+    def select_next_job(self):
+        """Select next scheduled job in the TUI selector."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return
+        num_jobs = len(self.scheduler.jobs)
+        if num_jobs > 0:
+            self.selected_job_index = min(self.selected_job_index + 1, num_jobs - 1)
+
+    def select_prev_job(self):
+        """Select previous scheduled job in the TUI selector."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return
+        if self.selected_job_index > 0:
+            self.selected_job_index -= 1
+
+    def enable_selected_job(self) -> Optional[ScheduledJob]:
+        """Enable the currently selected scheduled job and save config."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return None
+        jobs_list = list(self.scheduler.jobs.values())
+        if 0 <= self.selected_job_index < len(jobs_list):
+            job = jobs_list[self.selected_job_index]
+            job.enabled = True
+            self.scheduler.save_config()
+            return job
+        return None
+
+    def disable_selected_job(self) -> Optional[ScheduledJob]:
+        """Disable the currently selected scheduled job and save config."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return None
+        jobs_list = list(self.scheduler.jobs.values())
+        if 0 <= self.selected_job_index < len(jobs_list):
+            job = jobs_list[self.selected_job_index]
+            job.enabled = False
+            self.scheduler.save_config()
+            return job
+        return None
+
+    def run_selected_job_now(self) -> bool:
+        """Immediately execute the currently selected scheduled job."""
+        if not self.scheduler or not self.scheduler.jobs:
+            return False
+        jobs_list = list(self.scheduler.jobs.values())
+        if 0 <= self.selected_job_index < len(jobs_list):
+            job = jobs_list[self.selected_job_index]
+            return self.scheduler.trigger_job(job.job_id)
+        return False
+
+    def handle_key(self, key: str):
+        """Handle hotkey or navigation key press."""
+        if self.active_screen == "jobs":
+            if key in ("k", "K", "up", "\x1b[A"):
+                self.select_prev_job()
+            elif key in ("j", "J", "down", "\x1b[B"):
+                self.select_next_job()
+            elif key in ("e", "E"):
+                self.enable_selected_job()
+            elif key in ("d", "D"):
+                self.disable_selected_job()
+            elif key in ("r", "R"):
+                self.run_selected_job_now()
+            elif key in ("\x1b", "esc", "ESC"):
+                self.active_screen = "main"
+        elif self.active_screen == "logs":
+            if key in ("\x1b", "esc", "ESC"):
+                self.active_screen = "main"
+        elif self.active_screen == "main":
+            if key in ("j", "J"):
+                self.active_screen = "jobs"
+            elif key in ("e", "E"):
+                self.active_screen = "logs"
+
+        self._force_refresh()
 
     def _restore_termios(self):
         """Restore original terminal attributes if previously modified."""
@@ -679,9 +752,7 @@ class TerminalDashboard:
         self, width: int, scheduler: Optional[TaskScheduler], mode: str = "card"
     ) -> list:
         inner_w = width - 4
-        status_enabled = "ENABLED" if scheduler is not None else "DISABLED"
-        status_running = "RUNNING" if (scheduler and scheduler.is_running()) else "STOPPED"
-        panel_title = f" SCHEDULED JOBS [{status_enabled} | {status_running}] "
+        panel_title = " SCHEDULED JOBS [(e)nable | (d)isable | (r)un now] "
         title_dw = get_display_width(panel_title)
         pad_len = max(0, width - 3 - title_dw)
         header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
@@ -694,84 +765,99 @@ class TerminalDashboard:
                 msg = "(No scheduled jobs configured)"
             msg_styled = f"\033[2m{msg}\033[0m"
             res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
-        elif mode == "card":
-            now_dt = datetime.now(timezone.utc)
-            jobs_list = list(scheduler.jobs.values())
-            for idx, job in enumerate(jobs_list):
-                if job.enabled:
-                    status_badge = "\033[92m\033[1m[● ENABLED]\033[0m"
-                else:
-                    status_badge = "\033[90m[○ DISABLED]\033[0m"
-
-                header_line = f"{status_badge} \033[1m{job.job_id}\033[0m  \033[96m[Agent: {job.agent}]\033[0m"
-                res.append(f"│ {fit_to_display_width(header_line, inner_w)} │")
-
-                interval_str = self._format_interval(job.interval_seconds)
-                last_run_str = self._format_timestamp(job.last_run)
-                next_run_str = self._format_timestamp(job.next_run)
-                rem_str = self._format_remaining(job, now_dt)
-                sched_line = (
-                    f"Name: {job.name} │ Interval: {interval_str} │ "
-                    f"Last Run: {last_run_str} │ Next Run: {next_run_str} │ "
-                    f"Remaining: {rem_str}"
-                )
-                res.append(f"│ {fit_to_display_width(sched_line, inner_w)} │")
-
-                prompt_line = f"\033[2mPrompt: {job.prompt}\033[0m"
-                res.append(f"│ {fit_to_display_width(prompt_line, inner_w)} │")
-
-                if idx < len(jobs_list) - 1:
-                    sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
-                    res.append(f"│ {fit_to_display_width(sep_line, inner_w)} │")
         else:
-            fixed_w = 6 + 10 + 10 + 10  # INTV, LAST RUN, NEXT RUN, REMAIN
-            num_cols = 7
-            spacers = num_cols - 1  # 6 spaces
-            flex_avail = max(15, inner_w - fixed_w - spacers)
+            jobs_list = list(scheduler.jobs.values())
+            if jobs_list:
+                self.selected_job_index = max(0, min(self.selected_job_index, len(jobs_list) - 1))
+            else:
+                self.selected_job_index = 0
 
-            # Distribute remaining width (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
-            id_w = max(8, int(flex_avail * (12 / 52)))
-            name_w = max(12, int(flex_avail * (24 / 52)))
-            agent_w = max(10, flex_avail - id_w - name_w)
+            if mode == "card":
+                now_dt = datetime.now(timezone.utc)
+                for idx, job in enumerate(jobs_list):
+                    is_selected = (idx == self.selected_job_index)
+                    cursor_str = "> " if is_selected else "  "
+                    cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
 
-            col_hdr = (
-                f"{fit_to_display_width('JOB ID', id_w)} "
-                f"{fit_to_display_width('NAME', name_w)} "
-                f"{fit_to_display_width('AGENT', agent_w)} "
-                f"{fit_to_display_width('INTV', 6)} "
-                f"{fit_to_display_width('LAST RUN', 10)} "
-                f"{fit_to_display_width('NEXT RUN', 10)} "
-                f"{fit_to_display_width('REMAIN', 10)}"
-            )
-            hdr_styled = f"\033[1m{col_hdr}\033[0m"
-            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+                    if job.enabled:
+                        status_badge = "\033[92m\033[1m[● ENABLED]\033[0m"
+                    else:
+                        status_badge = "\033[90m[○ DISABLED]\033[0m"
 
-            now_dt = datetime.now(timezone.utc)
-            for job in list(scheduler.jobs.values()):
-                if get_display_width(job.job_id) > id_w:
-                    id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".."
-                else:
-                    id_trunc = job.job_id
+                    header_line = f"{cursor_styled}{status_badge} \033[1m{job.job_id}\033[0m  \033[96m[Agent: {job.agent}]\033[0m"
+                    res.append(f"│ {fit_to_display_width(header_line, inner_w)} │")
 
-                if get_display_width(job.name) > name_w:
-                    name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".."
-                else:
-                    name_trunc = job.name
+                    interval_str = self._format_interval(job.interval_seconds)
+                    last_run_str = self._format_timestamp(job.last_run)
+                    next_run_str = self._format_timestamp(job.next_run)
+                    rem_str = self._format_remaining(job, now_dt)
+                    sched_line = (
+                        f"  Name: {job.name} │ Interval: {interval_str} │ "
+                        f"Last Run: {last_run_str} │ Next Run: {next_run_str} │ "
+                        f"Remaining: {rem_str}"
+                    )
+                    res.append(f"│ {fit_to_display_width(sched_line, inner_w)} │")
 
-                if get_display_width(job.agent) > agent_w:
-                    agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".."
-                else:
-                    agent_trunc = job.agent
+                    prompt_line = f"  \033[2mPrompt: {job.prompt}\033[0m"
+                    res.append(f"│ {fit_to_display_width(prompt_line, inner_w)} │")
 
-                id_str = fit_to_display_width(id_trunc, id_w)
-                name_str = fit_to_display_width(name_trunc, name_w)
-                agent_str = fit_to_display_width(agent_trunc, agent_w)
-                interval_str = fit_to_display_width(self._format_interval(job.interval_seconds), 6)
-                last_run_str = fit_to_display_width(self._format_timestamp(job.last_run), 10)
-                next_run_str = fit_to_display_width(self._format_timestamp(job.next_run), 10)
-                rem_str = fit_to_display_width(self._format_remaining(job, now_dt), 10)
-                row = f"{id_str} {name_str} {agent_str} {interval_str} {last_run_str} {next_run_str} {rem_str}"
-                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+                    if idx < len(jobs_list) - 1:
+                        sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
+                        res.append(f"│ {fit_to_display_width(sep_line, inner_w)} │")
+            else:
+                fixed_w = 2 + 6 + 10 + 10 + 10  # SEL, INTV, LAST RUN, NEXT RUN, REMAIN
+                num_cols = 8
+                spacers = num_cols - 1  # 7 spaces
+                flex_avail = max(15, inner_w - fixed_w - spacers)
+
+                # Distribute remaining width (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
+                id_w = max(8, int(flex_avail * (12 / 52)))
+                name_w = max(12, int(flex_avail * (24 / 52)))
+                agent_w = max(10, flex_avail - id_w - name_w)
+
+                col_hdr = (
+                    f"{fit_to_display_width(' ', 2)} "
+                    f"{fit_to_display_width('JOB ID', id_w)} "
+                    f"{fit_to_display_width('NAME', name_w)} "
+                    f"{fit_to_display_width('AGENT', agent_w)} "
+                    f"{fit_to_display_width('INTV', 6)} "
+                    f"{fit_to_display_width('LAST RUN', 10)} "
+                    f"{fit_to_display_width('NEXT RUN', 10)} "
+                    f"{fit_to_display_width('REMAIN', 10)}"
+                )
+                hdr_styled = f"\033[1m{col_hdr}\033[0m"
+                res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+
+                now_dt = datetime.now(timezone.utc)
+                for idx, job in enumerate(jobs_list):
+                    is_selected = (idx == self.selected_job_index)
+                    cursor_str = "> " if is_selected else "  "
+                    cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
+
+                    if get_display_width(job.job_id) > id_w:
+                        id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".."
+                    else:
+                        id_trunc = job.job_id
+
+                    if get_display_width(job.name) > name_w:
+                        name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".."
+                    else:
+                        name_trunc = job.name
+
+                    if get_display_width(job.agent) > agent_w:
+                        agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".."
+                    else:
+                        agent_trunc = job.agent
+
+                    id_str = fit_to_display_width(id_trunc, id_w)
+                    name_str = fit_to_display_width(name_trunc, name_w)
+                    agent_str = fit_to_display_width(agent_trunc, agent_w)
+                    interval_str = fit_to_display_width(self._format_interval(job.interval_seconds), 6)
+                    last_run_str = fit_to_display_width(self._format_timestamp(job.last_run), 10)
+                    next_run_str = fit_to_display_width(self._format_timestamp(job.next_run), 10)
+                    rem_str = fit_to_display_width(self._format_remaining(job, now_dt), 10)
+                    row = f"{cursor_styled} {id_str} {name_str} {agent_str} {interval_str} {last_run_str} {next_run_str} {rem_str}"
+                    res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
         return res
