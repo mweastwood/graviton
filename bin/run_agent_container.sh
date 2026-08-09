@@ -38,8 +38,13 @@ if [ -n "${ORIGIN_URL}" ]; then
   git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
 fi
 
-# Clean up ephemeral workspace on exit (suppress permission warnings if created files are restricted)
-trap 'rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true' EXIT
+# Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
+CONTAINER_NAME="graviton-agent-run-${RUN_ID}"
+cleanup() {
+  docker rm -f "${CONTAINER_NAME}" &>/dev/null || true
+  rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 AGY_BIN_MOUNT=()
 if command -v agy &>/dev/null; then
@@ -74,23 +79,11 @@ GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "${GIT_AUTHOR_EMAIL:
 
 echo "Starting sandboxed Antigravity Agent container (Agent: ${AGENT_NAME}, Run ID: ${RUN_ID})..."
 
-# Launch container with retry / continuation loop for turn & timeout limits
-MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-2}"
-ATTEMPT=1
-EXIT_CODE=0
-
-while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-  AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
-
-  if [ $ATTEMPT -eq 1 ]; then
-    AGY_ARGS+=(--prompt "${PROMPT}")
-  else
-    echo "Agent session paused or hit step limit. Auto-continuing conversation (Attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
-    AGY_ARGS+=(--continue --prompt "Continue your work to complete the requested task.")
-  fi
-
-  set +e
-  docker run --rm \
+# Launch a persistent container instance to ensure uncommitted files, git branch state,
+# and environment variables are preserved across turns via docker exec.
+USE_CONTAINER_EXEC=false
+set +e
+if docker run -d --name "${CONTAINER_NAME}" \
     "${AGY_BIN_MOUNT[@]}" \
     "${SKILLS_MOUNT[@]}" \
     "${SSH_MOUNT[@]}" \
@@ -105,8 +98,49 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
     --security-opt=no-new-privileges \
     "${IMAGE_NAME}" \
-    "${AGY_ARGS[@]}"
-  EXIT_CODE=$?
+    sleep infinity &>/dev/null; then
+  USE_CONTAINER_EXEC=true
+fi
+set -e
+
+# Launch container with retry / continuation loop for turn & timeout limits
+MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-2}"
+ATTEMPT=1
+EXIT_CODE=0
+
+while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+  AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
+
+  if [ $ATTEMPT -eq 1 ]; then
+    AGY_ARGS+=(--prompt "${PROMPT}")
+  else
+    echo "Agent session paused or hit step limit. Auto-continuing conversation (Attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
+    AGY_ARGS+=(--continue --prompt "Resume from your existing work in /workspace and complete the commit/PR drafting")
+  fi
+
+  set +e
+  if [ "$USE_CONTAINER_EXEC" = true ]; then
+    docker exec -w /workspace "${CONTAINER_NAME}" "${AGY_ARGS[@]}"
+    EXIT_CODE=$?
+  else
+    docker run --rm \
+      "${AGY_BIN_MOUNT[@]}" \
+      "${SKILLS_MOUNT[@]}" \
+      "${SSH_MOUNT[@]}" \
+      "${GH_CONFIG_MOUNT[@]}" \
+      "${CLI_DIR_MOUNT[@]}" \
+      -v "${TEMP_WORKSPACE}:/workspace" \
+      -w /workspace \
+      -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+      -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
+      -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
+      -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
+      -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+      --security-opt=no-new-privileges \
+      "${IMAGE_NAME}" \
+      "${AGY_ARGS[@]}"
+    EXIT_CODE=$?
+  fi
   set -e
 
   if [ $EXIT_CODE -eq 0 ]; then
