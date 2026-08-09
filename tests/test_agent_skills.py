@@ -62,6 +62,17 @@ class TestAgentSkillsMapping(unittest.TestCase):
                 f"Agent '{data['name']}' system prompt is too long ({len(system_prompt)} chars)",
             )
 
+    def test_code_review_guidelines_includes_presubmit_and_mergeability_checks(self):
+        skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Presubmit & CI Status Verification", content)
+        self.assertIn("Mergeability Verification", content)
+        self.assertIn("gh pr checks", content)
+        self.assertIn("gh pr view", content)
+        self.assertIn("mergeable", content.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
