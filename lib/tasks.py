@@ -359,6 +359,19 @@ class TaskManager:
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
+            if target_id is not None:
+                for existing_task in self._tasks.values():
+                    if (
+                        existing_task.agent == agent
+                        and existing_task.target_id == target_id
+                        and existing_task.status in (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.PAUSED_FOR_QUOTA)
+                    ):
+                        logger.info(
+                            f"Skipping duplicate task submission for agent '{agent}' target '{target_id}'. "
+                            f"Existing task '{existing_task.id}' is {existing_task.status}."
+                        )
+                        return existing_task
+
             self._task_counter += 1
             task_id = f"task-{self._task_counter}"
             task = Task(

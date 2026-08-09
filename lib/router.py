@@ -2,8 +2,19 @@
 GitHub Webhook Event Routing Logic for Graviton.
 """
 
+import threading
+import time
 from typing import Any, Dict, Optional
 from lib.security import contains_bot_marker
+
+_pr_review_timestamps: Dict[Any, float] = {}
+_pr_review_timestamps_lock = threading.Lock()
+
+
+def clear_pr_review_cache():
+    """Clear the cached PR review event timestamps (useful for unit testing)."""
+    with _pr_review_timestamps_lock:
+        _pr_review_timestamps.clear()
 
 
 def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
@@ -88,6 +99,7 @@ def handle_pull_request_event(
     payload: Dict[str, Any],
     default_reviewer: str = "code_reviewer",
     pr_tracker: Optional[Any] = None,
+    debounce_window: float = 30.0,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request' webhook event."""
     action = payload.get("action")
@@ -98,6 +110,18 @@ def handle_pull_request_event(
         pr_tracker.remove_approved_pr(pr_number)
 
     if action in ("opened", "synchronize", "reopened"):
+        if pr_number is not None and debounce_window > 0:
+            pr_key = str(pr_number)
+            now = time.time()
+            with _pr_review_timestamps_lock:
+                last_time = _pr_review_timestamps.get(pr_key)
+                if action == "synchronize" and last_time is not None and (now - last_time) < debounce_window:
+                    return {
+                        "status": "ignored",
+                        "reason": f"PR #{pr_number} review event debounced (action '{action}')",
+                    }
+                _pr_review_timestamps[pr_key] = now
+
         prompt = f"Review PR #{pr_number}"
         return {
             "status": "accepted",
@@ -342,6 +366,7 @@ def route_webhook_event(
     default_fixer: str = "code_fixer",
     default_triager: str = "issue_triager",
     pr_tracker: Optional[Any] = None,
+    debounce_window: float = 30.0,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -352,12 +377,15 @@ def route_webhook_event(
     :param default_fixer: Name of the fixer agent.
     :param default_triager: Name of the issue triage agent.
     :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
+    :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
         "ping": handle_ping_event,
         "push": handle_push_event,
-        "pull_request": lambda p: handle_pull_request_event(p, default_reviewer=default_reviewer, pr_tracker=pr_tracker),
+        "pull_request": lambda p: handle_pull_request_event(
+            p, default_reviewer=default_reviewer, pr_tracker=pr_tracker, debounce_window=debounce_window
+        ),
         "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer, pr_tracker=pr_tracker),
         "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(p, default_fixer=default_fixer),
         "issues": lambda p: handle_issues_event(p, default_triager=default_triager, default_fixer=default_fixer),
