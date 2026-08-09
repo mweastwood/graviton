@@ -110,6 +110,19 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("gh pr review <pr_number> --comment", content)
         self.assertIn("Do **NOT** use `gh pr comment` or `gh issue comment`", content)
 
+    def test_code_review_guidelines_requires_changes_requested_for_any_findings(self):
+        skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Any Changes Needed", content)
+        self.assertIn("minor fixes", content)
+        self.assertIn("style tweaks", content)
+        self.assertIn("docstrings", content)
+        self.assertIn("CHANGES_REQUESTED", content)
+        self.assertIn("no code changes at all", content.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
+
