@@ -118,6 +118,15 @@ class TestTaskManager(unittest.TestCase):
         stats = manager.get_stats()
         self.assertEqual(stats["failed"], 1)
 
+        mock_run.assert_called_once_with(
+            "code_fixer",
+            "Fix issue",
+            Path("/tmp/fake_script.sh"),
+            Path("/tmp/fake_repo"),
+            on_output=task.update_attempt_from_line,
+            max_attempts=3,
+        )
+
         manager.stop()
 
     def test_task_manager_drain_active_tasks_success(self):

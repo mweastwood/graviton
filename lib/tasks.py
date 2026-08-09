@@ -518,6 +518,7 @@ class TaskManager:
                         self.script_path,
                         self.cwd,
                         on_output=task.update_attempt_from_line,
+                        max_attempts=task.max_attempts,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()

@@ -30,16 +30,14 @@ class TestRunner(unittest.TestCase):
             script_path,
             cwd,
             on_output=received_lines.append,
+            max_attempts=3,
         )
 
-        mock_popen.assert_called_once_with(
-            [str(script_path), "code_reviewer", "Review PR"],
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+        mock_popen.assert_called_once()
+        args, kwargs = mock_popen.call_args
+        self.assertEqual(args[0], [str(script_path), "code_reviewer", "Review PR"])
+        self.assertEqual(kwargs["cwd"], str(cwd))
+        self.assertEqual(kwargs["env"]["MAX_AGENT_RETRIES"], "3")
         self.assertEqual(res.returncode, 0)
         self.assertIn("Agent finished successfully", res.stdout)
         self.assertEqual(len(received_lines), 2)
@@ -54,11 +52,11 @@ class TestRunner(unittest.TestCase):
 
         script_path = Path("/tmp/run_agent_container.sh")
         cwd = Path("/workspace")
-        thread = run_agent_async("code_fixer", "Fix code", script_path, cwd)
+        thread = run_agent_async("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
         thread.join(timeout=2.0)
 
         self.assertFalse(thread.is_alive())
-        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd)
+        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
 
 
 class TestAgentContainerScript(unittest.TestCase):
@@ -354,6 +352,42 @@ exit 0
         self.assertEqual(proc.returncode, 0)
         self.assertIn("Agent 'code_fixer' completed successfully.", proc.stdout)
         self.assertNotIn("Auto-continuing conversation", proc.stdout)
+
+    def test_default_max_attempts_is_three(self):
+        import os
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls.log"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+if [ "$1" = "run" ] && [ "$2" = "-d" ]; then
+    exit 0
+elif [ "$1" = "exec" ]; then
+    exit 1
+else
+    exit 0
+fi
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("MAX_AGENT_RETRIES", None)
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertIn("Auto-continuing conversation (Attempt 2/3)", proc.stdout)
+        self.assertIn("Auto-continuing conversation (Attempt 3/3)", proc.stdout)
+        self.assertIn("Agent 'code_fixer' failed after 3 attempts", proc.stdout)
 
 
 class TestTranscriptInspector(unittest.TestCase):
