@@ -117,6 +117,28 @@ class TestGravitonHandler(unittest.TestCase):
         )
         handler._send_json.assert_called_once()
 
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_triggers_emoji_reaction(self, mock_run_async, mock_post_reaction):
+        payload = json.dumps({
+            "action": "opened",
+            "number": 7,
+            "repository": {"full_name": "mweastwood/graviton"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+
+        mock_post_reaction.assert_called_once_with("pull_request", {"action": "opened", "number": 7, "repository": {"full_name": "mweastwood/graviton"}})
+
     @patch("graviton_server.logger")
     def test_do_post_logging_enriched_context(self, mock_logger):
         payload = json.dumps({

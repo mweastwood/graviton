@@ -33,6 +33,7 @@ from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
 from lib.pr_tracker import PRTracker
 from lib.quota import QuotaTracker
+from lib.reactions import post_emoji_reaction_async
 
 # Setup logging
 logging.basicConfig(
@@ -155,6 +156,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             agent = decision.get("agent")
             prompt = decision.get("prompt")
             if agent and prompt:
+                post_emoji_reaction_async(event_type, payload)
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
                 if self.task_manager:
