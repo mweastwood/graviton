@@ -6,6 +6,47 @@ from typing import Any, Dict
 from lib.security import contains_bot_marker
 
 
+def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
+    """
+    Check whether a pull request was created by Graviton / Antigravity agent.
+
+    :param pr: Dictionary representing the pull request payload object.
+    :return: True if created by us or missing explicit non-bot author info, False otherwise.
+    """
+    if not isinstance(pr, dict) or not pr:
+        return True
+
+    # 1. Explicit boolean flag if provided
+    if pr.get("created_by_us") is False:
+        return False
+    if pr.get("created_by_us") is True:
+        return True
+
+    # 2. Check for bot marker signature in PR body
+    body = pr.get("body") or ""
+    if contains_bot_marker(body):
+        return True
+
+    # 3. Check head branch name ref prefix
+    head = pr.get("head")
+    if isinstance(head, dict):
+        head_ref = head.get("ref", "").lower()
+        if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
+            return True
+
+    # 4. Check user author details
+    user = pr.get("user")
+    if isinstance(user, dict) and user:
+        login = user.get("login", "").lower()
+        user_type = user.get("type", "")
+        if user_type == "Bot" or "bot" in login or "antigravity" in login:
+            return True
+        # Explicit user object given that is a human and not a bot / antigravity
+        return False
+
+    return True
+
+
 def route_webhook_event(
     event_type: str,
     payload: Dict[str, Any],
@@ -69,12 +110,19 @@ def route_webhook_event(
         review = payload.get("review", {})
         review_state = review.get("state", "").upper()
         review_body = review.get("body", "")
-        pr_number = payload.get("pull_request", {}).get("number")
+        pr = payload.get("pull_request", {})
+        pr_number = pr.get("number") or payload.get("number")
 
         if contains_bot_marker(review_body):
             return {
                 "status": "ignored",
                 "reason": "Bot self-review event dropped",
+            }
+
+        if not is_pr_created_by_us(pr):
+            return {
+                "status": "ignored",
+                "reason": "PR was not created by us",
             }
 
         if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
@@ -99,13 +147,20 @@ def route_webhook_event(
         comment_body = comment.get("body", "")
         file_path = comment.get("path", "")
         line = comment.get("line") or comment.get("original_line")
-        pr_url = payload.get("pull_request", {}).get("html_url", "")
-        pr_number = pr_url.rstrip("/").split("/")[-1] if pr_url else ""
+        pr = payload.get("pull_request", {})
+        pr_url = pr.get("html_url", "")
+        pr_number = pr.get("number") or (pr_url.rstrip("/").split("/")[-1] if pr_url else "")
 
         if contains_bot_marker(comment_body):
             return {
                 "status": "ignored",
                 "reason": "Bot comment dropped",
+            }
+
+        if not is_pr_created_by_us(pr):
+            return {
+                "status": "ignored",
+                "reason": "PR was not created by us",
             }
 
         if action == "created":
@@ -182,20 +237,22 @@ def route_webhook_event(
         if action == "created":
             # 5a. Comment on a Pull Request
             if pr:
-                body_lower = comment_body.lower()
-                if "@antigravity" in body_lower or "/fix" in body_lower or "/review" in body_lower:
-                    agent = default_reviewer if "/review" in body_lower else default_fixer
-                    prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
+                pr_data = pr if (isinstance(pr, dict) and len(pr) > 1) else issue
+                if not is_pr_created_by_us(pr_data):
                     return {
-                        "status": "accepted",
-                        "action": action,
-                        "pr_number": issue_number,
-                        "agent": agent,
-                        "prompt": prompt,
+                        "status": "ignored",
+                        "reason": "PR was not created by us",
                     }
+
+                body_lower = comment_body.lower()
+                agent = default_reviewer if "/review" in body_lower else default_fixer
+                prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
                 return {
-                    "status": "ignored",
-                    "reason": "Comment on PR did not trigger review or fix criteria",
+                    "status": "accepted",
+                    "action": action,
+                    "pr_number": issue_number,
+                    "agent": agent,
+                    "prompt": prompt,
                 }
 
             # 5b. Comment on a pure Issue (Triage vs PR Drafting)
@@ -234,3 +291,4 @@ def route_webhook_event(
             "status": "ignored",
             "reason": f"Event type '{event_type}' not handled",
         }
+
