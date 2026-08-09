@@ -67,7 +67,7 @@ class TestRouter(unittest.TestCase):
             "action": "submitted",
             "review": {
                 "state": "CHANGES_REQUESTED",
-                "body": f"Fix null pointer exception {BOT_MARKER}",
+                "body": "Fix null pointer exception",
             },
             "pull_request": {"number": 15, "user": {"login": "antigravity-bot"}},
         }
@@ -104,6 +104,19 @@ class TestRouter(unittest.TestCase):
             "review": {
                 "state": "COMMENTED",
                 "body": f"Automated reply {BOT_MARKER}",
+            },
+            "pull_request": {"number": 15},
+        }
+        result = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "Bot self-review event dropped")
+
+    def test_pull_request_review_bot_changes_requested_ignored(self):
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "CHANGES_REQUESTED",
+                "body": f"Automated review {BOT_MARKER}",
             },
             "pull_request": {"number": 15},
         }
