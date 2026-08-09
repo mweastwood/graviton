@@ -78,7 +78,7 @@ Even with a single GitHub account, Graviton differentiates human comments from a
 | `pull_request` (`opened`, `synchronize`) | Git Push / PR creation | `code_reviewer` | Performs full code review, runs static analysis, submits GitHub Review (`APPROVE` or `CHANGES_REQUESTED`). |
 | `pull_request_review` | `state == CHANGES_REQUESTED` | `code_fixer` | Parses requested changes, modifies code in `/workspace`, runs tests, commits & pushes. |
 | `pull_request_review_comment` | Line comment (no bot tag) | `code_fixer` | Resolves specific inline code comment, pushes commit, and posts thread reply. |
-| `issue_comment` (on PR) | Body contains `@antigravity` / `/fix` | `code_fixer` | Executes requested task from comment text, pushes commit, and replies to thread. |
+| `issue_comment` (on PR) | Human comment on PR created by us | `code_fixer` | Executes requested task from comment text, pushes commit, and replies to thread (or `code_reviewer` if `/review`). |
 | `pull_request_review` | `state == APPROVED` | *None* | Halts workflow; PR ready for merge. |
 
 ---
@@ -90,8 +90,9 @@ Even with a single GitHub account, Graviton differentiates human comments from a
    - Halts after 3 consecutive failed cycles to prevent infinite loops.
 2. **Local Test Gate**:
    - `code_fixer` executes unit tests (`pytest` / `npm test` / `flutter test`) locally before committing. If tests fail, it posts the failure log to the PR thread instead of pushing broken code.
-3. **Bot Tag Filtering**:
+3. **Bot Tag Filtering & PR Scope Scoping**:
    - Prevents agent self-triggering by dropping any webhook payload containing `<!-- antigravity-auto-reply -->`.
+   - Only processes PR review and comment events for PRs created by Graviton/Antigravity to prevent taking over external PRs.
 
 ---
 

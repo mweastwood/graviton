@@ -3,11 +3,24 @@ Unit tests for lib/router.py
 """
 
 import unittest
-from lib.router import route_webhook_event
+from lib.router import route_webhook_event, is_pr_created_by_us
 from lib.security import BOT_MARKER
 
 
 class TestRouter(unittest.TestCase):
+
+    def test_is_pr_created_by_us_helper(self):
+        self.assertTrue(is_pr_created_by_us({}))
+        self.assertTrue(is_pr_created_by_us({"number": 1}))
+        self.assertTrue(is_pr_created_by_us({"user": {"login": "antigravity-bot", "type": "Bot"}}))
+        self.assertTrue(is_pr_created_by_us({"body": f"PR description {BOT_MARKER}"}))
+        self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
+        self.assertTrue(is_pr_created_by_us({"created_by_us": True}))
+
+        self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
 
     def test_ping_event(self):
         payload = {"zen": "Non-blocking is better than blocking."}
@@ -40,14 +53,27 @@ class TestRouter(unittest.TestCase):
             "action": "submitted",
             "review": {
                 "state": "CHANGES_REQUESTED",
-                "body": "Fix null pointer exception",
+                "body": f"Fix null pointer exception {BOT_MARKER}",
             },
-            "pull_request": {"number": 15},
+            "pull_request": {"number": 15, "user": {"login": "antigravity-bot"}},
         }
         result = route_webhook_event("pull_request_review", payload)
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["agent"], "code_fixer")
         self.assertIn("Fix null pointer exception", result["prompt"])
+
+    def test_pull_request_review_not_created_by_us_ignored(self):
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "CHANGES_REQUESTED",
+                "body": "Fix null pointer exception",
+            },
+            "pull_request": {"number": 15, "user": {"login": "external_dev", "type": "User"}},
+        }
+        result = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
 
     def test_pull_request_review_approved_ignored(self):
         payload = {
@@ -62,7 +88,7 @@ class TestRouter(unittest.TestCase):
         payload = {
             "action": "submitted",
             "review": {
-                "state": "CHANGES_REQUESTED",
+                "state": "COMMENTED",
                 "body": f"Automated reply {BOT_MARKER}",
             },
             "pull_request": {"number": 15},
@@ -79,13 +105,33 @@ class TestRouter(unittest.TestCase):
                 "path": "lib/server.py",
                 "line": 42,
             },
-            "pull_request": {"html_url": "https://github.com/org/repo/pull/88"},
+            "pull_request": {
+                "html_url": "https://github.com/org/repo/pull/88",
+                "user": {"login": "antigravity-bot"},
+            },
         }
         result = route_webhook_event("pull_request_review_comment", payload)
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["agent"], "code_fixer")
         self.assertEqual(result["file"], "lib/server.py")
         self.assertEqual(result["line"], 42)
+
+    def test_pull_request_review_comment_not_created_by_us_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": "Use constant instead of hardcoded string",
+                "path": "lib/server.py",
+                "line": 42,
+            },
+            "pull_request": {
+                "html_url": "https://github.com/org/repo/pull/88",
+                "user": {"login": "external_dev", "type": "User"},
+            },
+        }
+        result = route_webhook_event("pull_request_review_comment", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
 
     def test_pull_request_review_comment_bot_ignored(self):
         payload = {
@@ -140,15 +186,52 @@ class TestRouter(unittest.TestCase):
         result = route_webhook_event("issues", payload)
         self.assertEqual(result["status"], "ignored")
 
-    def test_issue_comment_on_pr_mention_fix(self):
+    def test_issue_comment_on_pr_human_comment_triggers_fixer(self):
         payload = {
             "action": "created",
-            "comment": {"body": "@antigravity /fix add validation logic"},
-            "issue": {"number": 12, "pull_request": {"url": "https://api.github.com/..."}},
+            "comment": {"body": "Please add error handling here as well."},
+            "issue": {
+                "number": 12,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/12", "html_url": "https://github.com/org/repo/pull/12"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
         }
         result = route_webhook_event("issue_comment", payload)
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["agent"], "code_fixer")
+        self.assertIn("Address comment on PR #12", result["prompt"])
+
+    def test_issue_comment_on_pr_not_created_by_us_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "Please add error handling here as well."},
+            "issue": {
+                "number": 12,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/12", "html_url": "https://github.com/org/repo/pull/12"},
+                "user": {"login": "external_dev", "type": "User"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
+
+    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "Looks suspicious."},
+            "issue": {
+                "number": 19,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/19",
+                    "html_url": "https://github.com/org/repo/pull/19",
+                },
+                "user": {"login": "external_dev", "type": "User"},
+                "head": {"ref": "feat/new-ui-theme"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
 
     def test_issue_comment_on_pure_issue_triggers_triager(self):
         payload = {
@@ -201,3 +284,4 @@ class TestRouter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
