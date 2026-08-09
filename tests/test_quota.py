@@ -467,6 +467,102 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertEqual(polled_5h.remaining_percentage, 65.0)
             self.assertEqual(polled_1w.remaining_percentage, 20.0)
 
+    def test_gemini_1w_quota_detection_fix(self):
+        # 1. Test snake_case weekly_quota_info with remaining_fraction
+        payload_snake = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.1047,
+                        "resetTime": "2026-08-09T07:26:32Z",
+                    },
+                    "weekly_quota_info": {
+                        "remaining_fraction": 0.7105,
+                        "reset_time": "2026-08-12T09:00:00Z",
+                    },
+                }
+            }
+        }
+        res_snake = parse_antigravity_quota_json(payload_snake, pool="gemini")
+        self.assertIsNotNone(res_snake)
+        w5h, w1w = res_snake
+        self.assertAlmostEqual(w5h.remaining_percentage, 10.47, places=2)
+        self.assertAlmostEqual(w1w.remaining_percentage, 71.05, places=2)
+        self.assertEqual(w1w.reset_time, "2026-08-12T09:00:00Z")
+
+        # 2. Test nested quotaInfo.weeklyQuota
+        payload_nested = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "quotaInfo": {
+                        "remainingFraction": 0.15,
+                        "resetTime": "2026-08-09T07:26:32Z",
+                        "weeklyQuota": {
+                            "remaining_fraction": 0.60,
+                            "resetTime": "2026-08-12T09:00:00Z",
+                        },
+                    }
+                }
+            }
+        }
+        res_nested = parse_antigravity_quota_json(payload_nested, pool="gemini")
+        self.assertIsNotNone(res_nested)
+        _, w1w_n = res_nested
+        self.assertEqual(w1w_n.remaining_percentage, 60.0)
+
+        # 3. Test weeklyQuota container keys at model level
+        payload_weekly_container = {
+            "models": {
+                "gemini-2.0-pro": {
+                    "quotaInfo": {"remainingFraction": 0.25},
+                    "weeklyQuota": {
+                        "remainingFraction": 0.55,
+                        "resetTime": "2026-08-14T12:00:00Z",
+                    },
+                }
+            }
+        }
+        res_container = parse_antigravity_quota_json(payload_weekly_container, pool="gemini")
+        self.assertIsNotNone(res_container)
+        _, w1w_c = res_container
+        self.assertEqual(w1w_c.remaining_percentage, 55.0)
+
+        # 4. Test windows array schema
+        payload_windows = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "quotaInfo": {
+                        "windows": [
+                            {"name": "5H", "remainingFraction": 0.1047, "resetTime": "2026-08-09T07:26:32Z"},
+                            {"name": "1W", "remaining_fraction": 0.7105, "reset_time": "2026-08-12T09:00:00Z"},
+                        ]
+                    }
+                }
+            }
+        }
+        res_windows = parse_antigravity_quota_json(payload_windows, pool="gemini")
+        self.assertIsNotNone(res_windows)
+        w5h_win, w1w_win = res_windows
+        self.assertAlmostEqual(w5h_win.remaining_percentage, 10.47, places=2)
+        self.assertAlmostEqual(w1w_win.remaining_percentage, 71.05, places=2)
+
+        # 5. Test limits array schema with "weekly"
+        payload_limits = {
+            "models": {
+                "gemini-2.0-flash": {
+                    "limits": [
+                        {"window": "5h", "remainingQuota": 10.5, "resetTime": "2026-08-09T07:26:32Z"},
+                        {"window": "weekly", "remaining_fraction": 0.7105, "resetTime": "2026-08-12T09:00:00Z"},
+                    ]
+                }
+            }
+        }
+        res_limits = parse_antigravity_quota_json(payload_limits, pool="gemini")
+        self.assertIsNotNone(res_limits)
+        w5h_lim, w1w_lim = res_limits
+        self.assertEqual(w5h_lim.remaining_percentage, 10.5)
+        self.assertAlmostEqual(w1w_lim.remaining_percentage, 71.05, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
