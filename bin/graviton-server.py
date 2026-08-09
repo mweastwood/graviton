@@ -204,6 +204,9 @@ def main():
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
     )
+    restored_count = task_manager.restore_queue_state()
+    if restored_count > 0:
+        logger.info(f"Restored {restored_count} queued task(s) from persisted state.")
     task_manager.start()
     GravitonHandler.task_manager = task_manager
 

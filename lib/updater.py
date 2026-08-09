@@ -160,6 +160,8 @@ def hot_reload_server(httpd=None, task_manager=None):
         set_hot_reload_state("DRAINING_TASKS")
         logger.info("Draining active tasks before hot reload...")
         task_manager.drain_active_tasks()
+        logger.info("Dumping queue state before process re-execution...")
+        task_manager.dump_queue_state()
 
     set_hot_reload_state("RELOADING")
     logger.info("Hot reloading Graviton server process (os.execv)...")

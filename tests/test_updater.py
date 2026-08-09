@@ -80,6 +80,7 @@ class TestUpdater(unittest.TestCase):
         hot_reload_server(httpd=mock_httpd, task_manager=mock_tm)
 
         mock_tm.drain_active_tasks.assert_called_once()
+        mock_tm.dump_queue_state.assert_called_once()
         mock_httpd.server_close.assert_called_once()
         mock_execv.assert_called_once()
 

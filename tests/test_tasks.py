@@ -111,11 +111,56 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.is_draining)
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
-        # Confirm new tasks are rejected while draining
-        with self.assertRaises(RuntimeError):
-            manager.submit_task("code_fixer", "Fix bug #2")
+        # Confirm new task submission succeeds while draining and stays QUEUED (workers paused)
+        task2 = manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
+        self.assertIsNotNone(task2)
+        self.assertEqual(task2.status, TaskStatus.QUEUED)
+        time.sleep(0.2)
+        # Workers must refrain from pulling new tasks while draining
+        self.assertEqual(task2.status, TaskStatus.QUEUED)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
 
         manager.stop()
+
+    def test_task_manager_dump_and_restore_queue_state(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "test_queue_state.json"
+            manager1 = TaskManager(max_workers=2)
+            manager1.start()
+
+            # Submit tasks and enter drain
+            t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
+            manager1.drain_active_tasks(timeout=5.0)
+            t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
+
+            queued = manager1.get_queued_tasks()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0].id, t2.id)
+
+            dumped_count = manager1.dump_queue_state(filepath=state_file)
+            self.assertEqual(dumped_count, 1)
+            self.assertTrue(state_file.exists())
+            manager1.stop()
+
+            # Restore into new manager instance
+            manager2 = TaskManager(max_workers=2)
+            restored_count = manager2.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored_count, 1)
+            self.assertFalse(state_file.exists())
+
+            restored_queued = manager2.get_queued_tasks()
+            self.assertEqual(len(restored_queued), 1)
+            self.assertEqual(restored_queued[0].id, "task-2")
+            self.assertEqual(restored_queued[0].agent, "code_fixer")
+            self.assertEqual(restored_queued[0].prompt, "Fix bug #11")
+            self.assertEqual(restored_queued[0].target_id, "#11")
+
+            # Next submitted task should get incremental ID task-3
+            t3 = manager2.submit_task("issue_triager", "Triage #12", target_id="#12")
+            self.assertEqual(t3.id, "task-3")
+
+            manager2.stop()
 
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_drain_active_tasks_timeout(self, mock_run):
