@@ -132,6 +132,37 @@ class TestGravitonHandler(unittest.TestCase):
         mock_logger.info.assert_any_call("Received GitHub webhook event: issues (Issue #62 (action: opened))")
         mock_logger.info.assert_any_call("Routed webhook event 'issues' (Issue #62 (action: opened)): status=accepted, agent=issue_triager")
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_starts_dashboard_unconditionally(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_dashboard_cls.assert_called_once()
+        mock_dashboard_inst.start.assert_called_once()
+        mock_dashboard_inst.stop.assert_called_once()
+
+    def test_cli_parser_rejects_dashboard_flag(self):
+        with patch("sys.argv", ["graviton-server.py", "--dashboard"]):
+            with patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    server_mod.main()
+
 
 if __name__ == "__main__":
     unittest.main()
+
