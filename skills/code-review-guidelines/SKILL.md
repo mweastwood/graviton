@@ -31,10 +31,16 @@ This skill provides comprehensive instructions for the `code_reviewer` agent to 
    - **Code Quality & Style**: Verify readability, adherence to design patterns, and absence of redundant logic.
 
 5. **Review Submission Decision Logic**:
-   - Use `gh api` or `gh pr review` to submit the review, ensuring `<!-- antigravity-auto-reply -->` signature is included in the body submission.
-   - Set review state to `APPROVE` if all quality standards, presubmit checks, and mergeability checks pass with no critical issues.
-   - Set review state to `CHANGES_REQUESTED` if bugs, missing tests, security concerns, failing presubmit checks, or merge conflicts are identified.
+   - **ONLY** use formal GitHub PR review commands (`gh pr review`) to submit code reviews. Do **NOT** use `gh pr comment` or `gh issue comment` for code review submissions.
+   - Use the following formal review commands:
+     - `gh pr review <pr_number> --request-changes --body "<body_with_bot_signature>"` (if bugs, missing tests, security concerns, failing presubmit checks, or merge conflicts are identified)
+     - `gh pr review <pr_number> --approve --body "<body_with_bot_signature>"` (if all quality standards, presubmit checks, and mergeability checks pass with no critical issues)
+     - `gh pr review <pr_number> --comment --body "<body_with_bot_signature>"` (for general comments without approving or requesting changes)
+   - Always ensure `<!-- antigravity-auto-reply -->` signature tag is included in the body submission.
 
 6. **Safety & Loop Protection**:
    - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+   - **Formal Reviews Only**: Strictly submit code reviews via `gh pr review` (`--request-changes`, `--approve`, or `--comment`), never via `gh pr comment` or `gh issue comment`.
+
+
 

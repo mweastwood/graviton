@@ -111,7 +111,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "Bot self-review event dropped")
 
-    def test_pull_request_review_bot_changes_requested_ignored(self):
+    def test_pull_request_review_bot_changes_requested_accepted(self):
         payload = {
             "action": "submitted",
             "review": {
@@ -121,8 +121,10 @@ class TestRouter(unittest.TestCase):
             "pull_request": {"number": 15},
         }
         result = route_webhook_event("pull_request_review", payload)
-        self.assertEqual(result["status"], "ignored")
-        self.assertEqual(result["reason"], "Bot self-review event dropped")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["pr_number"], 15)
+        self.assertIn("Automated review", result["prompt"])
 
     def test_pull_request_review_comment_created(self):
         payload = {

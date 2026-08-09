@@ -129,12 +129,6 @@ def handle_pull_request_review_event(
     pr_user = pr.get("user", {}) if isinstance(pr.get("user"), dict) else {}
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
 
-    if contains_bot_marker(review_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot self-review event dropped",
-        }
-
     if pr_tracker and pr_number is not None:
         if action == "submitted" and review_state == "APPROVED":
             pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url)
@@ -145,6 +139,12 @@ def handle_pull_request_review_event(
         return {
             "status": "ignored",
             "reason": "PR was not created by us",
+        }
+
+    if contains_bot_marker(review_body) and review_state != "CHANGES_REQUESTED":
+        return {
+            "status": "ignored",
+            "reason": "Bot self-review event dropped",
         }
 
     if action == "submitted" and review_state == "CHANGES_REQUESTED":
