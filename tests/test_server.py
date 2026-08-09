@@ -28,9 +28,11 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.default_reviewer = "code_reviewer"
         GravitonHandler.default_fixer = "code_fixer"
         GravitonHandler.scheduler = None
+        GravitonHandler.task_manager = None
 
     def test_health_check_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
+        handler.task_manager = None
         handler.path = "/health"
         GravitonHandler.do_GET(handler)
         handler._send_json.assert_called_once()
@@ -57,6 +59,7 @@ class TestGravitonHandler(unittest.TestCase):
 
     def test_not_found_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
+        handler.task_manager = None
         handler.path = "/invalid"
         GravitonHandler.do_GET(handler)
         handler._send_json.assert_called_once_with(404, {"error": "Not Found"})
@@ -73,6 +76,7 @@ class TestGravitonHandler(unittest.TestCase):
         handler.secret = ""
         handler.default_reviewer = "code_reviewer"
         handler.default_fixer = "code_fixer"
+        handler.task_manager = None
 
         GravitonHandler.do_POST(handler)
 
@@ -82,6 +86,29 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertEqual(args[0], 200)
         self.assertEqual(args[1]["status"], "accepted")
         self.assertEqual(args[1]["agent"], "code_reviewer")
+
+    def test_do_post_with_task_manager(self):
+        mock_tm = MagicMock()
+        payload = json.dumps({"action": "opened", "number": 7}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.default_fixer = "code_fixer"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+
+        mock_tm.submit_task.assert_called_once_with(
+            agent="code_reviewer",
+            prompt="Review PR #7",
+            target_id="#7",
+        )
+        handler._send_json.assert_called_once()
 
 
 if __name__ == "__main__":

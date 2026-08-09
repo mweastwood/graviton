@@ -29,6 +29,8 @@ from lib.router import route_webhook_event
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
+from lib.tasks import TaskManager
+from lib.tui import TerminalDashboard
 
 # Setup logging
 logging.basicConfig(
@@ -47,11 +49,13 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
     scheduler: Optional[TaskScheduler] = None
+    task_manager: Optional[TaskManager] = None
 
     def do_GET(self):
         """Health check endpoint."""
         if self.path in ("/", "/health"):
             sched = GravitonHandler.scheduler
+            tasks_info = self.task_manager.get_stats() if self.task_manager else {}
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
@@ -61,6 +65,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "scheduler_enabled": sched is not None,
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
+                "tasks": tasks_info,
             })
         else:
             self._send_json(404, {"error": "Not Found"})
@@ -120,7 +125,12 @@ class GravitonHandler(BaseHTTPRequestHandler):
             agent = decision.get("agent")
             prompt = decision.get("prompt")
             if agent and prompt:
-                run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, REPO_ROOT)
+                target_num = decision.get("pr_number") or decision.get("issue_number")
+                target_id = f"#{target_num}" if target_num is not None else None
+                if self.task_manager:
+                    self.task_manager.submit_task(agent=agent, prompt=prompt, target_id=target_id)
+                else:
+                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, REPO_ROOT)
 
             # Omit internal prompt from HTTP response output
             response_payload = {k: v for k, v in decision.items() if k != "prompt"}
@@ -151,6 +161,8 @@ def main():
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
     parser.add_argument("--enable-scheduler", action="store_true", default=os.getenv("ENABLE_SCHEDULER", "false").lower() in ("true", "1", "yes"), help="Enable periodic task scheduler on server startup")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
+    parser.add_argument("--dashboard", "-d", action="store_true", help="Enable live terminal UI dashboard")
+    parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     args = parser.parse_args()
 
     GravitonHandler.secret = args.secret
@@ -180,18 +192,42 @@ def main():
         scheduler.start()
         GravitonHandler.scheduler = scheduler
 
+    task_manager = TaskManager(
+        max_workers=args.max_workers,
+        script_path=RUN_CONTAINER_SCRIPT,
+        cwd=REPO_ROOT,
+    )
+    task_manager.start()
+    GravitonHandler.task_manager = task_manager
+
+    dashboard = None
+    if args.dashboard:
+        dashboard = TerminalDashboard(
+            task_manager=task_manager,
+            host=args.host,
+            port=args.port,
+            repo_root=REPO_ROOT,
+        )
+        dashboard.start()
+
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}'")
     logger.info(f"Scheduler enabled: {args.enable_scheduler}")
+    if args.dashboard:
+        logger.info("Live Terminal UI Dashboard ENABLED.")
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         logger.info("Stopping Graviton Webhook Server...")
+    finally:
         if scheduler:
             scheduler.stop()
+        if dashboard:
+            dashboard.stop()
+        task_manager.stop()
         httpd.shutdown()
 
 
