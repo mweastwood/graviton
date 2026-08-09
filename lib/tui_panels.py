@@ -93,7 +93,8 @@ def format_timestamp(ts: Optional[str]) -> str:
     if not ts:
         return "-"
     try:
-        dt = datetime.fromisoformat(ts)
+        clean_ts = ts.replace("Z", "+00:00").replace("z", "+00:00")
+        dt = datetime.fromisoformat(clean_ts)
         return dt.strftime("%H:%M:%S")
     except Exception:
         return ts[:8]
@@ -107,7 +108,8 @@ def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
     next_dt = None
     if job.next_run:
         try:
-            next_dt = datetime.fromisoformat(job.next_run)
+            clean_next = job.next_run.replace("Z", "+00:00").replace("z", "+00:00")
+            next_dt = datetime.fromisoformat(clean_next)
             if next_dt.tzinfo is None:
                 next_dt = next_dt.replace(tzinfo=timezone.utc)
         except Exception:
@@ -115,7 +117,8 @@ def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
 
     if next_dt is None and job.last_run:
         try:
-            last_dt = datetime.fromisoformat(job.last_run)
+            clean_last = job.last_run.replace("Z", "+00:00").replace("z", "+00:00")
+            last_dt = datetime.fromisoformat(clean_last)
             if last_dt.tzinfo is None:
                 last_dt = last_dt.replace(tzinfo=timezone.utc)
             next_dt = datetime.fromtimestamp(last_dt.timestamp() + job.interval_seconds, tz=timezone.utc)

@@ -46,6 +46,19 @@ class TestTUIPanels(unittest.TestCase):
         job_due = ScheduledJob(job_id="j2", name="J2", agent="test", prompt="p", interval_seconds=60, enabled=True)
         self.assertEqual(format_remaining(job_due, now_dt), "DUE")
 
+        ref_dt = datetime(2026, 8, 9, 22, 0, 0, tzinfo=timezone.utc)
+        job_next_z = ScheduledJob(
+            job_id="j3", name="J3", agent="test", prompt="p", interval_seconds=60, enabled=True,
+            next_run="2026-08-09T23:00:00Z"
+        )
+        self.assertEqual(format_remaining(job_next_z, ref_dt), "in 1h 0m")
+
+        job_last_z = ScheduledJob(
+            job_id="j4", name="J4", agent="test", prompt="p", interval_seconds=3600, enabled=True,
+            last_run="2026-08-09T22:00:00Z"
+        )
+        self.assertEqual(format_remaining(job_last_z, ref_dt), "in 1h 0m")
+
     def test_render_header_panel(self):
         lines = render_header_panel(
             width=80,
