@@ -22,7 +22,7 @@
   {
     "job_id": "periodic_quota_fetch",
     "name": "Periodic Model Quota Fetch",
-    "interval_seconds": 10,
+    "interval_seconds": 600,
     "agent": "quota_fetcher",
     "prompt": "Fetch live Antigravity model quota metrics and update QuotaTracker",
     "enabled": true,
@@ -30,3 +30,4 @@
     "next_run": null
   }
 ]
+

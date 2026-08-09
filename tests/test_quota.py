@@ -3,10 +3,12 @@ Unit tests for lib/quota.py (QuotaTracker, QuotaInfo, parse_quota_headers, Quota
 """
 
 import json
+import threading
 import time
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+
 
 from lib.quota import (
     QuotaInfo,
@@ -521,22 +523,20 @@ class TestQuotaTracker(unittest.TestCase):
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
                 self.assertEqual(w_1w.remaining_percentage, 80.0)
 
-        # 12 seconds later: 5H TTL (10s) expired, 1W TTL (60s) NOT expired
+        # 12 seconds later: 5H TTL (10s) expired -> fetch triggers and updates BOTH windows from API payload
         with patch("lib.quota.time.time", return_value=start_time + 12.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
-                # 5H window should be updated to v2 (70%)
+                # 5H and 1W windows updated to v2 (70% and 60%) from fresh API response
                 self.assertEqual(w_5h.remaining_percentage, 70.0)
-                # 1W window should remain v1 (80%)
-                self.assertEqual(w_1w.remaining_percentage, 80.0)
+                self.assertEqual(w_1w.remaining_percentage, 60.0)
 
-        # 62 seconds later: 1W TTL (60s) also expired
+        # 62 seconds later: 60s TTL also expired
         with patch("lib.quota.time.time", return_value=start_time + 62.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
-                # Both windows updated to v2
                 self.assertEqual(w_5h.remaining_percentage, 70.0)
                 self.assertEqual(w_1w.remaining_percentage, 60.0)
 
@@ -588,9 +588,58 @@ class TestQuotaTracker(unittest.TestCase):
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
 
+    def test_concurrent_poll_live_quota_in_flight_deduplication(self):
+        tracker = QuotaTracker()
+        w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
+        w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
+        fetch_call_count = 0
+        fetch_lock = threading.Lock()
+
+        def slow_fetch(*args, **kwargs):
+            nonlocal fetch_call_count
+            with fetch_lock:
+                fetch_call_count += 1
+            time.sleep(0.1)
+            return w5h, w1w
+
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+            t1 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
+            t2 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        self.assertEqual(fetch_call_count, 1)
+
+    def test_fetch_failure_updates_timestamps_to_prevent_endpoint_hammering(self):
+        tracker = QuotaTracker()
+        w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
+        w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
+        start_time = 5000.0
+
+        # Initial fetch returns None (API error)
+        with patch("lib.quota.time.time", return_value=start_time):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=None) as mock_fetch:
+                tracker.poll_live_quota()
+                self.assertEqual(mock_fetch.call_count, 1)
+
+        # 1 second later: TTL (10s) not reached, must NOT retry
+        with patch("lib.quota.time.time", return_value=start_time + 1.0):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
+                tracker.poll_live_quota()
+                self.assertEqual(mock_fetch.call_count, 0)
+
+        # 10 seconds later: TTL expired, retries API call
+        with patch("lib.quota.time.time", return_value=start_time + 10.0):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
+                tracker.poll_live_quota()
+                self.assertEqual(mock_fetch.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

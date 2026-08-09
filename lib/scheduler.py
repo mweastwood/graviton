@@ -54,7 +54,7 @@ DEFAULT_JOBS = [
     {
         "job_id": "periodic_quota_fetch",
         "name": "Periodic Model Quota Fetch",
-        "interval_seconds": 10,
+        "interval_seconds": 600,
         "agent": "quota_fetcher",
         "prompt": "Fetch live Antigravity model quota metrics and update QuotaTracker",
         "enabled": True,
@@ -62,7 +62,6 @@ DEFAULT_JOBS = [
         "next_run": None,
     },
 ]
-
 
 
 def parse_iso_timestamp(ts_str: Optional[str], context: str = "") -> Optional[datetime]:

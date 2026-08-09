@@ -627,6 +627,7 @@ class QuotaTracker:
         self.interval_1w = 60.0
         self._last_fetch_5h: float = 0.0
         self._last_fetch_1w: float = 0.0
+        self._in_flight: bool = False
         self._stop_polling_event = threading.Event()
         self._polling_thread: Optional[threading.Thread] = None
 
@@ -804,30 +805,33 @@ class QuotaTracker:
         """
         now = time.time()
         with self._lock:
+            if self._in_flight:
+                return self.window_5h, self.window_1w
+
             due_5h = force or (self._last_fetch_5h == 0.0) or ((now - self._last_fetch_5h) >= self.interval_5h)
             due_1w = force or (self._last_fetch_1w == 0.0) or ((now - self._last_fetch_1w) >= self.interval_1w)
             if not (due_5h or due_1w):
                 return self.window_5h, self.window_1w
+
+            self._in_flight = True
             pool = quota_pool if quota_pool is not None else self.quota_pool
 
-        res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
+        try:
+            res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
+        finally:
+            with self._lock:
+                self._in_flight = False
 
         with self._lock:
             now = time.time()
             if res is not None:
                 w_5h, w_1w = res
-                updated_5h = False
-                updated_1w = False
-
-                if due_5h:
-                    self.window_5h = w_5h
-                    self._last_fetch_5h = now
-                    updated_5h = True
-
-                if due_1w:
-                    self.window_1w = w_1w
-                    self._last_fetch_1w = now
-                    updated_1w = True
+                self.window_5h = w_5h
+                self.window_1w = w_1w
+                self._last_fetch_5h = now
+                self._last_fetch_1w = now
+                updated_5h = due_5h
+                updated_1w = due_1w
 
                 effective_pct = min(self.window_5h.remaining_percentage, self.window_1w.remaining_percentage)
                 self._remaining_percentage = max(0.0, min(100.0, float(effective_pct)))
@@ -860,6 +864,10 @@ class QuotaTracker:
                     f"1W={self.window_1w.remaining_percentage:.1f}% (updated: {updated_1w})"
                 )
             else:
+                if due_5h:
+                    self._last_fetch_5h = now
+                if due_1w:
+                    self._last_fetch_1w = now
                 logger.warning("Live Antigravity quota fetch returned None; preserving existing QuotaTracker metrics.")
 
             return self.window_5h, self.window_1w
@@ -884,18 +892,22 @@ class QuotaTracker:
     def stop_background_polling(self, timeout: float = 2.0):
         """Stop asynchronous background polling thread gracefully."""
         self._stop_polling_event.set()
-        if self._polling_thread and self._polling_thread.is_alive():
-            self._polling_thread.join(timeout=timeout)
-        self._polling_thread = None
+        with self._lock:
+            thread = self._polling_thread
+            self._polling_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
         logger.info("QuotaTracker background polling thread stopped.")
 
     def is_polling(self) -> bool:
         """Return True if background polling thread is active."""
-        return (
-            self._polling_thread is not None
-            and self._polling_thread.is_alive()
-            and not self._stop_polling_event.is_set()
-        )
+        with self._lock:
+            return (
+                self._polling_thread is not None
+                and self._polling_thread.is_alive()
+                and not self._stop_polling_event.is_set()
+            )
+
 
     def _background_polling_loop(
         self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
