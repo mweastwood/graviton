@@ -485,6 +485,62 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("SCHEDULED JOBS [DISABLED | STOPPED]", rendered)
         self.assertIn("(Scheduler disabled)", rendered)
 
+    def test_render_approved_prs_empty(self):
+        manager = TaskManager(max_workers=2)
+        mock_pr_tracker = patch("lib.pr_tracker.PRTracker").start()()
+        mock_pr_tracker.get_approved_prs.return_value = []
+
+        dashboard = TerminalDashboard(task_manager=manager, pr_tracker=mock_pr_tracker)
+        rendered = dashboard.render(width=80)
+
+        self.assertIn("APPROVED PULL REQUESTS (READY TO MERGE)", rendered)
+        self.assertIn("(No approved PRs awaiting merge)", rendered)
+
+        # Verify width of all rendered lines
+        for line in rendered.split("\n"):
+            if line:
+                self.assertEqual(get_display_width(line), 80)
+
+    def test_render_approved_prs_populated(self):
+        manager = TaskManager(max_workers=2)
+        mock_pr_tracker = patch("lib.pr_tracker.PRTracker").start()()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 42,
+                "title": "A very long pull request title that will be truncated",
+                "author": "mweastwood",
+                "url": "https://github.com/mweastwood/graviton/pull/42",
+            },
+            {
+                "number": 101,
+                "title": "Short title",
+                "author": "contributor_user",
+                "url": "https://github.com/mweastwood/graviton/pull/101",
+            },
+        ]
+
+        dashboard = TerminalDashboard(task_manager=manager, pr_tracker=mock_pr_tracker)
+
+        for target_w in [80, 100, 120]:
+            rendered = dashboard.render(width=target_w)
+            self.assertIn("APPROVED PULL REQUESTS (READY TO MERGE)", rendered)
+            self.assertIn("#42", rendered)
+            self.assertIn("#101", rendered)
+            self.assertIn("mweastwood", rendered)
+            self.assertIn("PR #", rendered)
+            self.assertIn("TITLE", rendered)
+            self.assertIn("AUTHOR", rendered)
+            self.assertIn("URL", rendered)
+
+            for i, line in enumerate(rendered.split("\n")):
+                if not line:
+                    continue
+                self.assertEqual(
+                    get_display_width(line),
+                    target_w,
+                    f"Line {i} width mismatch at width {target_w}: {line!r}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,7 @@ from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
+from lib.pr_tracker import PRTracker
 
 # Setup logging
 logging.basicConfig(
@@ -50,12 +51,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_triager: str = "issue_triager"
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
+    pr_tracker: Optional[PRTracker] = None
 
     def do_GET(self):
         """Health check endpoint."""
         if self.path in ("/", "/health"):
             sched = GravitonHandler.scheduler
             tasks_info = self.task_manager.get_stats() if self.task_manager else {}
+            approved_count = len(self.pr_tracker.get_approved_prs()) if self.pr_tracker else 0
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
@@ -65,6 +68,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "scheduler_enabled": sched is not None,
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
+                "approved_prs_count": approved_count,
                 "tasks": tasks_info,
             })
         else:
@@ -100,6 +104,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_reviewer=self.default_reviewer,
             default_fixer=self.default_fixer,
             default_triager=self.default_triager,
+            pr_tracker=self.pr_tracker,
         )
 
         if decision.get("status") == "accepted":
@@ -198,6 +203,10 @@ def main():
         scheduler.start()
         GravitonHandler.scheduler = scheduler
 
+    pr_tracker = PRTracker()
+    GravitonHandler.pr_tracker = pr_tracker
+    threading.Thread(target=pr_tracker.sync_from_gh, args=(str(REPO_ROOT),), daemon=True).start()
+
     task_manager = TaskManager(
         max_workers=args.max_workers,
         max_tasks=args.max_tasks,
@@ -215,6 +224,7 @@ def main():
             port=args.port,
             repo_root=REPO_ROOT,
             scheduler=scheduler,
+            pr_tracker=pr_tracker,
         )
         dashboard.start()
 

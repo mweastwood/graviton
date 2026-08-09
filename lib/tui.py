@@ -12,7 +12,7 @@ import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, TextIO, Tuple, Union
+from typing import Any, Dict, Optional, TextIO, Tuple, Union
 
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
@@ -139,6 +139,7 @@ class TerminalDashboard:
         log_handler: Optional[TUILogHandler] = None,
         git_cache_ttl: float = 10.0,
         scheduler: Optional[TaskScheduler] = None,
+        pr_tracker: Optional[Any] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -159,6 +160,7 @@ class TerminalDashboard:
 
         self.log_handler = log_handler or TUILogHandler()
         self.scheduler = scheduler
+        self.pr_tracker = pr_tracker
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -298,16 +300,21 @@ class TerminalDashboard:
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
-        # 4. Scheduled Jobs Panel
+        # 4. Approved Pull Requests Panel
+        approved_prs = self.pr_tracker.get_approved_prs() if self.pr_tracker else []
+        lines.extend(self._render_approved_prs(width, approved_prs))
+        lines.append("")
+
+        # 5. Scheduled Jobs Panel
         lines.extend(self._render_scheduled_jobs(width, self.scheduler))
         lines.append("")
 
-        # 5. Task History Panel
+        # 6. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
         lines.append("")
 
-        # 6. Event Logs Panel
+        # 7. Event Logs Panel
         lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
@@ -405,6 +412,54 @@ class TerminalDashboard:
                 wait_str = fit_to_display_width(f"{t.wait_time:.1f}s", 10)
                 prompt_str = fit_to_display_width(prompt_trunc, 26)
                 row = f"{id_str} {agent_str} {target_str} {wait_str} {prompt_str}"
+                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+
+        res.append("└" + "─" * (width - 2) + "┘")
+        return res
+
+    def _render_approved_prs(self, width: int, approved_prs: list) -> list:
+        inner_w = width - 4
+        panel_title = " APPROVED PULL REQUESTS (READY TO MERGE) "
+        title_dw = get_display_width(panel_title)
+        pad_len = max(0, width - 3 - title_dw)
+        header_bar = "┌─" + f"\033[92m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+
+        res = [header_bar]
+        if not approved_prs:
+            msg = "(No approved PRs awaiting merge)"
+            msg_styled = f"\033[2m{msg}\033[0m"
+            res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
+        else:
+            col_hdr = f"{fit_to_display_width('PR #', 8)} {fit_to_display_width('TITLE', 24)} {fit_to_display_width('AUTHOR', 14)} {fit_to_display_width('URL', 26)}"
+            hdr_styled = f"\033[1m{col_hdr}\033[0m"
+            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+            for pr in approved_prs:
+                pr_num_str = f"#{pr.get('number', '')}"
+                title = str(pr.get("title", ""))
+                author = str(pr.get("author", ""))
+                url = str(pr.get("url", ""))
+
+                if get_display_width(title) > 24:
+                    title_trunc = truncate_to_display_width(title, 22) + ".."
+                else:
+                    title_trunc = title
+
+                if get_display_width(author) > 14:
+                    author_trunc = truncate_to_display_width(author, 12) + ".."
+                else:
+                    author_trunc = author
+
+                if get_display_width(url) > 26:
+                    url_trunc = truncate_to_display_width(url, 24) + ".."
+                else:
+                    url_trunc = url
+
+                num_str = fit_to_display_width(pr_num_str, 8)
+                t_str = fit_to_display_width(title_trunc, 24)
+                a_str = fit_to_display_width(author_trunc, 14)
+                u_str = fit_to_display_width(url_trunc, 26)
+
+                row = f"{num_str} {t_str} {a_str} {u_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
