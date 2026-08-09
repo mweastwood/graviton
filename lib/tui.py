@@ -254,6 +254,10 @@ class TerminalDashboard:
                         if self.active_screen != "jobs":
                             self.active_screen = "jobs"
                             self._force_refresh()
+                    elif ch in ("e", "E"):
+                        if self.active_screen != "logs":
+                            self.active_screen = "logs"
+                            self._force_refresh()
                     elif ch == "\x1b":
                         if self.active_screen != "main":
                             self.active_screen = "main"
@@ -392,6 +396,15 @@ class TerminalDashboard:
             lines.extend(self._render_scheduled_jobs(width, self.scheduler))
             return "\n".join(lines)
 
+        if self.active_screen == "logs":
+            # Dedicated Event Logs Screen View
+            banner_text = "Press [Esc] to return to Main Screen"
+            banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
+            lines.append(banner_line)
+            lines.append("")
+            lines.extend(self._render_event_logs(width, limit=15))
+            return "\n".join(lines)
+
         # Main Screen Layout
         # 2. Antigravity Quota Panel
         lines.extend(self._render_quota_panel(width))
@@ -415,10 +428,6 @@ class TerminalDashboard:
         # 6. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
-        lines.append("")
-
-        # 7. Event Logs Panel
-        lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
 
@@ -503,10 +512,10 @@ class TerminalDashboard:
         info_line = f"Host: {self.host}:{self.port} │ Branch: {branch} │ Commit: {commit} │ Uptime: {uptime}"
         info_content = fit_to_display_width(info_line, inner_w)
 
-        if self.active_screen == "jobs":
+        if self.active_screen in ("jobs", "logs"):
             nav_hint = "Nav: [Esc] Main Screen"
         else:
-            nav_hint = "Nav: [j] Periodic Jobs"
+            nav_hint = "Nav: [j] Periodic Jobs │ [e] Event Logs"
         nav_content = fit_to_display_width(f"\033[93m\033[1m{nav_hint}\033[0m", inner_w)
 
         return [
@@ -800,7 +809,7 @@ class TerminalDashboard:
         res.append("└" + "─" * (width - 2) + "┘")
         return res
 
-    def _render_event_logs(self, width: int) -> list:
+    def _render_event_logs(self, width: int, limit: int = 15) -> list:
         inner_w = width - 4
         panel_title = " EVENT LOGS "
         title_dw = get_display_width(panel_title)
@@ -808,7 +817,7 @@ class TerminalDashboard:
         header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
         res = [header_bar]
-        recent_logs = self.log_handler.get_logs(limit=5) if self.log_handler else []
+        recent_logs = self.log_handler.get_logs(limit=limit) if self.log_handler else []
         if not recent_logs:
             msg = "(No event logs recorded yet)"
             msg_styled = f"\033[2m{msg}\033[0m"
