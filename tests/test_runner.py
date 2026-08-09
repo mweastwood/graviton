@@ -410,6 +410,18 @@ class TestTranscriptInspector(unittest.TestCase):
         empty_file.write_text("", encoding="utf-8")
         self.assertFalse(is_transcript_incomplete(empty_file))
 
+    def test_is_transcript_incomplete_trailing_whitespace(self):
+        from lib.runner import is_transcript_incomplete
+        transcript_file = self.test_dir / "trailing.jsonl"
+        content = (
+            '{"type": "USER_INPUT", "content": "hello"}\n'
+            '{"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "cmd"}]}\n'
+            '\n'
+            '   \n'
+        )
+        transcript_file.write_text(content, encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
     def test_is_transcript_incomplete_cli_execution(self):
         runner_py = Path(__file__).resolve().parent.parent / "lib" / "runner.py"
 
