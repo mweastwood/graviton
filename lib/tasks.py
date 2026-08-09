@@ -4,6 +4,7 @@ Thread-safe Task Queue & Execution Manager for Graviton.
 
 import logging
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ class Task:
     worker_thread_id: Optional[str] = None
     return_code: Optional[int] = None
     error_message: Optional[str] = None
+    attempt: int = 1
+    max_attempts: int = 3
 
     @property
     def elapsed_time(self) -> float:
@@ -50,6 +53,23 @@ class Task:
             return self.start_time - self.enqueue_time
         return time.time() - self.enqueue_time
 
+    def update_attempt_from_line(self, line: str) -> bool:
+        """Parse retry log line and update attempt / max_attempts if present."""
+        match = re.search(r"(?i)attempt[:\s]*(\d+)(?:\s*(?:/|of)\s*(\d+))?", line)
+        if match:
+            self.attempt = int(match.group(1))
+            if match.group(2):
+                self.max_attempts = int(match.group(2))
+            return True
+        return False
+
+    def update_attempt_from_output(self, output: str):
+        """Parse all lines of output string and update attempt / max_attempts."""
+        if not output:
+            return
+        for line in output.splitlines():
+            self.update_attempt_from_line(line)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -64,6 +84,8 @@ class Task:
             "return_code": self.return_code,
             "elapsed_time": round(self.elapsed_time, 2),
             "wait_time": round(self.wait_time, 2),
+            "attempt": self.attempt,
+            "max_attempts": self.max_attempts,
         }
 
 
@@ -273,6 +295,8 @@ class TaskManager:
                         target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
                         status=TaskStatus.QUEUED,
                         enqueue_time=float(td.get("enqueue_time", time.time())),
+                        attempt=int(td.get("attempt", 1)),
+                        max_attempts=int(td.get("max_attempts", 3)),
                     )
                     self._tasks[task.id] = task
                     self._queue.put(task)
@@ -432,10 +456,18 @@ class TaskManager:
             try:
                 if self.script_path and self.cwd:
                     res = run_agent_container(
-                        task.agent, task.prompt, self.script_path, self.cwd
+                        task.agent,
+                        task.prompt,
+                        self.script_path,
+                        self.cwd,
+                        on_output=task.update_attempt_from_line,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()
+                    if res.stdout:
+                        task.update_attempt_from_output(res.stdout)
+                    if res.stderr:
+                        task.update_attempt_from_output(res.stderr)
                 else:
                     return_code = 0
                     stderr_output = ""

@@ -38,6 +38,27 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(d["elapsed_time"], 10.0)
         self.assertEqual(d["wait_time"], 5.0)
         self.assertEqual(d["return_code"], 0)
+        self.assertEqual(d["attempt"], 1)
+        self.assertEqual(d["max_attempts"], 3)
+
+    def test_task_attempt_parsing(self):
+        t = Task(id="task-1", agent="code_reviewer", prompt="Test")
+        self.assertEqual(t.attempt, 1)
+        self.assertEqual(t.max_attempts, 3)
+
+        updated = t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)...")
+        self.assertTrue(updated)
+        self.assertEqual(t.attempt, 2)
+        self.assertEqual(t.max_attempts, 3)
+
+        t.update_attempt_from_line("Agent exited on attempt 3")
+        self.assertEqual(t.attempt, 3)
+        self.assertEqual(t.max_attempts, 3)
+
+        output = "Starting container\nAuto-continuing conversation (Attempt 3/5)...\nDone"
+        t.update_attempt_from_output(output)
+        self.assertEqual(t.attempt, 3)
+        self.assertEqual(t.max_attempts, 5)
 
     def test_task_manager_submit_and_execute(self):
         manager = TaskManager(max_workers=2)

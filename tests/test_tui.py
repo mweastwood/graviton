@@ -200,6 +200,8 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("GRAVITON SERVER DASHBOARD", rendered)
         self.assertIn("Host: 127.0.0.1:8080", rendered)
         self.assertIn("ACTIVE TASKS (RUNNING)", rendered)
+        self.assertIn("ATTEMPT", rendered)
+        self.assertIn("1/3", rendered)
         self.assertIn("task-1", rendered)
         self.assertIn("code_reviewer", rendered)
         self.assertIn("TASK QUEUE (QUEUED)", rendered)
@@ -209,6 +211,35 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("EVENT LOGS", rendered)
         self.assertIn("task-3", rendered)
         self.assertIn("COMPLETED", rendered)
+
+    def test_dashboard_attempt_column_rendering(self):
+        manager = TaskManager(max_workers=2)
+        t_active = Task(
+            id="task-1",
+            agent="code_reviewer",
+            prompt="Review PR #1",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 5,
+            attempt=2,
+            max_attempts=3,
+        )
+        t_history = Task(
+            id="task-2",
+            agent="code_fixer",
+            prompt="Fix PR #2",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 15,
+            finish_time=time.time() - 5,
+            attempt=3,
+            max_attempts=3,
+        )
+        manager._tasks = {"task-1": t_active, "task-2": t_history}
+        dashboard = TerminalDashboard(task_manager=manager)
+        rendered = dashboard.render(width=80)
+
+        self.assertIn("2/3", rendered)
+        self.assertIn("3/3", rendered)
+        self.assertIn("ATTEMPT", rendered)
 
     def test_dashboard_line_widths(self):
         manager = TaskManager(max_workers=2)

@@ -364,21 +364,30 @@ class TerminalDashboard:
             msg_styled = f"\033[2m{msg}\033[0m"
             res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
         else:
-            col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('TARGET', 10)} {fit_to_display_width('WORKER', 10)} {fit_to_display_width('ELAPSED', 10)} {fit_to_display_width('PROMPT', 18)}"
+            col_hdr = (
+                f"{fit_to_display_width('ID', 8)} "
+                f"{fit_to_display_width('AGENT', 14)} "
+                f"{fit_to_display_width('TARGET', 8)} "
+                f"{fit_to_display_width('WORKER', 9)} "
+                f"{fit_to_display_width('ATTEMPT', 7)} "
+                f"{fit_to_display_width('ELAPSED', 9)} "
+                f"{fit_to_display_width('PROMPT', 15)}"
+            )
             hdr_styled = f"\033[1m{col_hdr}\033[0m"
             res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
             for t in tasks:
-                if get_display_width(t.prompt) > 18:
-                    prompt_trunc = truncate_to_display_width(t.prompt, 16) + ".."
+                if get_display_width(t.prompt) > 15:
+                    prompt_trunc = truncate_to_display_width(t.prompt, 13) + ".."
                 else:
                     prompt_trunc = t.prompt
                 id_str = fit_to_display_width(t.id, 8)
-                agent_str = fit_to_display_width(t.agent, 15)
-                target_str = fit_to_display_width(t.target_id or "-", 10)
-                worker_str = fit_to_display_width(t.worker_thread_id or "-", 10)
-                elapsed_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 10)
-                prompt_str = fit_to_display_width(prompt_trunc, 18)
-                row = f"{id_str} {agent_str} {target_str} {worker_str} {elapsed_str} {prompt_str}"
+                agent_str = fit_to_display_width(t.agent, 14)
+                target_str = fit_to_display_width(t.target_id or "-", 8)
+                worker_str = fit_to_display_width(t.worker_thread_id or "-", 9)
+                attempt_str = fit_to_display_width(f"{t.attempt}/{t.max_attempts}", 7)
+                elapsed_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 9)
+                prompt_str = fit_to_display_width(prompt_trunc, 15)
+                row = f"{id_str} {agent_str} {target_str} {worker_str} {attempt_str} {elapsed_str} {prompt_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")
@@ -597,19 +606,28 @@ class TerminalDashboard:
             msg_styled = f"\033[2m{msg}\033[0m"
             res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
         else:
-            col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('STATUS', 11)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('RETURN', 8)} {fit_to_display_width('DURATION', 10)} {fit_to_display_width('TARGET', 8)}"
+            col_hdr = (
+                f"{fit_to_display_width('ID', 8)} "
+                f"{fit_to_display_width('STATUS', 11)} "
+                f"{fit_to_display_width('AGENT', 14)} "
+                f"{fit_to_display_width('ATTEMPT', 7)} "
+                f"{fit_to_display_width('RETURN', 8)} "
+                f"{fit_to_display_width('DURATION', 9)} "
+                f"{fit_to_display_width('TARGET', 8)}"
+            )
             hdr_styled = f"\033[1m{col_hdr}\033[0m"
             res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
             for t in tasks:
                 status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
                 id_str = fit_to_display_width(t.id, 8)
                 status_str = fit_to_display_width(f"{status_color}{t.status}\033[0m", 11)
-                agent_str = fit_to_display_width(t.agent, 15)
+                agent_str = fit_to_display_width(t.agent, 14)
+                attempt_str = fit_to_display_width(f"{t.attempt}/{t.max_attempts}", 7)
                 ret_val = str(t.return_code) if t.return_code is not None else "-"
                 ret_str = fit_to_display_width(ret_val, 8)
-                dur_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 10)
+                dur_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 9)
                 target_str = fit_to_display_width(t.target_id or "-", 8)
-                row = f"{id_str} {status_str} {agent_str} {ret_str} {dur_str} {target_str}"
+                row = f"{id_str} {status_str} {agent_str} {attempt_str} {ret_str} {dur_str} {target_str}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
         res.append("└" + "─" * (width - 2) + "┘")

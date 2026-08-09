@@ -11,27 +11,40 @@ from lib.runner import run_agent_container, run_agent_async
 
 class TestRunner(unittest.TestCase):
 
-    @patch("subprocess.run")
-    def test_run_agent_container_success(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["run_agent_container.sh", "code_reviewer", "Review PR"],
-            returncode=0,
-            stdout="Agent finished successfully",
-            stderr="",
-        )
+    @patch("subprocess.Popen")
+    def test_run_agent_container_success(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ["Agent finished successfully\n", "Auto-continuing conversation (Attempt 2/3)...\n"]
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
 
         script_path = Path("/tmp/run_agent_container.sh")
         cwd = Path("/workspace")
-        res = run_agent_container("code_reviewer", "Review PR", script_path, cwd)
+        received_lines = []
 
-        mock_run.assert_called_once_with(
+        res = run_agent_container(
+            "code_reviewer",
+            "Review PR",
+            script_path,
+            cwd,
+            on_output=received_lines.append,
+        )
+
+        mock_popen.assert_called_once_with(
             [str(script_path), "code_reviewer", "Review PR"],
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
         )
         self.assertEqual(res.returncode, 0)
-        self.assertEqual(res.stdout, "Agent finished successfully")
+        self.assertIn("Agent finished successfully", res.stdout)
+        self.assertEqual(len(received_lines), 2)
+        self.assertEqual(received_lines[0], "Agent finished successfully\n")
+        self.assertEqual(received_lines[1], "Auto-continuing conversation (Attempt 2/3)...\n")
 
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async(self, mock_run_container):
