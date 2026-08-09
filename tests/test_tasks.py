@@ -105,6 +105,12 @@ class TestTaskManager(unittest.TestCase):
         manager.start()
         task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
 
+        # Wait for worker thread to pick up/complete task1 before initiating drain
+        for _ in range(50):
+            if task1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
         # Initiate drain
         drained = manager.drain_active_tasks(timeout=5.0)
         self.assertTrue(drained)
@@ -129,8 +135,13 @@ class TestTaskManager(unittest.TestCase):
             manager1 = TaskManager(max_workers=2)
             manager1.start()
 
-            # Submit tasks and enter drain
+            # Submit task t1 and wait for worker to pick up/complete it before initiating drain
             t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
+            for _ in range(50):
+                if t1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                    break
+                time.sleep(0.05)
+
             manager1.drain_active_tasks(timeout=5.0)
             t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
 
@@ -161,6 +172,37 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(t3.id, "task-3")
 
             manager2.stop()
+
+    def test_task_manager_restore_queue_state_defensive_parsing(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "corrupted_queue_state.json"
+            
+            # Case 1: File contains invalid JSON object (e.g. array at root)
+            state_file.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+            manager = TaskManager(max_workers=2)
+            self.assertEqual(manager.restore_queue_state(filepath=state_file), 0)
+
+            # Case 2: queued_tasks contains invalid/malformed items
+            malformed_state = {
+                "task_counter": 10,
+                "queued_tasks": [
+                    "not a dict",
+                    {"id": "task-5"},  # missing agent and prompt
+                    {"id": "task-6", "agent": "code_reviewer"},  # missing prompt
+                    {"id": "task-7", "agent": "code_fixer", "prompt": "Valid task", "target_id": "#7"},
+                ],
+            }
+            state_file.write_text(json.dumps(malformed_state), encoding="utf-8")
+            restored = manager.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored, 1)
+            queued = manager.get_queued_tasks()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0].id, "task-7")
+            self.assertEqual(queued[0].agent, "code_fixer")
+            self.assertEqual(queued[0].prompt, "Valid task")
+            self.assertEqual(manager._task_counter, 10)
 
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_drain_active_tasks_timeout(self, mock_run):

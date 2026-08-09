@@ -229,32 +229,57 @@ class TaskManager:
             logger.exception(f"Failed to read queue state file '{path}': {e}")
             return 0
 
+        if not isinstance(data, dict):
+            logger.warning(f"Invalid queue state format in '{path}': expected JSON object.")
+            return 0
+
         queued_data = data.get("queued_tasks", [])
+        if not isinstance(queued_data, list):
+            logger.warning(f"Invalid queued_tasks format in '{path}': expected list.")
+            return 0
+
         saved_counter = data.get("task_counter", 0)
 
         with self._lock:
-            self._task_counter = max(self._task_counter, saved_counter)
+            if isinstance(saved_counter, int):
+                self._task_counter = max(self._task_counter, saved_counter)
             restored_count = 0
             for td in queued_data:
-                task_id = td["id"]
-                if task_id.startswith("task-"):
-                    try:
-                        num = int(task_id.split("-")[1])
-                        self._task_counter = max(self._task_counter, num)
-                    except (IndexError, ValueError):
-                        pass
+                if not isinstance(td, dict):
+                    logger.warning(f"Skipping non-dict item in queued_tasks state: {td}")
+                    continue
 
-                task = Task(
-                    id=task_id,
-                    agent=td["agent"],
-                    prompt=td["prompt"],
-                    target_id=td.get("target_id"),
-                    status=TaskStatus.QUEUED,
-                    enqueue_time=td.get("enqueue_time", time.time()),
-                )
-                self._tasks[task_id] = task
-                self._queue.put(task)
-                restored_count += 1
+                try:
+                    task_id = td.get("id")
+                    agent = td.get("agent")
+                    prompt = td.get("prompt")
+                    if not task_id or not agent or prompt is None:
+                        logger.warning(
+                            f"Skipping queue state item missing required fields ('id', 'agent', 'prompt'): {td}"
+                        )
+                        continue
+
+                    if isinstance(task_id, str) and task_id.startswith("task-"):
+                        try:
+                            num = int(task_id.split("-")[1])
+                            self._task_counter = max(self._task_counter, num)
+                        except (IndexError, ValueError):
+                            pass
+
+                    task = Task(
+                        id=str(task_id),
+                        agent=str(agent),
+                        prompt=str(prompt),
+                        target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
+                        status=TaskStatus.QUEUED,
+                        enqueue_time=float(td.get("enqueue_time", time.time())),
+                    )
+                    self._tasks[task.id] = task
+                    self._queue.put(task)
+                    restored_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to restore queued task item {td}: {e}")
+                    continue
 
         logger.info(f"Restored {restored_count} queued task(s) state from {path}.")
         return restored_count
