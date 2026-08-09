@@ -261,32 +261,233 @@ def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
     return os.getenv("ANTIGRAVITY_TOKEN")
 
 
-def _extract_pct_and_reset(info_dict: dict) -> Tuple[Optional[float], Optional[str]]:
+def _extract_pct_and_reset(info_dict: dict, include_weekly: bool = True) -> Tuple[Optional[float], Optional[str]]:
     """Extract remaining_percentage (0.0 to 100.0) and reset_time string from quota dict."""
     if not isinstance(info_dict, dict):
         return None, None
     pct = None
-    if "remainingFraction" in info_dict and info_dict["remainingFraction"] is not None:
-        try:
-            val = float(info_dict["remainingFraction"])
-            pct = val * 100.0 if val <= 1.0 else val
-        except (ValueError, TypeError):
-            pass
-    if pct is None:
-        for k in ("quotaRemaining", "remainingQuota", "quota_remaining", "remaining_percentage", "quota"):
-            if k in info_dict and info_dict[k] is not None:
-                try:
-                    val = float(info_dict[k])
-                    pct = val * 100.0 if val <= 1.0 else val
-                    break
-                except (ValueError, TypeError):
-                    pass
+    pct_keys = [
+        "remainingFraction",
+        "remaining_fraction",
+        "quotaRemaining",
+        "remainingQuota",
+        "quota_remaining",
+        "remaining_percentage",
+        "remainingPercentage",
+        "quotaRemainingFraction",
+        "quota_remaining_fraction",
+    ]
+    if include_weekly:
+        pct_keys.extend([
+            "weekly_remaining_fraction",
+            "weeklyRemainingFraction",
+            "weekly_remaining",
+            "weeklyRemaining",
+            "weekly_percentage",
+            "weeklyPercentage",
+        ])
+    pct_keys.extend([
+        "quota",
+        "remaining",
+        "percentage",
+    ])
+    for k in pct_keys:
+        if k in info_dict and info_dict[k] is not None and not isinstance(info_dict[k], (dict, list)):
+            try:
+                val = float(info_dict[k])
+                pct = round(val * 100.0, 4) if val <= 1.0 else val
+                break
+            except (ValueError, TypeError):
+                pass
+
     reset_time = None
-    for k in ("resetTime", "reset_time", "weeklyResetTime", "weekly_reset_time"):
-        if k in info_dict and info_dict[k] is not None:
+    reset_keys = [
+        "resetTime",
+        "reset_time",
+    ]
+    if include_weekly:
+        reset_keys.extend([
+            "weeklyResetTime",
+            "weekly_reset_time",
+        ])
+    reset_keys.append("reset")
+    if include_weekly:
+        reset_keys.extend([
+            "weeklyReset",
+            "weekly_reset",
+        ])
+    for k in reset_keys:
+        if k in info_dict and info_dict[k] is not None and not isinstance(info_dict[k], (dict, list)):
             reset_time = str(info_dict[k])
             break
+
+    # If missing pct or reset_time, check nested container dictionaries
+    if pct is None or reset_time is None:
+        sub_keys = []
+        if include_weekly:
+            sub_keys.extend([
+                "weeklyQuotaInfo",
+                "weekly_quota_info",
+                "weeklyQuota",
+                "weekly_quota",
+                "weekly",
+                "weeklyQuotaDetails",
+                "weekly_quota_details",
+            ])
+        sub_keys.extend([
+            "quotaInfo",
+            "quota_info",
+            "quota",
+            "remaining",
+        ])
+        for sub_key in sub_keys:
+            if sub_key in info_dict and isinstance(info_dict[sub_key], dict):
+                sub_pct, sub_reset = _extract_pct_and_reset(info_dict[sub_key], include_weekly=include_weekly)
+                if pct is None and sub_pct is not None:
+                    pct = sub_pct
+                if reset_time is None and sub_reset is not None:
+                    reset_time = sub_reset
+                if pct is not None and reset_time is not None:
+                    break
+
     return pct, reset_time
+
+
+def _extract_from_windows_or_limits(
+    dict_data: dict,
+) -> Tuple[Optional[Tuple[float, Optional[str]]], Optional[Tuple[float, Optional[str]]]]:
+    """Extract (5H_window, 1W_window) tuples from windows/limits arrays inside dict_data or nested dicts."""
+    if not isinstance(dict_data, dict):
+        return None, None
+
+    res_5h: Optional[Tuple[float, Optional[str]]] = None
+    res_1w: Optional[Tuple[float, Optional[str]]] = None
+
+    dicts_to_check = [dict_data]
+    for sub in ("quotaInfo", "quota_info", "weeklyQuotaInfo", "weekly_quota_info"):
+        if sub in dict_data and isinstance(dict_data[sub], dict):
+            dicts_to_check.append(dict_data[sub])
+
+    for target_dict in dicts_to_check:
+        for key in ("windows", "limits", "window_limits", "quota_windows"):
+            if key in target_dict and isinstance(target_dict[key], list):
+                for item in target_dict[key]:
+                    if not isinstance(item, dict):
+                        continue
+                    ident = str(
+                        item.get("name")
+                        or item.get("window")
+                        or item.get("duration")
+                        or item.get("type")
+                        or item.get("window_name")
+                        or item.get("label")
+                        or ""
+                    ).upper()
+                    p, r = _extract_pct_and_reset(item, include_weekly=True)
+                    if p is not None:
+                        if any(w in ident for w in ("1W", "WEEKLY", "7D", "1WEEK", "WEEK")):
+                            if res_1w is None:
+                                res_1w = (p, r)
+                        elif any(w in ident for w in ("5H", "5HOUR", "5_HOUR", "FIVE_HOUR", "5HOURS", "HOURLY")):
+                            if res_5h is None:
+                                res_5h = (p, r)
+
+    return res_5h, res_1w
+
+
+def _extract_1w_from_dict(d: dict) -> Tuple[Optional[float], Optional[str]]:
+    """Extract 1W quota percentage and reset time from any dict (m_data, q_info, pool_target, flat target)."""
+    if not isinstance(d, dict):
+        return None, None
+
+    # 1. Check explicit weekly container keys in d
+    weekly_container_keys = (
+        "weeklyQuotaInfo",
+        "weekly_quota_info",
+        "weeklyQuota",
+        "weekly_quota",
+        "weekly",
+        "weeklyQuotaDetails",
+        "weekly_quota_details",
+    )
+    for k in weekly_container_keys:
+        if k in d and isinstance(d[k], dict):
+            w_pct, w_rst = _extract_pct_and_reset(d[k], include_weekly=True)
+            if w_pct is not None:
+                return w_pct, w_rst
+
+    # 2. Check windows or limits array inside d
+    w5h, w1w = _extract_from_windows_or_limits(d)
+    if w1w is not None and w1w[0] is not None:
+        return w1w
+
+    # 3. Check direct 1W fraction/pct and reset keys in d
+    direct_pct = None
+    direct_pct_keys = (
+        "weekly_remaining_fraction",
+        "weeklyRemainingFraction",
+        "weeklyQuotaRemaining",
+        "weekly_quota_remaining",
+        "weekly_remaining",
+        "weeklyRemaining",
+        "weekly_percentage",
+        "weeklyPercentage",
+        "weekly_quota",
+        "weeklyQuota",
+    )
+    for k in direct_pct_keys:
+        if k in d and d[k] is not None and not isinstance(d[k], (dict, list)):
+            try:
+                val = float(d[k])
+                direct_pct = round(val * 100.0, 4) if val <= 1.0 else val
+                break
+            except (ValueError, TypeError):
+                pass
+
+    direct_reset = None
+    direct_reset_keys = (
+        "weeklyResetTime",
+        "weekly_reset_time",
+        "weeklyReset",
+        "weekly_reset",
+    )
+    for k in direct_reset_keys:
+        if k in d and d[k] is not None and not isinstance(d[k], (dict, list)):
+            direct_reset = str(d[k])
+            break
+
+    if direct_pct is not None:
+        return direct_pct, direct_reset
+
+    # 4. Check nested quotaInfo or quota_info in d
+    for q_key in ("quotaInfo", "quota_info"):
+        if q_key in d and isinstance(d[q_key], dict):
+            w_pct, w_rst = _extract_1w_from_dict(d[q_key])
+            if w_pct is not None:
+                return w_pct, w_rst
+
+    return None, None
+
+
+def _extract_5h_from_dict(d: dict) -> Tuple[Optional[float], Optional[str]]:
+    """Extract 5H quota percentage and reset time from any dict (m_data, pool_target, flat target)."""
+    if not isinstance(d, dict):
+        return None, None
+
+    # 1. Check windows or limits array inside d
+    w5h, w1w = _extract_from_windows_or_limits(d)
+    if w5h is not None and w5h[0] is not None:
+        return w5h
+
+    # 2. Check quotaInfo or quota_info container in d
+    q_info = d.get("quotaInfo") or d.get("quota_info")
+    if isinstance(q_info, dict):
+        q_pct, q_rst = _extract_pct_and_reset(q_info, include_weekly=False)
+        if q_pct is not None:
+            return q_pct, q_rst
+
+    # 3. Direct extraction on d itself
+    return _extract_pct_and_reset(d, include_weekly=False)
 
 
 def _model_matches_pool(model_id: str, pool: str) -> bool:
@@ -347,22 +548,12 @@ def parse_antigravity_quota_json(
         if "models" in pool_target and isinstance(pool_target["models"], (dict, list)):
             data = pool_target
         else:
-            q_info = pool_target.get("quotaInfo") or pool_target.get("quota_info") or pool_target
-            w_info = pool_target.get("weeklyQuotaInfo") or pool_target.get("weekly_quota_info")
-            if isinstance(q_info, dict):
-                pct_5h, reset_5h = _extract_pct_and_reset(q_info)
-            if isinstance(w_info, dict):
-                pct_1w, reset_1w = _extract_pct_and_reset(w_info)
-
-            val_1w = pool_target.get("weeklyQuotaRemaining", pool_target.get("weekly_quota_remaining", pool_target.get("weeklyRemainingFraction")))
-            reset_1w_direct = pool_target.get("weeklyResetTime", pool_target.get("weekly_reset_time"))
-            if pct_1w is None and val_1w is not None:
-                try:
-                    val_1w_f = float(val_1w)
-                    pct_1w = val_1w_f * 100.0 if val_1w_f <= 1.0 else val_1w_f
-                    reset_1w = str(reset_1w_direct) if reset_1w_direct is not None else reset_1w
-                except (ValueError, TypeError):
-                    pass
+            w_pct, w_rst = _extract_1w_from_dict(pool_target)
+            if w_pct is not None:
+                pct_1w, reset_1w = w_pct, w_rst
+            q_pct, q_rst = _extract_5h_from_dict(pool_target)
+            if q_pct is not None:
+                pct_5h, reset_5h = q_pct, q_rst
 
     # 2. Handle fetchAvailableModels schema with "models" dictionary or list
     if pct_5h is None and pct_1w is None and "models" in data and isinstance(data["models"], (dict, list)):
@@ -379,38 +570,15 @@ def parse_antigravity_quota_json(
             if not _model_matches_pool(str(model_id), effective_pool):
                 continue
 
-            # Check explicit weeklyQuotaInfo first for 1W window
-            w_info = m_data.get("weeklyQuotaInfo") or m_data.get("weekly_quota_info")
-            if isinstance(w_info, dict):
-                w_pct, w_rst = _extract_pct_and_reset(w_info)
-                if w_pct is not None and pct_1w is None:
+            if pct_1w is None:
+                w_pct, w_rst = _extract_1w_from_dict(m_data)
+                if w_pct is not None:
                     pct_1w, reset_1w = w_pct, w_rst
 
-            # Check standard quotaInfo or model dict itself for 5H window
-            q_info = m_data.get("quotaInfo") or m_data.get("quota_info") or m_data
-            if isinstance(q_info, dict):
-                q_pct, q_rst = _extract_pct_and_reset(q_info)
-                if q_pct is not None and pct_5h is None:
+            if pct_5h is None:
+                q_pct, q_rst = _extract_5h_from_dict(m_data)
+                if q_pct is not None:
                     pct_5h, reset_5h = q_pct, q_rst
-
-            # Check direct weekly fields in m_data or q_info if pct_1w still None
-            if pct_1w is None:
-                for k in ("weeklyRemainingFraction", "weeklyQuotaRemaining", "weekly_quota_remaining"):
-                    val_w = m_data.get(k) if isinstance(m_data, dict) else None
-                    if val_w is None and isinstance(q_info, dict):
-                        val_w = q_info.get(k)
-                    if val_w is not None:
-                        try:
-                            val_w_f = float(val_w)
-                            pct_1w = val_w_f * 100.0 if val_w_f <= 1.0 else val_w_f
-                            w_rst_direct = m_data.get("weeklyResetTime", m_data.get("weekly_reset_time"))
-                            if w_rst_direct is None and isinstance(q_info, dict):
-                                w_rst_direct = q_info.get("weeklyResetTime", q_info.get("weekly_reset_time"))
-                            if w_rst_direct is not None:
-                                reset_1w = str(w_rst_direct)
-                            break
-                        except (ValueError, TypeError):
-                            pass
 
         if pct_5h is None and pct_1w is not None:
             pct_5h, reset_5h = 100.0, None
@@ -425,45 +593,13 @@ def parse_antigravity_quota_json(
                 target = target[k]
                 break
 
-        quota_keys = (
-            "quotaRemaining",
-            "remainingQuota",
-            "quota_remaining",
-            "weeklyQuotaRemaining",
-            "weekly_quota_remaining",
-            "resetTime",
-            "reset_time",
-            "weeklyResetTime",
-            "weekly_reset_time",
-            "remainingFraction",
-        )
-        if not any(k in target for k in quota_keys):
-            logger.warning(f"No valid quota keys found in Antigravity RPC payload target: {target}")
-            return None
+        w_pct, w_rst = _extract_1w_from_dict(target)
+        if w_pct is not None:
+            pct_1w, reset_1w = w_pct, w_rst
 
-        val_5h = target.get("quotaRemaining", target.get("remainingQuota", target.get("quota_remaining", target.get("remainingFraction"))))
-        reset_5h = target.get("resetTime", target.get("reset_time"))
-
-        if val_5h is not None:
-            try:
-                val_5h_f = float(val_5h)
-                pct_5h = val_5h_f * 100.0 if val_5h_f <= 1.0 else val_5h_f
-            except (ValueError, TypeError):
-                pct_5h = 100.0
-        else:
-            pct_5h = 100.0
-
-        val_1w = target.get("weeklyQuotaRemaining", target.get("weekly_quota_remaining", target.get("weeklyRemainingFraction")))
-        reset_1w = target.get("weeklyResetTime", target.get("weekly_reset_time"))
-
-        if val_1w is not None:
-            try:
-                val_1w_f = float(val_1w)
-                pct_1w = val_1w_f * 100.0 if val_1w_f <= 1.0 else val_1w_f
-            except (ValueError, TypeError):
-                pct_1w = 100.0
-        else:
-            pct_1w = 100.0
+        q_pct, q_rst = _extract_5h_from_dict(target)
+        if q_pct is not None:
+            pct_5h, reset_5h = q_pct, q_rst
 
     if pct_5h is None and pct_1w is None:
         return None
