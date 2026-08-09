@@ -2,7 +2,7 @@
 GitHub Webhook Event Routing Logic for Graviton.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from lib.security import contains_bot_marker
 
 
@@ -74,10 +74,15 @@ def handle_push_event(payload: Dict[str, Any]) -> Dict[str, Any]:
 def handle_pull_request_event(
     payload: Dict[str, Any],
     default_reviewer: str = "code_reviewer",
+    pr_tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request' webhook event."""
     action = payload.get("action")
-    pr_number = payload.get("number") or payload.get("pull_request", {}).get("number")
+    pr = payload.get("pull_request", {}) if isinstance(payload.get("pull_request"), dict) else {}
+    pr_number = payload.get("number") or pr.get("number")
+
+    if pr_tracker and pr_number is not None and (action in ("closed", "merged") or payload.get("merged") or pr.get("merged")):
+        pr_tracker.remove_approved_pr(pr_number)
 
     if action in ("opened", "synchronize", "reopened"):
         prompt = f"Review PR #{pr_number}"
@@ -97,14 +102,25 @@ def handle_pull_request_event(
 def handle_pull_request_review_event(
     payload: Dict[str, Any],
     default_fixer: str = "code_fixer",
+    pr_tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review' webhook event."""
     action = payload.get("action")
-    review = payload.get("review", {})
+    review = payload.get("review", {}) if isinstance(payload.get("review"), dict) else {}
     review_state = review.get("state", "").upper()
     review_body = review.get("body", "")
-    pr = payload.get("pull_request", {})
+    pr = payload.get("pull_request", {}) if isinstance(payload.get("pull_request"), dict) else {}
     pr_number = pr.get("number") or payload.get("number")
+    pr_title = pr.get("title", "")
+    pr_url = pr.get("html_url", "") or pr.get("url", "")
+    pr_user = pr.get("user", {}) if isinstance(pr.get("user"), dict) else {}
+    pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
+
+    if pr_tracker and pr_number is not None:
+        if action == "submitted" and review_state == "APPROVED":
+            pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url)
+        elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
+            pr_tracker.remove_approved_pr(pr_number)
 
     if not is_pr_created_by_us(pr):
         return {
@@ -312,6 +328,7 @@ def route_webhook_event(
     default_reviewer: str = "code_reviewer",
     default_fixer: str = "code_fixer",
     default_triager: str = "issue_triager",
+    pr_tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -321,13 +338,14 @@ def route_webhook_event(
     :param default_reviewer: Name of the reviewer agent.
     :param default_fixer: Name of the fixer agent.
     :param default_triager: Name of the issue triage agent.
+    :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
         "ping": handle_ping_event,
         "push": handle_push_event,
-        "pull_request": lambda p: handle_pull_request_event(p, default_reviewer=default_reviewer),
-        "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer),
+        "pull_request": lambda p: handle_pull_request_event(p, default_reviewer=default_reviewer, pr_tracker=pr_tracker),
+        "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer, pr_tracker=pr_tracker),
         "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(p, default_fixer=default_fixer),
         "issues": lambda p: handle_issues_event(p, default_triager=default_triager, default_fixer=default_fixer),
         "issue_comment": lambda p: handle_issue_comment_event(

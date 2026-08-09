@@ -345,6 +345,70 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res_issue_comment["status"], "accepted")
         self.assertEqual(res_issue_comment["agent"], "custom_triager")
 
+    def test_router_updates_pr_tracker_on_approval_and_changes_requested(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+
+        payload_approved = {
+            "action": "submitted",
+            "review": {"state": "APPROVED", "body": "LGTM!"},
+            "pull_request": {
+                "number": 42,
+                "title": "Add PR tracking feature",
+                "html_url": "https://github.com/mweastwood/graviton/pull/42",
+                "user": {"login": "alice_reviewer"},
+            },
+        }
+
+        route_webhook_event("pull_request_review", payload_approved, pr_tracker=tracker)
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 42)
+        self.assertEqual(approved[0]["title"], "Add PR tracking feature")
+        self.assertEqual(approved[0]["author"], "alice_reviewer")
+        self.assertEqual(approved[0]["url"], "https://github.com/mweastwood/graviton/pull/42")
+
+        # Now send CHANGES_REQUESTED
+        payload_changes = {
+            "action": "submitted",
+            "review": {"state": "CHANGES_REQUESTED", "body": "Needs fixes"},
+            "pull_request": {
+                "number": 42,
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        route_webhook_event("pull_request_review", payload_changes, pr_tracker=tracker)
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    def test_router_updates_pr_tracker_on_review_dismissed(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+        tracker.add_approved_pr(42, "PR Title", "author", "https://example.com/42")
+
+        payload_dismissed = {
+            "action": "dismissed",
+            "review": {"state": "DISMISSED"},
+            "pull_request": {
+                "number": 42,
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        route_webhook_event("pull_request_review", payload_dismissed, pr_tracker=tracker)
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    def test_router_updates_pr_tracker_on_pr_closed_or_merged(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+        tracker.add_approved_pr(42, "PR Title", "author", "https://example.com/42")
+
+        payload_closed = {
+            "action": "closed",
+            "number": 42,
+            "pull_request": {"number": 42, "merged": True},
+        }
+        route_webhook_event("pull_request", payload_closed, pr_tracker=tracker)
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

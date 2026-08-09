@@ -31,6 +31,7 @@ from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
+from lib.pr_tracker import PRTracker
 
 # Setup logging
 logging.basicConfig(
@@ -50,6 +51,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_triager: str = "issue_triager"
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
+    pr_tracker: Optional[PRTracker] = None
 
     def do_GET(self):
         """Health check endpoint."""
@@ -100,6 +102,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_reviewer=self.default_reviewer,
             default_fixer=self.default_fixer,
             default_triager=self.default_triager,
+            pr_tracker=self.pr_tracker,
         )
 
         if decision.get("status") == "accepted":
@@ -207,6 +210,10 @@ def main():
     task_manager.start()
     GravitonHandler.task_manager = task_manager
 
+    pr_tracker = PRTracker()
+    pr_tracker.sync_in_background(repo_root=REPO_ROOT)
+    GravitonHandler.pr_tracker = pr_tracker
+
     dashboard = None
     if args.dashboard:
         dashboard = TerminalDashboard(
@@ -215,6 +222,7 @@ def main():
             port=args.port,
             repo_root=REPO_ROOT,
             scheduler=scheduler,
+            pr_tracker=pr_tracker,
         )
         dashboard.start()
 
