@@ -105,7 +105,7 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_tm.submit_task.assert_called_once_with(
             agent="code_reviewer",
-            prompt="Review PR #7",
+            prompt="Review PR #7. Use --request-changes for any findings or code fixes.",
             target_id="#7",
         )
         handler._send_json.assert_called_once()
