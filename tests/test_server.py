@@ -249,7 +249,52 @@ class TestGravitonHandler(unittest.TestCase):
             clone_url="https://github.com/owner/repo-alpha.git",
         )
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_cli_repos_dir_defaults_to_starting_directory(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        self.assertEqual(GravitonHandler.repos_dir, Path.cwd().resolve())
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_cli_projects_dir_option(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py", "--projects-dir", "/tmp/custom_projects"]):
+            server_mod.main()
+
+        self.assertEqual(GravitonHandler.repos_dir, Path("/tmp/custom_projects").resolve())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
