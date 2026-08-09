@@ -16,6 +16,7 @@ from typing import Any, List, Optional, TextIO, Tuple, Union
 
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
+from lib.quota import QuotaState, QuotaTracker
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -119,9 +120,11 @@ class TerminalDashboard:
     """
     Live terminal UI dashboard for Graviton server, displaying:
     - Header: host, port, git version, branch, server uptime, hot-reload state.
+    - Antigravity Model Quota panel (level, state, reset time, backoff delay).
     - Active Tasks (RUNNING) panel.
     - Task Queue (QUEUED) panel.
     - Scheduled Jobs panel (periodic TaskScheduler status & upcoming jobs).
+    - Approved Pull Requests panel.
     - Task History (COMPLETED/FAILED) panel.
     - Event Logs panel.
     """
@@ -140,6 +143,7 @@ class TerminalDashboard:
         git_cache_ttl: float = 10.0,
         scheduler: Optional[TaskScheduler] = None,
         pr_tracker: Optional[Any] = None,
+        quota_tracker: Optional[QuotaTracker] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -150,6 +154,8 @@ class TerminalDashboard:
         self.enable_log_redirection = enable_log_redirection
         self.git_cache_ttl = git_cache_ttl
         self.pr_tracker = pr_tracker
+        self.scheduler = scheduler
+        self.quota_tracker = quota_tracker
 
         if log_file is not None:
             log_path = Path(log_file)
@@ -160,7 +166,6 @@ class TerminalDashboard:
             self.log_file = None
 
         self.log_handler = log_handler or TUILogHandler()
-        self.scheduler = scheduler
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -290,34 +295,88 @@ class TerminalDashboard:
         lines.extend(self._render_header(width, commit, branch, reload_state, uptime))
         lines.append("")
 
-        # 2. Active Tasks Panel
+        # 2. Antigravity Quota Panel
+        lines.extend(self._render_quota_panel(width))
+        lines.append("")
+
+        # 3. Active Tasks Panel
         active_tasks = self.task_manager.get_active_tasks()
         lines.extend(self._render_active_tasks(width, active_tasks, stats["max_workers"]))
         lines.append("")
 
-        # 3. Queued Tasks Panel
+        # 4. Queued Tasks Panel
         queued_tasks = self.task_manager.get_queued_tasks()
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
-        # 4. Scheduled Jobs Panel
+        # 5. Scheduled Jobs Panel
         lines.extend(self._render_scheduled_jobs(width, self.scheduler))
         lines.append("")
 
-        # 5. Approved Pull Requests Panel
+        # 6. Approved Pull Requests Panel
         approved_prs = self.pr_tracker.get_approved_prs() if self.pr_tracker else []
         lines.extend(self._render_approved_prs(width, approved_prs))
         lines.append("")
 
-        # 6. Task History Panel
+        # 7. Task History Panel
         history_tasks = self.task_manager.get_task_history(limit=5)
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
         lines.append("")
 
-        # 7. Event Logs Panel
+        # 8. Event Logs Panel
         lines.extend(self._render_event_logs(width))
 
         return "\n".join(lines)
+
+    def _render_quota_panel(self, width: int) -> list:
+        inner_w = width - 4
+        quota_tracker = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+
+        if quota_tracker:
+            pct = quota_tracker.remaining_percentage
+            state = quota_tracker.state
+            reset_str = quota_tracker.get_reset_time_str()
+            backoff_delay = quota_tracker.active_backoff_delay
+        else:
+            pct = 100.0
+            state = QuotaState.NORMAL
+            reset_str = "N/A"
+            backoff_delay = 0.0
+
+        if state == QuotaState.NORMAL:
+            badge_color = "\033[92m\033[1m"
+            badge_text = f"[ QUOTA OK: {pct:.1f}% ]"
+            state_desc = "\033[92mNORMAL\033[0m"
+        elif state == QuotaState.LOW_QUOTA:
+            badge_color = "\033[93m\033[1m"
+            badge_text = f"[ LOW QUOTA: {pct:.1f}% ]"
+            state_desc = f"\033[93mLOW_QUOTA (Back-off: {backoff_delay:.1f}s)\033[0m"
+        else:
+            badge_color = "\033[91m\033[1m"
+            badge_text = f"[ EXHAUSTED: {pct:.1f}% ]"
+            state_desc = "\033[91mEXHAUSTED (PAUSED_FOR_QUOTA)\033[0m"
+
+        panel_title = " ANTIGRAVITY MODEL QUOTA "
+        title_dw = get_display_width(panel_title)
+        badge_dw = get_display_width(badge_text)
+        pad_len = max(0, width - 3 - title_dw - badge_dw)
+
+        header_bar = (
+            "┌─"
+            + f"\033[96m\033[1m{panel_title}\033[0m"
+            + ("─" * pad_len)
+            + f"{badge_color}{badge_text}\033[0m"
+            + "┐"
+        )
+
+        body_line = f"Level: {badge_color}{pct:.1f}%\033[0m │ Status: {state_desc} │ Reset: {reset_str}"
+        body_content = fit_to_display_width(body_line, inner_w)
+
+        return [
+            header_bar,
+            f"│ {body_content} │",
+            "└" + "─" * (width - 2) + "┘",
+        ]
 
     def _render_header(
         self, width: int, commit: str, branch: str, reload_state: str, uptime: str

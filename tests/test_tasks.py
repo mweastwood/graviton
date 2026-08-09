@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from lib.quota import QuotaState, QuotaTracker
 from lib.tasks import Task, TaskManager, TaskStatus
 
 
@@ -301,6 +302,49 @@ class TestTaskManager(unittest.TestCase):
         cleared = manager.clear_completed_tasks()
         self.assertEqual(cleared, 3)
         self.assertEqual(len(manager.get_all_tasks()), 0)
+
+        manager.stop()
+
+    def test_task_manager_quota_backoff_and_pause(self):
+        quota = QuotaTracker(remaining_percentage=10.0, base_backoff_delay=0.01)
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+
+        # 1. Test LOW_QUOTA state stats
+        stats = manager.get_stats()
+        self.assertEqual(stats["quota_state"], QuotaState.LOW_QUOTA)
+        self.assertEqual(stats["queue_status"], "BACKING_OFF")
+
+        manager.start()
+        task1 = manager.submit_task("code_reviewer", "Task under low quota")
+
+        for _ in range(50):
+            if task1.status == TaskStatus.COMPLETED:
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task1.status, TaskStatus.COMPLETED)
+
+        # 2. Test EXHAUSTED state pauses execution
+        quota.update_quota(0.0)
+        stats = manager.get_stats()
+        self.assertEqual(stats["quota_state"], QuotaState.EXHAUSTED)
+        self.assertEqual(stats["queue_status"], "PAUSED_FOR_QUOTA")
+        self.assertEqual(stats["status"], "PAUSED_FOR_QUOTA")
+
+        task2 = manager.submit_task("code_fixer", "Task under exhausted quota")
+        time.sleep(0.2)
+
+        # Task 2 should remain queued/paused, NOT completed
+        self.assertIn(task2.status, (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA))
+
+        # Recover quota to NORMAL
+        quota.update_quota(100.0)
+        for _ in range(50):
+            if task2.status == TaskStatus.COMPLETED:
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task2.status, TaskStatus.COMPLETED)
 
         manager.stop()
 

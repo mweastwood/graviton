@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from lib.quota import QuotaState, QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui import (
@@ -198,6 +199,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered = dashboard.render(width=80)
 
         self.assertIn("GRAVITON SERVER DASHBOARD", rendered)
+        self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
         self.assertIn("Host: 127.0.0.1:8080", rendered)
         self.assertIn("ACTIVE TASKS (RUNNING)", rendered)
         self.assertIn("ATTEMPT", rendered)
@@ -556,6 +558,31 @@ class TestTerminalDashboard(unittest.TestCase):
                     target_w,
                     f"Line {i} visual width {dw} != {target_w} in approved PRs dashboard frame: {line!r}",
                 )
+
+    def test_quota_panel_rendering(self):
+        quota = QuotaTracker(remaining_percentage=10.0, reset_time="14:30:00")
+        manager = TaskManager(max_workers=2, quota_tracker=quota)
+        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
+
+        # 1. LOW_QUOTA state rendering
+        rendered_low = dashboard.render(width=80)
+        self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered_low)
+        self.assertIn("[ LOW QUOTA: 10.0% ]", rendered_low)
+        self.assertIn("LOW_QUOTA", rendered_low)
+        self.assertIn("14:30:00", rendered_low)
+
+        # 2. EXHAUSTED state rendering
+        quota.update_quota(0.0)
+        rendered_ex = dashboard.render(width=80)
+        self.assertIn("[ EXHAUSTED: 0.0% ]", rendered_ex)
+        self.assertIn("EXHAUSTED (PAUSED_FOR_QUOTA)", rendered_ex)
+
+        # 3. NORMAL state rendering
+        quota.update_quota(95.0)
+        rendered_norm = dashboard.render(width=80)
+        self.assertIn("[ QUOTA OK: 95.0% ]", rendered_norm)
+        self.assertIn("NORMAL", rendered_norm)
+
 
 if __name__ == "__main__":
     unittest.main()
