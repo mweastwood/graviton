@@ -67,6 +67,7 @@ class TestTerminalDashboard(unittest.TestCase):
         manager = TaskManager(max_workers=2)
         dashboard = TerminalDashboard(task_manager=manager)
         dashboard.log_handler.records.append("Line 1\nLine 2\nLine 3")
+        dashboard.active_screen = "logs"
         rendered = dashboard.render(width=80)
         for line in rendered.split("\n"):
             if line:
@@ -104,9 +105,12 @@ class TestTerminalDashboard(unittest.TestCase):
                 self.assertTrue(any("Webhook event received: pull_request" in l for l in logs))
                 self.assertTrue(any("Worker task completed successfully" in l for l in logs))
 
-                rendered = dashboard.render(width=80)
-                self.assertIn("EVENT LOGS", rendered)
-                self.assertIn("Webhook event received", rendered)
+                rendered_main = dashboard.render(width=80)
+                self.assertNotIn("EVENT LOGS", rendered_main)
+                dashboard.active_screen = "logs"
+                rendered_logs = dashboard.render(width=80)
+                self.assertIn("EVENT LOGS", rendered_logs)
+                self.assertIn("Webhook event received", rendered_logs)
 
                 self.assertTrue(log_file.exists())
                 file_content = log_file.read_text(encoding="utf-8")
@@ -210,7 +214,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("task-2", rendered)
         self.assertIn("code_fixer", rendered)
         self.assertIn("TASK HISTORY", rendered)
-        self.assertIn("EVENT LOGS", rendered)
+        self.assertNotIn("EVENT LOGS", rendered)
         self.assertIn("task-3", rendered)
         self.assertIn("COMPLETED", rendered)
 
@@ -438,9 +442,15 @@ class TestTerminalDashboard(unittest.TestCase):
         # 4. Test full dashboard layout rendering
         rendered = dashboard.render(width=80)
         self.assertIn("TASK HISTORY", rendered)
-        self.assertIn("EVENT LOGS", rendered)
+        self.assertNotIn("EVENT LOGS", rendered)
         self.assertIn("task-10", rendered)
-        self.assertIn("Webhook event: issue_comment received", rendered)
+        self.assertNotIn("Webhook event: issue_comment received", rendered)
+
+        dashboard.active_screen = "logs"
+        rendered_logs = dashboard.render(width=80)
+        self.assertIn("EVENT LOGS", rendered_logs)
+        self.assertIn("Webhook event: issue_comment received", rendered_logs)
+        self.assertNotIn("TASK HISTORY", rendered_logs)
 
         # Clean up logger handler
         logger.removeHandler(log_handler)
@@ -536,10 +546,11 @@ class TestTerminalDashboard(unittest.TestCase):
         # 1. Default active_screen is "main"
         self.assertEqual(dashboard.active_screen, "main")
 
-        # 2. Main screen render excludes scheduled jobs and displays hotkey hint
+        # 2. Main screen render excludes scheduled jobs and event logs, displaying hotkey hint
         rendered_main = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_main)
-        self.assertIn("[j] Periodic Jobs", rendered_main)
+        self.assertNotIn("EVENT LOGS", rendered_main)
+        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_main)
 
         # 3. Toggle to "jobs" screen
         dashboard.active_screen = "jobs"
@@ -551,7 +562,20 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.active_screen = "main"
         rendered_back = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_back)
-        self.assertIn("[j] Periodic Jobs", rendered_back)
+        self.assertNotIn("EVENT LOGS", rendered_back)
+        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back)
+
+        # 5. Toggle to "logs" screen
+        dashboard.active_screen = "logs"
+        rendered_logs = dashboard.render(width=80)
+        self.assertIn("EVENT LOGS", rendered_logs)
+        self.assertIn("Press [Esc] to return to Main Screen", rendered_logs)
+
+        # 6. Toggle back to "main" screen
+        dashboard.active_screen = "main"
+        rendered_back_again = dashboard.render(width=80)
+        self.assertNotIn("EVENT LOGS", rendered_back_again)
+        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back_again)
 
     def test_jobs_screen_line_widths(self):
         manager = TaskManager(max_workers=2)
@@ -569,6 +593,28 @@ class TestTerminalDashboard(unittest.TestCase):
                     dw,
                     target_w,
                     f"Line {i} visual width {dw} != {target_w} on jobs screen: {line!r}",
+                )
+
+    def test_logs_screen_line_widths(self):
+        manager = TaskManager(max_workers=2)
+        log_handler = TUILogHandler(max_records=20)
+        for i in range(15):
+            log_handler.records.append(f"Event log entry #{i+1} with 🚀 emoji and long line details")
+
+        dashboard = TerminalDashboard(task_manager=manager, log_handler=log_handler)
+        dashboard.active_screen = "logs"
+
+        for target_w in [80, 100, 120]:
+            rendered = dashboard.render(width=target_w)
+            lines = rendered.split("\n")
+            for i, line in enumerate(lines):
+                if not line:
+                    continue
+                dw = get_display_width(line)
+                self.assertEqual(
+                    dw,
+                    target_w,
+                    f"Line {i} visual width {dw} != {target_w} on logs screen: {line!r}",
                 )
 
     def test_render_approved_prs_empty_and_populated(self):
