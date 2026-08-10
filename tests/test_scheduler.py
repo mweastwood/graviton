@@ -612,6 +612,71 @@ class TestTaskScheduler(unittest.TestCase):
         tmp_files = list(self.state_path.parent.glob("*.tmp"))
         self.assertEqual(tmp_files, [])
 
+    @patch("lib.scheduler._atomic_write_json")
+    def test_save_state_and_config_release_lock_during_fsync(self, mock_write):
+        """Verify save_state and save_config release self._lock before executing file write and fsync."""
+        import threading
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        acquired_in_another_thread = []
+
+        def fake_write(target_path, data, indent=2):
+            # Verify lock is released so another thread can acquire it concurrently during disk write/fsync
+            def acquire_lock():
+                got_lock = scheduler._lock.acquire(blocking=False)
+                if got_lock:
+                    acquired_in_another_thread.append(True)
+                    scheduler._lock.release()
+                else:
+                    acquired_in_another_thread.append(False)
+
+            t = threading.Thread(target=acquire_lock)
+            t.start()
+            t.join()
+
+        mock_write.side_effect = fake_write
+
+        scheduler.save_state()
+        self.assertTrue(acquired_in_another_thread[-1])
+
+        scheduler.save_config()
+        self.assertTrue(acquired_in_another_thread[-1])
+
+    def test_high_concurrency_lock_decoupling(self):
+        """Verify high concurrency operations on TaskScheduler do not block on disk fsync or deadlock."""
+        import threading
+        import time
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        errors = []
+
+        def mock_slow_fsync(target_path, data, indent=2):
+            time.sleep(0.005)
+
+        with patch("lib.scheduler._atomic_write_json", side_effect=mock_slow_fsync):
+            def writer():
+                try:
+                    for _ in range(10):
+                        scheduler.save_state()
+                        scheduler.save_config()
+                except Exception as e:
+                    errors.append(e)
+
+            def reader():
+                try:
+                    for _ in range(20):
+                        scheduler.get_job("periodic_bug_sweep")
+                        with scheduler._lock:
+                            pass
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=writer) for _ in range(3)] + [threading.Thread(target=reader) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(errors, [])
+
 
 
 class TestIssueUtilities(unittest.TestCase):
