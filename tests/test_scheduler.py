@@ -318,7 +318,7 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertFalse(job.is_running)
         self.assertIsNone(job.current_task_id)
 
-    def test_update_running_states_preserves_is_running_when_current_task_id_none(self):
+    def test_update_running_states_resets_orphaned_is_running_when_current_task_id_none(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
         scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
@@ -329,7 +329,7 @@ class TestTaskScheduler(unittest.TestCase):
         job.current_task_id = None
 
         scheduler.update_running_states()
-        self.assertTrue(job.is_running)
+        self.assertFalse(job.is_running)
 
     def test_custom_handler_is_running_lifecycle(self):
         from lib.tasks import TaskManager

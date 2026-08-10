@@ -225,19 +225,6 @@ def main():
     except Exception as e:
         logger.warning(f"Initial live quota poll failed: {e}")
 
-    config_path = Path(args.schedules_config)
-    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
-    scheduler = TaskScheduler(
-        config_path=config_path,
-        runner=run_agent_async,
-        script_path=RUN_CONTAINER_SCRIPT,
-        cwd=REPO_ROOT,
-    )
-    scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
-    scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
-    scheduler.start()
-    GravitonHandler.scheduler = scheduler
-
     task_manager = TaskManager(
         max_workers=args.max_workers,
         max_tasks=args.max_tasks,
@@ -250,7 +237,20 @@ def main():
         logger.info(f"Restored {restored_count} queued task(s) from persisted state.")
     task_manager.start()
     GravitonHandler.task_manager = task_manager
-    scheduler.task_manager = task_manager
+
+    config_path = Path(args.schedules_config)
+    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
+    scheduler = TaskScheduler(
+        config_path=config_path,
+        runner=run_agent_async,
+        script_path=RUN_CONTAINER_SCRIPT,
+        cwd=REPO_ROOT,
+        task_manager=task_manager,
+    )
+    scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
+    scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
+    scheduler.start()
+    GravitonHandler.scheduler = scheduler
 
     pr_tracker = PRTracker()
     pr_tracker.sync_in_background(repo_root=REPO_ROOT)

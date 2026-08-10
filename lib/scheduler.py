@@ -255,6 +255,10 @@ class TaskScheduler:
         with self._lock:
             state_changed = False
             for job in list(self.jobs.values()):
+                # Skip custom handler jobs as their is_running state is managed within _execute_job
+                if job.job_id in self.job_handlers or job.agent in self.job_handlers:
+                    continue
+
                 target_id = f"sched:{job.job_id}"
                 active_task = None
                 for task in self.task_manager.get_all_tasks():
@@ -278,6 +282,9 @@ class TaskScheduler:
                             job.is_running = False
                             job.current_task_id = None
                             state_changed = True
+                elif job.is_running:
+                    job.is_running = False
+                    state_changed = True
 
             if state_changed:
                 self.save_config()

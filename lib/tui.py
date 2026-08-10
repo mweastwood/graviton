@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, TextIO, Tuple, Union
@@ -409,44 +410,25 @@ class TerminalDashboard:
         """Select next scheduled job in the TUI selector."""
         if not self.scheduler:
             return
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
-        if num_jobs > 0:
-            self.selected_job_index = min(self.selected_job_index + 1, num_jobs - 1)
+            if num_jobs > 0:
+                self.selected_job_index = min(self.selected_job_index + 1, num_jobs - 1)
 
     def select_prev_job(self):
         """Select previous scheduled job in the TUI selector."""
         if not self.scheduler:
             return
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
-        if self.selected_job_index > 0:
-            self.selected_job_index -= 1
+            if self.selected_job_index > 0:
+                self.selected_job_index -= 1
 
     def enable_selected_job(self) -> Optional[ScheduledJob]:
         """Enable the currently selected scheduled job and save config."""
         if not self.scheduler:
             return None
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                if not self.scheduler.jobs:
-                    return None
-                jobs_list = list(self.scheduler.jobs.values())
-                if 0 <= self.selected_job_index < len(jobs_list):
-                    job = jobs_list[self.selected_job_index]
-                    job.enabled = True
-                    self.scheduler.save_config()
-                    return job
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             if not self.scheduler.jobs:
                 return None
             jobs_list = list(self.scheduler.jobs.values())
@@ -461,18 +443,7 @@ class TerminalDashboard:
         """Disable the currently selected scheduled job and save config."""
         if not self.scheduler:
             return None
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                if not self.scheduler.jobs:
-                    return None
-                jobs_list = list(self.scheduler.jobs.values())
-                if 0 <= self.selected_job_index < len(jobs_list):
-                    job = jobs_list[self.selected_job_index]
-                    job.enabled = False
-                    self.scheduler.save_config()
-                    return job
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             if not self.scheduler.jobs:
                 return None
             jobs_list = list(self.scheduler.jobs.values())
@@ -487,18 +458,7 @@ class TerminalDashboard:
         """Toggle enable/disable state for the currently selected scheduled job and save config."""
         if not self.scheduler:
             return None
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                if not self.scheduler.jobs:
-                    return None
-                jobs_list = list(self.scheduler.jobs.values())
-                if 0 <= self.selected_job_index < len(jobs_list):
-                    job = jobs_list[self.selected_job_index]
-                    job.enabled = not job.enabled
-                    self.scheduler.save_config()
-                    return job
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             if not self.scheduler.jobs:
                 return None
             jobs_list = list(self.scheduler.jobs.values())
@@ -513,18 +473,7 @@ class TerminalDashboard:
         """Immediately execute the currently selected scheduled job."""
         if not self.scheduler:
             return False
-        lock = getattr(self.scheduler, "_lock", None)
-        if lock:
-            with lock:
-                if not self.scheduler.jobs:
-                    return False
-                jobs_list = list(self.scheduler.jobs.values())
-                if 0 <= self.selected_job_index < len(jobs_list):
-                    job = jobs_list[self.selected_job_index]
-                    job_id = job.job_id
-                else:
-                    return False
-        else:
+        with getattr(self.scheduler, "_lock", nullcontext()):
             if not self.scheduler.jobs:
                 return False
             jobs_list = list(self.scheduler.jobs.values())
@@ -759,11 +708,12 @@ class TerminalDashboard:
         self, width: int, scheduler: Optional[TaskScheduler], mode: str = "card"
     ) -> list:
         if scheduler and scheduler.jobs:
-            jobs_list = list(scheduler.jobs.values())
-            if jobs_list:
-                self.selected_job_index = max(0, min(self.selected_job_index, len(jobs_list) - 1))
-            else:
-                self.selected_job_index = 0
+            with getattr(scheduler, "_lock", nullcontext()):
+                jobs_list = list(scheduler.jobs.values())
+                if jobs_list:
+                    self.selected_job_index = max(0, min(self.selected_job_index, len(jobs_list) - 1))
+                else:
+                    self.selected_job_index = 0
         else:
             self.selected_job_index = 0
         return render_scheduled_jobs_panel(width, scheduler, self.selected_job_index, mode=mode)

@@ -4,6 +4,7 @@ Modular component rendering utilities for Graviton Server Terminal UI (TUI) pane
 
 import re
 import unicodedata
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,6 +13,7 @@ from lib.scheduler import ScheduledJob, TaskScheduler, parse_iso_timestamp
 from lib.tasks import TaskManager, TaskStatus
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
 
 
 def get_display_width(s: str) -> int:
@@ -102,6 +104,8 @@ def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
     """Format time remaining until scheduled job next run."""
     if not job.enabled:
         return "DISABLED"
+    if getattr(job, "is_running", False):
+        return "RUNNING"
 
     next_dt = parse_iso_timestamp(job.next_run)
 
@@ -364,7 +368,8 @@ def render_scheduled_jobs_panel(
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        jobs_list = list(scheduler.jobs.values())
+        with getattr(scheduler, "_lock", nullcontext()):
+            jobs_list = list(scheduler.jobs.values())
         if jobs_list:
             selected_job_index = max(0, min(selected_job_index, len(jobs_list) - 1))
         else:
@@ -377,7 +382,9 @@ def render_scheduled_jobs_panel(
                 cursor_str = "> " if is_selected else "  "
                 cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
 
-                if job.enabled:
+                if getattr(job, "is_running", False):
+                    status_badge = "\033[93m\033[1m[⚡ RUNNING]\033[0m"
+                elif job.enabled:
                     status_badge = "\033[92m\033[1m[● ENABLED]\033[0m"
                 else:
                     status_badge = "\033[90m[○ DISABLED]\033[0m"
