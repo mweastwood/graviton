@@ -284,10 +284,28 @@ class TestIssueUtilities(unittest.TestCase):
         existing = [
             {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
             {"number": 2, "title": "[Bug Sweep] Memory leak in runner thread", "body": "..."},
+            {"number": 3, "title": "bug", "body": "..."},
+            {"number": 4, "title": "fix", "body": "..."},
+            {"number": 5, "title": "tui", "body": "..."},
         ]
+        # Exact and normalized title matching
         self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing))
         self.assertTrue(is_duplicate_issue("[Bug Sweep] Memory leak in runner thread", existing))
+        self.assertTrue(is_duplicate_issue("Memory leak in runner thread", existing))
+
+        # Distinct issues
         self.assertFalse(is_duplicate_issue("Completely new bug report", existing))
+        self.assertFalse(is_duplicate_issue("[Bug Sweep] Unhandled null pointer exception in database.py", existing))
+
+        # Short open issue titles should not cause false positive matches for longer proposed titles (Issue #110)
+        self.assertFalse(is_duplicate_issue("[Bug Sweep] tui: Decouple panel rendering into dedicated components", existing))
+        self.assertFalse(is_duplicate_issue("Fix race condition in task runner loop", existing))
+        self.assertFalse(is_duplicate_issue("Memory leak in background task scheduler worker", existing))
+
+        # Edge cases
+        self.assertFalse(is_duplicate_issue("", existing))
+        self.assertFalse(is_duplicate_issue("Any issue title", []))
+        self.assertFalse(is_duplicate_issue("Any issue title", [{"number": 99, "body": "no title"}]))
 
     @patch("lib.scheduler.subprocess.run")
     def test_fetch_open_issues(self, mock_run):

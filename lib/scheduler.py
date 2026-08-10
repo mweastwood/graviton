@@ -9,6 +9,7 @@ Uses standard Python library only (threading, time, datetime, json, pathlib).
 
 import json
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -190,15 +191,49 @@ def fetch_open_issues(cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
         return []
 
 
-def is_duplicate_issue(proposed_title: str, existing_issues: List[Dict[str, Any]]) -> bool:
+def _normalize_title(title: str) -> str:
+    """Normalize title by stripping bracketed prefix tags, lowercasing, and stripping whitespace."""
+    if not title:
+        return ""
+    cleaned = re.sub(r"^\s*\[[^\]]+\]\s*", "", title.strip().lower())
+    return cleaned.strip()
+
+
+def is_duplicate_issue(
+    proposed_title: str, existing_issues: List[Dict[str, Any]], similarity_threshold: float = 0.8
+) -> bool:
     """
-    Check if proposed title overlaps significantly with an existing issue title.
+    Check if proposed title overlaps significantly with an existing issue title
+    using normalized exact matching and token set similarity to prevent false positives
+    from short issue titles.
     """
     p_norm = proposed_title.strip().lower()
+    p_clean = _normalize_title(proposed_title)
+    p_tokens = set(re.findall(r"\w+", p_clean))
+
+    if not p_norm:
+        return False
+
     for issue in existing_issues:
-        ex_title = issue.get("title", "").strip().lower()
-        if p_norm in ex_title or ex_title in p_norm:
+        ex_raw = issue.get("title", "")
+        if not ex_raw:
+            continue
+        ex_norm = ex_raw.strip().lower()
+        ex_clean = _normalize_title(ex_raw)
+
+        # Exact match (raw or normalized without bracket tags)
+        if p_norm == ex_norm or (p_clean and p_clean == ex_clean):
             return True
+
+        # Token set similarity (Jaccard similarity)
+        ex_tokens = set(re.findall(r"\w+", ex_clean))
+        if p_tokens and ex_tokens:
+            intersection = p_tokens & ex_tokens
+            union = p_tokens | ex_tokens
+            jaccard = len(intersection) / len(union)
+            if jaccard >= similarity_threshold:
+                return True
+
     return False
 
 
