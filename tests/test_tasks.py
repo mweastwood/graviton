@@ -425,7 +425,7 @@ class TestTaskManager(unittest.TestCase):
     def test_task_manager_dump_queue_state_paused_for_quota(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "test_paused_queue_state.json"
-            manager1 = TaskManager(max_workers=2)
+            manager1 = TaskManager(max_workers=0)
 
             t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
             t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
@@ -437,7 +437,7 @@ class TestTaskManager(unittest.TestCase):
             manager1.stop()
 
             # Restore into new manager instance
-            manager2 = TaskManager(max_workers=2)
+            manager2 = TaskManager(max_workers=0)
             restored_count = manager2.restore_queue_state(filepath=state_file)
             self.assertEqual(restored_count, 2)
             self.assertFalse(state_file.exists())
