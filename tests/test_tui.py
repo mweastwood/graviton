@@ -908,6 +908,19 @@ class TestTerminalDashboard(unittest.TestCase):
                     self.assertEqual(dashboard.selected_job_index, 1)
                     self.assertEqual(dashboard.active_screen, "jobs")
 
+                    # Test multi-key chunk (b"\x1b[B\x1b[B" - 2 down arrows in a single write)
+                    dashboard.selected_job_index = 0
+                    os.write(master, b"\x1b[B\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test multi-key chunk (b"kk" - 2 'k' keypresses in a single write)
+                    os.write(master, b"kk")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 0)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
                     # Send standalone ESC key
                     os.write(master, b"\x1b")
                     time.sleep(0.15)
@@ -932,12 +945,27 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[1"))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15"))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bO"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"j\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\x1b["))
 
         # Complete sequences
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A"))
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[B"))
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15~"))
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bOA"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bM"))
+
+    def test_parse_keys(self):
+        self.assertEqual(TerminalDashboard._parse_keys(b""), [])
+        self.assertEqual(TerminalDashboard._parse_keys(b"j"), ["j"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"jj"), ["j", "j"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"kk"), ["k", "k"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[B"), ["\x1b[B"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[B\x1b[B"), ["\x1b[B", "\x1b[B"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"j\x1b[A"), ["j", "\x1b[A"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b1"), ["\x1b1"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b"), ["\x1b"])
 
 
 if __name__ == "__main__":

@@ -189,22 +189,68 @@ class TerminalDashboard:
 
     @staticmethod
     def _is_incomplete_escape_sequence(raw_bytes: bytes) -> bool:
-        """Check if raw_bytes represents a partial/incomplete ANSI escape sequence."""
-        if not raw_bytes or not raw_bytes.startswith(b"\x1b"):
+        """Check if raw_bytes represents a partial/incomplete ANSI escape sequence at its end."""
+        if not raw_bytes:
             return False
-        if len(raw_bytes) == 1:
+        last_esc_idx = raw_bytes.rfind(b"\x1b")
+        if last_esc_idx == -1:
+            return False
+        tail = raw_bytes[last_esc_idx:]
+        if len(tail) == 1:
             return True
-        if raw_bytes.startswith(b"\x1b[") or raw_bytes.startswith(b"\x1bO"):
-            if len(raw_bytes) == 2:
+        if tail.startswith(b"\x1b[") or tail.startswith(b"\x1bO"):
+            if len(tail) == 2:
                 return True
-            last = raw_bytes[-1]
+            last = tail[-1]
             if 0x40 <= last <= 0x7E:
                 return False
             return True
-        last = raw_bytes[-1]
-        if 0x40 <= last <= 0x7E:
-            return False
-        return True
+        return False
+
+    @staticmethod
+    def _parse_keys(raw_bytes: bytes) -> list:
+        """Tokenize raw input bytes into individual keys or ANSI escape sequences."""
+        if not raw_bytes:
+            return []
+        keys = []
+        i = 0
+        n = len(raw_bytes)
+        while i < n:
+            b = raw_bytes[i]
+            if b == 0x1B:  # ESC
+                if i + 1 >= n:
+                    keys.append("\x1b")
+                    i += 1
+                else:
+                    next_b = raw_bytes[i + 1]
+                    if next_b in (0x5B, 0x4F):  # '[' or 'O'
+                        term_idx = -1
+                        for j in range(i + 2, n):
+                            if 0x40 <= raw_bytes[j] <= 0x7E:
+                                term_idx = j
+                                break
+                        if term_idx != -1:
+                            seq = raw_bytes[i : term_idx + 1].decode("utf-8", errors="ignore")
+                            keys.append(seq)
+                            i = term_idx + 1
+                        else:
+                            seq = raw_bytes[i:].decode("utf-8", errors="ignore")
+                            keys.append(seq)
+                            i = n
+                    else:
+                        seq = raw_bytes[i : i + 2].decode("utf-8", errors="ignore")
+                        keys.append(seq)
+                        i += 2
+            else:
+                decoded = raw_bytes[i:].decode("utf-8", errors="ignore")
+                if decoded:
+                    ch = decoded[0]
+                    keys.append(ch)
+                    ch_len = len(ch.encode("utf-8"))
+                    i += max(1, ch_len)
+                else:
+                    i += 1
+        return keys
 
     def _stdin_loop(self):
         """Background thread reading character hotkeys from stdin."""
@@ -261,8 +307,8 @@ class TerminalDashboard:
                         else:
                             break
 
-                    ch = raw_bytes.decode("utf-8", errors="ignore")
-                    self.handle_key(ch)
+                    for key in self._parse_keys(raw_bytes):
+                        self.handle_key(key)
         except Exception:
             pass
         finally:
