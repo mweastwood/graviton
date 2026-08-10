@@ -202,7 +202,7 @@ class TerminalDashboard:
             if len(tail) == 2:
                 return True
             last = tail[-1]
-            if 0x40 <= last <= 0x7E:
+            if 0x40 <= last <= 0x7E and last != 0x5B:
                 return False
             return True
         return False
@@ -225,8 +225,12 @@ class TerminalDashboard:
                     next_b = raw_bytes[i + 1]
                     if next_b in (0x5B, 0x4F):  # '[' or 'O'
                         term_idx = -1
+                        end_idx = n
                         for j in range(i + 2, n):
-                            if 0x40 <= raw_bytes[j] <= 0x7E:
+                            if raw_bytes[j] == 0x1B:
+                                end_idx = j
+                                break
+                            if 0x40 <= raw_bytes[j] <= 0x7E and raw_bytes[j] != 0x5B:
                                 term_idx = j
                                 break
                         if term_idx != -1:
@@ -234,20 +238,28 @@ class TerminalDashboard:
                             keys.append(seq)
                             i = term_idx + 1
                         else:
-                            seq = raw_bytes[i:].decode("utf-8", errors="ignore")
+                            seq = raw_bytes[i : end_idx].decode("utf-8", errors="ignore")
                             keys.append(seq)
-                            i = n
+                            i = end_idx
                     else:
                         seq = raw_bytes[i : i + 2].decode("utf-8", errors="ignore")
                         keys.append(seq)
                         i += 2
             else:
-                decoded = raw_bytes[i:].decode("utf-8", errors="ignore")
-                if decoded:
-                    ch = decoded[0]
-                    keys.append(ch)
-                    ch_len = len(ch.encode("utf-8"))
-                    i += max(1, ch_len)
+                decoded_ch = None
+                decoded_len = 0
+                for length in range(1, min(5, n - i + 1)):
+                    try:
+                        chunk = raw_bytes[i : i + length].decode("utf-8")
+                        if len(chunk) == 1:
+                            decoded_ch = chunk
+                            decoded_len = length
+                            break
+                    except UnicodeDecodeError:
+                        continue
+                if decoded_ch is not None:
+                    keys.append(decoded_ch)
+                    i += decoded_len
                 else:
                     i += 1
         return keys

@@ -841,6 +841,7 @@ class TestTerminalDashboard(unittest.TestCase):
 
         try:
             manager = TaskManager(max_workers=2)
+            self.addCleanup(manager.stop)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 json.dump(
                     [
@@ -942,6 +943,7 @@ class TestTerminalDashboard(unittest.TestCase):
         # Incomplete sequences
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b"))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[["))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[1"))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15"))
         self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bO"))
@@ -966,6 +968,10 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._parse_keys(b"j\x1b[A"), ["j", "\x1b[A"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b1"), ["\x1b1"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b"), ["\x1b"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x80\x61\x62"), ["a", "b"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[\x1b[A"), ["\x1b[", "\x1b[A"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[[" ), ["\x1b[[" ])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[1\x1b[B"), ["\x1b[1", "\x1b[B"])
 
 
 if __name__ == "__main__":
