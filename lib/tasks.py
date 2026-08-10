@@ -292,12 +292,16 @@ class TaskManager:
                         except (IndexError, ValueError):
                             pass
 
+                    restored_status = td.get("status", TaskStatus.QUEUED)
+                    if restored_status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                        restored_status = TaskStatus.QUEUED
+
                     task = Task(
                         id=str(task_id),
                         agent=str(agent),
                         prompt=str(prompt),
                         target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
-                        status=TaskStatus.QUEUED,
+                        status=restored_status,
                         enqueue_time=float(td.get("enqueue_time", time.time())),
                         attempt=int(td.get("attempt", 1)),
                         max_attempts=int(td.get("max_attempts", 3)),

@@ -424,6 +424,8 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(len(restored_queued), 2)
             restored_ids = {t.id for t in restored_queued}
             self.assertEqual(restored_ids, {t1.id, t2.id})
+            self.assertEqual(manager2.get_task(t1.id).status, TaskStatus.QUEUED)
+            self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.PAUSED_FOR_QUOTA)
             manager2.stop()
 
 
