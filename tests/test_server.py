@@ -269,7 +269,7 @@ class TestGravitonHandler(unittest.TestCase):
         with patch("sys.argv", ["graviton-server.py"]):
             server_mod.main()
 
-        self.assertEqual(GravitonHandler.repos_dir, Path.cwd().resolve())
+        self.assertEqual(GravitonHandler.repos_dir, Path("~/graviton-repos").expanduser().resolve())
 
     @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
@@ -301,7 +301,16 @@ class TestGravitonHandler(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repos_dir = Path(tmpdir) / "repos"
             expected_repo_dir = repos_dir / "repo-alpha"
-            mock_sub_run.side_effect = lambda *args, **kwargs: (expected_repo_dir.mkdir(parents=True, exist_ok=True), MagicMock(returncode=0))[1]
+
+            def mock_sub_run_impl(cmd, **kwargs):
+                if "clone" in cmd:
+                    expected_repo_dir.mkdir(parents=True, exist_ok=True)
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = ""
+                return res
+
+            mock_sub_run.side_effect = mock_sub_run_impl
 
             payload = json.dumps({
                 "action": "opened",
@@ -326,8 +335,8 @@ class TestGravitonHandler(unittest.TestCase):
 
             GravitonHandler.do_POST(handler)
 
-            mock_sub_run.assert_called_once_with(
-                ["git", "clone", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
+            mock_sub_run.assert_any_call(
+                ["git", "clone", "--", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
                 check=True,
                 capture_output=True,
                 text=True,

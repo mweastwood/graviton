@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.security import verify_signature, is_valid_repo_name
-from lib.router import route_webhook_event, format_event_summary
+from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
@@ -52,7 +52,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
     default_drafter: str = "pr_drafter"
-    server_repo_name: str = REPO_ROOT.name
+    server_repo_name: str = get_server_repo_name(REPO_ROOT)
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
@@ -114,7 +114,8 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_triager=self.default_triager,
             default_drafter=self.default_drafter,
             pr_tracker=self.pr_tracker,
-            server_repo_name=getattr(self, "server_repo_name", REPO_ROOT.name),
+            server_repo_name=getattr(self, "server_repo_name", get_server_repo_name(REPO_ROOT)),
+            repo_root=REPO_ROOT,
         )
 
         status = decision.get("status", "unknown")
@@ -201,7 +202,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                             import subprocess
                             exec_cwd.parent.mkdir(parents=True, exist_ok=True)
                             subprocess.run(
-                                ["git", "clone", clone_url, str(exec_cwd)],
+                                ["git", "clone", "--", clone_url, str(exec_cwd)],
                                 check=True,
                                 capture_output=True,
                                 text=True,
@@ -243,7 +244,7 @@ def main():
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="Host IP to bind (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=int(os.getenv("PORT", "8000")), help="Port to bind (default: 8000)")
     parser.add_argument("--secret", "-s", default=os.getenv("WEBHOOK_SECRET", os.getenv("GITHUB_WEBHOOK_SECRET", "")), help="GitHub webhook secret for HMAC verification")
-    parser.add_argument("--repos-dir", "--projects-dir", default=os.getenv("REPOS_DIR", os.getenv("PROJECTS_DIR", ".")), help="Base directory for managed repository checkouts (env: REPOS_DIR or PROJECTS_DIR, default: current working directory)")
+    parser.add_argument("--repos-dir", "--projects-dir", default=os.getenv("REPOS_DIR", os.getenv("PROJECTS_DIR", "~/graviton-repos")), help="Base directory for managed repository checkouts (env: REPOS_DIR or PROJECTS_DIR, default: ~/graviton-repos)")
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")

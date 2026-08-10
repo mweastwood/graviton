@@ -584,7 +584,7 @@ class TaskManager:
                                 import subprocess
                                 exec_cwd.parent.mkdir(parents=True, exist_ok=True)
                                 subprocess.run(
-                                    ["git", "clone", task.clone_url, str(exec_cwd)],
+                                    ["git", "clone", "--", task.clone_url, str(exec_cwd)],
                                     check=True,
                                     capture_output=True,
                                     text=True,
@@ -593,6 +593,10 @@ class TaskManager:
                             except Exception as clone_err:
                                 logger.error(f"[{worker_id}] Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}")
                                 raise RuntimeError(f"Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}") from clone_err
+
+                if exec_cwd and not exec_cwd.exists():
+                    logger.error(f"[{worker_id}] Target repository directory '{exec_cwd}' does not exist.")
+                    raise RuntimeError(f"Target repository directory '{exec_cwd}' does not exist.")
 
                 if self.script_path and exec_cwd:
                     res = run_agent_container(

@@ -14,6 +14,10 @@ from lib.tasks import Task, TaskManager, TaskStatus
 
 class TestTaskManager(unittest.TestCase):
 
+    @classmethod
+    def setUpClass(cls):
+        Path("/tmp/fake_repo").mkdir(parents=True, exist_ok=True)
+
     def test_task_model_properties(self):
         t = Task(
             id="task-1",
@@ -564,7 +568,7 @@ class TestTaskManager(unittest.TestCase):
 
             # Check that git clone was invoked for non-existent repo_dir
             mock_sub_run.assert_called_once_with(
-                ["git", "clone", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
+                ["git", "clone", "--", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -784,6 +788,30 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(t1.status, TaskStatus.COMPLETED)
             self.assertEqual(t2.status, TaskStatus.COMPLETED)
             self.assertEqual(mock_subproc_run.call_count, 1)
+            manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_nonexistent_exec_cwd_raises_error(self, mock_run_agent):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            non_existent_dir = Path(tmpdir) / "does_not_exist"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=non_existent_dir,
+            )
+            manager.start()
+
+            task = manager.submit_task("code_reviewer", "Test prompt")
+
+            for _ in range(50):
+                if task.status == TaskStatus.FAILED:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertIn("Target repository directory", task.error_message)
+            self.assertIn("does not exist", task.error_message)
+            mock_run_agent.assert_not_called()
             manager.stop()
 
 

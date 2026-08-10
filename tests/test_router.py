@@ -2,8 +2,10 @@
 Unit tests for lib/router.py
 """
 
+from pathlib import Path
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 from lib.router import (
     route_webhook_event,
     format_event_summary,
@@ -882,6 +884,33 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res["repo_full_name"], "owner/repo-beta")
         self.assertEqual(res["clone_url"], "https://github.com/owner/repo-beta.git")
         self.assertIn("Triage Issue #96 in owner/repo-beta", res["prompt"])
+
+    @patch("subprocess.run")
+    def test_get_server_repo_name_from_git_remote(self, mock_sub_run):
+        from lib.router import get_server_repo_name
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "git@github.com:mweastwood/graviton.git\n"
+        mock_sub_run.return_value = mock_res
+
+        name = get_server_repo_name(Path("/workspace"))
+        self.assertEqual(name, "graviton")
+
+    @patch("subprocess.run")
+    def test_push_event_matching_git_remote_origin(self, mock_sub_run):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "git@github.com:mweastwood/graviton.git\n"
+        mock_sub_run.return_value = mock_res
+
+        payload = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "graviton", "full_name": "mweastwood/graviton"},
+        }
+        # Server running in directory 'workspace' with server_repo_name='workspace'
+        res = route_webhook_event("push", payload, server_repo_name="workspace", repo_root=Path("/workspace"))
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "self_update")
 
 
 if __name__ == "__main__":

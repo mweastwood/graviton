@@ -2,10 +2,12 @@
 GitHub Webhook Event Routing Logic for Graviton.
 """
 
+from pathlib import Path
 import re
+import subprocess
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from lib.security import contains_bot_marker
 
 _pr_review_timestamps: Dict[Any, float] = {}
@@ -100,15 +102,79 @@ def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_push_event(payload: Dict[str, Any], server_repo_name: Optional[str] = None) -> Dict[str, Any]:
+def _get_git_remote_repo_names(repo_root: Optional[Path] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract (repo_name, repo_full_name) from git remote origin of repo_root.
+    Returns (None, None) if git command fails or url cannot be parsed.
+    """
+    if repo_root is None:
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+        except Exception:
+            return None, None
+    try:
+        git_res = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if git_res.returncode == 0 and git_res.stdout:
+            origin_url = git_res.stdout.strip()
+            clean_url = origin_url.rstrip("/").removesuffix(".git").rstrip("/")
+            if ":" in clean_url or "/" in clean_url:
+                parts = clean_url.replace(":", "/").split("/")
+                if len(parts) >= 2 and parts[-2] and parts[-1]:
+                    repo_full_name = f"{parts[-2]}/{parts[-1]}"
+                    repo_name = parts[-1]
+                    return repo_name, repo_full_name
+                elif len(parts) >= 1 and parts[-1]:
+                    return parts[-1], None
+    except Exception:
+        pass
+    return None, None
+
+
+def get_server_repo_name(repo_root: Optional[Path] = None) -> str:
+    """Get the server repository name from git remote origin or fallback to directory name."""
+    if repo_root is None:
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+        except Exception:
+            return "graviton"
+    remote_name, _ = _get_git_remote_repo_names(repo_root)
+    if remote_name:
+        return remote_name
+    return repo_root.name
+
+
+def handle_push_event(
+    payload: Dict[str, Any],
+    server_repo_name: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Handle GitHub 'push' webhook event (Self-Update & Hot Reload on main/master)."""
     ref = payload.get("ref", "")
     repo_full_name, repo_name, _ = _extract_repo_info(payload)
-    if server_repo_name and server_repo_name not in (repo_name, repo_full_name):
-        return {
-            "status": "ignored",
-            "reason": f"Push event for repository '{repo_name or repo_full_name}' is not graviton server repository",
-        }
+
+    if server_repo_name or repo_root is not None:
+        allowed_names = set()
+        if server_repo_name:
+            allowed_names.add(server_repo_name)
+
+        target_root = repo_root if repo_root is not None else Path(__file__).resolve().parent.parent
+        remote_name, remote_full_name = _get_git_remote_repo_names(target_root)
+        if remote_name:
+            allowed_names.add(remote_name)
+        if remote_full_name:
+            allowed_names.add(remote_full_name)
+
+        if allowed_names and repo_name not in allowed_names and repo_full_name not in allowed_names:
+            return {
+                "status": "ignored",
+                "reason": f"Push event for repository '{repo_name or repo_full_name}' is not graviton server repository",
+            }
     if ref in ("refs/heads/main", "refs/heads/master"):
         return {
             "status": "accepted",
@@ -550,6 +616,7 @@ def route_webhook_event(
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
     server_repo_name: Optional[str] = None,
+    repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -563,11 +630,12 @@ def route_webhook_event(
     :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
     :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
     :param server_repo_name: Optional repository name for graviton server to check on push events.
+    :param repo_root: Optional Path to server repository root directory for inspecting git remote origin.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
         "ping": handle_ping_event,
-        "push": lambda p: handle_push_event(p, server_repo_name=server_repo_name),
+        "push": lambda p: handle_push_event(p, server_repo_name=server_repo_name, repo_root=repo_root),
         "pull_request": lambda p: handle_pull_request_event(
             p, default_reviewer=default_reviewer, pr_tracker=pr_tracker, debounce_window=debounce_window
         ),
