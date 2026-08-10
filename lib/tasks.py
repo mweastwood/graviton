@@ -207,18 +207,16 @@ class TaskManager:
         :return: Number of queued and quota-paused tasks serialized.
         """
         path = self._get_default_state_path(filepath)
-        with self._lock:
-            queued_tasks = [
-                t for t in self._tasks.values() if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
-            ]
-            if not queued_tasks:
-                if path.exists():
-                    try:
-                        path.unlink()
-                    except Exception as e:
-                        logger.warning(f"Could not remove stale state file '{path}': {e}")
-                return 0
+        queued_tasks = self.get_queued_tasks()
+        if not queued_tasks:
+            if path.exists():
+                try:
+                    path.unlink()
+                except Exception as e:
+                    logger.warning(f"Could not remove stale state file '{path}': {e}")
+            return 0
 
+        with self._lock:
             state = {
                 "task_counter": self._task_counter,
                 "queued_tasks": [t.to_dict() for t in queued_tasks],

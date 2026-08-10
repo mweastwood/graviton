@@ -453,6 +453,18 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(stats["queued"], 1)
             self.assertEqual(stats["paused"], 1)
             self.assertEqual(stats["total"], 2)
+
+            # Verify restored PAUSED_FOR_QUOTA task transitions to COMPLETED when worker thread runs under normal quota
+            manager2.max_workers = 1
+            manager2.start()
+
+            for _ in range(50):
+                if manager2.get_task(t2.id).status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(manager2.get_task(t1.id).status, TaskStatus.COMPLETED)
+            self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.COMPLETED)
             manager2.stop()
 
 
