@@ -142,9 +142,12 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("Template for APPROVE / NO_CHANGES_NEEDED", content)
         self.assertIn("Code Review Summary: Changes Requested", content)
         self.assertIn("Code Review Summary: Approved", content)
+        self.assertIn("Presubmit & CI Status", content)
+        self.assertIn("Mergeability Verification", content)
+        self.assertIn("Action Items & Required Changes", content)
+        self.assertIn("Verification Checklist", content)
+        self.assertIn("<!-- antigravity-auto-reply -->", content)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
