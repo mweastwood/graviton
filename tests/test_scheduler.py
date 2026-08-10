@@ -614,7 +614,7 @@ class TestTaskScheduler(unittest.TestCase):
 
     @patch("lib.scheduler._atomic_write_json")
     def test_save_state_and_config_release_lock_during_fsync(self, mock_write):
-        """Verify save_state, save_config, and load_state release self._lock before executing file write while retaining self._save_lock."""
+        """Verify save_state, save_config, and load_state release self._lock while retaining self._save_lock during file write."""
         import threading
         from lib.tasks import TaskManager
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
