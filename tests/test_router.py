@@ -20,11 +20,71 @@ from lib.router import (
     handle_issue_comment_event,
     clear_pr_review_cache,
     _extract_repo_info,
+    _build_accepted_response,
 )
 from lib.security import BOT_MARKER
 
 
 class TestRouter(unittest.TestCase):
+
+    def test_build_accepted_response_helper(self):
+        res = _build_accepted_response(
+            action="opened",
+            agent="code_reviewer",
+            prompt="Review PR #1",
+            repo_full_name="owner/repo",
+            repo_name="repo",
+            clone_url="https://github.com/owner/repo.git",
+            pr_number=1,
+        )
+        self.assertEqual(res, {
+            "status": "accepted",
+            "action": "opened",
+            "pr_number": 1,
+            "agent": "code_reviewer",
+            "prompt": "Review PR #1",
+            "repo_full_name": "owner/repo",
+            "repo_name": "repo",
+            "clone_url": "https://github.com/owner/repo.git",
+        })
+
+        res_no_repo = _build_accepted_response(
+            action="opened",
+            agent="issue_triager",
+            prompt="Triage issue #5",
+            issue_number=5,
+        )
+        self.assertEqual(res_no_repo, {
+            "status": "accepted",
+            "action": "opened",
+            "issue_number": 5,
+            "agent": "issue_triager",
+            "prompt": "Triage issue #5",
+        })
+        self.assertNotIn("repo_full_name", res_no_repo)
+        self.assertNotIn("repo_name", res_no_repo)
+        self.assertNotIn("clone_url", res_no_repo)
+
+        res_partial_repo = _build_accepted_response(
+            action="labeled",
+            agent="pr_drafter",
+            prompt="Draft PR for issue #10",
+            repo_full_name="owner/repo",
+            issue_number=10,
+            label="ready-for-pr",
+        )
+        self.assertEqual(res_partial_repo, {
+            "status": "accepted",
+            "action": "labeled",
+            "issue_number": 10,
+            "label": "ready-for-pr",
+            "agent": "pr_drafter",
+            "prompt": "Draft PR for issue #10",
+            "repo_full_name": "owner/repo",
+        })
+        self.assertNotIn("repo_name", res_partial_repo)
+        self.assertNotIn("clone_url", res_partial_repo)
+
 
     def test_is_pr_created_by_us_helper(self):
         self.assertTrue(is_pr_created_by_us({}))

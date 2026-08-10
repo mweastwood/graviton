@@ -93,6 +93,35 @@ def _extract_repo_info(payload: Dict[str, Any]):
     return repo_full_name, repo_name, clone_url
 
 
+def _build_accepted_response(
+    action: str,
+    agent: str,
+    prompt: str,
+    repo_full_name: Optional[str] = None,
+    repo_name: Optional[str] = None,
+    clone_url: Optional[str] = None,
+    **extra_fields: Any,
+) -> Dict[str, Any]:
+    """
+    Construct an 'accepted' webhook response dictionary with optional repository metadata.
+    """
+    res: Dict[str, Any] = {
+        "status": "accepted",
+        "action": action,
+    }
+    res.update(extra_fields)
+    res["agent"] = agent
+    res["prompt"] = prompt
+
+    if repo_full_name:
+        res["repo_full_name"] = repo_full_name
+    if repo_name:
+        res["repo_name"] = repo_name
+    if clone_url:
+        res["clone_url"] = clone_url
+    return res
+
+
 def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Handle GitHub 'ping' webhook event."""
     return {
@@ -220,20 +249,15 @@ def handle_pull_request_event(
         else:
             prompt = f"Review PR #{pr_number}. Use --request-changes for any findings or code fixes."
 
-        res = {
-            "status": "accepted",
-            "action": action,
-            "pr_number": pr_number,
-            "agent": default_reviewer,
-            "prompt": prompt,
-        }
-        if repo_full_name:
-            res["repo_full_name"] = repo_full_name
-        if repo_name:
-            res["repo_name"] = repo_name
-        if clone_url:
-            res["clone_url"] = clone_url
-        return res
+        return _build_accepted_response(
+            action=action,
+            agent=default_reviewer,
+            prompt=prompt,
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            clone_url=clone_url,
+            pr_number=pr_number,
+        )
 
     return {
         "status": "ignored",
@@ -282,21 +306,16 @@ def handle_pull_request_review_event(
             prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
         else:
             prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
-        res = {
-            "status": "accepted",
-            "action": action,
-            "review_state": review_state,
-            "pr_number": pr_number,
-            "agent": default_fixer,
-            "prompt": prompt,
-        }
-        if repo_full_name:
-            res["repo_full_name"] = repo_full_name
-        if repo_name:
-            res["repo_name"] = repo_name
-        if clone_url:
-            res["clone_url"] = clone_url
-        return res
+        return _build_accepted_response(
+            action=action,
+            agent=default_fixer,
+            prompt=prompt,
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            clone_url=clone_url,
+            review_state=review_state,
+            pr_number=pr_number,
+        )
 
     return {
         "status": "ignored",
@@ -336,22 +355,17 @@ def handle_pull_request_review_comment_event(
             prompt = f"Resolve review comment on PR #{pr_number} in {repo_full_name} in file '{file_path}' (line {line}): '{comment_body}'"
         else:
             prompt = f"Resolve review comment on PR #{pr_number} in file '{file_path}' (line {line}): '{comment_body}'"
-        res = {
-            "status": "accepted",
-            "action": action,
-            "pr_number": pr_number,
-            "file": file_path,
-            "line": line,
-            "agent": default_fixer,
-            "prompt": prompt,
-        }
-        if repo_full_name:
-            res["repo_full_name"] = repo_full_name
-        if repo_name:
-            res["repo_name"] = repo_name
-        if clone_url:
-            res["clone_url"] = clone_url
-        return res
+        return _build_accepted_response(
+            action=action,
+            agent=default_fixer,
+            prompt=prompt,
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            clone_url=clone_url,
+            pr_number=pr_number,
+            file=file_path,
+            line=line,
+        )
     return {
         "status": "ignored",
         "reason": f"Review comment action '{action}' does not trigger fixer",
@@ -377,20 +391,15 @@ def handle_issues_event(
             prompt = f"Triage Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
         else:
             prompt = f"Triage Issue #{issue_number}: '{issue_title}' - {issue_body}"
-        res = {
-            "status": "accepted",
-            "action": action,
-            "issue_number": issue_number,
-            "agent": default_triager,
-            "prompt": prompt,
-        }
-        if repo_full_name:
-            res["repo_full_name"] = repo_full_name
-        if repo_name:
-            res["repo_name"] = repo_name
-        if clone_url:
-            res["clone_url"] = clone_url
-        return res
+        return _build_accepted_response(
+            action=action,
+            agent=default_triager,
+            prompt=prompt,
+            repo_full_name=repo_full_name,
+            repo_name=repo_name,
+            clone_url=clone_url,
+            issue_number=issue_number,
+        )
     elif action == "labeled":
         label = payload.get("label", {})
         label_name = label.get("name", "")
@@ -399,21 +408,16 @@ def handle_issues_event(
                 prompt = f"Draft initial PR to implement ready Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
             else:
                 prompt = f"Draft initial PR to implement ready Issue #{issue_number}: '{issue_title}' - {issue_body}"
-            res = {
-                "status": "accepted",
-                "action": action,
-                "label": label_name,
-                "issue_number": issue_number,
-                "agent": default_drafter,
-                "prompt": prompt,
-            }
-            if repo_full_name:
-                res["repo_full_name"] = repo_full_name
-            if repo_name:
-                res["repo_name"] = repo_name
-            if clone_url:
-                res["clone_url"] = clone_url
-            return res
+            return _build_accepted_response(
+                action=action,
+                agent=default_drafter,
+                prompt=prompt,
+                repo_full_name=repo_full_name,
+                repo_name=repo_name,
+                clone_url=clone_url,
+                label=label_name,
+                issue_number=issue_number,
+            )
         return {
             "status": "ignored",
             "reason": f"Issue label '{label_name}' does not trigger PR drafting",
@@ -472,20 +476,15 @@ def handle_issue_comment_event(
                 prompt = f"Address comment on PR #{issue_number} in {repo_full_name}: '{comment_body}'"
             else:
                 prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
-            res = {
-                "status": "accepted",
-                "action": action,
-                "pr_number": issue_number,
-                "agent": agent,
-                "prompt": prompt,
-            }
-            if repo_full_name:
-                res["repo_full_name"] = repo_full_name
-            if repo_name:
-                res["repo_name"] = repo_name
-            if clone_url:
-                res["clone_url"] = clone_url
-            return res
+            return _build_accepted_response(
+                action=action,
+                agent=agent,
+                prompt=prompt,
+                repo_full_name=repo_full_name,
+                repo_name=repo_name,
+                clone_url=clone_url,
+                pr_number=issue_number,
+            )
 
         # 2. Comment on a pure Issue (Triage vs PR Drafting)
         else:
@@ -499,39 +498,29 @@ def handle_issue_comment_event(
                     prompt = f"Draft initial PR for Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
                 else:
                     prompt = f"Draft initial PR for Issue #{issue_number} based on comment: '{comment_body}'"
-                res = {
-                    "status": "accepted",
-                    "action": action,
-                    "issue_number": issue_number,
-                    "agent": default_drafter,
-                    "prompt": prompt,
-                }
-                if repo_full_name:
-                    res["repo_full_name"] = repo_full_name
-                if repo_name:
-                    res["repo_name"] = repo_name
-                if clone_url:
-                    res["clone_url"] = clone_url
-                return res
+                return _build_accepted_response(
+                    action=action,
+                    agent=default_drafter,
+                    prompt=prompt,
+                    repo_full_name=repo_full_name,
+                    repo_name=repo_name,
+                    clone_url=clone_url,
+                    issue_number=issue_number,
+                )
             else:
                 if repo_full_name:
                     prompt = f"Continue triage on Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
                 else:
                     prompt = f"Continue triage on Issue #{issue_number} based on comment: '{comment_body}'"
-                res = {
-                    "status": "accepted",
-                    "action": action,
-                    "issue_number": issue_number,
-                    "agent": default_triager,
-                    "prompt": prompt,
-                }
-                if repo_full_name:
-                    res["repo_full_name"] = repo_full_name
-                if repo_name:
-                    res["repo_name"] = repo_name
-                if clone_url:
-                    res["clone_url"] = clone_url
-                return res
+                return _build_accepted_response(
+                    action=action,
+                    agent=default_triager,
+                    prompt=prompt,
+                    repo_full_name=repo_full_name,
+                    repo_name=repo_name,
+                    clone_url=clone_url,
+                    issue_number=issue_number,
+                )
 
     return {
         "status": "ignored",
