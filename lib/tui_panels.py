@@ -340,6 +340,9 @@ def render_scheduled_jobs_panel(
     inner_w = width - 4
     panel_title = " SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ] "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
@@ -394,12 +397,17 @@ def render_scheduled_jobs_panel(
             fixed_w = 2 + 6 + 10 + 10 + 10  # SEL, INTV, LAST RUN, NEXT RUN, REMAIN
             num_cols = 8
             spacers = num_cols - 1  # 7 spaces
-            flex_avail = max(15, inner_w - fixed_w - spacers)
+            flex_avail = max(1, inner_w - fixed_w - spacers)
 
             # Distribute remaining width (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
-            id_w = max(8, int(flex_avail * (12 / 52)))
-            name_w = max(12, int(flex_avail * (24 / 52)))
-            agent_w = max(10, flex_avail - id_w - name_w)
+            min_scale = min(1.0, flex_avail / 52.0)
+            min_id = max(1 if flex_avail >= 3 else 0, int(8 * min_scale))
+            min_name = max(1 if flex_avail >= 2 else 0, int(12 * min_scale))
+            min_agent = max(1 if flex_avail >= 1 else 0, int(10 * min_scale))
+
+            id_w = max(min_id, min(flex_avail - min_name - min_agent, int(flex_avail * (12 / 52))))
+            name_w = max(min_name, min(flex_avail - id_w - min_agent, int(flex_avail * (24 / 52))))
+            agent_w = max(0, flex_avail - id_w - name_w)
 
             col_hdr = (
                 f"{fit_to_display_width(' ', 2)} "
@@ -421,17 +429,17 @@ def render_scheduled_jobs_panel(
                 cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
 
                 if get_display_width(job.job_id) > id_w:
-                    id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".."
+                    id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".." if id_w >= 2 else truncate_to_display_width(job.job_id, id_w)
                 else:
                     id_trunc = job.job_id
 
                 if get_display_width(job.name) > name_w:
-                    name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".."
+                    name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".." if name_w >= 2 else truncate_to_display_width(job.name, name_w)
                 else:
                     name_trunc = job.name
 
                 if get_display_width(job.agent) > agent_w:
-                    agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".."
+                    agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".." if agent_w >= 2 else truncate_to_display_width(job.agent, agent_w)
                 else:
                     agent_trunc = job.agent
 
@@ -455,6 +463,9 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
     approved_cnt = len(approved_prs)
     panel_title = f" APPROVED PULL REQUESTS (READY TO MERGE) [{approved_cnt} Ready] "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[92m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
@@ -464,11 +475,20 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        pr_col_w = 8
-        author_col_w = 15
         spacing = 3
-        remaining = max(20, inner_w - pr_col_w - author_col_w - spacing)
-        title_col_w = max(15, remaining // 2 - 2)
+        if inner_w < 26:
+            avail = max(1, inner_w - spacing)
+            pr_col_w = max(4, min(8, int(avail * 0.2)))
+            author_col_w = max(6, min(15, int(avail * 0.3)))
+        else:
+            pr_col_w = 8
+            author_col_w = 15
+
+        remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
+        if remaining >= 8:
+            title_col_w = max(1, remaining // 2 - 2)
+        else:
+            title_col_w = max(1, min(remaining - 1, remaining // 2))
         url_col_w = remaining - title_col_w
 
         col_hdr = (

@@ -124,6 +124,19 @@ class TestTUIPanels(unittest.TestCase):
         table_lines = render_scheduled_jobs_panel(width=80, scheduler=scheduler, mode="table")
         self.assertTrue(any("job-1" in l for l in table_lines))
 
+    def test_render_scheduled_jobs_panel_compact_widths(self):
+        scheduler = TaskScheduler(config_path=None)
+        scheduler.jobs["job-1"] = ScheduledJob(
+            job_id="job-1", name="Health Check", agent="code_reviewer", prompt="Check status", interval_seconds=300
+        )
+        for w in (60, 78):
+            lines = render_scheduled_jobs_panel(width=w, scheduler=scheduler, mode="table")
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+            hdr_line = lines[1]
+            self.assertIn("REMAIN", hdr_line)
+            self.assertIn("NEXT RUN", hdr_line)
+
     def test_render_approved_prs_panel(self):
         empty_lines = render_approved_prs_panel(width=80, approved_prs=[])
         self.assertTrue(any("No approved PRs" in l for l in empty_lines))
@@ -131,6 +144,16 @@ class TestTUIPanels(unittest.TestCase):
         prs = [{"number": 42, "title": "Fix issue", "author": "dev", "url": "http://github.com/pr/42"}]
         pop_lines = render_approved_prs_panel(width=80, approved_prs=prs)
         self.assertTrue(any("#42" in l for l in pop_lines))
+
+    def test_render_approved_prs_panel_compact_widths(self):
+        prs = [{"number": 42, "title": "Fix issue with a very long description that might overflow", "author": "developer-name", "url": "http://github.com/org/repo/pull/42"}]
+        for w in (60, 78):
+            lines = render_approved_prs_panel(width=w, approved_prs=prs)
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+            hdr_line = lines[1]
+            self.assertIn("URL", hdr_line)
+            self.assertIn("AUTHOR", hdr_line)
 
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
