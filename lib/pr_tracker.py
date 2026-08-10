@@ -23,7 +23,7 @@ def _parse_event_timestamp(ts: Any) -> float:
     """Parse an ISO timestamp string or numeric timestamp to float epoch seconds for chronological sorting."""
     if not ts:
         return 0.0
-    if isinstance(ts, (int, float)):
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
         return float(ts)
     if isinstance(ts, datetime):
         if ts.tzinfo is None:
@@ -294,7 +294,7 @@ class PRTracker:
                             events.append({
                                 "state": "",
                                 "body": c.get("body") or "",
-                                "author": c.get("author"),
+                                "author": c.get("author") or c.get("user"),
                                 "created_at": c.get("createdAt") or c.get("submittedAt") or "",
                             })
 

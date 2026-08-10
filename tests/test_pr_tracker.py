@@ -619,6 +619,38 @@ class TestPRTracker(unittest.TestCase):
         self.assertLess(ts1, ts3)
         self.assertEqual(_parse_event_timestamp(None), 0.0)
         self.assertEqual(_parse_event_timestamp(""), 0.0)
+        self.assertEqual(_parse_event_timestamp(True), 0.0)
+        self.assertEqual(_parse_event_timestamp(False), 0.0)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_with_user_schema_format(self, mock_run):
+        mock_output = [
+            {
+                "number": 150,
+                "title": "PR with REST user schema comment",
+                "url": "https://github.com/org/repo/pull/150",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "LGTM!",
+                        "createdAt": "2026-08-10T01:00:00Z",
+                        "user": {"login": "reviewer_bob"},
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 150)
 
     @patch("subprocess.run")
     def test_sync_github_prs_with_modal_verb_approval_comment(self, mock_run):
