@@ -392,7 +392,7 @@ class TaskManager:
         """Submit a new task to the queue."""
         with self._lock:
             if repo_full_name and target_id:
-                if not target_id.startswith(repo_full_name):
+                if not target_id.startswith(f"{repo_full_name}#"):
                     target_num_str = target_id.lstrip("#")
                     formatted_target_id = f"{repo_full_name}#{target_num_str}"
                 else:

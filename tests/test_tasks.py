@@ -695,6 +695,20 @@ class TestTaskManager(unittest.TestCase):
             mock_run_agent.assert_not_called()
             manager.stop()
 
+    def test_submit_task_target_id_prefix_matching(self):
+        manager = TaskManager()
+        # Similar repo name prefix where target_id belongs to repo-2
+        t1 = manager.submit_task("code_reviewer", "Prompt 1", target_id="owner/repo-2#5", repo_full_name="owner/repo")
+        self.assertEqual(t1.target_id, "owner/repo#owner/repo-2#5")
+
+        # Matching repo target_id with hash prefix
+        t2 = manager.submit_task("code_reviewer", "Prompt 2", target_id="owner/repo#5", repo_full_name="owner/repo")
+        self.assertEqual(t2.target_id, "owner/repo#5")
+
+        # Issue/PR number only with leading hash
+        t3 = manager.submit_task("code_reviewer", "Prompt 3", target_id="#5", repo_full_name="owner/repo")
+        self.assertEqual(t3.target_id, "owner/repo#5")
+
 
 if __name__ == "__main__":
     unittest.main()

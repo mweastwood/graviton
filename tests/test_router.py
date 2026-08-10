@@ -17,6 +17,7 @@ from lib.router import (
     handle_issues_event,
     handle_issue_comment_event,
     clear_pr_review_cache,
+    _extract_repo_info,
 )
 from lib.security import BOT_MARKER
 
@@ -831,9 +832,15 @@ class TestRouter(unittest.TestCase):
             "ref": "refs/heads/main",
             "repository": {"name": "repo-alpha", "full_name": "owner/repo-alpha"},
         }
-        res_other = route_webhook_event("push", payload_other)
+        # When server_repo_name is configured, push events for other repos are filtered
+        res_other = route_webhook_event("push", payload_other, server_repo_name="graviton")
         self.assertEqual(res_other["status"], "ignored")
         self.assertIn("not graviton server repository", res_other["reason"])
+
+        # When server_repo_name matches, push event is accepted
+        res_matched = route_webhook_event("push", payload_other, server_repo_name="repo-alpha")
+        self.assertEqual(res_matched["status"], "accepted")
+        self.assertEqual(res_matched["action"], "self_update")
 
         payload_self = {
             "ref": "refs/heads/main",
@@ -842,6 +849,18 @@ class TestRouter(unittest.TestCase):
         res_self = route_webhook_event("push", payload_self)
         self.assertEqual(res_self["status"], "accepted")
         self.assertEqual(res_self["action"], "self_update")
+
+    def test_extract_repo_info_fallback(self):
+        # Payload with repo.name omitted, but repo.full_name provided
+        payload = {
+            "repository": {
+                "full_name": "owner/repo-alpha",
+            }
+        }
+        repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
+        self.assertEqual(repo_full_name, "owner/repo-alpha")
+        self.assertEqual(repo_name, "repo-alpha")
+        self.assertEqual(clone_url, "https://github.com/owner/repo-alpha.git")
 
     def test_multi_repo_issues_routing(self):
         payload = {

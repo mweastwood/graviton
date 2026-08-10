@@ -84,7 +84,7 @@ def _extract_repo_info(payload: Dict[str, Any]):
     if not isinstance(repo, dict):
         return None, None, None
     repo_full_name = repo.get("full_name") or None
-    repo_name = repo.get("name") or None
+    repo_name = repo.get("name") or (repo_full_name.split("/")[-1] if repo_full_name and "/" in repo_full_name else None)
     clone_url = repo.get("clone_url") or repo.get("html_url") or None
     if repo_full_name and not clone_url:
         clone_url = f"https://github.com/{repo_full_name}.git"
@@ -100,17 +100,15 @@ def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_push_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+def handle_push_event(payload: Dict[str, Any], server_repo_name: Optional[str] = None) -> Dict[str, Any]:
     """Handle GitHub 'push' webhook event (Self-Update & Hot Reload on main/master)."""
     ref = payload.get("ref", "")
-    repo = payload.get("repository")
-    if isinstance(repo, dict) and repo:
-        repo_name = repo.get("name")
-        if repo_name and repo_name != "graviton":
-            return {
-                "status": "ignored",
-                "reason": f"Push event for repository '{repo_name}' is not graviton server repository",
-            }
+    _, repo_name, _ = _extract_repo_info(payload)
+    if server_repo_name and repo_name and repo_name != server_repo_name:
+        return {
+            "status": "ignored",
+            "reason": f"Push event for repository '{repo_name}' is not graviton server repository",
+        }
     if ref in ("refs/heads/main", "refs/heads/master"):
         return {
             "status": "accepted",
@@ -551,6 +549,7 @@ def route_webhook_event(
     default_drafter: str = "pr_drafter",
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
+    server_repo_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -563,11 +562,12 @@ def route_webhook_event(
     :param default_drafter: Name of the PR drafter agent.
     :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
     :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
+    :param server_repo_name: Optional repository name for graviton server to check on push events.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
         "ping": handle_ping_event,
-        "push": handle_push_event,
+        "push": lambda p: handle_push_event(p, server_repo_name=server_repo_name),
         "pull_request": lambda p: handle_pull_request_event(
             p, default_reviewer=default_reviewer, pr_tracker=pr_tracker, debounce_window=debounce_window
         ),
