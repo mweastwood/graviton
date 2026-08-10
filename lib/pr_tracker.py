@@ -8,8 +8,9 @@ import json
 import logging
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("graviton.pr_tracker")
 
@@ -135,6 +136,25 @@ class PRTracker:
                     })
         return results
 
+    def _sync_directory(self, d: Path) -> Tuple[str, List[Dict[str, Any]]]:
+        repo_full_name = ""
+        git_res = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(d),
+            capture_output=True,
+            text=True,
+        )
+        if git_res.returncode == 0 and git_res.stdout:
+            origin_url = git_res.stdout.strip()
+            clean_url = origin_url.strip().rstrip("/").removesuffix(".git").rstrip("/")
+            if "github.com" in clean_url:
+                parts = clean_url.split("github.com")[-1].lstrip(":/").split("/")
+                if len(parts) >= 2:
+                    repo_full_name = f"{parts[-2]}/{parts[-1]}"
+
+        prs = self._sync_single_repo(cwd=str(d))
+        return repo_full_name, prs
+
     def sync_github_prs(
         self, repo_root: Optional[Path] = None, repos_dir: Optional[Path] = None
     ) -> None:
@@ -156,37 +176,29 @@ class PRTracker:
                 target_dirs.append(Path(repo_root) if repo_root else Path.cwd())
 
             success_count = 0
-            for d in target_dirs:
-                try:
-                    repo_full_name = ""
-                    git_res = subprocess.run(
-                        ["git", "remote", "get-url", "origin"],
-                        cwd=str(d),
-                        capture_output=True,
-                        text=True,
-                    )
-                    if git_res.returncode == 0 and git_res.stdout:
-                        origin_url = git_res.stdout.strip()
-                        clean_url = origin_url.strip().rstrip("/").removesuffix(".git").rstrip("/")
-                        if "github.com" in clean_url:
-                            parts = clean_url.split("github.com")[-1].lstrip(":/").split("/")
-                            if len(parts) >= 2:
-                                repo_full_name = f"{parts[-2]}/{parts[-1]}"
-
-                    prs = self._sync_single_repo(cwd=str(d))
-                    for item in prs:
-                        num = item["number"]
-                        key = (repo_full_name, num)
-                        new_approved[key] = {
-                            "number": num,
-                            "repo_full_name": repo_full_name,
-                            "title": item["title"],
-                            "author": item["author"],
-                            "url": item["url"],
-                        }
-                    success_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to sync PRs for repository directory '{d}': {e}")
+            max_workers = min(10, max(1, len(target_dirs)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_dir = {
+                    executor.submit(self._sync_directory, d): d
+                    for d in target_dirs
+                }
+                for future in as_completed(future_to_dir):
+                    d = future_to_dir[future]
+                    try:
+                        repo_full_name, prs = future.result()
+                        for item in prs:
+                            num = item["number"]
+                            key = (repo_full_name, num)
+                            new_approved[key] = {
+                                "number": num,
+                                "repo_full_name": repo_full_name,
+                                "title": item["title"],
+                                "author": item["author"],
+                                "url": item["url"],
+                            }
+                        success_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to sync PRs for repository directory '{d}': {e}")
 
             if success_count > 0 or not target_dirs:
                 with self._lock:
