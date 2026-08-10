@@ -547,9 +547,9 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
             for pr in approved_prs:
                 num_str = f"#{pr.get('number', '')}"
                 repo_str = pr.get("repo_full_name", "") or "-"
-                title_str = pr.get("title", "")
-                author_str = pr.get("author", "")
-                url_str = pr.get("url", "")
+                title_str = pr.get("title") or ""
+                author_str = pr.get("author") or ""
+                url_str = pr.get("url") or ""
 
                 pr_formatted = fit_to_display_width(num_str, pr_col_w)
                 repo_formatted = fit_to_display_width(repo_str, repo_col_w)
@@ -571,9 +571,9 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
 
             for pr in approved_prs:
                 num_str = f"#{pr.get('number', '')}"
-                title_str = pr.get("title", "")
-                author_str = pr.get("author", "")
-                url_str = pr.get("url", "")
+                title_str = pr.get("title") or ""
+                author_str = pr.get("author") or ""
+                url_str = pr.get("url") or ""
 
                 pr_formatted = fit_to_display_width(num_str, pr_col_w)
                 title_formatted = fit_to_display_width(title_str, title_col_w)

@@ -174,6 +174,28 @@ class TestTUIPanels(unittest.TestCase):
             self.assertIn("URL", hdr_line)
             self.assertIn("AUTHOR", hdr_line)
 
+    def test_render_approved_prs_panel_with_none_values(self):
+        prs_none = [
+            {
+                "number": 123,
+                "repo_full_name": "owner/repo",
+                "title": None,
+                "author": None,
+                "url": None,
+            },
+            {
+                "number": 124,
+                "title": None,
+                "author": None,
+                "url": None,
+            },
+        ]
+        lines_repo = render_approved_prs_panel(width=80, approved_prs=prs_none)
+        self.assertTrue(any("#123" in l for l in lines_repo))
+
+        lines_no_repo = render_approved_prs_panel(width=80, approved_prs=[prs_none[1]])
+        self.assertTrue(any("#124" in l for l in lines_no_repo))
+
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
         self.assertTrue(any("No task history" in l for l in empty_lines))

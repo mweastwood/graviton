@@ -893,6 +893,37 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(len(approved), 1)
         self.assertEqual(approved[0]["number"], 200)
 
+    @patch("subprocess.run")
+    def test_sync_single_repo_author_dict_lacking_login_key(self, mock_run):
+        mock_output = [
+            {
+                "number": 301,
+                "title": "PR with dict author lacking login key",
+                "url": "https://github.com/org/repo/pull/301",
+                "author": {"id": 12345},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            },
+            {
+                "number": 302,
+                "title": "PR with dict author containing None login",
+                "url": "https://github.com/org/repo/pull/302",
+                "author": {"login": None},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            },
+        ]
+        mock_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.return_value = mock_res
+
+        tracker = PRTracker()
+        results = tracker._sync_single_repo(cwd="/tmp")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["number"], 301)
+        self.assertEqual(results[0]["author"], "")
+        self.assertEqual(results[1]["number"], 302)
+        self.assertEqual(results[1]["author"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

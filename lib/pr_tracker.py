@@ -342,7 +342,7 @@ class PRTracker:
                     title = item.get("title") or ""
                     url = item.get("url") or ""
                     author_raw = item.get("author")
-                    author = author_raw.get("login") if isinstance(author_raw, dict) else str(author_raw or "")
+                    author = (author_raw.get("login") or "") if isinstance(author_raw, dict) else str(author_raw or "")
                     results.append({
                         "number": num,
                         "title": title,
