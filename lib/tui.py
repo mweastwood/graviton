@@ -187,6 +187,25 @@ class TerminalDashboard:
         )
         self._stdin_thread.start()
 
+    @staticmethod
+    def _is_incomplete_escape_sequence(raw_bytes: bytes) -> bool:
+        """Check if raw_bytes represents a partial/incomplete ANSI escape sequence."""
+        if not raw_bytes or not raw_bytes.startswith(b"\x1b"):
+            return False
+        if len(raw_bytes) == 1:
+            return True
+        if raw_bytes.startswith(b"\x1b[") or raw_bytes.startswith(b"\x1bO"):
+            if len(raw_bytes) == 2:
+                return True
+            last = raw_bytes[-1]
+            if 0x40 <= last <= 0x7E:
+                return False
+            return True
+        last = raw_bytes[-1]
+        if 0x40 <= last <= 0x7E:
+            return False
+        return True
+
     def _stdin_loop(self):
         """Background thread reading character hotkeys from stdin."""
         if not HAS_TERMIOS:
@@ -203,22 +222,45 @@ class TerminalDashboard:
 
         try:
             while self._running:
-                rlist, _, _ = select.select([fd], [], [], 0.1)
+                try:
+                    rlist, _, _ = select.select([fd], [], [], 0.1)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except Exception:
+                    break
+
                 if rlist:
                     try:
                         raw_bytes = os.read(fd, 32)
+                    except (BlockingIOError, InterruptedError):
+                        continue
                     except Exception:
                         break
+
                     if not raw_bytes:
                         break
-                    if raw_bytes == b"\x1b":
-                        rlist_seq, _, _ = select.select([fd], [], [], 0.05)
+
+                    while self._running and self._is_incomplete_escape_sequence(raw_bytes):
+                        try:
+                            rlist_seq, _, _ = select.select([fd], [], [], 0.05)
+                        except (BlockingIOError, InterruptedError):
+                            continue
+                        except Exception:
+                            break
+
                         if rlist_seq:
                             try:
                                 seq_bytes = os.read(fd, 31)
+                                if not seq_bytes:
+                                    break
                                 raw_bytes = raw_bytes + seq_bytes
+                            except (BlockingIOError, InterruptedError):
+                                continue
                             except Exception:
-                                pass
+                                break
+                        else:
+                            break
+
                     ch = raw_bytes.decode("utf-8", errors="ignore")
                     self.handle_key(ch)
         except Exception:

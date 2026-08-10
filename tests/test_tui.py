@@ -485,6 +485,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         scheduler.start()
@@ -571,6 +572,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
@@ -610,6 +612,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
@@ -848,6 +851,7 @@ class TestTerminalDashboard(unittest.TestCase):
                     f,
                 )
                 config_path = Path(f.name)
+            self.addCleanup(config_path.unlink, missing_ok=True)
 
             scheduler = TaskScheduler(config_path=config_path)
             stream = io.StringIO()
@@ -888,6 +892,22 @@ class TestTerminalDashboard(unittest.TestCase):
                     self.assertEqual(dashboard.selected_job_index, 1)
                     self.assertEqual(dashboard.active_screen, "jobs")
 
+                    # Test streaming partial escape sequence (b"\x1b" followed after delay by b"[B")
+                    os.write(master, b"\x1b")
+                    time.sleep(0.01)
+                    os.write(master, b"[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test streaming partial escape sequence (b"\x1b[" followed after delay by b"A")
+                    os.write(master, b"\x1b[")
+                    time.sleep(0.01)
+                    os.write(master, b"A")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
                     # Send standalone ESC key
                     os.write(master, b"\x1b")
                     time.sleep(0.15)
@@ -899,6 +919,25 @@ class TestTerminalDashboard(unittest.TestCase):
         finally:
             os.close(master)
             os.close(slave)
+
+    def test_is_incomplete_escape_sequence(self):
+        # Empty or non-escape sequence
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b""))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"a"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"hello"))
+
+        # Incomplete sequences
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[1"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bO"))
+
+        # Complete sequences
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[B"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15~"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bOA"))
 
 
 if __name__ == "__main__":
