@@ -198,6 +198,7 @@ def main():
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
     parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
+    parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
@@ -239,9 +240,11 @@ def main():
     GravitonHandler.task_manager = task_manager
 
     config_path = Path(args.schedules_config)
-    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}")
+    state_path = Path(args.schedules_state)
+    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}, state: {state_path}")
     scheduler = TaskScheduler(
         config_path=config_path,
+        state_path=state_path,
         runner=run_agent_async,
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,

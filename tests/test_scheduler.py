@@ -203,19 +203,21 @@ class TestTaskScheduler(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "schedules.json"
+        self.state_path = Path(self.temp_dir.name) / ".graviton_scheduler_state.json"
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def test_load_default_jobs_if_file_missing(self):
         mock_runner = MagicMock()
-        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
         self.assertTrue(self.config_path.exists())
+        self.assertTrue(self.state_path.exists())
         self.assertIn("periodic_bug_sweep", scheduler.jobs)
         self.assertIn("periodic_quality_sweep", scheduler.jobs)
 
     def test_add_get_remove_job(self):
-        scheduler = TaskScheduler(config_path=self.config_path)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         new_job = ScheduledJob(
             job_id="custom_sweep",
             name="Custom Sweep",
@@ -235,13 +237,88 @@ class TestTaskScheduler(unittest.TestCase):
 
     def test_trigger_job(self):
         mock_runner = MagicMock()
-        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
         success = scheduler.trigger_job("periodic_bug_sweep")
         self.assertTrue(success)
         mock_runner.assert_called_once()
 
+    def test_static_config_untouched_on_job_execution(self):
+        mock_runner = MagicMock()
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            initial_config_content = f.read()
+
+        scheduler.trigger_job("periodic_bug_sweep")
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            after_config_content = f.read()
+
+        self.assertEqual(initial_config_content, after_config_content)
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+
+        self.assertIn("periodic_bug_sweep", state_data)
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["last_run"])
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["next_run"])
+
+    def test_state_loading_and_saving(self):
+        job = ScheduledJob(
+            job_id="test_job",
+            name="Test Job",
+            interval_seconds=3600,
+            agent="codebase_auditor",
+            prompt="Audit",
+            enabled=True,
+        )
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        state_info = {
+            "test_job": {
+                "last_run": "2026-08-10T00:00:00+00:00",
+                "next_run": "2026-08-10T01:00:00+00:00",
+                "enabled": False,
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(state_info, f)
+
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        retrieved_job = scheduler.get_job("test_job")
+        self.assertIsNotNone(retrieved_job)
+        self.assertEqual(retrieved_job.last_run, "2026-08-10T00:00:00+00:00")
+        self.assertEqual(retrieved_job.next_run, "2026-08-10T01:00:00+00:00")
+        self.assertFalse(retrieved_job.enabled)
+
+    def test_state_fallback_corrupted_file(self):
+        job = ScheduledJob(
+            job_id="test_job",
+            name="Test Job",
+            interval_seconds=3600,
+            agent="codebase_auditor",
+            prompt="Audit",
+            enabled=True,
+        )
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            f.write("{invalid_json_content...")
+
+        with self.assertLogs("graviton.scheduler", level="ERROR") as cm:
+            scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+
+        self.assertTrue(any("Failed to load schedule state from" in log for log in cm.output))
+        self.assertIn("test_job", scheduler.jobs)
+        self.assertTrue(self.state_path.exists())
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            recovered_state = json.load(f)
+        self.assertIn("test_job", recovered_state)
+
     def test_start_and_stop_lifecycle(self):
-        scheduler = TaskScheduler(config_path=self.config_path, check_interval_seconds=0.1)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, check_interval_seconds=0.1)
         scheduler.start()
         self.assertTrue(scheduler.is_running())
         scheduler.stop()
@@ -261,7 +338,6 @@ class TestTaskScheduler(unittest.TestCase):
 
     def test_scheduler_loop_executes_due_job(self):
         mock_runner = MagicMock()
-        # Set a short interval and job due in past
         past_dt = datetime.now(timezone.utc) - timedelta(days=1)
         job = ScheduledJob(
             job_id="due_job",
@@ -278,11 +354,11 @@ class TestTaskScheduler(unittest.TestCase):
 
         scheduler = TaskScheduler(
             config_path=self.config_path,
+            state_path=self.state_path,
             runner=mock_runner,
             check_interval_seconds=0.05,
         )
         scheduler.start()
-        # Wait briefly for thread to loop
         import time
 
         time.sleep(0.3)

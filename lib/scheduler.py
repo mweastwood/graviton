@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger("graviton.scheduler")
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "schedules.json"
+DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / ".graviton_scheduler_state.json"
 
 DEFAULT_JOBS = [
     {
@@ -154,6 +155,16 @@ class ScheduledJob:
         next_dt = datetime.fromtimestamp(now_dt.timestamp() + self.interval_seconds, tz=timezone.utc)
         self.next_run = next_dt.isoformat()
 
+    def to_config_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "name": self.name,
+            "interval_seconds": self.interval_seconds,
+            "agent": self.agent,
+            "prompt": self.prompt,
+            "enabled": self.enabled,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "job_id": self.job_id,
@@ -167,6 +178,7 @@ class ScheduledJob:
             "is_running": self.is_running,
             "current_task_id": self.current_task_id,
         }
+
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScheduledJob":
@@ -262,6 +274,7 @@ class TaskScheduler:
     def __init__(
         self,
         config_path: Optional[Path] = None,
+        state_path: Optional[Path] = None,
         runner: Optional[Callable] = None,
         script_path: Optional[Path] = None,
         cwd: Optional[Path] = None,
@@ -270,6 +283,7 @@ class TaskScheduler:
     ):
         self._lock = threading.RLock()
         self.config_path = config_path or DEFAULT_CONFIG_PATH
+        self.state_path = state_path or DEFAULT_STATE_PATH
         self.runner = runner
         self.script_path = script_path
         self.cwd = cwd
@@ -282,6 +296,7 @@ class TaskScheduler:
         self._thread: Optional[threading.Thread] = None
 
         self.load_config()
+        self.load_state()
 
     def register_handler(self, key: str, handler: Callable):
         """Register a custom handler function for a specific job_id or agent."""
@@ -331,7 +346,7 @@ class TaskScheduler:
                     state_changed = True
 
             if state_changed:
-                self.save_config()
+                self.save_state()
 
     def load_config(self):
         """
@@ -352,14 +367,86 @@ class TaskScheduler:
             self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in DEFAULT_JOBS}
             self.save_config()
 
+    def load_state(self):
+        """
+        Load runtime execution state (last_run, next_run, enabled, is_running, current_task_id) from state_path if present.
+        If state_path does not exist or is corrupted, fallback gracefully and persist initial state.
+        """
+        with self._lock:
+            if self.state_path.exists():
+                try:
+                    with open(self.state_path, "r", encoding="utf-8") as f:
+                        state_data = json.load(f)
+                    if isinstance(state_data, dict):
+                        for job_id, s_info in state_data.items():
+                            if job_id in self.jobs and isinstance(s_info, dict):
+                                if "last_run" in s_info:
+                                    self.jobs[job_id].last_run = s_info["last_run"]
+                                if "next_run" in s_info:
+                                    self.jobs[job_id].next_run = s_info["next_run"]
+                                if "enabled" in s_info:
+                                    self.jobs[job_id].enabled = bool(s_info["enabled"])
+                                if "is_running" in s_info:
+                                    self.jobs[job_id].is_running = bool(s_info["is_running"])
+                                if "current_task_id" in s_info:
+                                    self.jobs[job_id].current_task_id = s_info["current_task_id"]
+                        logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
+                        return
+                    elif isinstance(state_data, list):
+                        for item in state_data:
+                            if isinstance(item, dict) and "job_id" in item:
+                                job_id = item["job_id"]
+                                if job_id in self.jobs:
+                                    if "last_run" in item:
+                                        self.jobs[job_id].last_run = item["last_run"]
+                                    if "next_run" in item:
+                                        self.jobs[job_id].next_run = item["next_run"]
+                                    if "enabled" in item:
+                                        self.jobs[job_id].enabled = bool(item["enabled"])
+                                    if "is_running" in item:
+                                        self.jobs[job_id].is_running = bool(item["is_running"])
+                                    if "current_task_id" in item:
+                                        self.jobs[job_id].current_task_id = item["current_task_id"]
+                        logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
+                        return
+                except Exception as e:
+                    logger.error(f"Failed to load schedule state from {self.state_path}: {e}")
+
+            # Fallback / Migration: Save initial execution state to state_path
+            self.save_state()
+
+    def save_state(self):
+        """
+        Persist job execution state (last_run, next_run, enabled, is_running, current_task_id) to state_path.
+        """
+        with self._lock:
+            try:
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {
+                    job_id: {
+                        "last_run": job.last_run,
+                        "next_run": job.next_run,
+                        "enabled": job.enabled,
+                        "is_running": job.is_running,
+                        "current_task_id": job.current_task_id,
+                    }
+                    for job_id, job in self.jobs.items()
+                }
+                with open(self.state_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                logger.debug(f"Saved schedule state for {len(self.jobs)} job(s) to {self.state_path}")
+            except Exception as e:
+                logger.error(f"Failed to save schedule state to {self.state_path}: {e}")
+
     def save_config(self):
         """
-        Persist current scheduled job states back to config_path.
+        Persist current scheduled job definitions back to config_path.
+        Excludes dynamic runtime state attributes (last_run, next_run, is_running, current_task_id).
         """
         with self._lock:
             try:
                 self.config_path.parent.mkdir(parents=True, exist_ok=True)
-                data = [job.to_dict() for job in self.jobs.values()]
+                data = [job.to_config_dict() for job in self.jobs.values()]
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2)
                 logger.debug(f"Saved {len(self.jobs)} scheduled job(s) to {self.config_path}")
@@ -371,6 +458,7 @@ class TaskScheduler:
         with self._lock:
             self.jobs[job.job_id] = job
             self.save_config()
+            self.save_state()
 
     def remove_job(self, job_id: str) -> bool:
         """Remove a scheduled job by job_id."""
@@ -378,6 +466,7 @@ class TaskScheduler:
             if job_id in self.jobs:
                 del self.jobs[job_id]
                 self.save_config()
+                self.save_state()
                 return True
             return False
 
@@ -410,7 +499,7 @@ class TaskScheduler:
         with self._lock:
             job.mark_executed(now_dt)
             job.is_running = True
-            self.save_config()
+            self.save_state()
             handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
 
         if handler:
@@ -421,7 +510,7 @@ class TaskScheduler:
             finally:
                 with self._lock:
                     job.is_running = False
-                    self.save_config()
+                    self.save_state()
             return
 
         if self.task_manager:
@@ -435,13 +524,13 @@ class TaskScheduler:
                 with self._lock:
                     job.current_task_id = task.id
                     job.is_running = True
-                    self.save_config()
+                    self.save_state()
                 return
             except Exception as e:
                 logger.exception(f"Error submitting task for job '{job.job_id}': {e}")
                 with self._lock:
                     job.is_running = False
-                    self.save_config()
+                    self.save_state()
                 return
 
         if self.runner:
@@ -455,12 +544,12 @@ class TaskScheduler:
             finally:
                 with self._lock:
                     job.is_running = False
-                    self.save_config()
+                    self.save_state()
             return
 
         with self._lock:
             job.is_running = False
-            self.save_config()
+            self.save_state()
 
     def start(self):
         """
