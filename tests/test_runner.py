@@ -2,11 +2,13 @@
 Unit tests for lib/runner.py
 """
 
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from lib.runner import run_agent_container, run_agent_async
+from lib.runner import run_agent_container, run_agent_async, is_transcript_incomplete
 
 
 class TestRunner(unittest.TestCase):
@@ -64,7 +66,6 @@ class TestRunner(unittest.TestCase):
 class TestAgentContainerScript(unittest.TestCase):
 
     def setUp(self):
-        import tempfile
         self.temp_dir = tempfile.TemporaryDirectory()
         self.test_dir = Path(self.temp_dir.name)
 
@@ -84,7 +85,6 @@ class TestAgentContainerScript(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_continuation_retry_and_workspace_preservation(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir()
         docker_log = self.test_dir / "docker_calls.log"
@@ -147,7 +147,6 @@ fi
         self.assertIn("rm -f graviton-agent-run-", log_content)
 
     def test_fallback_to_docker_run_when_exec_fails(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir()
         docker_log = self.test_dir / "docker_calls.log"
@@ -206,7 +205,6 @@ fi
         self.assertIn("Resume from your existing work in /workspace and complete your goal", log_content)
 
     def test_remote_origin_synchronization(self):
-        import os
         # 1. Create a remote bare repository
         remote_dir = self.test_dir / "remote_repo.git"
         subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True, capture_output=True)
@@ -264,7 +262,6 @@ exit 0
         self.assertEqual(sync_verified_file.read_text().strip(), "synced")
 
     def test_transcript_incomplete_triggers_continuation_retry(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         docker_log = self.test_dir / "docker_calls.log"
@@ -317,7 +314,6 @@ fi
         self.assertIn("Agent session hit step limit with unexecuted tool calls. Auto-continuing conversation (Attempt 2/2)...", proc.stdout)
 
     def test_transcript_complete_exits_cleanly(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         docker_log = self.test_dir / "docker_calls.log"
@@ -359,7 +355,6 @@ exit 0
 class TestTranscriptInspector(unittest.TestCase):
 
     def setUp(self):
-        import tempfile
         self.temp_dir = tempfile.TemporaryDirectory()
         self.test_dir = Path(self.temp_dir.name)
 
@@ -367,7 +362,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_is_transcript_incomplete_true(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -379,7 +373,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertTrue(is_transcript_incomplete(str(transcript_file)))
 
     def test_is_transcript_incomplete_false_completed(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -391,7 +384,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_false_empty_tool_calls(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -402,13 +394,36 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_missing_file_and_empty(self):
-        from lib.runner import is_transcript_incomplete
         non_existent = self.test_dir / "missing.jsonl"
         self.assertFalse(is_transcript_incomplete(non_existent))
 
         empty_file = self.test_dir / "empty.jsonl"
         empty_file.write_text("", encoding="utf-8")
         self.assertFalse(is_transcript_incomplete(empty_file))
+
+    def test_is_transcript_incomplete_trailing_whitespace(self):
+        transcript_file = self.test_dir / "trailing.jsonl"
+        content = (
+            '{"type": "USER_INPUT", "content": "hello"}\n'
+            '{"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "cmd"}]}\n'
+            '\n'
+            '   \n'
+        )
+        transcript_file.write_text(content, encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_interspersed_blank_lines(self):
+        transcript_file = self.test_dir / "interspersed.jsonl"
+        content = (
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}\n'
+            '\n'
+            '   \n'
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command"}]}\n'
+            '\n'
+            '\t\n'
+        )
+        transcript_file.write_text(content, encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_cli_execution(self):
         runner_py = Path(__file__).resolve().parent.parent / "lib" / "runner.py"
@@ -426,6 +441,37 @@ class TestTranscriptInspector(unittest.TestCase):
         )
         res_comp = subprocess.run(["python3", str(runner_py), str(complete_file)])
         self.assertEqual(res_comp.returncode, 1)
+
+    def test_is_transcript_incomplete_malformed_json(self):
+        transcript_file = self.test_dir / "malformed.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            'this is invalid json {{{'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_non_dict_json(self):
+        transcript_file = self.test_dir / "non_dict.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
+            '[1, 2, 3]'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_non_list_tool_calls(self):
+        cases = [
+            '{"type": "PLANNER_RESPONSE", "tool_calls": null}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": true}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": 123}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": {"key": "val"}}',
+        ]
+        for i, case in enumerate(cases):
+            tf = self.test_dir / f"non_list_tool_calls_{i}.jsonl"
+            tf.write_text(case, encoding="utf-8")
+            self.assertFalse(is_transcript_incomplete(tf))
 
 
 if __name__ == "__main__":

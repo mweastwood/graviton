@@ -23,14 +23,20 @@ def is_transcript_incomplete(transcript_path: Union[str, Path]) -> bool:
         path = Path(transcript_path)
         if not path.is_file():
             return False
+        last_line = None
         with open(path, "r", encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-        if not lines:
+            for line in f:
+                stripped = line.strip()
+                if stripped:
+                    last_line = stripped
+        if not last_line:
             return False
-        last_step = json.loads(lines[-1])
+        last_step = json.loads(last_line)
+        if not isinstance(last_step, dict):
+            return False
         if last_step.get("type") == "PLANNER_RESPONSE":
             tool_calls = last_step.get("tool_calls", [])
-            if tool_calls and len(tool_calls) > 0:
+            if isinstance(tool_calls, list) and tool_calls:
                 return True
     except Exception as e:
         logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")
