@@ -288,7 +288,7 @@ class PRTracker:
 
                 review_decision = str(item.get("reviewDecision") or "").upper()
 
-                if has_cr or review_decision in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+                if has_cr or review_decision == "CHANGES_REQUESTED":
                     is_approved = False
                 elif has_human_approval or review_decision == "APPROVED":
                     is_approved = True

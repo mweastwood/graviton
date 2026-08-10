@@ -483,7 +483,7 @@ class TestPRTracker(unittest.TestCase):
         self.assertFalse(is_bot_event("", {"login": "human_dev", "type": "User"}))
 
     @patch("subprocess.run")
-    def test_sync_github_prs_review_required_blocks_approval(self, mock_run):
+    def test_sync_github_prs_review_required_with_approval(self, mock_run):
         mock_output = [
             {
                 "number": 130,
@@ -510,7 +510,7 @@ class TestPRTracker(unittest.TestCase):
         tracker.sync_github_prs(repo_root=Path("/tmp"))
 
         approved = tracker.get_approved_prs()
-        self.assertEqual(len(approved), 0)
+        self.assertEqual(len(approved), 1)
 
     @patch("subprocess.run")
     def test_sync_github_prs_dismissed_review_clears_approval(self, mock_run):
@@ -646,6 +646,37 @@ class TestPRTracker(unittest.TestCase):
         approved = tracker.get_approved_prs()
         self.assertEqual(len(approved), 1)
         self.assertEqual(approved[0]["number"], 140)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_approval_with_review_required(self, mock_run):
+        mock_output = [
+            {
+                "number": 145,
+                "title": "Branch protected PR with comment approval",
+                "url": "https://github.com/org/repo/pull/145",
+                "author": {"login": "dev"},
+                "reviewDecision": "REVIEW_REQUIRED",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "LGTM! Approved for merge.",
+                        "createdAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "reviewer_bob"},
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 145)
+        self.assertEqual(approved[0]["author"], "dev")
 
 
 if __name__ == "__main__":
