@@ -979,6 +979,10 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b1"))
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bM"))
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\xc3\xa1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A "))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\n"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\xc3\xa1"))
 
     def test_parse_keys(self):
         self.assertEqual(TerminalDashboard._parse_keys(b""), [])
@@ -1000,6 +1004,8 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\x1b[A"), ["\x1b", "\x1b[A"])
         self.assertEqual(TerminalDashboard._parse_keys(b"j\xc3"), ["j"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\xc3\xa1"), ["á"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\xc3\xa1"), ["\x1bá"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\xe2\x82\xac"), ["\x1b€"])
 
     def test_split_incomplete_utf8_tail(self):
         self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b""), (b"", b""))

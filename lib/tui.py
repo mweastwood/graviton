@@ -200,11 +200,8 @@ class TerminalDashboard:
             if tail.startswith(b"\x1b[") or tail.startswith(b"\x1bO"):
                 if len(tail) == 2:
                     return True
-                last = tail[-1]
-                if 0x40 <= last <= 0x7E and last != 0x5B:
-                    return False
-                return True
-            return False
+                if not any(0x40 <= b <= 0x7E and b != 0x5B for b in tail[2:]):
+                    return True
         try:
             raw_bytes.decode("utf-8")
         except UnicodeDecodeError as e:
@@ -266,9 +263,18 @@ class TerminalDashboard:
                         keys.append("\x1b")
                         i += 1
                     else:
-                        seq = raw_bytes[i : i + 2].decode("utf-8", errors="ignore")
+                        char_len = 1
+                        for length in range(1, min(5, n - (i + 1) + 1)):
+                            try:
+                                chunk = raw_bytes[i + 1 : i + 1 + length].decode("utf-8")
+                                if len(chunk) == 1:
+                                    char_len = length
+                                    break
+                            except UnicodeDecodeError:
+                                continue
+                        seq = raw_bytes[i : i + 1 + char_len].decode("utf-8", errors="ignore")
                         keys.append(seq)
-                        i += 2
+                        i += 1 + char_len
             else:
                 decoded_ch = None
                 decoded_len = 0
