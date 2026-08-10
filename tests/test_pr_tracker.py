@@ -791,8 +791,79 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(len(approved), 1)
         self.assertEqual(approved[0]["number"], 125)
 
+    @patch("subprocess.run")
+    def test_sync_directory_custom_and_ssh_git_remote_urls(self, mock_run):
+        import tempfile
+        remote_urls = [
+            ("git@git.internal.com:custom-org/custom-repo.git", "custom-org/custom-repo"),
+            ("https://github.enterprise.corp/enterprise-org/ent-repo.git", "enterprise-org/ent-repo"),
+            ("ssh://git@git.internal.com:2222/team/project.git", "team/project"),
+        ]
+        for url, expected_repo in remote_urls:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                d = Path(tmpdir) / "repo"
+                d.mkdir()
+                (d / ".git").mkdir()
+
+                mock_git_res = MagicMock(returncode=0, stdout=f"{url}\n")
+                mock_gh_res = MagicMock(returncode=0, stdout=json.dumps([{
+                    "number": 1,
+                    "title": "Remote test PR",
+                    "url": f"https://example.com/pr/1",
+                    "author": {"login": "dev"},
+                    "reviewDecision": "APPROVED",
+                    "isDraft": False,
+                }]))
+                mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+                tracker = PRTracker()
+                repo_name, prs = tracker._sync_directory(d)
+                self.assertEqual(repo_name, expected_repo)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_review_id_numeric_type_safety(self, mock_run):
+        mock_output = [
+            {
+                "number": 200,
+                "title": "PR with numeric review IDs across review lists",
+                "url": "https://github.com/org/repo/pull/200",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "latestReviews": [
+                    {
+                        "id": 99999,
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "reviewer1"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+                "reviews": [
+                    {
+                        "id": "99999",
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "reviewer1"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 200)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -270,7 +270,8 @@ class PRTracker:
                     if isinstance(rev_list, list):
                         for r in rev_list:
                             if isinstance(r, dict):
-                                r_id = r.get("id") or (
+                                raw_id = r.get("id")
+                                r_id = str(raw_id) if raw_id is not None and raw_id != "" else (
                                     r.get("submittedAt"),
                                     r.get("createdAt"),
                                     r.get("body"),
@@ -361,10 +362,9 @@ class PRTracker:
         if git_res.returncode == 0 and git_res.stdout:
             origin_url = git_res.stdout.strip()
             clean_url = origin_url.strip().rstrip("/").removesuffix(".git").rstrip("/")
-            if "github.com" in clean_url:
-                parts = clean_url.split("github.com")[-1].lstrip(":/").split("/")
-                if len(parts) >= 2:
-                    repo_full_name = f"{parts[-2]}/{parts[-1]}"
+            match = re.search(r'[:/]([^/]+/[^/]+)$', clean_url)
+            if match:
+                repo_full_name = match.group(1)
 
         prs = self._sync_single_repo(cwd=str(d))
         return repo_full_name, prs
