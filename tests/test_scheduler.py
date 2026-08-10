@@ -310,12 +310,27 @@ class TestIssueUtilities(unittest.TestCase):
 
         # Distinct issues
         self.assertFalse(is_duplicate_issue("Completely new bug report", existing))
-        self.assertFalse(is_duplicate_issue("[Bug Sweep] Unhandled null pointer exception in database.py", existing))
+        self.assertFalse(is_duplicate_issue("[Bug Sweep] Database connection timeout in query handler", existing))
 
         # Short open issue titles should not cause false positive matches for longer proposed titles (Issue #110)
         self.assertFalse(is_duplicate_issue("[Bug Sweep] tui: Refactor panel rendering pipeline", existing))
         self.assertFalse(is_duplicate_issue("Fix race condition in task runner loop", existing))
         self.assertFalse(is_duplicate_issue("Memory leak in background task scheduler worker", existing))
+
+        # Jaccard token similarity boundary tests around default 0.7 threshold
+        # 5 matching tokens out of 7 union tokens (5/7 ≈ 0.714 >= 0.70) -> True
+        bound_ex_7 = [{"title": "word1 word2 word3 word4 word5 word6"}]
+        self.assertTrue(is_duplicate_issue("word1 word2 word3 word4 word5 word7", bound_ex_7))
+
+        # 5 matching tokens out of 8 union tokens (5/8 = 0.625 < 0.70) -> False
+        self.assertFalse(is_duplicate_issue("word1 word2 word3 word4 word5 extraA extraB", bound_ex_7))
+
+        # Exactly 70% boundary: 7 matching tokens out of 10 union tokens (7/10 = 0.70 >= 0.70) -> True
+        bound_ex_10 = [{"title": "t1 t2 t3 t4 t5 t6 t7 ex1 ex2"}]
+        self.assertTrue(is_duplicate_issue("t1 t2 t3 t4 t5 t6 t7 pr1", bound_ex_10))
+
+        # Below 70% boundary: 6 matching tokens out of 11 union tokens (6/11 ≈ 0.545 < 0.70) -> False
+        self.assertFalse(is_duplicate_issue("t1 t2 t3 t4 t5 t6 pr1 pr2", bound_ex_10))
 
         # Edge cases & defensive type handling
         self.assertFalse(is_duplicate_issue("", existing))

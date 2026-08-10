@@ -200,7 +200,7 @@ def _normalize_title(title: str) -> str:
 
 
 def is_duplicate_issue(
-    proposed_title: str, existing_issues: List[Dict[str, Any]], similarity_threshold: float = 0.8
+    proposed_title: str, existing_issues: List[Dict[str, Any]], similarity_threshold: float = 0.7
 ) -> bool:
     """
     Check if proposed title overlaps significantly with an existing issue title
@@ -234,13 +234,14 @@ def is_duplicate_issue(
             return True
 
         # Token set similarity (Jaccard similarity)
-        ex_tokens = set(re.findall(r"\w+", ex_clean))
-        if p_tokens and ex_tokens:
-            intersection = p_tokens & ex_tokens
-            union = p_tokens | ex_tokens
-            jaccard = len(intersection) / len(union)
-            if jaccard >= similarity_threshold:
-                return True
+        if p_tokens:
+            ex_tokens = set(re.findall(r"\w+", ex_clean))
+            if ex_tokens:
+                intersection = p_tokens & ex_tokens
+                union = p_tokens | ex_tokens
+                jaccard = len(intersection) / len(union)
+                if jaccard >= similarity_threshold:
+                    return True
 
     return False
 
