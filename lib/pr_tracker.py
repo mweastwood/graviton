@@ -148,7 +148,21 @@ def is_bot_event(body: str, author_raw: Any = None) -> bool:
         login = str(author_raw.get("login") or "").lower()
     else:
         login = str(author_raw or "").lower()
-    if "bot" in login or "antigravity" in login or "code_reviewer" in login or "code_fixer" in login:
+    if not login:
+        return False
+    if login.endswith("[bot]"):
+        return True
+    if re.search(r'(?:^|[-_])bot(?:[-_]|$)', login):
+        return True
+    explicit_bots = (
+        "antigravity",
+        "code_reviewer",
+        "code_fixer",
+        "issue_triager",
+        "pr_drafter",
+        "codebase_auditor",
+    )
+    if any(b in login for b in explicit_bots):
         return True
     return False
 
@@ -308,9 +322,13 @@ class PRTracker:
 
                 review_decision = str(item.get("reviewDecision") or "").upper()
 
-                if has_cr or review_decision == "CHANGES_REQUESTED":
+                if has_cr:
                     is_approved = False
-                elif has_human_approval or has_bot_approval or review_decision == "APPROVED":
+                elif has_human_approval or has_bot_approval:
+                    is_approved = True
+                elif review_decision == "CHANGES_REQUESTED":
+                    is_approved = False
+                elif review_decision == "APPROVED":
                     is_approved = True
                 else:
                     is_approved = False

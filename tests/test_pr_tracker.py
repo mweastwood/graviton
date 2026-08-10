@@ -705,7 +705,94 @@ class TestPRTracker(unittest.TestCase):
         self.assertTrue(is_bot_event("", "code_fixer"))
         self.assertFalse(is_bot_event("", {"login": "human_dev"}))
 
+    def test_is_bot_event_human_usernames_with_bot_substring(self):
+        from lib.pr_tracker import is_bot_event
+        human_logins = ["chabot", "talbot", "bottomley", "robotics", "Abott", "botany"]
+        for login in human_logins:
+            self.assertFalse(is_bot_event("", login), f"Failed for string login '{login}'")
+            self.assertFalse(is_bot_event("", {"login": login, "type": "User"}), f"Failed for dict login '{login}'")
+
+        bot_logins = ["github-actions[bot]", "my-bot", "bot_helper", "bot"]
+        for login in bot_logins:
+            self.assertTrue(is_bot_event("", login), f"Failed for bot login '{login}'")
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_approval_overrides_changes_requested_decision(self, mock_run):
+        mock_output = [
+            {
+                "number": 124,
+                "title": "PR with comment approval following CHANGES_REQUESTED review state",
+                "url": "https://github.com/mweastwood/graviton/pull/124",
+                "author": {"login": "dev_author"},
+                "reviewDecision": "CHANGES_REQUESTED",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "body": "/fix Action items required",
+                        "author": {"login": "chabot"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+                "comments": [
+                    {
+                        "body": "LGTM! Approved for merge.",
+                        "createdAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "chabot"},
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 124)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_subsequent_review_approval_overrides_changes_requested_decision(self, mock_run):
+        mock_output = [
+            {
+                "number": 125,
+                "title": "PR with review approval following CHANGES_REQUESTED state",
+                "url": "https://github.com/mweastwood/graviton/pull/125",
+                "author": {"login": "dev_author"},
+                "reviewDecision": "CHANGES_REQUESTED",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "body": "Please fix issues",
+                        "author": {"login": "reviewer_alice"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    },
+                    {
+                        "state": "APPROVED",
+                        "body": "Looks good now",
+                        "author": {"login": "reviewer_alice"},
+                        "submittedAt": "2026-08-10T02:00:00Z",
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 125)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
