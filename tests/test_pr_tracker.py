@@ -366,6 +366,7 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_concurrent_multi_repo_sync(self, mock_run):
+        import time
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             num_repos = 5
@@ -376,7 +377,13 @@ class TestPRTracker(unittest.TestCase):
                 (r_dir / ".git").mkdir()
                 dirs.append(r_dir)
 
+            thread_ids = set()
+            lock = threading.Lock()
+
             def side_effect(cmd, cwd=None, **kwargs):
+                with lock:
+                    thread_ids.add(threading.get_ident())
+                time.sleep(0.01)
                 cmd_str = " ".join(cmd)
                 cwd_str = str(cwd or "")
                 for i in range(1, num_repos + 1):
@@ -405,6 +412,7 @@ class TestPRTracker(unittest.TestCase):
                 matching = [p for p in approved if p["repo_full_name"] == f"org/repo{i}"]
                 self.assertEqual(len(matching), 1)
                 self.assertEqual(matching[0]["number"], i * 10)
+            self.assertGreater(len(thread_ids), 1)
 
     @patch("lib.pr_tracker.ThreadPoolExecutor")
     @patch("subprocess.run")
