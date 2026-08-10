@@ -33,8 +33,8 @@ class TestRouter(unittest.TestCase):
 
         self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
-        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
-        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
+        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "feat/my-feature"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
@@ -251,6 +251,50 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["pr_number"], 15)
         self.assertIn("Address comment on PR #15", result["prompt"])
 
+    def test_issue_comment_review_substring_does_not_trigger_reviewer(self):
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": f"/fix Action items required: please fix test failure via comment/review {BOT_MARKER}",
+            },
+            "issue": {
+                "number": 124,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/124"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+
+    def test_issue_comment_explicit_review_command_triggers_reviewer(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "/review please inspect these changes"},
+            "issue": {
+                "number": 125,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/125"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_reviewer")
+
+    def test_issue_comment_fix_command_overrides_review(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "/fix please /review and fix this issue"},
+            "issue": {
+                "number": 126,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/126"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+
     def test_issue_comment_bot_comment_without_command_ignored(self):
         payload = {
             "action": "created",
@@ -281,7 +325,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "PR was not created by us")
 
-    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
+    def test_issue_comment_on_external_pr_with_feat_branch_accepted(self):
         payload = {
             "action": "created",
             "comment": {"body": "Looks suspicious."},
@@ -293,6 +337,24 @@ class TestRouter(unittest.TestCase):
                 },
                 "user": {"login": "external_dev", "type": "User"},
                 "head": {"ref": "feat/new-ui-theme"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+
+    def test_issue_comment_on_external_pr_with_other_branch_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "Looks suspicious."},
+            "issue": {
+                "number": 19,
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/19",
+                    "html_url": "https://github.com/org/repo/pull/19",
+                },
+                "user": {"login": "external_dev", "type": "User"},
+                "head": {"ref": "patch-1"},
             },
         }
         result = route_webhook_event("issue_comment", payload)

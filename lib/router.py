@@ -2,6 +2,7 @@
 GitHub Webhook Event Routing Logic for Graviton.
 """
 
+import re
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -45,8 +46,6 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         user_type = user.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
-        # Explicit user object given that is a human and not a bot / antigravity
-        return False
 
     # 4. Check head branch name ref prefix
     head = pr.get("head")
@@ -54,6 +53,10 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         head_ref = head.get("ref", "").lower()
         if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
             return True
+
+    # 5. Explicit user object given that is a human and not a bot / antigravity
+    if isinstance(user, dict) and user:
+        return False
 
     return True
 
@@ -319,7 +322,15 @@ def handle_issue_comment_event(
                 }
 
             body_lower = comment_body.lower()
-            agent = default_reviewer if "/review" in body_lower else default_fixer
+            is_fix_cmd = bool(re.search(r'(?:\s|^)/fix\b', body_lower))
+            is_review_cmd = bool(re.search(r'(?:\s|^)/review\b', body_lower))
+
+            if is_fix_cmd:
+                agent = default_fixer
+            elif is_review_cmd:
+                agent = default_reviewer
+            else:
+                agent = default_fixer
             prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
             return {
                 "status": "accepted",
