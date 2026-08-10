@@ -407,64 +407,133 @@ class TerminalDashboard:
 
     def select_next_job(self):
         """Select next scheduled job in the TUI selector."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return
-        num_jobs = len(self.scheduler.jobs)
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
+        else:
+            num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
         if num_jobs > 0:
             self.selected_job_index = min(self.selected_job_index + 1, num_jobs - 1)
 
     def select_prev_job(self):
         """Select previous scheduled job in the TUI selector."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
+        else:
+            num_jobs = len(self.scheduler.jobs) if self.scheduler.jobs else 0
         if self.selected_job_index > 0:
             self.selected_job_index -= 1
 
     def enable_selected_job(self) -> Optional[ScheduledJob]:
         """Enable the currently selected scheduled job and save config."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return None
-        jobs_list = list(self.scheduler.jobs.values())
-        if 0 <= self.selected_job_index < len(jobs_list):
-            job = jobs_list[self.selected_job_index]
-            job.enabled = True
-            self.scheduler.save_config()
-            return job
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                if not self.scheduler.jobs:
+                    return None
+                jobs_list = list(self.scheduler.jobs.values())
+                if 0 <= self.selected_job_index < len(jobs_list):
+                    job = jobs_list[self.selected_job_index]
+                    job.enabled = True
+                    self.scheduler.save_config()
+                    return job
+        else:
+            if not self.scheduler.jobs:
+                return None
+            jobs_list = list(self.scheduler.jobs.values())
+            if 0 <= self.selected_job_index < len(jobs_list):
+                job = jobs_list[self.selected_job_index]
+                job.enabled = True
+                self.scheduler.save_config()
+                return job
         return None
 
     def disable_selected_job(self) -> Optional[ScheduledJob]:
         """Disable the currently selected scheduled job and save config."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return None
-        jobs_list = list(self.scheduler.jobs.values())
-        if 0 <= self.selected_job_index < len(jobs_list):
-            job = jobs_list[self.selected_job_index]
-            job.enabled = False
-            self.scheduler.save_config()
-            return job
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                if not self.scheduler.jobs:
+                    return None
+                jobs_list = list(self.scheduler.jobs.values())
+                if 0 <= self.selected_job_index < len(jobs_list):
+                    job = jobs_list[self.selected_job_index]
+                    job.enabled = False
+                    self.scheduler.save_config()
+                    return job
+        else:
+            if not self.scheduler.jobs:
+                return None
+            jobs_list = list(self.scheduler.jobs.values())
+            if 0 <= self.selected_job_index < len(jobs_list):
+                job = jobs_list[self.selected_job_index]
+                job.enabled = False
+                self.scheduler.save_config()
+                return job
         return None
 
     def toggle_selected_job(self) -> Optional[ScheduledJob]:
         """Toggle enable/disable state for the currently selected scheduled job and save config."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return None
-        jobs_list = list(self.scheduler.jobs.values())
-        if 0 <= self.selected_job_index < len(jobs_list):
-            job = jobs_list[self.selected_job_index]
-            job.enabled = not job.enabled
-            self.scheduler.save_config()
-            return job
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                if not self.scheduler.jobs:
+                    return None
+                jobs_list = list(self.scheduler.jobs.values())
+                if 0 <= self.selected_job_index < len(jobs_list):
+                    job = jobs_list[self.selected_job_index]
+                    job.enabled = not job.enabled
+                    self.scheduler.save_config()
+                    return job
+        else:
+            if not self.scheduler.jobs:
+                return None
+            jobs_list = list(self.scheduler.jobs.values())
+            if 0 <= self.selected_job_index < len(jobs_list):
+                job = jobs_list[self.selected_job_index]
+                job.enabled = not job.enabled
+                self.scheduler.save_config()
+                return job
         return None
 
     def run_selected_job_now(self) -> bool:
         """Immediately execute the currently selected scheduled job."""
-        if not self.scheduler or not self.scheduler.jobs:
+        if not self.scheduler:
             return False
-        jobs_list = list(self.scheduler.jobs.values())
-        if 0 <= self.selected_job_index < len(jobs_list):
-            job = jobs_list[self.selected_job_index]
-            return self.scheduler.trigger_job(job.job_id)
-        return False
+        lock = getattr(self.scheduler, "_lock", None)
+        if lock:
+            with lock:
+                if not self.scheduler.jobs:
+                    return False
+                jobs_list = list(self.scheduler.jobs.values())
+                if 0 <= self.selected_job_index < len(jobs_list):
+                    job = jobs_list[self.selected_job_index]
+                    job_id = job.job_id
+                else:
+                    return False
+        else:
+            if not self.scheduler.jobs:
+                return False
+            jobs_list = list(self.scheduler.jobs.values())
+            if 0 <= self.selected_job_index < len(jobs_list):
+                job = jobs_list[self.selected_job_index]
+                job_id = job.job_id
+            else:
+                return False
+        return self.scheduler.trigger_job(job_id)
 
     def handle_key(self, key: str):
         """Handle hotkey or navigation key press."""
