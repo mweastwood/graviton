@@ -248,6 +248,24 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(queued[0].prompt, "Valid task")
             self.assertEqual(manager._task_counter, 10)
 
+            # Case 3: queued_tasks with unrecognized or invalid status string (e.g. "INVALID_STATUS", "RUNNING")
+            unrecognized_status_state = {
+                "task_counter": 15,
+                "queued_tasks": [
+                    {"id": "task-8", "agent": "code_reviewer", "prompt": "Task invalid status", "status": "INVALID_STATUS"},
+                    {"id": "task-9", "agent": "code_fixer", "prompt": "Task running status", "status": "RUNNING"},
+                ],
+            }
+            state_file.write_text(json.dumps(unrecognized_status_state), encoding="utf-8")
+            restored_unrecognized = manager.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored_unrecognized, 2)
+            t8 = manager.get_task("task-8")
+            t9 = manager.get_task("task-9")
+            self.assertIsNotNone(t8)
+            self.assertIsNotNone(t9)
+            self.assertEqual(t8.status, TaskStatus.QUEUED)
+            self.assertEqual(t9.status, TaskStatus.QUEUED)
+
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_drain_active_tasks_timeout(self, mock_run):
         # Make run_agent_container hang for a moment

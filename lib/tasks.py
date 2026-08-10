@@ -201,10 +201,10 @@ class TaskManager:
 
     def dump_queue_state(self, filepath: Optional[Path] = None) -> int:
         """
-        Serialize pending queued tasks and task counter to disk JSON file.
+        Serialize pending queued and quota-paused tasks and task counter to disk JSON file.
 
         :param filepath: Optional Path override for destination state file.
-        :return: Number of queued tasks serialized.
+        :return: Number of queued and quota-paused tasks serialized.
         """
         path = self._get_default_state_path(filepath)
         with self._lock:
@@ -235,10 +235,10 @@ class TaskManager:
 
     def restore_queue_state(self, filepath: Optional[Path] = None) -> int:
         """
-        Restore pending queued tasks and task counter from disk JSON file.
+        Restore pending queued and quota-paused tasks and task counter from disk JSON file.
 
         :param filepath: Optional Path override for source state file.
-        :return: Number of queued tasks restored.
+        :return: Number of queued and quota-paused tasks restored.
         """
         path = self._get_default_state_path(filepath)
         if not path.exists():
