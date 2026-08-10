@@ -33,8 +33,8 @@ class TestRouter(unittest.TestCase):
 
         self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
-        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
-        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "feat/my-feature"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
@@ -325,7 +325,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "PR was not created by us")
 
-    def test_issue_comment_on_external_pr_with_feat_branch_accepted(self):
+    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
         payload = {
             "action": "created",
             "comment": {"body": "Looks suspicious."},
@@ -340,8 +340,8 @@ class TestRouter(unittest.TestCase):
             },
         }
         result = route_webhook_event("issue_comment", payload)
-        self.assertEqual(result["status"], "accepted")
-        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "PR was not created by us")
 
     def test_issue_comment_on_external_pr_with_other_branch_ignored(self):
         payload = {
@@ -376,6 +376,21 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["agent"], "code_fixer")
         self.assertIn("Address comment on PR #20", result["prompt"])
+
+    def test_issue_comment_on_external_pr_with_review_command_accepted(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "/review please inspect these changes"},
+            "issue": {
+                "number": 24,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/24"},
+                "user": {"login": "external_dev", "type": "User"},
+                "head": {"ref": "patch-1"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_reviewer")
 
     def test_issue_comment_on_external_pr_with_antigravity_command_accepted(self):
         payload = {
@@ -429,10 +444,78 @@ class TestRouter(unittest.TestCase):
 
     def test_has_explicit_command_helper(self):
         self.assertTrue(has_explicit_command("/fix please address"))
+        self.assertTrue(has_explicit_command(">/review please inspect"))
+        self.assertTrue(has_explicit_command("**/review**"))
+        self.assertTrue(has_explicit_command("(/review)"))
+        self.assertTrue(has_explicit_command('"/review"'))
+        self.assertTrue(has_explicit_command(">/fix"))
+        self.assertTrue(has_explicit_command("**/fix**"))
+        self.assertTrue(has_explicit_command("(/fix)"))
+        self.assertTrue(has_explicit_command('"/fix"'))
         self.assertTrue(has_explicit_command("Hey @antigravity check this"))
         self.assertTrue(has_explicit_command("@Antigravity /fix"))
+        self.assertFalse(has_explicit_command("see comment/review for details"))
+        self.assertFalse(has_explicit_command("https://example.com/review"))
+        self.assertFalse(has_explicit_command("see foo/fix for details"))
         self.assertFalse(has_explicit_command("Looks good to me"))
         self.assertFalse(has_explicit_command(""))
+
+    def test_issue_comment_markdown_formatted_commands(self):
+        # >/review should route to code_reviewer
+        p1 = {
+            "action": "created",
+            "comment": {"body": ">/review please check"},
+            "issue": {
+                "number": 130,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/130"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        r1 = route_webhook_event("issue_comment", p1)
+        self.assertEqual(r1["status"], "accepted")
+        self.assertEqual(r1["agent"], "code_reviewer")
+
+        # **/review** should route to code_reviewer
+        p2 = {
+            "action": "created",
+            "comment": {"body": "Please do a **/review** of this code"},
+            "issue": {
+                "number": 131,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/131"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        r2 = route_webhook_event("issue_comment", p2)
+        self.assertEqual(r2["status"], "accepted")
+        self.assertEqual(r2["agent"], "code_reviewer")
+
+        # (/review) should route to code_reviewer
+        p3 = {
+            "action": "created",
+            "comment": {"body": "Run (/review)"},
+            "issue": {
+                "number": 132,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/132"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        r3 = route_webhook_event("issue_comment", p3)
+        self.assertEqual(r3["status"], "accepted")
+        self.assertEqual(r3["agent"], "code_reviewer")
+
+        # >/fix should route to code_fixer
+        p4 = {
+            "action": "created",
+            "comment": {"body": ">/fix issue now"},
+            "issue": {
+                "number": 133,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/133"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        r4 = route_webhook_event("issue_comment", p4)
+        self.assertEqual(r4["status"], "accepted")
+        self.assertEqual(r4["agent"], "code_fixer")
 
     def test_issue_comment_on_pure_issue_triggers_triager(self):
         payload = {

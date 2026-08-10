@@ -46,17 +46,14 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         user_type = user.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
+        return False
 
-    # 4. Check head branch name ref prefix
+    # 4. Check head branch name ref prefix (when author user object is omitted)
     head = pr.get("head")
     if isinstance(head, dict):
         head_ref = head.get("ref", "").lower()
         if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
             return True
-
-    # 5. Explicit user object given that is a human and not a bot / antigravity
-    if isinstance(user, dict) and user:
-        return False
 
     return True
 
@@ -66,12 +63,12 @@ def has_explicit_command(text: str) -> bool:
     Check whether a comment or review body contains an explicit human command.
 
     :param text: Comment or review text body.
-    :return: True if text contains explicit commands like '/fix' or '@antigravity', False otherwise.
+    :return: True if text contains explicit commands like '/fix', '/review', or '@antigravity', False otherwise.
     """
     if not text:
         return False
     text_lower = text.lower()
-    return "/fix" in text_lower or "@antigravity" in text_lower
+    return bool(re.search(r'(?<![\w/])/(?:fix|review)\b|@antigravity', text_lower))
 
 
 def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -322,8 +319,8 @@ def handle_issue_comment_event(
                 }
 
             body_lower = comment_body.lower()
-            is_fix_cmd = bool(re.search(r'(?:\s|^)/fix\b', body_lower))
-            is_review_cmd = bool(re.search(r'(?:\s|^)/review\b', body_lower))
+            is_fix_cmd = bool(re.search(r'(?<![\w/])/fix\b', body_lower))
+            is_review_cmd = bool(re.search(r'(?<![\w/])/review\b', body_lower))
 
             if is_fix_cmd:
                 agent = default_fixer
