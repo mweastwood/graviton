@@ -4,6 +4,7 @@ Agent container execution runner for Graviton.
 
 import json
 import logging
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -50,6 +51,7 @@ def run_agent_container(
     script_path: Path,
     cwd: Path,
     on_output: Optional[Callable[[str], None]] = None,
+    max_attempts: Optional[int] = None,
 ) -> subprocess.CompletedProcess:
     """
     Execute the agent container script synchronously.
@@ -59,14 +61,20 @@ def run_agent_container(
     :param script_path: Path to run_agent_container.sh.
     :param cwd: Working directory (repository root).
     :param on_output: Optional callback function invoked for each line of stdout/stderr output.
+    :param max_attempts: Optional maximum agent retry attempt limit (sets MAX_AGENT_RETRIES env var).
     :return: subprocess.CompletedProcess instance.
     """
     cmd = [str(script_path), agent_name, prompt]
     logger.info(f"Triggering agent '{agent_name}' with prompt: '{prompt}'")
 
+    env = os.environ.copy()
+    if max_attempts is not None:
+        env["MAX_AGENT_RETRIES"] = str(max_attempts)
+
     process = subprocess.Popen(
         cmd,
         cwd=str(cwd),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -109,6 +117,7 @@ def run_agent_async(
     prompt: str,
     script_path: Path,
     cwd: Path,
+    max_attempts: Optional[int] = None,
 ) -> threading.Thread:
     """
     Execute the agent container asynchronously in a background daemon thread.
@@ -117,11 +126,12 @@ def run_agent_async(
     :param prompt: Prompt instruction string for agent.
     :param script_path: Path to run_agent_container.sh.
     :param cwd: Working directory.
+    :param max_attempts: Optional maximum agent retry attempt limit.
     :return: Started daemon Thread instance.
     """
     def worker():
         try:
-            result = run_agent_container(agent_name, prompt, script_path, cwd)
+            result = run_agent_container(agent_name, prompt, script_path, cwd, max_attempts=max_attempts)
             if result.returncode == 0:
                 logger.info(f"Agent '{agent_name}' finished successfully for prompt: '{prompt}'")
                 if result.stdout:

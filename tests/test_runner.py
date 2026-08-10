@@ -37,6 +37,7 @@ class TestRunner(unittest.TestCase):
         mock_popen.assert_called_once_with(
             [str(script_path), "code_reviewer", "Review PR"],
             cwd=str(cwd),
+            env=unittest.mock.ANY,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -48,6 +49,30 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(received_lines[0], "Agent finished successfully\n")
         self.assertEqual(received_lines[1], "Auto-continuing conversation (Attempt 2/3)...\n")
 
+    @patch("subprocess.Popen")
+    def test_run_agent_container_with_max_attempts(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = []
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        script_path = Path("/tmp/run_agent_container.sh")
+        cwd = Path("/workspace")
+
+        res = run_agent_container(
+            "code_reviewer",
+            "Review PR",
+            script_path,
+            cwd,
+            max_attempts=5,
+        )
+
+        self.assertEqual(mock_popen.call_count, 1)
+        _, kwargs = mock_popen.call_args
+        self.assertEqual(kwargs["env"].get("MAX_AGENT_RETRIES"), "5")
+
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async(self, mock_run_container):
         mock_run_container.return_value = subprocess.CompletedProcess(
@@ -56,11 +81,11 @@ class TestRunner(unittest.TestCase):
 
         script_path = Path("/tmp/run_agent_container.sh")
         cwd = Path("/workspace")
-        thread = run_agent_async("code_fixer", "Fix code", script_path, cwd)
+        thread = run_agent_async("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
         thread.join(timeout=2.0)
 
         self.assertFalse(thread.is_alive())
-        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd)
+        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
 
 
 class TestAgentContainerScript(unittest.TestCase):
@@ -350,6 +375,57 @@ exit 0
         self.assertEqual(proc.returncode, 0)
         self.assertIn("Agent 'code_fixer' completed successfully.", proc.stdout)
         self.assertNotIn("Auto-continuing conversation", proc.stdout)
+
+    def test_default_max_attempts_is_3(self):
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls.log"
+
+        conv_id = "99999999-8888-7777-6666-555555555555"
+        mock_home = self.test_dir / "home"
+        brain_log_dir = mock_home / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs"
+        brain_log_dir.mkdir(parents=True, exist_ok=True)
+        transcript_file = brain_log_dir / "transcript.jsonl"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+echo "Conversation ID: {conv_id}"
+
+if [ "$1" = "run" ] && [ "$2" = "-d" ]; then
+    exit 0
+elif [ "$1" = "exec" ]; then
+    if [ ! -f "{self.test_dir}/default_attempt2.txt" ]; then
+        echo '{{"type": "PLANNER_RESPONSE", "tool_calls": [{{"name": "write_file"}}]}}' > "{transcript_file}"
+        echo "attempt 1 done" > "{self.test_dir}/default_attempt2.txt"
+        exit 0
+    else
+        echo '{{"type": "PLANNER_RESPONSE", "tool_calls": []}}' > "{transcript_file}"
+        exit 0
+    fi
+else
+    exit 0
+fi
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HOME"] = str(mock_home)
+        if "MAX_AGENT_RETRIES" in env:
+            del env["MAX_AGENT_RETRIES"]
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue default retries"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("Auto-continuing conversation (Attempt 2/3)...", proc.stdout)
 
 
 class TestTranscriptInspector(unittest.TestCase):

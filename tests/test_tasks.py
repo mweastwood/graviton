@@ -116,6 +116,15 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertEqual(task.return_code, 1)
 
+        mock_run.assert_called_once_with(
+            "code_fixer",
+            "Fix issue",
+            Path("/tmp/fake_script.sh"),
+            Path("/tmp/fake_repo"),
+            on_output=task.update_attempt_from_line,
+            max_attempts=3,
+        )
+
         stats = manager.get_stats()
         self.assertEqual(stats["failed"], 1)
 
