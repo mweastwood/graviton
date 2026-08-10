@@ -459,6 +459,20 @@ class TestTranscriptInspector(unittest.TestCase):
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
+    def test_is_transcript_incomplete_non_list_tool_calls(self):
+        from lib.runner import is_transcript_incomplete
+        cases = [
+            '{"type": "PLANNER_RESPONSE", "tool_calls": null}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": true}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": 123}',
+            '{"type": "PLANNER_RESPONSE", "tool_calls": {"key": "val"}}',
+        ]
+        for i, case in enumerate(cases):
+            tf = self.test_dir / f"non_list_tool_calls_{i}.jsonl"
+            tf.write_text(case, encoding="utf-8")
+            self.assertFalse(is_transcript_incomplete(tf))
+
 
 if __name__ == "__main__":
     unittest.main()

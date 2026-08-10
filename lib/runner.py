@@ -36,7 +36,7 @@ def is_transcript_incomplete(transcript_path: Union[str, Path]) -> bool:
             return False
         if last_step.get("type") == "PLANNER_RESPONSE":
             tool_calls = last_step.get("tool_calls", [])
-            if tool_calls:
+            if isinstance(tool_calls, list) and tool_calls:
                 return True
     except Exception as e:
         logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")
