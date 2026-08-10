@@ -5,7 +5,7 @@ Modular component rendering utilities for Graviton Server Terminal UI (TUI) pane
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from lib.quota import QuotaTracker, QuotaWindow, format_quota_badge
 from lib.scheduler import ScheduledJob, TaskScheduler, parse_iso_timestamp
@@ -250,7 +250,7 @@ def render_quota_panel(
     ]
 
 
-def render_active_tasks_panel(width: int, tasks: list, max_workers: int) -> List[str]:
+def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) -> List[str]:
     """Render active running tasks panel."""
     inner_w = width - 4
     active_cnt = len(tasks)
@@ -295,7 +295,7 @@ def render_active_tasks_panel(width: int, tasks: list, max_workers: int) -> List
     return res
 
 
-def render_queued_tasks_panel(width: int, tasks: list) -> List[str]:
+def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
     """Render pending queued tasks panel."""
     inner_w = width - 4
     queued_cnt = len(tasks)
@@ -449,7 +449,7 @@ def render_scheduled_jobs_panel(
     return res
 
 
-def render_approved_prs_panel(width: int, approved_prs: list) -> List[str]:
+def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) -> List[str]:
     """Render approved pull requests panel."""
     inner_w = width - 4
     approved_cnt = len(approved_prs)
@@ -498,7 +498,7 @@ def render_approved_prs_panel(width: int, approved_prs: list) -> List[str]:
     return res
 
 
-def render_history_tasks_panel(width: int, tasks: list, stats: dict) -> List[str]:
+def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, Any]) -> List[str]:
     """Render task execution history panel."""
     inner_w = width - 4
     passed = stats.get("completed", 0)

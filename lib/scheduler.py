@@ -74,6 +74,8 @@ def parse_iso_timestamp(ts_str: Optional[str], context: str = "") -> Optional[da
     try:
         if not isinstance(ts_str, str):
             raise TypeError(f"Expected str, got {type(ts_str).__name__}")
+        if len(ts_str.strip()) < 4:
+            raise ValueError(f"Invalid isoformat string: '{ts_str}'")
         if ts_str.endswith("Z") or ts_str.endswith("z"):
             clean_ts = ts_str[:-1] + "+00:00"
         else:
