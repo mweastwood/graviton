@@ -42,5 +42,51 @@ This skill provides comprehensive instructions for the `code_reviewer` agent to 
    - **Formal Reviews Only**: Strictly submit code reviews via `gh pr review` (`--request-changes`, `--approve`, or `--comment`), never via `gh pr comment` or `gh issue comment`.
    - **Triggering Fixer**: Any review finding that requires code modifications (including minor nits and style tweaks) must set the review state to `CHANGES_REQUESTED` (`--request-changes`) so the event is not dropped by the router and `code_fixer` can process the findings. `--comment` must **never** be used for actionable review findings or fixes because bot `COMMENTED` reviews are ignored by the webhook router.
 
+## Review Body Templates
 
+### 1. Template for CHANGES_REQUESTED
 
+Submitted via `gh pr review <pr_number> --request-changes --body "..."` when presubmit checks fail, merge conflicts exist, or any code changes (bugs, style tweaks, missing tests, etc.) are required.
+
+```markdown
+## Code Review Summary: Changes Requested ❌
+
+### 1. Presubmit & CI Status
+- **Status**: FAIL / PASS
+- **Details**: <failing_check_names_or_all_passed>
+
+### 2. Mergeability Verification
+- **Status**: MERGEABLE / CONFLICTING
+- **Details**: <rebase_required_or_clean>
+
+### 3. Action Items & Required Changes
+- **Security & Safety**: <findings_or_none>
+- **Bugs & Correctness**: <findings_or_none>
+- **Test Coverage**: <findings_or_none>
+- **Code Quality & Style**: <findings_or_none>
+
+### 4. Next Steps
+Please resolve the actionable items above and push the fixes for re-review.
+
+<!-- antigravity-auto-reply -->
+```
+
+### 2. Template for APPROVE / NO_CHANGES_NEEDED
+
+Submitted via `gh pr review <pr_number> --approve --body "..."` (or `--comment` only for purely advisory notes) when all quality, CI, and mergeability standards pass without required code changes.
+
+```markdown
+## Code Review Summary: Approved ✅
+
+### Verification Checklist
+- [x] **Presubmit & CI**: Passed
+- [x] **Mergeability**: Cleanly mergeable
+- [x] **Security & Safety**: Verified
+- [x] **Test Coverage**: Adequate
+- [x] **Code Quality**: Meets standards
+
+### Summary & Notes
+<summary_of_changes_and_optional_notes>
+
+<!-- antigravity-auto-reply -->
+```
