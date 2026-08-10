@@ -74,7 +74,7 @@ def parse_iso_timestamp(ts_str: Optional[str], context: str = "") -> Optional[da
     try:
         if not isinstance(ts_str, str):
             raise TypeError(f"Expected str, got {type(ts_str).__name__}")
-        clean_ts = ts_str.replace("Z", "+00:00").replace("z", "+00:00")
+        clean_ts = ts_str[:-1] + "+00:00" if ts_str.endswith(("Z", "z")) else ts_str
         dt = datetime.fromisoformat(clean_ts)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)

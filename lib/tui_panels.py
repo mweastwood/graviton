@@ -4,11 +4,11 @@ Modular component rendering utilities for Graviton Server Terminal UI (TUI) pane
 
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
 from lib.quota import QuotaTracker, QuotaWindow, format_quota_badge
-from lib.scheduler import ScheduledJob, TaskScheduler
+from lib.scheduler import ScheduledJob, TaskScheduler, parse_iso_timestamp
 from lib.tasks import TaskManager, TaskStatus
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -92,12 +92,10 @@ def format_timestamp(ts: Optional[str]) -> str:
     """Format ISO timestamp string into HH:MM:SS format."""
     if not ts:
         return "-"
-    try:
-        clean_ts = ts.replace("Z", "+00:00").replace("z", "+00:00")
-        dt = datetime.fromisoformat(clean_ts)
+    dt = parse_iso_timestamp(ts)
+    if dt is not None:
         return dt.strftime("%H:%M:%S")
-    except Exception:
-        return ts[:8]
+    return ts[:8]
 
 
 def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
@@ -105,28 +103,18 @@ def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
     if not job.enabled:
         return "DISABLED"
 
-    next_dt = None
-    if job.next_run:
-        try:
-            clean_next = job.next_run.replace("Z", "+00:00").replace("z", "+00:00")
-            next_dt = datetime.fromisoformat(clean_next)
-            if next_dt.tzinfo is None:
-                next_dt = next_dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
+    next_dt = parse_iso_timestamp(job.next_run)
 
     if next_dt is None and job.last_run:
-        try:
-            clean_last = job.last_run.replace("Z", "+00:00").replace("z", "+00:00")
-            last_dt = datetime.fromisoformat(clean_last)
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            next_dt = datetime.fromtimestamp(last_dt.timestamp() + job.interval_seconds, tz=timezone.utc)
-        except Exception:
-            pass
+        last_dt = parse_iso_timestamp(job.last_run)
+        if last_dt is not None:
+            next_dt = last_dt + timedelta(seconds=job.interval_seconds)
 
     if next_dt is None:
         return "DUE"
+
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
 
     rem_sec = (next_dt - now_dt).total_seconds()
     if rem_sec <= 0:
@@ -208,10 +196,11 @@ def render_quota_panel(
     pool = getattr(quota_tr, "quota_pool", "gemini") if quota_tr else "gemini"
 
     if quota_tr:
+        rem_pct = getattr(quota_tr, "remaining_percentage", 100.0)
         w_5h = getattr(
             quota_tr,
             "window_5h",
-            QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=quota_tr.remaining_percentage),
+            QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=rem_pct),
         )
         w_1w = getattr(
             quota_tr,

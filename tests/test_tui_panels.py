@@ -81,6 +81,13 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(len(lines), 4)
         self.assertIn("ANTIGRAVITY MODEL QUOTA", lines[0])
 
+        class DummyTrackerNoRemaining:
+            quota_pool = "gemini"
+
+        dummy_tracker = DummyTrackerNoRemaining()
+        lines_dummy = render_quota_panel(width=80, quota_tracker=dummy_tracker)  # type: ignore
+        self.assertEqual(len(lines_dummy), 4)
+
     def test_render_active_tasks_panel_empty_and_populated(self):
         empty_lines = render_active_tasks_panel(width=80, tasks=[], max_workers=2)
         self.assertTrue(any("No active tasks" in l for l in empty_lines))

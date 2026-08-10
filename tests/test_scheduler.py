@@ -164,6 +164,21 @@ class TestParseIsoTimestamp(unittest.TestCase):
             self.assertIsNone(res)
         self.assertTrue(any("Failed to parse ISO timestamp '12345' for type_context" in log for log in cm.output))
 
+    def test_parse_z_suffix_scoped(self):
+        dt_uppercase = parse_iso_timestamp("2026-08-09T02:00:00Z")
+        self.assertIsNotNone(dt_uppercase)
+        self.assertEqual(dt_uppercase.hour, 2)
+        self.assertEqual(dt_uppercase.tzinfo, timezone.utc)
+
+        dt_lowercase = parse_iso_timestamp("2026-08-09T02:00:00z")
+        self.assertIsNotNone(dt_lowercase)
+        self.assertEqual(dt_lowercase.hour, 2)
+        self.assertEqual(dt_lowercase.tzinfo, timezone.utc)
+
+        with self.assertLogs("graviton.scheduler", level="WARNING"):
+            res = parse_iso_timestamp("2026-08-09T02:00:00Z_invalid")
+            self.assertIsNone(res)
+
 
 class TestTaskScheduler(unittest.TestCase):
 
