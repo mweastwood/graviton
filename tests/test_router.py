@@ -233,6 +233,40 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["agent"], "code_fixer")
         self.assertIn("Address comment on PR #12", result["prompt"])
 
+    def test_issue_comment_bot_comment_with_fix_command_accepted(self):
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": f"/fix Action items required: please fix test failure {BOT_MARKER}",
+            },
+            "issue": {
+                "number": 15,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/15"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["agent"], "code_fixer")
+        self.assertEqual(result["pr_number"], 15)
+        self.assertIn("Address comment on PR #15", result["prompt"])
+
+    def test_issue_comment_bot_comment_without_command_ignored(self):
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": f"Automated reply {BOT_MARKER}",
+            },
+            "issue": {
+                "number": 15,
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/15"},
+                "user": {"login": "antigravity-bot", "type": "Bot"},
+            },
+        }
+        result = route_webhook_event("issue_comment", payload)
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "Bot comment dropped")
+
     def test_issue_comment_on_pr_not_created_by_us_ignored(self):
         payload = {
             "action": "created",
