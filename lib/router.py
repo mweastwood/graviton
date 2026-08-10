@@ -46,14 +46,17 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         user_type = user.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
-        return False
 
-    # 4. Check head branch name ref prefix (when author user object is omitted)
+    # 4. Check head branch name ref prefix
     head = pr.get("head")
     if isinstance(head, dict):
         head_ref = head.get("ref", "").lower()
         if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
             return True
+
+    # 5. Non-bot human author logins return False
+    if isinstance(user, dict) and user:
+        return False
 
     return True
 
