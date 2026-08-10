@@ -210,7 +210,7 @@ class TerminalDashboard:
         return False
 
     @staticmethod
-    def _split_incomplete_utf8_tail(raw_bytes: bytes) -> tuple:
+    def _split_incomplete_utf8_tail(raw_bytes: bytes) -> tuple[bytes, bytes]:
         """Split raw_bytes into (complete_prefix, incomplete_utf8_tail)."""
         if not raw_bytes:
             return raw_bytes, b""
@@ -227,7 +227,12 @@ class TerminalDashboard:
 
     @staticmethod
     def _parse_keys(raw_bytes: bytes) -> list:
-        """Tokenize raw input bytes into individual keys or ANSI escape sequences."""
+        """Tokenize raw input bytes into individual keys or ANSI escape sequences.
+
+        Handles multi-byte UTF-8 sequences by inspecting character length prior to slicing,
+        and uses errors='ignore' when decoding recognized non-standard or malformed ESC escape
+        sequences to safely bypass unparseable byte sequences.
+        """
         if not raw_bytes:
             return []
         keys = []

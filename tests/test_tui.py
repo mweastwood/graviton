@@ -999,7 +999,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b"), ["\x1b"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x80\x61\x62"), ["a", "b"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[\x1b[A"), ["\x1b[", "\x1b[A"])
-        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[[" ), ["\x1b[[" ])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[["), ["\x1b[["])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[1\x1b[B"), ["\x1b[1", "\x1b[B"])
         self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\x1b[A"), ["\x1b", "\x1b[A"])
         self.assertEqual(TerminalDashboard._parse_keys(b"j\xc3"), ["j"])
