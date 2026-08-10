@@ -193,9 +193,9 @@ def fetch_open_issues(cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
 
 def _normalize_title(title: str) -> str:
     """Normalize title by stripping bracketed prefix tags, lowercasing, and stripping whitespace."""
-    if not title:
+    if not title or not isinstance(title, str):
         return ""
-    cleaned = re.sub(r"^\s*\[[^\]]+\]\s*", "", title.strip().lower())
+    cleaned = re.sub(r"^(?:\s*\[[^\]]+\]\s*)+", "", title.strip().lower())
     return cleaned.strip()
 
 
@@ -207,6 +207,9 @@ def is_duplicate_issue(
     using normalized exact matching and token set similarity to prevent false positives
     from short issue titles.
     """
+    if not proposed_title or not isinstance(proposed_title, str):
+        return False
+
     p_norm = proposed_title.strip().lower()
     p_clean = _normalize_title(proposed_title)
     p_tokens = set(re.findall(r"\w+", p_clean))
@@ -214,9 +217,14 @@ def is_duplicate_issue(
     if not p_norm:
         return False
 
+    if not existing_issues or not isinstance(existing_issues, list):
+        return False
+
     for issue in existing_issues:
+        if not isinstance(issue, dict):
+            continue
         ex_raw = issue.get("title", "")
-        if not ex_raw:
+        if not isinstance(ex_raw, str) or not ex_raw:
             continue
         ex_norm = ex_raw.strip().lower()
         ex_clean = _normalize_title(ex_raw)
