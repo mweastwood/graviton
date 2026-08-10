@@ -57,7 +57,7 @@ class Task:
 
     def update_attempt_from_line(self, line: str) -> bool:
         """Parse retry log line and update attempt / max_attempts if present."""
-        match = re.search(r"(?i)attempt[:\s]*(\d+)(?:\s*(?:/|of)\s*(\d+))?", line)
+        match = re.search(r"(?i)Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)", line)
         if match:
             self.attempt = int(match.group(1))
             if match.group(2):
@@ -364,7 +364,11 @@ class TaskManager:
             return len(to_remove)
 
     def submit_task(
-        self, agent: str, prompt: str, target_id: Optional[str] = None
+        self,
+        agent: str,
+        prompt: str,
+        target_id: Optional[str] = None,
+        max_attempts: Optional[int] = None,
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
@@ -390,6 +394,7 @@ class TaskManager:
                 target_id=target_id,
                 status=TaskStatus.QUEUED,
                 enqueue_time=time.time(),
+                max_attempts=max_attempts if max_attempts is not None else 3,
             )
             self._tasks[task_id] = task
             self._prune_tasks_locked()
@@ -527,6 +532,7 @@ class TaskManager:
                         self.script_path,
                         self.cwd,
                         on_output=task.update_attempt_from_line,
+                        max_attempts=task.max_attempts,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()

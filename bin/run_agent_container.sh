@@ -111,7 +111,7 @@ fi
 set -e
 
 # Launch container with retry / continuation loop for turn & timeout limits
-MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-2}"
+MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-3}"
 ATTEMPT=1
 EXIT_CODE=0
 AGENT_LOG="${TEMP_WORKSPACE}/agent_output.log"
