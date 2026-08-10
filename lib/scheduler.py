@@ -249,6 +249,7 @@ class TaskScheduler:
         if not self.task_manager:
             return
 
+        state_changed = False
         for job in self.jobs.values():
             target_id = f"sched:{job.job_id}"
             active_task = None
@@ -258,18 +259,28 @@ class TaskScheduler:
                     break
 
             if active_task:
-                job.is_running = True
-                job.current_task_id = active_task.id
-            else:
-                if job.current_task_id:
-                    task = self.task_manager.get_task(job.current_task_id)
-                    if task and task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
+                if not job.is_running or job.current_task_id != active_task.id:
+                    job.is_running = True
+                    job.current_task_id = active_task.id
+                    state_changed = True
+            elif job.current_task_id:
+                task = self.task_manager.get_task(job.current_task_id)
+                if task and task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
+                    if not job.is_running:
                         job.is_running = True
-                    else:
+                        state_changed = True
+                else:
+                    if job.is_running or job.current_task_id is not None:
                         job.is_running = False
                         job.current_task_id = None
-                elif not job.is_running:
-                    job.is_running = False
+                        state_changed = True
+            elif job.is_running:
+                job.is_running = False
+                state_changed = True
+
+        if state_changed:
+            self.save_config()
+
 
     def load_config(self):
         """

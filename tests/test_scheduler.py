@@ -318,6 +318,43 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertFalse(job.is_running)
         self.assertIsNone(job.current_task_id)
 
+    def test_update_running_states_resets_is_running_when_current_task_id_none(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+        job.is_running = True
+        job.current_task_id = None
+
+        scheduler.update_running_states()
+        self.assertFalse(job.is_running)
+
+    def test_update_running_states_persists_config_changes(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+
+        scheduler.trigger_job("periodic_bug_sweep")
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        saved_job = next(item for item in data if item["job_id"] == "periodic_bug_sweep")
+        self.assertTrue(saved_job["is_running"])
+
+        tasks = tm.get_all_tasks()
+        tasks[0].status = "COMPLETED"
+        scheduler.update_running_states()
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            data_after = json.load(f)
+        saved_job_after = next(item for item in data_after if item["job_id"] == "periodic_bug_sweep")
+        self.assertFalse(saved_job_after["is_running"])
+
+
 
 class TestIssueUtilities(unittest.TestCase):
 
