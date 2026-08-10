@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from lib.security import verify_signature
+from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
@@ -52,6 +52,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
     default_drafter: str = "pr_drafter"
+    server_repo_name: str = REPO_ROOT.name
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
@@ -113,6 +114,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_triager=self.default_triager,
             default_drafter=self.default_drafter,
             pr_tracker=self.pr_tracker,
+            server_repo_name=getattr(self, "server_repo_name", REPO_ROOT.name),
         )
 
         status = decision.get("status", "unknown")
@@ -180,16 +182,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 else:
                     exec_cwd = REPO_ROOT
                     if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
-                        safe_repo_name = Path(repo_name).name
-                        if safe_repo_name:
-                            candidate_cwd = (self.repos_dir / safe_repo_name).resolve()
-                            repos_dir_resolved = self.repos_dir.resolve()
-                            if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
-                                exec_cwd = candidate_cwd
-                            else:
-                                logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
-                                self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
-                                return
+                        if not is_valid_repo_name(repo_name):
+                            logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
+                            self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
+                            return
+                        candidate_cwd = (self.repos_dir / repo_name).resolve()
+                        repos_dir_resolved = self.repos_dir.resolve()
+                        if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
+                            exec_cwd = candidate_cwd
                         else:
                             logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
                             self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})

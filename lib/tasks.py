@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker
+from lib.security import is_valid_repo_name
 
 logger = logging.getLogger("graviton.tasks")
 
@@ -561,15 +562,13 @@ class TaskManager:
                 # Resolve target repository checkout directory
                 exec_cwd = task.repo_dir
                 if not exec_cwd and task.repo_name and self.repos_dir:
-                    safe_repo_name = Path(task.repo_name).name
-                    if safe_repo_name:
-                        candidate_cwd = (self.repos_dir / safe_repo_name).resolve()
-                        repos_dir_resolved = self.repos_dir.resolve()
-                        if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
-                            exec_cwd = candidate_cwd
-                        else:
-                            logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
-                            raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
+                    if not is_valid_repo_name(task.repo_name):
+                        logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
+                        raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
+                    candidate_cwd = (self.repos_dir / task.repo_name).resolve()
+                    repos_dir_resolved = self.repos_dir.resolve()
+                    if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
+                        exec_cwd = candidate_cwd
                     else:
                         logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
                         raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")

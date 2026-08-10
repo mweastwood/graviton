@@ -837,10 +837,19 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res_other["status"], "ignored")
         self.assertIn("not graviton server repository", res_other["reason"])
 
-        # When server_repo_name matches, push event is accepted
+        # When server_repo_name matches short repo_name, push event is accepted
         res_matched = route_webhook_event("push", payload_other, server_repo_name="repo-alpha")
         self.assertEqual(res_matched["status"], "accepted")
         self.assertEqual(res_matched["action"], "self_update")
+
+        # When server_repo_name matches repo_full_name, push event is also accepted
+        res_full_matched = route_webhook_event("push", payload_other, server_repo_name="owner/repo-alpha")
+        self.assertEqual(res_full_matched["status"], "accepted")
+        self.assertEqual(res_full_matched["action"], "self_update")
+
+        # When server_repo_name matches neither short name nor full_name, push event is ignored
+        res_mismatch_full = route_webhook_event("push", payload_other, server_repo_name="owner/other-repo")
+        self.assertEqual(res_mismatch_full["status"], "ignored")
 
         payload_self = {
             "ref": "refs/heads/main",

@@ -103,11 +103,11 @@ def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
 def handle_push_event(payload: Dict[str, Any], server_repo_name: Optional[str] = None) -> Dict[str, Any]:
     """Handle GitHub 'push' webhook event (Self-Update & Hot Reload on main/master)."""
     ref = payload.get("ref", "")
-    _, repo_name, _ = _extract_repo_info(payload)
-    if server_repo_name and repo_name and repo_name != server_repo_name:
+    repo_full_name, repo_name, _ = _extract_repo_info(payload)
+    if server_repo_name and server_repo_name not in (repo_name, repo_full_name):
         return {
             "status": "ignored",
-            "reason": f"Push event for repository '{repo_name}' is not graviton server repository",
+            "reason": f"Push event for repository '{repo_name or repo_full_name}' is not graviton server repository",
         }
     if ref in ("refs/heads/main", "refs/heads/master"):
         return {
