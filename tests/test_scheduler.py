@@ -614,23 +614,27 @@ class TestTaskScheduler(unittest.TestCase):
 
     @patch("lib.scheduler._atomic_write_json")
     def test_save_state_and_config_release_lock_during_fsync(self, mock_write):
-        """Verify save_state, save_config, and load_state release self._lock before executing file write and fsync."""
+        """Verify save_state, save_config, and load_state release self._lock before executing file write while retaining self._save_lock."""
         import threading
         from lib.tasks import TaskManager
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         acquired_in_another_thread = []
 
         def fake_write(target_path, data, indent=2):
-            # Verify lock is released so another thread can acquire it concurrently during disk write/fsync
-            def acquire_lock():
-                got_lock = scheduler._lock.acquire(blocking=False)
-                if got_lock:
-                    acquired_in_another_thread.append(True)
+            # Verify self._lock is released so another thread can acquire it concurrently,
+            # while self._save_lock remains held to serialize concurrent disk writes.
+            def acquire_locks():
+                got_main_lock = scheduler._lock.acquire(blocking=False)
+                if got_main_lock:
                     scheduler._lock.release()
-                else:
-                    acquired_in_another_thread.append(False)
 
-            t = threading.Thread(target=acquire_lock)
+                got_save_lock = scheduler._save_lock.acquire(blocking=False)
+                if got_save_lock:
+                    scheduler._save_lock.release()
+
+                acquired_in_another_thread.append(got_main_lock and not got_save_lock)
+
+            t = threading.Thread(target=acquire_locks)
             t.start()
             t.join()
 
