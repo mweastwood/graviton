@@ -1014,6 +1014,16 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"\xe2\x82"), (b"", b"\xe2\x82"))
         self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"\xc3\xa1"), (b"\xc3\xa1", b""))
 
+    def test_split_incomplete_escape_tail(self):
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b""), (b"", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"hello"), (b"hello", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b"), (b"\x1b", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b["), (b"", b"\x1b["))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1bO"), (b"", b"\x1bO"))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b[1;"), (b"", b"\x1b[1;"))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b[A"), (b"\x1b[A", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"j\x1b["), (b"j", b"\x1b["))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -226,6 +226,26 @@ class TerminalDashboard:
         return raw_bytes, b""
 
     @staticmethod
+    def _split_incomplete_escape_tail(raw_bytes: bytes) -> tuple[bytes, bytes]:
+        """Split raw_bytes into (complete_prefix, incomplete_escape_tail).
+
+        If raw_bytes ends with an incomplete multi-byte escape sequence prefix (where len(tail) > 1,
+        e.g. b"\\x1b[" or b"\\x1bO"), the incomplete tail is returned to be retained in leftover_bytes.
+        Single-byte b"\\x1b" (len(tail) == 1) is not split and remains in prefix to be processed
+        immediately as standalone ESC after timeout.
+        """
+        if not raw_bytes:
+            return raw_bytes, b""
+        last_esc_idx = raw_bytes.rfind(b"\x1b")
+        if last_esc_idx != -1:
+            tail = raw_bytes[last_esc_idx:]
+            if len(tail) > 1:
+                if tail.startswith(b"\x1b[") or tail.startswith(b"\x1bO"):
+                    if len(tail) == 2 or not any(0x40 <= b <= 0x7E and b != 0x5B for b in tail[2:]):
+                        return raw_bytes[:last_esc_idx], tail
+        return raw_bytes, b""
+
+    @staticmethod
     def _parse_keys(raw_bytes: bytes) -> list:
         """Tokenize raw input bytes into individual keys or ANSI escape sequences.
 
@@ -366,7 +386,9 @@ class TerminalDashboard:
                         else:
                             break
 
-                    prefix, leftover_bytes = self._split_incomplete_utf8_tail(raw_bytes)
+                    raw_bytes, leftover_esc = self._split_incomplete_escape_tail(raw_bytes)
+                    prefix, leftover_utf8 = self._split_incomplete_utf8_tail(raw_bytes)
+                    leftover_bytes = leftover_utf8 + leftover_esc
                     for key in self._parse_keys(prefix):
                         self.handle_key(key)
         except Exception:
