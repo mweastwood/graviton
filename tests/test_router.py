@@ -101,6 +101,9 @@ class TestRouter(unittest.TestCase):
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "feat/my-feature"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
+        self.assertFalse(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}}))
+        self.assertFalse(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
+        self.assertTrue(is_pr_created_by_us({"author": {"login": "antigravity-bot", "type": "Bot"}}))
 
     def test_ping_event(self):
         payload = {"zen": "Non-blocking is better than blocking."}
@@ -783,6 +786,39 @@ class TestRouter(unittest.TestCase):
             "pull_request": {"number": 42, "merged": True},
         }
         route_webhook_event("pull_request", payload_closed, pr_tracker=tracker)
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    def test_router_updates_pr_tracker_on_comment_edited(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+
+        payload_edited_approval = {
+            "action": "edited",
+            "comment": {"body": "LGTM! Approved for merge.", "user": {"login": "alice_reviewer"}},
+            "issue": {
+                "number": 124,
+                "title": "Fix approved PR tracking",
+                "html_url": "https://github.com/mweastwood/graviton/pull/124",
+                "user": {"login": "dev_author"},
+                "pull_request": {"url": "https://api.github.com/repos/mweastwood/graviton/pulls/124"},
+            },
+        }
+
+        route_webhook_event("issue_comment", payload_edited_approval, pr_tracker=tracker)
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 124)
+
+        payload_edited_fix = {
+            "action": "edited",
+            "comment": {"body": "/fix Action items required", "user": {"login": "alice_reviewer"}},
+            "issue": {
+                "number": 124,
+                "pull_request": {"url": "https://api.github.com/repos/mweastwood/graviton/pulls/124"},
+            },
+        }
+
+        route_webhook_event("issue_comment", payload_edited_fix, pr_tracker=tracker)
         self.assertEqual(len(tracker.get_approved_prs()), 0)
 
     def test_pull_request_event_debouncing(self):

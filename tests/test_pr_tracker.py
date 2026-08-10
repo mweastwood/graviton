@@ -600,6 +600,23 @@ class TestPRTracker(unittest.TestCase):
         self.assertFalse(has_approval_marker("It could be approved later."))
         self.assertFalse(has_approval_marker("It would be approved if tests pass."))
 
+    def test_has_approval_marker_prefix_negations(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertFalse(has_approval_marker("This PR is disapproved."))
+        self.assertFalse(has_approval_marker("This PR is unapproved."))
+        self.assertFalse(has_approval_marker("This PR is dis-approved."))
+        self.assertFalse(has_approval_marker("This PR is non-approved."))
+
+    def test_parse_event_timestamp_and_sorting(self):
+        from lib.pr_tracker import _parse_event_timestamp
+        ts1 = _parse_event_timestamp("2026-08-10T01:00:00Z")
+        ts2 = _parse_event_timestamp("2026-08-10T03:00:00+02:00")
+        ts3 = _parse_event_timestamp("2026-08-10T01:30:00.123456Z")
+        self.assertEqual(ts1, ts2)
+        self.assertLess(ts1, ts3)
+        self.assertEqual(_parse_event_timestamp(None), 0.0)
+        self.assertEqual(_parse_event_timestamp(""), 0.0)
+
     @patch("subprocess.run")
     def test_sync_github_prs_with_modal_verb_approval_comment(self, mock_run):
         mock_output = [

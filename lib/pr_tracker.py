@@ -10,6 +10,7 @@ import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,14 +19,43 @@ from lib.security import contains_bot_marker
 logger = logging.getLogger("graviton.pr_tracker")
 
 
+def _parse_event_timestamp(ts: Any) -> float:
+    """Parse an ISO timestamp string or numeric timestamp to float epoch seconds for chronological sorting."""
+    if not ts:
+        return 0.0
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    if isinstance(ts, str):
+        ts_str = ts.strip()
+        if not ts_str:
+            return 0.0
+        try:
+            if ts_str.endswith("Z") or ts_str.endswith("z"):
+                clean_ts = ts_str[:-1] + "+00:00"
+            else:
+                clean_ts = ts_str
+            dt = datetime.fromisoformat(clean_ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+
 def has_approval_marker(text: str) -> bool:
     """Check if text contains approval markers like LGTM or Approved."""
     if not text:
         return False
     text_lower = text.lower()
 
-    neg_pattern = r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|un|non|dis|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b'
-    if re.search(neg_pattern, text_lower):
+    multi_word_neg = r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b'
+    prefix_neg = r'\b(un|non|dis)[-\s]?(approved|lgtm)\b'
+    if re.search(multi_word_neg, text_lower) or re.search(prefix_neg, text_lower):
         return False
 
     negative_phrases = (
@@ -233,7 +263,7 @@ class PRTracker:
                                 "created_at": c.get("createdAt") or c.get("submittedAt") or "",
                             })
 
-                events.sort(key=lambda x: str(x.get("created_at") or "1970-01-01T00:00:00Z"))
+                events.sort(key=lambda x: _parse_event_timestamp(x.get("created_at")))
 
                 has_bot_approval = False
                 has_human_approval = False
