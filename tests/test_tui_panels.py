@@ -11,6 +11,7 @@ from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
+    allocate_approved_pr_columns,
     fit_to_display_width,
     format_interval,
     format_remaining,
@@ -22,6 +23,7 @@ from lib.tui_panels import (
     render_event_logs_panel,
     render_header_panel,
     render_history_tasks_panel,
+    render_panel_header,
     render_queued_tasks_panel,
     render_quota_panel,
     render_scheduled_jobs_panel,
@@ -240,6 +242,40 @@ class TestTUIPanels(unittest.TestCase):
             lines = render_event_logs_panel(width=w, log_handler=handler)
             for line in lines:
                 self.assertEqual(get_display_width(line), w)
+
+    def test_allocate_approved_pr_columns_narrow_container_widths(self):
+        for inner_w in (10, 15, 20, 23):
+            # Test with repo column
+            pr_w, repo_w, title_w, author_w, url_w = allocate_approved_pr_columns(inner_w, has_repo=True)
+            self.assertGreaterEqual(pr_w, 4)
+            self.assertGreaterEqual(repo_w, 8)
+            self.assertGreaterEqual(author_w, 6)
+            self.assertGreaterEqual(title_w, 1)
+            self.assertGreaterEqual(url_w, 1)
+
+            # Test without repo column
+            pr_w2, repo_w2, title_w2, author_w2, url_w2 = allocate_approved_pr_columns(inner_w, has_repo=False)
+            self.assertGreaterEqual(pr_w2, 4)
+            self.assertEqual(repo_w2, 0)
+            self.assertGreaterEqual(author_w2, 6)
+            self.assertGreaterEqual(title_w2, 1)
+            self.assertGreaterEqual(url_w2, 1)
+
+    def test_render_panel_header_truncation_when_exceeding_width(self):
+        # Normal width where title fits comfortably
+        hdr_normal = render_panel_header(width=80, title="EVENT LOGS")
+        self.assertEqual(get_display_width(hdr_normal), 80)
+        self.assertTrue(hdr_normal.startswith("┌─"))
+        self.assertTrue(hdr_normal.endswith("┐"))
+        self.assertIn("EVENT LOGS", hdr_normal)
+
+        # Narrow width where title display width exceeds width - 3
+        long_title = "APPROVED PULL REQUESTS (READY TO MERGE) [10 Ready]"
+        for w in (20, 25, 30):
+            hdr_trunc = render_panel_header(width=w, title=long_title)
+            self.assertEqual(get_display_width(hdr_trunc), w)
+            self.assertTrue(hdr_trunc.startswith("┌─"))
+            self.assertTrue(hdr_trunc.endswith("┐"))
 
 
 if __name__ == "__main__":

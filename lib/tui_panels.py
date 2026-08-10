@@ -189,6 +189,78 @@ def render_header_panel(
     ]
 
 
+def render_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
+    """
+    Render top border header line for a panel box with title truncation and ANSI styling.
+
+    :param width: Total panel width in characters.
+    :param title: Title text to display in header bar.
+    :param color_code: ANSI color formatting code for title text.
+    :return: Formatted top border string (e.g. '┌─ TITLE ───────┐').
+    """
+    panel_title = f" {title.strip()} "
+    title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
+    pad_len = max(0, width - 3 - title_dw)
+    return "┌─" + f"{color_code}{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+
+
+def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Tuple[int, int, int, int, int]:
+    """
+    Allocate column widths for approved pull requests panel table.
+
+    Note on minimum width floors:
+    Minimum width floors ensure columns retain reasonable minimum visual widths
+    even in narrow container widths (inner_w < 36 with repo, or inner_w < 26 without repo).
+    For narrow container widths (e.g. inner_w < 24), minimum width floors guarantee
+    column widths do not shrink below their minimum thresholds (e.g. PR col >= 4,
+    REPO col >= 8, AUTHOR col >= 6, TITLE col >= 1, URL col >= 1).
+
+    :param inner_w: Available inner width for table content.
+    :param has_repo: True if repository column should be included, False otherwise.
+    :return: 5-tuple of (pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w).
+             When has_repo is False, repo_col_w is returned as 0.
+    """
+    if has_repo:
+        spacing = 4
+        if inner_w < 36:
+            avail = max(1, inner_w - spacing)
+            pr_col_w = max(4, min(8, int(avail * 0.15)))
+            repo_col_w = max(8, min(16, int(avail * 0.25)))
+            author_col_w = max(6, min(14, int(avail * 0.2)))
+        else:
+            pr_col_w = 8
+            repo_col_w = 16
+            author_col_w = 14
+
+        remaining = max(2, inner_w - pr_col_w - repo_col_w - author_col_w - spacing)
+        if remaining >= 8:
+            title_col_w = max(1, remaining // 2 - 2)
+        else:
+            title_col_w = max(1, min(remaining - 1, remaining // 2))
+        url_col_w = remaining - title_col_w
+        return pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w
+    else:
+        spacing = 3
+        if inner_w < 26:
+            avail = max(1, inner_w - spacing)
+            pr_col_w = max(4, min(8, int(avail * 0.2)))
+            author_col_w = max(6, min(15, int(avail * 0.3)))
+        else:
+            pr_col_w = 8
+            author_col_w = 15
+
+        remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
+        if remaining >= 8:
+            title_col_w = max(1, remaining // 2 - 2)
+        else:
+            title_col_w = max(1, min(remaining - 1, remaining // 2))
+        url_col_w = remaining - title_col_w
+        return pr_col_w, 0, title_col_w, author_col_w, url_col_w
+
+
 def render_quota_panel(
     width: int,
     quota_tracker: Optional[QuotaTracker] = None,
@@ -232,19 +304,7 @@ def render_quota_panel(
         else ("\033[91m\033[1m" if w_1w.remaining_percentage == 0 else "\033[93m\033[1m")
     )
 
-    panel_title = f" ANTIGRAVITY MODEL QUOTA ({pool.upper()}) "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-
-    header_bar = (
-        "┌─"
-        + f"\033[96m\033[1m{panel_title}\033[0m"
-        + ("─" * pad_len)
-        + "┐"
-    )
+    header_bar = render_panel_header(width, f"ANTIGRAVITY MODEL QUOTA ({pool.upper()})", color_code="\033[96m\033[1m")
 
     body_line_1 = fit_to_display_width(f"{color_5h}{badge_5h_text}\033[0m", inner_w)
     body_line_2 = fit_to_display_width(f"{color_1w}{badge_1w_text}\033[0m", inner_w)
@@ -261,13 +321,8 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
     """Render active running tasks panel."""
     inner_w = width - 4
     active_cnt = len(tasks)
-    panel_title = f" ACTIVE TASKS (RUNNING) [{active_cnt}/{max_workers} Workers Active] "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[94m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = f"ACTIVE TASKS (RUNNING) [{active_cnt}/{max_workers} Workers Active]"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[94m\033[1m")
 
     res = [header_bar]
     if not tasks:
@@ -309,13 +364,8 @@ def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
     """Render pending queued tasks panel."""
     inner_w = width - 4
     queued_cnt = len(tasks)
-    panel_title = f" TASK QUEUE (QUEUED) [{queued_cnt} Pending] "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[93m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = f"TASK QUEUE (QUEUED) [{queued_cnt} Pending]"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[93m\033[1m")
 
     res = [header_bar]
     if not tasks:
@@ -351,13 +401,8 @@ def render_scheduled_jobs_panel(
 ) -> List[str]:
     """Render periodic scheduled jobs panel in card or table view mode."""
     inner_w = width - 4
-    panel_title = " SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ] "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = "SCHEDULED JOBS [(j/k) select | (space) toggle | (e/d) state | (r)un ]"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[96m\033[1m")
 
     res = [header_bar]
     if not scheduler or not scheduler.jobs:
@@ -477,13 +522,8 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
     """Render approved pull requests panel."""
     inner_w = width - 4
     approved_cnt = len(approved_prs)
-    panel_title = f" APPROVED PULL REQUESTS (READY TO MERGE) [{approved_cnt} Ready] "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[92m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = f"APPROVED PULL REQUESTS (READY TO MERGE) [{approved_cnt} Ready]"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[92m\033[1m")
 
     res = [header_bar]
     if not approved_prs:
@@ -492,25 +532,8 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
         has_repo = any(bool(pr.get("repo_full_name")) for pr in approved_prs)
+        pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w = allocate_approved_pr_columns(inner_w, has_repo=has_repo)
         if has_repo:
-            spacing = 4
-            if inner_w < 36:
-                avail = max(1, inner_w - spacing)
-                pr_col_w = max(4, min(8, int(avail * 0.15)))
-                repo_col_w = max(8, min(16, int(avail * 0.25)))
-                author_col_w = max(6, min(14, int(avail * 0.2)))
-            else:
-                pr_col_w = 8
-                repo_col_w = 16
-                author_col_w = 14
-
-            remaining = max(2, inner_w - pr_col_w - repo_col_w - author_col_w - spacing)
-            if remaining >= 8:
-                title_col_w = max(1, remaining // 2 - 2)
-            else:
-                title_col_w = max(1, min(remaining - 1, remaining // 2))
-            url_col_w = remaining - title_col_w
-
             col_hdr = (
                 f"{fit_to_display_width('PR #', pr_col_w)} "
                 f"{fit_to_display_width('REPO', repo_col_w)} "
@@ -537,22 +560,6 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
                 row = f"{pr_formatted} {repo_formatted} {title_formatted} {author_formatted} {url_formatted}"
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
         else:
-            spacing = 3
-            if inner_w < 26:
-                avail = max(1, inner_w - spacing)
-                pr_col_w = max(4, min(8, int(avail * 0.2)))
-                author_col_w = max(6, min(15, int(avail * 0.3)))
-            else:
-                pr_col_w = 8
-                author_col_w = 15
-
-            remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
-            if remaining >= 8:
-                title_col_w = max(1, remaining // 2 - 2)
-            else:
-                title_col_w = max(1, min(remaining - 1, remaining // 2))
-            url_col_w = remaining - title_col_w
-
             col_hdr = (
                 f"{fit_to_display_width('PR #', pr_col_w)} "
                 f"{fit_to_display_width('TITLE', title_col_w)} "
@@ -585,13 +592,8 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
     inner_w = width - 4
     passed = stats.get("completed", 0)
     failed = stats.get("failed", 0)
-    panel_title = f" TASK HISTORY (COMPLETED & FAILED) [Passed: {passed} | Failed: {failed}] "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[95m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = f"TASK HISTORY (COMPLETED & FAILED) [Passed: {passed} | Failed: {failed}]"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[95m\033[1m")
 
     res = [header_bar]
     if not tasks:
@@ -634,13 +636,8 @@ def render_event_logs_panel(
 ) -> List[str]:
     """Render recent event log records panel."""
     inner_w = width - 4
-    panel_title = " EVENT LOGS "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+    panel_title = "EVENT LOGS"
+    header_bar = render_panel_header(width, panel_title, color_code="\033[96m\033[1m")
 
     res = [header_bar]
     recent_logs = log_handler.get_logs(limit=limit) if log_handler else []
