@@ -53,6 +53,20 @@ def has_approval_marker(text: str) -> bool:
         return False
     text_lower = text.lower()
 
+    # Reject questions (trailing '?' or question words/phrasing like 'Is this PR approved?', 'Was this approved?', 'Has this been approved?')
+    if "?" in text_lower:
+        return False
+
+    question_pattern = r'\b(is|was|has|had|have|how|when|why|what|if|whether)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
+    if re.search(question_pattern, text_lower):
+        return False
+
+    # Reject discussion / noun phrases (e.g. "approved pull requests panel", "in approved prs")
+    noun_phrase_pattern = r'\bapproved\s+(pull\s+requests?|prs?|panel|box|list|section|screen|widget|table|feature)\b'
+    preposition_pattern = r'\b(in|of|from|on|about|view|show|display|fix|fixed|update|updated)\s+approved\b'
+    if re.search(noun_phrase_pattern, text_lower) or re.search(preposition_pattern, text_lower):
+        return False
+
     multi_word_neg = r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b'
     prefix_neg = r'\b(un|non|dis)[-\s]?(approved|lgtm)\b'
     if re.search(multi_word_neg, text_lower) or re.search(prefix_neg, text_lower):
@@ -87,6 +101,11 @@ def has_approval_marker(text: str) -> bool:
         "no lgtm",
         "non-lgtm",
         "un-lgtm",
+        "is this pr approved",
+        "is this approved",
+        "was this approved",
+        "has this been approved",
+        "has it been approved",
     )
     if any(neg in text_lower for neg in negative_phrases):
         return False

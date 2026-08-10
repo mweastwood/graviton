@@ -43,24 +43,26 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     if is_bot_event(body, user):
         return True
 
-    # 3. Check user / author dict details
+    # 3. Check user / author dict details or string author
     user_dict = pr.get("user") if isinstance(pr.get("user"), dict) else (pr.get("author") if isinstance(pr.get("author"), dict) else None)
     if isinstance(user_dict, dict) and user_dict:
         login = user_dict.get("login", "").lower()
         user_type = user_dict.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
+        return False
+    elif isinstance(user, str) and user.strip():
+        login = user.strip().lower()
+        if login.endswith("[bot]") or "bot" in login or "antigravity" in login:
+            return True
+        return False
 
-    # 4. Check head branch name ref prefix
+    # 4. Check head branch name ref prefix (fallback if no explicit user/author info)
     head = pr.get("head")
     if isinstance(head, dict):
         head_ref = head.get("ref", "").lower()
         if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
             return True
-
-    # 5. Non-bot human author logins return False
-    if isinstance(user_dict, dict) and user_dict:
-        return False
 
     return True
 
@@ -459,6 +461,12 @@ def handle_issue_comment_event(
     pr = issue.get("pull_request")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
+    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+        return {
+            "status": "ignored",
+            "reason": "Bot comment dropped",
+        }
+
     if pr and pr_tracker and issue_number is not None and action in ("created", "edited"):
         if has_change_request_marker(comment_body):
             pr_tracker.remove_approved_pr(issue_number, repo_full_name=repo_full_name)
@@ -468,12 +476,6 @@ def handle_issue_comment_event(
             issue_user = issue.get("user", {})
             pr_author = issue_user.get("login", "") if isinstance(issue_user, dict) else str(issue_user or "")
             pr_tracker.add_approved_pr(issue_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
-
-    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot comment dropped",
-        }
 
     if action == "created":
         # 1. Comment on a Pull Request

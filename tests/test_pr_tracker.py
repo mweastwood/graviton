@@ -678,6 +678,15 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(approved[0]["number"], 145)
         self.assertEqual(approved[0]["author"], "dev")
 
+    def test_has_approval_marker_rejects_questions_and_discussion(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertFalse(has_approval_marker("Is this PR approved?"))
+        self.assertFalse(has_approval_marker("Has this been approved?"))
+        self.assertFalse(has_approval_marker("Was this approved?"))
+        self.assertFalse(has_approval_marker("Is this approved"))
+        self.assertFalse(has_approval_marker("Why was this approved?"))
+        self.assertFalse(has_approval_marker("Fixed issue in approved pull requests panel"))
+
 
 if __name__ == "__main__":
     unittest.main()
