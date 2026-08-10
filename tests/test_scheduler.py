@@ -614,8 +614,9 @@ class TestTaskScheduler(unittest.TestCase):
 
     @patch("lib.scheduler._atomic_write_json")
     def test_save_state_and_config_release_lock_during_fsync(self, mock_write):
-        """Verify save_state and save_config release self._lock before executing file write and fsync."""
+        """Verify save_state, save_config, and load_state release self._lock before executing file write and fsync."""
         import threading
+        from lib.tasks import TaskManager
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         acquired_in_another_thread = []
 
@@ -635,11 +636,72 @@ class TestTaskScheduler(unittest.TestCase):
 
         mock_write.side_effect = fake_write
 
+        # Clear any fallback save results recorded during constructor initialization
+        acquired_in_another_thread.clear()
+
         scheduler.save_state()
+        self.assertEqual(len(acquired_in_another_thread), 1)
         self.assertTrue(acquired_in_another_thread[-1])
 
+        acquired_in_another_thread.clear()
+
         scheduler.save_config()
+        self.assertEqual(len(acquired_in_another_thread), 1)
         self.assertTrue(acquired_in_another_thread[-1])
+
+        acquired_in_another_thread.clear()
+
+        # Test load_state fallback save when state_path does not exist
+        if self.state_path.exists():
+            self.state_path.unlink()
+        scheduler.load_state()
+        self.assertEqual(len(acquired_in_another_thread), 1)
+        self.assertTrue(acquired_in_another_thread[-1])
+
+        acquired_in_another_thread.clear()
+
+        # Test load_state with active TaskManager updating running states
+        tm = TaskManager(max_workers=1)
+        scheduler.task_manager = tm
+        tm.submit_task(agent="codebase_auditor", prompt="test", target_id="sched:periodic_bug_sweep")
+        scheduler.load_state()
+        self.assertEqual(len(acquired_in_another_thread), 1)
+        self.assertTrue(acquired_in_another_thread[-1])
+
+    def test_save_lock_serializes_disk_writes(self):
+        """Verify _save_lock serializes _atomic_write_json execution across concurrent save calls."""
+        import threading
+        import time
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        self.assertTrue(hasattr(scheduler, "_save_lock"))
+
+        concurrent_writes = []
+        max_concurrent_writes = 0
+        counter_lock = threading.Lock()
+
+        def slow_write(target_path, data, indent=2):
+            nonlocal max_concurrent_writes
+            with counter_lock:
+                concurrent_writes.append(1)
+                if len(concurrent_writes) > max_concurrent_writes:
+                    max_concurrent_writes = len(concurrent_writes)
+            time.sleep(0.01)
+            with counter_lock:
+                concurrent_writes.pop()
+
+        with patch("lib.scheduler._atomic_write_json", side_effect=slow_write):
+            threads = [
+                threading.Thread(target=scheduler.save_state),
+                threading.Thread(target=scheduler.save_config),
+                threading.Thread(target=scheduler.save_state),
+                threading.Thread(target=scheduler.save_config),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(max_concurrent_writes, 1)
 
     def test_high_concurrency_lock_decoupling(self):
         """Verify high concurrency operations on TaskScheduler do not block on disk fsync or deadlock."""
