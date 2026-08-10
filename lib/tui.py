@@ -347,6 +347,7 @@ class TerminalDashboard:
                 try:
                     rlist, _, _ = select.select([fd], [], [], 0.1)
                 except (BlockingIOError, InterruptedError):
+                    time.sleep(0.01)
                     continue
                 except Exception:
                     break
@@ -355,6 +356,7 @@ class TerminalDashboard:
                     try:
                         chunk = os.read(fd, 32)
                     except (BlockingIOError, InterruptedError):
+                        time.sleep(0.01)
                         continue
                     except Exception:
                         break
@@ -369,6 +371,7 @@ class TerminalDashboard:
                         try:
                             rlist_seq, _, _ = select.select([fd], [], [], 0.05)
                         except (BlockingIOError, InterruptedError):
+                            time.sleep(0.01)
                             continue
                         except Exception:
                             break
@@ -380,6 +383,7 @@ class TerminalDashboard:
                                     break
                                 raw_bytes = raw_bytes + seq_bytes
                             except (BlockingIOError, InterruptedError):
+                                time.sleep(0.01)
                                 continue
                             except Exception:
                                 break
@@ -391,6 +395,11 @@ class TerminalDashboard:
                     leftover_bytes = leftover_utf8 + leftover_esc
                     for key in self._parse_keys(prefix):
                         self.handle_key(key)
+                else:
+                    if leftover_bytes:
+                        for key in self._parse_keys(leftover_bytes):
+                            self.handle_key(key)
+                        leftover_bytes = b""
         except Exception:
             pass
         finally:

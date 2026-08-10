@@ -952,6 +952,53 @@ class TestTerminalDashboard(unittest.TestCase):
             os.close(master)
             os.close(slave)
 
+    def test_stdin_idle_timeout_flushes_leftover_bytes(self):
+        """Test that idle timeout flushes and clears leftover_bytes without corrupting subsequent inputs."""
+        import os
+        import pty
+        from unittest.mock import patch
+
+        master, slave = pty.openpty()
+
+        try:
+            manager = TaskManager(max_workers=2)
+            self.addCleanup(manager.stop)
+            stream = io.StringIO()
+            dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+            dashboard.active_screen = "main"
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+
+            with patch("sys.stdin", mock_stdin):
+                dashboard._running = True
+                stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
+                stdin_thread.start()
+                time.sleep(0.05)
+
+                try:
+                    # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
+                    os.write(master, b"\x1b[")
+                    # Wait long enough for stdin to become idle and select.select to time out (>0.1s)
+                    time.sleep(0.25)
+
+                    # At this point, leftover_bytes should have been flushed/cleared.
+                    # Send a valid key (b"j") to switch to jobs screen.
+                    os.write(master, b"j")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+                finally:
+                    dashboard._running = False
+                    stdin_thread.join(timeout=1.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_is_incomplete_escape_sequence(self):
         # Empty or non-escape sequence
         self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b""))
