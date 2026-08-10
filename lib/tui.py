@@ -241,6 +241,9 @@ class TerminalDashboard:
                             seq = raw_bytes[i : end_idx].decode("utf-8", errors="ignore")
                             keys.append(seq)
                             i = end_idx
+                    elif next_b == 0x1B:
+                        keys.append("\x1b")
+                        i += 1
                     else:
                         seq = raw_bytes[i : i + 2].decode("utf-8", errors="ignore")
                         keys.append(seq)
