@@ -339,6 +339,104 @@ class TestPRTracker(unittest.TestCase):
             self.assertEqual(approved[0]["repo_full_name"], "owner/repo2")
             self.assertEqual(approved[0]["number"], 10)
 
+    @patch("subprocess.run")
+    def test_sync_directory_helper(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            d = Path(tmpdir) / "myrepo"
+            d.mkdir()
+            (d / ".git").mkdir()
+
+            mock_git_res = MagicMock(returncode=0, stdout="git@github.com:org/myrepo.git\n")
+            mock_gh_res = MagicMock(returncode=0, stdout=json.dumps([{
+                "number": 101,
+                "title": "Helper Test PR",
+                "url": "https://github.com/org/myrepo/pull/101",
+                "author": {"login": "alice"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            }]))
+            mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+            tracker = PRTracker()
+            repo_name, prs = tracker._sync_directory(d)
+            self.assertEqual(repo_name, "org/myrepo")
+            self.assertEqual(len(prs), 1)
+            self.assertEqual(prs[0]["number"], 101)
+
+    @patch("subprocess.run")
+    def test_concurrent_multi_repo_sync(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            num_repos = 5
+            dirs = []
+            for i in range(1, num_repos + 1):
+                r_dir = Path(tmpdir) / f"repo{i}"
+                r_dir.mkdir()
+                (r_dir / ".git").mkdir()
+                dirs.append(r_dir)
+
+            def side_effect(cmd, cwd=None, **kwargs):
+                cmd_str = " ".join(cmd)
+                cwd_str = str(cwd or "")
+                for i in range(1, num_repos + 1):
+                    if f"repo{i}" in cwd_str:
+                        if "git remote get-url" in cmd_str:
+                            return MagicMock(returncode=0, stdout=f"https://github.com/org/repo{i}.git\n")
+                        if "gh pr list" in cmd_str:
+                            return MagicMock(returncode=0, stdout=json.dumps([{
+                                "number": i * 10,
+                                "title": f"PR Repo {i}",
+                                "url": f"https://github.com/org/repo{i}/pull/{i*10}",
+                                "author": {"login": f"user{i}"},
+                                "reviewDecision": "APPROVED",
+                                "isDraft": False,
+                            }]))
+                return MagicMock(returncode=0, stdout="")
+
+            mock_run.side_effect = side_effect
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            approved = tracker.get_approved_prs()
+            self.assertEqual(len(approved), num_repos)
+            for i in range(1, num_repos + 1):
+                matching = [p for p in approved if p["repo_full_name"] == f"org/repo{i}"]
+                self.assertEqual(len(matching), 1)
+                self.assertEqual(matching[0]["number"], i * 10)
+
+    @patch("lib.pr_tracker.ThreadPoolExecutor")
+    @patch("subprocess.run")
+    def test_thread_pool_worker_bounds(self, mock_run, mock_executor_cls):
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # Test max_workers calculation for 15 repositories (bounded to min(10, len(target_dirs)))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(15):
+                r_dir = Path(tmpdir) / f"repo{i}"
+                r_dir.mkdir()
+                (r_dir / ".git").mkdir()
+
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            
+            # Use real ThreadPoolExecutor context manager inside mock
+            real_executor_instances = []
+            def executor_factory(max_workers=None):
+                executor = ThreadPoolExecutor(max_workers=max_workers)
+                real_executor_instances.append((max_workers, executor))
+                return executor
+
+            mock_executor_cls.side_effect = executor_factory
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            self.assertTrue(len(real_executor_instances) > 0)
+            self.assertEqual(real_executor_instances[0][0], 10)  # Bound capped at 10 for 15 repos
+
 
 if __name__ == "__main__":
     unittest.main()
+
