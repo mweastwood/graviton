@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from lib.runner import run_agent_container, run_agent_async
+from lib.runner import run_agent_container, run_agent_async, is_transcript_incomplete
 
 
 class TestRunner(unittest.TestCase):
@@ -367,7 +367,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_is_transcript_incomplete_true(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -379,7 +378,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertTrue(is_transcript_incomplete(str(transcript_file)))
 
     def test_is_transcript_incomplete_false_completed(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -391,7 +389,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_false_empty_tool_calls(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "transcript.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -402,7 +399,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_missing_file_and_empty(self):
-        from lib.runner import is_transcript_incomplete
         non_existent = self.test_dir / "missing.jsonl"
         self.assertFalse(is_transcript_incomplete(non_existent))
 
@@ -411,13 +407,25 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(empty_file))
 
     def test_is_transcript_incomplete_trailing_whitespace(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "trailing.jsonl"
         content = (
             '{"type": "USER_INPUT", "content": "hello"}\n'
             '{"type": "PLANNER_RESPONSE", "tool_calls": [{"name": "cmd"}]}\n'
             '\n'
             '   \n'
+        )
+        transcript_file.write_text(content, encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_interspersed_blank_lines(self):
+        transcript_file = self.test_dir / "interspersed.jsonl"
+        content = (
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}\n'
+            '\n'
+            '   \n'
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command"}]}\n'
+            '\n'
+            '\t\n'
         )
         transcript_file.write_text(content, encoding="utf-8")
         self.assertTrue(is_transcript_incomplete(transcript_file))
@@ -440,7 +448,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertEqual(res_comp.returncode, 1)
 
     def test_is_transcript_incomplete_malformed_json(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "malformed.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -450,7 +457,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_non_dict_json(self):
-        from lib.runner import is_transcript_incomplete
         transcript_file = self.test_dir / "non_dict.jsonl"
         lines = [
             '{"step_index": 1, "type": "USER_INPUT", "content": "Hello"}',
@@ -460,7 +466,6 @@ class TestTranscriptInspector(unittest.TestCase):
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
     def test_is_transcript_incomplete_non_list_tool_calls(self):
-        from lib.runner import is_transcript_incomplete
         cases = [
             '{"type": "PLANNER_RESPONSE", "tool_calls": null}',
             '{"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"}',
