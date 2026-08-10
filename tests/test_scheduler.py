@@ -158,11 +158,43 @@ class TestParseIsoTimestamp(unittest.TestCase):
             self.assertIsNone(res)
         self.assertTrue(any("Failed to parse ISO timestamp 'invalid-iso-date' for test_context" in log for log in cm.output))
 
+    def test_parse_invalid_string_no_context_logs_warning(self):
+        invalid_ts = "invalid-iso-date"
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            res = parse_iso_timestamp(invalid_ts)
+            self.assertIsNone(res)
+        self.assertTrue(any("Failed to parse ISO timestamp 'invalid-iso-date': " in log for log in cm.output))
+        self.assertFalse(any(" for : " in log for log in cm.output))
+
     def test_parse_invalid_type_logs_warning(self):
         with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
             res = parse_iso_timestamp(12345, context="type_context")  # type: ignore
             self.assertIsNone(res)
         self.assertTrue(any("Failed to parse ISO timestamp '12345' for type_context" in log for log in cm.output))
+
+    def test_parse_z_suffix_native(self):
+        dt_uppercase = parse_iso_timestamp("2026-08-09T02:00:00Z")
+        self.assertIsNotNone(dt_uppercase)
+        self.assertEqual(dt_uppercase.hour, 2)
+        self.assertEqual(dt_uppercase.tzinfo, timezone.utc)
+
+        dt_lowercase = parse_iso_timestamp("2026-08-09T02:00:00z")
+        self.assertIsNotNone(dt_lowercase)
+        self.assertEqual(dt_lowercase.hour, 2)
+        self.assertEqual(dt_lowercase.tzinfo, timezone.utc)
+
+        with self.assertLogs("graviton.scheduler", level="WARNING"):
+            res = parse_iso_timestamp("2026-08-09T02:00:00Z_invalid")
+            self.assertIsNone(res)
+
+    def test_parse_single_z_edge_case(self):
+        with self.assertLogs("graviton.scheduler", level="WARNING") as cm:
+            res_upper = parse_iso_timestamp("Z")
+            self.assertIsNone(res_upper)
+            res_lower = parse_iso_timestamp("z")
+            self.assertIsNone(res_lower)
+        self.assertTrue(any("Failed to parse ISO timestamp 'Z':" in log for log in cm.output))
+        self.assertTrue(any("Failed to parse ISO timestamp 'z':" in log for log in cm.output))
 
 
 class TestTaskScheduler(unittest.TestCase):
