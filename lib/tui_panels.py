@@ -230,6 +230,9 @@ def render_quota_panel(
 
     panel_title = f" ANTIGRAVITY MODEL QUOTA ({pool.upper()}) "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
 
     header_bar = (
@@ -256,6 +259,9 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
     active_cnt = len(tasks)
     panel_title = f" ACTIVE TASKS (RUNNING) [{active_cnt}/{max_workers} Workers Active] "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[94m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
@@ -301,6 +307,9 @@ def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
     queued_cnt = len(tasks)
     panel_title = f" TASK QUEUE (QUEUED) [{queued_cnt} Pending] "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[93m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
@@ -525,6 +534,9 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
     failed = stats.get("failed", 0)
     panel_title = f" TASK HISTORY (COMPLETED & FAILED) [Passed: {passed} | Failed: {failed}] "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[95m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 
@@ -571,6 +583,9 @@ def render_event_logs_panel(
     inner_w = width - 4
     panel_title = " EVENT LOGS "
     title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
+        title_dw = get_display_width(panel_title)
     pad_len = max(0, width - 3 - title_dw)
     header_bar = "┌─" + f"\033[96m\033[1m{panel_title}\033[0m" + ("─" * pad_len) + "┐"
 

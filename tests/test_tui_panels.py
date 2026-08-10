@@ -173,6 +173,58 @@ class TestTUIPanels(unittest.TestCase):
         empty_lines = render_event_logs_panel(width=80, log_handler=None)
         self.assertTrue(any("No event logs" in l for l in empty_lines))
 
+    def test_render_quota_panel_compact_widths(self):
+        tracker = QuotaTracker()
+        for w in (40, 60):
+            lines = render_quota_panel(width=w, quota_tracker=tracker)
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+
+    def test_render_active_tasks_panel_compact_widths(self):
+        task = Task(
+            id="task-100",
+            agent="code_reviewer",
+            prompt="Review pull request with very long prompt description",
+            status=TaskStatus.RUNNING,
+            worker_thread_id="Worker-1",
+        )
+        for w in (40, 60):
+            lines = render_active_tasks_panel(width=w, tasks=[task], max_workers=10)
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+
+    def test_render_queued_tasks_panel_compact_widths(self):
+        task = Task(id="task-200", agent="code_fixer", prompt="Fix bug", status=TaskStatus.QUEUED)
+        for w in (40, 60):
+            lines = render_queued_tasks_panel(width=w, tasks=[task])
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+
+    def test_render_history_tasks_panel_compact_widths(self):
+        task = Task(
+            id="task-300",
+            agent="issue_triager",
+            prompt="Triage issue",
+            status=TaskStatus.COMPLETED,
+            return_code=0,
+        )
+        for w in (40, 60):
+            lines = render_history_tasks_panel(width=w, tasks=[task], stats={"completed": 1234, "failed": 5678})
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+
+    class MockLogHandler:
+        def get_logs(self, limit=15):
+            return ["Log entry 1 with long details", "Log entry 2"]
+
+    def test_render_event_logs_panel_compact_widths(self):
+        handler = self.MockLogHandler()
+        for w in (40, 60):
+            lines = render_event_logs_panel(width=w, log_handler=handler)
+            for line in lines:
+                self.assertEqual(get_display_width(line), w)
+
 
 if __name__ == "__main__":
     unittest.main()
+
