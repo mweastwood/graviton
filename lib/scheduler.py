@@ -314,6 +314,7 @@ class TaskScheduler:
         task_manager: Optional[Any] = None,
     ):
         self._lock = threading.RLock()
+        self._save_lock = threading.Lock()
         self.config_path = config_path or DEFAULT_CONFIG_PATH
         self.state_path = state_path or DEFAULT_STATE_PATH
         self.runner = runner
@@ -343,8 +344,8 @@ class TaskScheduler:
         if not self.task_manager:
             return
 
+        state_changed = False
         with self._lock:
-            state_changed = False
             for job in list(self.jobs.values()):
                 # Skip custom handler jobs as their is_running state is managed within _execute_job
                 if job.job_id in self.job_handlers or job.agent in self.job_handlers:
@@ -377,8 +378,8 @@ class TaskScheduler:
                     job.is_running = False
                     state_changed = True
 
-            if state_changed:
-                self.save_state()
+        if state_changed:
+            self.save_state()
 
     def load_config(self):
         """
@@ -397,24 +398,30 @@ class TaskScheduler:
 
             # Fallback to default jobs and create file
             self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in DEFAULT_JOBS}
-            self.save_config()
+        self.save_config()
 
     def load_state(self):
         """
         Load runtime execution state (last_run, next_run, enabled) from state_path if present.
         Resets transient running states (is_running = False, current_task_id = None) on startup
         to recover from process crashes mid-execution, unless reconciled by an active task manager.
+        State snapshot and in-memory updates are modified under lock context, while
+        update_running_states and disk writes (save_state) execute outside the lock context.
         """
-        with self._lock:
-            # Reset transient runtime execution flags for all jobs on load to recover from process crashes
-            for job in self.jobs.values():
-                job.is_running = False
-                job.current_task_id = None
+        need_save_fallback = False
+        loaded_successfully = False
 
-            if self.state_path.exists():
-                try:
-                    with open(self.state_path, "r", encoding="utf-8") as f:
-                        state_data = json.load(f)
+        if self.state_path.exists():
+            try:
+                with open(self.state_path, "r", encoding="utf-8") as f:
+                    state_data = json.load(f)
+
+                with self._lock:
+                    # Reset transient runtime execution flags for all jobs on load to recover from process crashes
+                    for job in self.jobs.values():
+                        job.is_running = False
+                        job.current_task_id = None
+
                     if isinstance(state_data, dict):
                         for job_id, s_info in state_data.items():
                             if job_id in self.jobs and isinstance(s_info, dict):
@@ -424,10 +431,7 @@ class TaskScheduler:
                                     self.jobs[job_id].next_run = s_info["next_run"]
                                 if "enabled" in s_info:
                                     self.jobs[job_id].enabled = bool(s_info["enabled"])
-                        if self.task_manager:
-                            self.update_running_states()
-                        logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
-                        return
+                        loaded_successfully = True
                     elif isinstance(state_data, list):
                         for item in state_data:
                             if isinstance(item, dict) and "job_id" in item:
@@ -439,23 +443,39 @@ class TaskScheduler:
                                         self.jobs[job_id].next_run = item["next_run"]
                                     if "enabled" in item:
                                         self.jobs[job_id].enabled = bool(item["enabled"])
-                        if self.task_manager:
-                            self.update_running_states()
-                        logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
-                        return
-                except Exception as e:
-                    logger.error(f"Failed to load schedule state from {self.state_path}: {e}")
+                        loaded_successfully = True
+                    else:
+                        need_save_fallback = True
+            except Exception as e:
+                logger.error(f"Failed to load schedule state from {self.state_path}: {e}")
+                need_save_fallback = True
+        else:
+            need_save_fallback = True
 
-            # Fallback / Migration: Save initial execution state to state_path
-            self.save_state()
+        if loaded_successfully:
+            with self._lock:
+                job_count = len(self.jobs)
+            logger.info(f"Loaded schedule state for {job_count} job(s) from {self.state_path}")
+            if self.task_manager:
+                self.update_running_states()
+        else:
+            with self._lock:
+                for job in self.jobs.values():
+                    job.is_running = False
+                    job.current_task_id = None
+            if need_save_fallback:
+                # Fallback / Migration: Save initial execution state to state_path
+                self.save_state()
 
     def save_state(self):
         """
         Persist job execution state (last_run, next_run, enabled, is_running, current_task_id) to state_path.
         Uses atomic file replacement to prevent file corruption during unexpected crashes.
+        State snapshot is captured under self._lock context, while synchronous file writing and fsync
+        are serialized via self._save_lock outside self._lock to avoid blocking concurrent scheduler operations.
         """
-        with self._lock:
-            try:
+        with self._save_lock:
+            with self._lock:
                 data = {
                     job_id: {
                         "last_run": job.last_run,
@@ -466,8 +486,10 @@ class TaskScheduler:
                     }
                     for job_id, job in self.jobs.items()
                 }
+
+            try:
                 _atomic_write_json(self.state_path, data, indent=2)
-                logger.debug(f"Saved schedule state for {len(self.jobs)} job(s) to {self.state_path}")
+                logger.debug(f"Saved schedule state for {len(data)} job(s) to {self.state_path}")
             except Exception as e:
                 logger.error(f"Failed to save schedule state to {self.state_path}: {e}")
 
@@ -476,12 +498,16 @@ class TaskScheduler:
         Persist current scheduled job definitions back to config_path.
         Excludes dynamic runtime state attributes (last_run, next_run, is_running, current_task_id).
         Uses atomic file replacement to prevent file corruption during unexpected crashes.
+        State snapshot is captured under self._lock context, while synchronous file writing and fsync
+        are serialized via self._save_lock outside self._lock to avoid blocking concurrent scheduler operations.
         """
-        with self._lock:
-            try:
+        with self._save_lock:
+            with self._lock:
                 data = [job.to_config_dict() for job in self.jobs.values()]
+
+            try:
                 _atomic_write_json(self.config_path, data, indent=2)
-                logger.debug(f"Saved {len(self.jobs)} scheduled job(s) to {self.config_path}")
+                logger.debug(f"Saved {len(data)} scheduled job(s) to {self.config_path}")
             except Exception as e:
                 logger.error(f"Failed to save schedule config to {self.config_path}: {e}")
 
@@ -489,18 +515,19 @@ class TaskScheduler:
         """Add or overwrite a scheduled job."""
         with self._lock:
             self.jobs[job.job_id] = job
-            self.save_config()
-            self.save_state()
+        self.save_config()
+        self.save_state()
 
     def remove_job(self, job_id: str) -> bool:
         """Remove a scheduled job by job_id."""
         with self._lock:
-            if job_id in self.jobs:
+            removed = job_id in self.jobs
+            if removed:
                 del self.jobs[job_id]
-                self.save_config()
-                self.save_state()
-                return True
-            return False
+        if removed:
+            self.save_config()
+            self.save_state()
+        return removed
 
     def get_job(self, job_id: str) -> Optional[ScheduledJob]:
         """Retrieve a job by job_id."""
@@ -531,8 +558,8 @@ class TaskScheduler:
         with self._lock:
             job.mark_executed(now_dt)
             job.is_running = True
-            self.save_state()
             handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
+        self.save_state()
 
         if handler:
             try:
@@ -542,7 +569,7 @@ class TaskScheduler:
             finally:
                 with self._lock:
                     job.is_running = False
-                    self.save_state()
+                self.save_state()
             return
 
         if self.task_manager:
@@ -556,13 +583,13 @@ class TaskScheduler:
                 with self._lock:
                     job.current_task_id = task.id
                     job.is_running = True
-                    self.save_state()
+                self.save_state()
                 return
             except Exception as e:
                 logger.exception(f"Error submitting task for job '{job.job_id}': {e}")
                 with self._lock:
                     job.is_running = False
-                    self.save_state()
+                self.save_state()
                 return
 
         if self.runner:
@@ -576,12 +603,12 @@ class TaskScheduler:
             finally:
                 with self._lock:
                     job.is_running = False
-                    self.save_state()
+                self.save_state()
             return
 
         with self._lock:
             job.is_running = False
-            self.save_state()
+        self.save_state()
 
     def start(self):
         """
