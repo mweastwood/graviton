@@ -300,17 +300,17 @@ class PRTracker:
                         has_human_approval = False
                         has_bot_approval = False
                     elif state == "APPROVED" or (has_approval_marker(body) and not has_change_request_marker(body)):
+                        has_cr = False
                         if is_bot_event(body, author):
                             has_bot_approval = True
                         else:
                             has_human_approval = True
-                            has_cr = False
 
                 review_decision = str(item.get("reviewDecision") or "").upper()
 
                 if has_cr or review_decision == "CHANGES_REQUESTED":
                     is_approved = False
-                elif has_human_approval or review_decision == "APPROVED":
+                elif has_human_approval or has_bot_approval or review_decision == "APPROVED":
                     is_approved = True
                 else:
                     is_approved = False

@@ -822,6 +822,34 @@ class TestRouter(unittest.TestCase):
         route_webhook_event("issue_comment", payload_edited_fix, pr_tracker=tracker)
         self.assertEqual(len(tracker.get_approved_prs()), 0)
 
+    def test_router_updates_pr_tracker_on_bot_comment_approval(self):
+        from lib.pr_tracker import PRTracker
+        from lib.security import BOT_MARKER
+        tracker = PRTracker()
+
+        payload_bot_comment = {
+            "action": "created",
+            "comment": {
+                "body": f"Code Review Summary: Approved ✅\n\n{BOT_MARKER}",
+                "user": {"login": "code_reviewer"},
+            },
+            "issue": {
+                "number": 125,
+                "title": "Fix router misrouting",
+                "html_url": "https://github.com/mweastwood/graviton/pull/125",
+                "user": {"login": "dev_author"},
+                "pull_request": {"url": "https://api.github.com/repos/mweastwood/graviton/pulls/125"},
+            },
+        }
+
+        res = route_webhook_event("issue_comment", payload_bot_comment, pr_tracker=tracker)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot comment dropped")
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 125)
+
     def test_pull_request_event_debouncing(self):
         clear_pr_review_cache()
 

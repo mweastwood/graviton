@@ -437,7 +437,7 @@ class TestPRTracker(unittest.TestCase):
             self.assertEqual(real_executor_instances[0][0], 10)  # Bound capped at 10 for 15 repos
 
     @patch("subprocess.run")
-    def test_sync_github_prs_bot_approval_ignored(self, mock_run):
+    def test_sync_github_prs_with_bot_approval(self, mock_run):
         from lib.security import BOT_MARKER
         mock_output = [
             {
@@ -449,15 +449,17 @@ class TestPRTracker(unittest.TestCase):
                 "isDraft": False,
                 "comments": [
                     {
-                        "body": f"Code Review Summary: Approved ✅ {BOT_MARKER}",
+                        "body": f"Code Review Summary: Approved ✅\n\n{BOT_MARKER}",
                         "createdAt": "2026-08-10T01:00:00Z",
+                        "author": {"login": "code_reviewer"},
                     },
                 ],
                 "reviews": [
                     {
                         "state": "COMMENTED",
-                        "body": f"Approved LGTM {BOT_MARKER}",
+                        "body": f"Code Review Summary: Approved ✅\n\n{BOT_MARKER}",
                         "submittedAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "code_reviewer"},
                     }
                 ],
             },
@@ -470,7 +472,8 @@ class TestPRTracker(unittest.TestCase):
         tracker.sync_github_prs(repo_root=Path("/tmp"))
 
         approved = tracker.get_approved_prs()
-        self.assertEqual(len(approved), 0)
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 107)
 
     def test_has_approval_marker_glad_to_see_approved(self):
         from lib.pr_tracker import has_approval_marker

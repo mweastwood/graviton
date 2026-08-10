@@ -462,21 +462,21 @@ def handle_issue_comment_event(
     pr = issue.get("pull_request")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot comment dropped",
-        }
-
     if pr and pr_tracker and issue_number is not None and action in ("created", "edited"):
         if has_change_request_marker(comment_body):
             pr_tracker.remove_approved_pr(issue_number, repo_full_name=repo_full_name)
-        elif has_approval_marker(comment_body) and not is_bot_event(comment_body, comment_author):
+        elif has_approval_marker(comment_body):
             pr_title = issue.get("title", "")
             pr_url = issue.get("html_url", "") or issue.get("url", "")
             issue_user = issue.get("user", {})
             pr_author = issue_user.get("login", "") if isinstance(issue_user, dict) else str(issue_user or "")
             pr_tracker.add_approved_pr(issue_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
+
+    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+        return {
+            "status": "ignored",
+            "reason": "Bot comment dropped",
+        }
 
     if action == "created":
         # 1. Comment on a Pull Request
