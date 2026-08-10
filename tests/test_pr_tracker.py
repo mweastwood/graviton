@@ -419,7 +419,7 @@ class TestPRTracker(unittest.TestCase):
                 r_dir.mkdir()
                 (r_dir / ".git").mkdir()
 
-            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]")
             
             # Use real ThreadPoolExecutor context manager inside mock
             real_executor_instances = []
