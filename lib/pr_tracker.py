@@ -57,8 +57,9 @@ def has_approval_marker(text: str) -> bool:
     if "?" in text_lower:
         return False
 
-    question_pattern = r'\b(is|was|has|had|have|how|when|why|what|if|whether)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
-    if re.search(question_pattern, text_lower):
+    question_pattern = r'\b(how|when|why|what|if|whether)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
+    inverted_question_pattern = r'(?:^|[\.\!\?\n;])\s*\b(is|was)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
+    if re.search(question_pattern, text_lower) or re.search(inverted_question_pattern, text_lower):
         return False
 
     # Reject discussion / noun phrases (e.g. "approved pull requests panel", "in approved prs")
@@ -147,7 +148,7 @@ def is_bot_event(body: str, author_raw: Any = None) -> bool:
         login = str(author_raw.get("login") or "").lower()
     else:
         login = str(author_raw or "").lower()
-    if login.endswith("[bot]") or "antigravity" in login:
+    if "bot" in login or "antigravity" in login or "code_reviewer" in login or "code_fixer" in login:
         return True
     return False
 

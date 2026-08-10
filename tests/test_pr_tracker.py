@@ -135,11 +135,11 @@ class TestPRTracker(unittest.TestCase):
                 "number": 59,
                 "title": "Approved PR via latestReviews",
                 "url": "https://github.com/org/repo/pull/59",
-                "author": {"login": "bot_reviewer"},
+                "author": {"login": "dev"},
                 "reviewDecision": "",
                 "isDraft": False,
                 "latestReviews": [
-                    {"state": "APPROVED", "author": {"login": "bot_reviewer"}}
+                    {"state": "APPROVED", "author": {"login": "reviewer_alice"}}
                 ],
             },
         ]
@@ -154,7 +154,7 @@ class TestPRTracker(unittest.TestCase):
         approved = tracker.get_approved_prs()
         self.assertEqual(len(approved), 1)
         self.assertEqual(approved[0]["number"], 59)
-        self.assertEqual(approved[0]["author"], "bot_reviewer")
+        self.assertEqual(approved[0]["author"], "dev")
 
         cmd = mock_run.call_args_list[-1][0][0]
         self.assertIn("--limit", cmd)
@@ -686,6 +686,21 @@ class TestPRTracker(unittest.TestCase):
         self.assertFalse(has_approval_marker("Is this approved"))
         self.assertFalse(has_approval_marker("Why was this approved?"))
         self.assertFalse(has_approval_marker("Fixed issue in approved pull requests panel"))
+
+    def test_has_approval_marker_perfect_tense_approvals(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertTrue(has_approval_marker("This PR has been tested and approved"))
+        self.assertTrue(has_approval_marker("I have reviewed and approved"))
+        self.assertTrue(has_approval_marker("The team has approved this PR"))
+        self.assertTrue(has_approval_marker("I have approved"))
+
+    def test_is_bot_event_agent_logins(self):
+        from lib.pr_tracker import is_bot_event
+        self.assertTrue(is_bot_event("", {"login": "code_reviewer"}))
+        self.assertTrue(is_bot_event("", {"login": "code_fixer"}))
+        self.assertTrue(is_bot_event("", "code_reviewer"))
+        self.assertTrue(is_bot_event("", "code_fixer"))
+        self.assertFalse(is_bot_event("", {"login": "human_dev"}))
 
 
 if __name__ == "__main__":

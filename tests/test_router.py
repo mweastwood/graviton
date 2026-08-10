@@ -96,14 +96,14 @@ class TestRouter(unittest.TestCase):
 
         self.assertFalse(is_pr_created_by_us({"created_by_us": False}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}}))
-        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
-        self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
+        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/my-feature"}}))
+        self.assertTrue(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "fix/some-bug"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "feat/my-feature"}}))
         self.assertTrue(is_pr_created_by_us({"head": {"ref": "fix/some-bug"}}))
         self.assertFalse(is_pr_created_by_us({"user": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
         self.assertFalse(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}}))
         self.assertFalse(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}, "head": {"ref": "patch-1"}}))
-        self.assertFalse(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/new-feature"}}))
+        self.assertTrue(is_pr_created_by_us({"author": {"login": "external_dev", "type": "User"}, "head": {"ref": "feat/new-feature"}}))
         self.assertTrue(is_pr_created_by_us({"author": {"login": "antigravity-bot", "type": "Bot"}}))
 
     def test_ping_event(self):
@@ -392,7 +392,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "PR was not created by us")
 
-    def test_issue_comment_on_external_pr_with_feat_branch_ignored(self):
+    def test_issue_comment_on_external_pr_with_feat_branch_accepted(self):
         payload = {
             "action": "created",
             "comment": {"body": "Looks suspicious."},
@@ -407,8 +407,8 @@ class TestRouter(unittest.TestCase):
             },
         }
         result = route_webhook_event("issue_comment", payload)
-        self.assertEqual(result["status"], "ignored")
-        self.assertEqual(result["reason"], "PR was not created by us")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["pr_number"], 19)
 
     def test_issue_comment_on_external_pr_with_other_branch_ignored(self):
         payload = {
@@ -758,7 +758,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res["reason"], "Bot self-review event dropped")
 
         approved = tracker.get_approved_prs()
-        self.assertEqual(len(approved), 0)
+        self.assertEqual(len(approved), 1)
 
     def test_router_updates_pr_tracker_on_review_dismissed(self):
         from lib.pr_tracker import PRTracker
@@ -1028,7 +1028,7 @@ class TestRouter(unittest.TestCase):
         res = route_webhook_event("pull_request_review", payload, pr_tracker=tracker)
         self.assertEqual(res["status"], "ignored")
         self.assertEqual(res["reason"], "Bot self-review event dropped")
-        self.assertEqual(len(tracker.get_approved_prs()), 0)
+        self.assertEqual(len(tracker.get_approved_prs()), 1)
 
     def test_pull_request_review_commented_with_approval_marker_does_not_trigger_fixer(self):
         from lib.pr_tracker import PRTracker

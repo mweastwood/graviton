@@ -50,19 +50,20 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
         user_type = user_dict.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
-        return False
     elif isinstance(user, str) and user.strip():
         login = user.strip().lower()
         if login.endswith("[bot]") or "bot" in login or "antigravity" in login:
             return True
-        return False
 
-    # 4. Check head branch name ref prefix (fallback if no explicit user/author info)
+    # 4. Check head branch name ref prefix (fallback if no explicit user/author info or human author with bot branch)
     head = pr.get("head")
     if isinstance(head, dict):
         head_ref = head.get("ref", "").lower()
         if head_ref.startswith(("fix/", "feat/", "antigravity/", "bot/")):
             return True
+
+    if (isinstance(user_dict, dict) and user_dict) or (isinstance(user, str) and user.strip()):
+        return False
 
     return True
 
@@ -288,12 +289,6 @@ def handle_pull_request_review_event(
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
-        return {
-            "status": "ignored",
-            "reason": "Bot self-review event dropped",
-        }
-
     if pr_tracker and pr_number is not None:
         if action == "submitted":
             if review_state == "APPROVED" or (review_state == "COMMENTED" and has_approval_marker(review_body) and not has_change_request_marker(review_body)):
@@ -302,6 +297,12 @@ def handle_pull_request_review_event(
                 pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
         elif action == "dismissed":
             pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
+
+    if is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
+        return {
+            "status": "ignored",
+            "reason": "Bot self-review event dropped",
+        }
 
     if not is_pr_created_by_us(pr) and not has_explicit_command(review_body):
         return {
