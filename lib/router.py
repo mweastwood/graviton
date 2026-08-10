@@ -302,7 +302,7 @@ def handle_issue_comment_event(
     issue_number = issue.get("number")
     pr = issue.get("pull_request")
 
-    if contains_bot_marker(comment_body):
+    if contains_bot_marker(comment_body) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",

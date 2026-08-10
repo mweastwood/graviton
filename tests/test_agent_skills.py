@@ -130,7 +130,21 @@ class TestAgentSkillsMapping(unittest.TestCase):
             data = json.load(f)
         system_prompt = data["system_prompt"]
         self.assertIn("--request-changes", system_prompt)
-        self.assertIn("never use --comment for actionable findings", system_prompt)
+        self.assertIn("/fix", system_prompt)
+        self.assertIn("gh pr comment", system_prompt)
+
+    def test_code_review_guidelines_includes_author_verification_and_own_pr_rules(self):
+        skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Author Verification & Submission Strategy", content)
+        self.assertIn("gh pr view <number> --json author", content)
+        self.assertIn("External Author PRs", content)
+        self.assertIn("Own PRs (Author is Graviton/Bot)", content)
+        self.assertIn("/fix", content)
+        self.assertIn("Can't submit review on your own pull request", content)
+        self.assertIn("Template for Own PR Review with Changes Needed (`/fix` Trigger)", content)
 
     def test_code_review_guidelines_includes_templates_for_changes_requested_and_approved(self):
         skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
@@ -151,3 +165,4 @@ class TestAgentSkillsMapping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
