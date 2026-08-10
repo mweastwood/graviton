@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from lib.scheduler import (
     ScheduledJob,
     TaskScheduler,
+    _normalize_title,
     fetch_open_issues,
     is_duplicate_issue,
     parse_iso_timestamp,
@@ -280,14 +281,78 @@ class TestTaskScheduler(unittest.TestCase):
 
 class TestIssueUtilities(unittest.TestCase):
 
+    def test_normalize_title(self):
+        self.assertEqual(_normalize_title("[Bug Sweep] [TUI] Decouple panel rendering"), "decouple panel rendering")
+        self.assertEqual(_normalize_title("  [Tag1]   [Tag2]  [Tag3]  Fix memory leak  "), "fix memory leak")
+        self.assertEqual(_normalize_title("[Bug Sweep] Memory leak"), "memory leak")
+        self.assertEqual(_normalize_title("Simple title"), "simple title")
+        self.assertEqual(_normalize_title(""), "")
+        self.assertEqual(_normalize_title(None), "")
+        self.assertEqual(_normalize_title(123), "")
+
     def test_is_duplicate_issue(self):
         existing = [
             {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
             {"number": 2, "title": "[Bug Sweep] Memory leak in runner thread", "body": "..."},
+            {"number": 3, "title": "bug", "body": "..."},
+            {"number": 4, "title": "fix", "body": "..."},
+            {"number": 5, "title": "tui", "body": "..."},
+            {"number": 6, "title": "[Bug Sweep] [TUI] Decouple panel rendering into dedicated components", "body": "..."},
         ]
+        # Exact and normalized title matching
         self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing))
         self.assertTrue(is_duplicate_issue("[Bug Sweep] Memory leak in runner thread", existing))
+        self.assertTrue(is_duplicate_issue("Memory leak in runner thread", existing))
+
+        # Multiple bracket prefix tag stripping matching
+        self.assertTrue(is_duplicate_issue("Decouple panel rendering into dedicated components", existing))
+        self.assertTrue(is_duplicate_issue("[Quality Sweep] Decouple panel rendering into dedicated components", existing))
+
+        # Distinct issues
         self.assertFalse(is_duplicate_issue("Completely new bug report", existing))
+        self.assertFalse(is_duplicate_issue("[Bug Sweep] Database connection timeout in query handler", existing))
+
+        # Short open issue titles should not cause false positive matches for longer proposed titles (Issue #110)
+        self.assertFalse(is_duplicate_issue("[Bug Sweep] tui: Refactor panel rendering pipeline", existing))
+        self.assertFalse(is_duplicate_issue("Fix race condition in task runner loop", existing))
+        self.assertFalse(is_duplicate_issue("Memory leak in background task scheduler worker", existing))
+
+        # Jaccard token similarity boundary tests around default 0.7 threshold
+        # 5 matching tokens out of 7 union tokens (5/7 ≈ 0.714 >= 0.70) -> True
+        bound_ex_7 = [{"title": "word1 word2 word3 word4 word5 word6"}]
+        self.assertTrue(is_duplicate_issue("word1 word2 word3 word4 word5 word7", bound_ex_7))
+
+        # 5 matching tokens out of 8 union tokens (5/8 = 0.625 < 0.70) -> False
+        self.assertFalse(is_duplicate_issue("word1 word2 word3 word4 word5 extraA extraB", bound_ex_7))
+
+        # Exactly 70% boundary: 7 matching tokens out of 10 union tokens (7/10 = 0.70 >= 0.70) -> True
+        bound_ex_10 = [{"title": "t1 t2 t3 t4 t5 t6 t7 ex1 ex2"}]
+        self.assertTrue(is_duplicate_issue("t1 t2 t3 t4 t5 t6 t7 pr1", bound_ex_10))
+
+        # Below 70% boundary: 6 matching tokens out of 11 union tokens (6/11 ≈ 0.545 < 0.70) -> False
+        self.assertFalse(is_duplicate_issue("t1 t2 t3 t4 t5 t6 pr1 pr2", bound_ex_10))
+
+        # Edge cases & defensive type handling
+        self.assertFalse(is_duplicate_issue("", existing))
+        self.assertFalse(is_duplicate_issue(None, existing))
+        self.assertFalse(is_duplicate_issue(123, existing))
+        self.assertFalse(is_duplicate_issue("Any issue title", []))
+        self.assertFalse(is_duplicate_issue("Any issue title", None))
+        self.assertFalse(is_duplicate_issue("Any issue title", 123))
+        self.assertFalse(is_duplicate_issue("Any issue title", [{"number": 99, "body": "no title"}]))
+
+        # Non-dict elements and invalid title values in existing_issues
+        existing_with_invalid = [
+            None,
+            "invalid string element",
+            123,
+            [],
+            {"title": None},
+            {"title": 123},
+            {"number": 1, "title": "Unhandled null pointer exception in router.py"},
+        ]
+        self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing_with_invalid))
+        self.assertFalse(is_duplicate_issue("Completely new bug report", existing_with_invalid))
 
     @patch("lib.scheduler.subprocess.run")
     def test_fetch_open_issues(self, mock_run):
