@@ -754,10 +754,7 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res["reason"], "Bot self-review event dropped")
 
         approved = tracker.get_approved_prs()
-        self.assertEqual(len(approved), 1)
-        self.assertEqual(approved[0]["number"], 59)
-        self.assertEqual(approved[0]["title"], "Fix Empty Approved PRs Panel")
-        self.assertEqual(approved[0]["author"], "code_reviewer")
+        self.assertEqual(len(approved), 0)
 
     def test_router_updates_pr_tracker_on_review_dismissed(self):
         from lib.pr_tracker import PRTracker
@@ -971,6 +968,55 @@ class TestRouter(unittest.TestCase):
         res = route_webhook_event("push", payload, server_repo_name="workspace", repo_root=Path("/workspace"))
         self.assertEqual(res["status"], "accepted")
         self.assertEqual(res["action"], "self_update")
+
+    def test_pull_request_review_bot_user_ignored_without_marker(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "APPROVED",
+                "body": "LGTM! Looks good.",  # No bot HTML marker
+                "user": {"login": "github-actions[bot]", "isBot": True},
+            },
+            "pull_request": {
+                "number": 125,
+                "title": "Fix router bot detection",
+                "html_url": "https://github.com/mweastwood/graviton/pull/125",
+                "user": {"login": "code_reviewer"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload, pr_tracker=tracker)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot self-review event dropped")
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    def test_pull_request_review_commented_with_approval_marker_does_not_trigger_fixer(self):
+        from lib.pr_tracker import PRTracker
+        tracker = PRTracker()
+
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "Changes look good and will work as expected. Approved!",
+                "user": {"login": "human_reviewer", "type": "User"},
+            },
+            "pull_request": {
+                "number": 126,
+                "title": "PR with commented approval review",
+                "html_url": "https://github.com/mweastwood/graviton/pull/126",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload, pr_tracker=tracker)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Review state 'COMMENTED' with approval marker does not trigger fixer")
+        self.assertEqual(len(tracker.get_approved_prs()), 1)
+        self.assertEqual(tracker.get_approved_prs()[0]["number"], 126)
 
 
 if __name__ == "__main__":

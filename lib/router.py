@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 from lib.security import contains_bot_marker
+from lib.pr_tracker import has_approval_marker, has_change_request_marker, is_bot_event
 
 _pr_review_timestamps: Dict[Any, float] = {}
 _pr_review_timestamps_lock = threading.Lock()
@@ -36,16 +37,17 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     if pr.get("created_by_us") is True:
         return True
 
-    # 2. Check for bot marker signature in PR body
+    # 2. Check for bot marker signature or bot author in PR body/user
     body = pr.get("body") or ""
-    if contains_bot_marker(body):
+    user = pr.get("user") or pr.get("author")
+    if is_bot_event(body, user):
         return True
 
     # 3. Check user author details
-    user = pr.get("user")
-    if isinstance(user, dict) and user:
-        login = user.get("login", "").lower()
-        user_type = user.get("type", "")
+    user_dict = pr.get("user")
+    if isinstance(user_dict, dict) and user_dict:
+        login = user_dict.get("login", "").lower()
+        user_type = user_dict.get("type", "")
         if user_type == "Bot" or "bot" in login or "antigravity" in login:
             return True
 
@@ -57,7 +59,7 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
             return True
 
     # 5. Non-bot human author logins return False
-    if isinstance(user, dict) and user:
+    if isinstance(user_dict, dict) and user_dict:
         return False
 
     return True
@@ -275,6 +277,7 @@ def handle_pull_request_review_event(
     review = payload.get("review", {}) if isinstance(payload.get("review"), dict) else {}
     review_state = review.get("state", "").upper()
     review_body = review.get("body", "")
+    review_author = review.get("user") or review.get("author")
     pr = payload.get("pull_request", {}) if isinstance(payload.get("pull_request"), dict) else {}
     pr_number = pr.get("number") or payload.get("number")
     pr_title = pr.get("title", "")
@@ -283,17 +286,20 @@ def handle_pull_request_review_event(
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if pr_tracker and pr_number is not None:
-        if action == "submitted" and review_state == "APPROVED":
-            pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
-        elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
-            pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
-
-    if contains_bot_marker(review_body) and review_state != "CHANGES_REQUESTED":
+    if is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
         return {
             "status": "ignored",
             "reason": "Bot self-review event dropped",
         }
+
+    if pr_tracker and pr_number is not None:
+        if action == "submitted":
+            if review_state == "APPROVED" or (review_state == "COMMENTED" and has_approval_marker(review_body) and not has_change_request_marker(review_body)):
+                pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
+            elif review_state == "CHANGES_REQUESTED" or has_change_request_marker(review_body):
+                pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
+        elif action == "dismissed":
+            pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
 
     if not is_pr_created_by_us(pr) and not has_explicit_command(review_body):
         return {
@@ -302,6 +308,11 @@ def handle_pull_request_review_event(
         }
 
     if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
+        if review_state == "COMMENTED" and has_approval_marker(review_body) and not has_change_request_marker(review_body):
+            return {
+                "status": "ignored",
+                "reason": f"Review state '{review_state}' with approval marker does not trigger fixer",
+            }
         if repo_full_name:
             prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
         else:
@@ -329,8 +340,9 @@ def handle_pull_request_review_comment_event(
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review_comment' webhook event (inline comments)."""
     action = payload.get("action")
-    comment = payload.get("comment", {})
+    comment = payload.get("comment", {}) if isinstance(payload.get("comment"), dict) else {}
     comment_body = comment.get("body", "")
+    comment_author = comment.get("user") or comment.get("author")
     file_path = comment.get("path", "")
     line = comment.get("line") or comment.get("original_line")
     pr = payload.get("pull_request", {})
@@ -338,7 +350,7 @@ def handle_pull_request_review_comment_event(
     pr_number = pr.get("number") or (pr_url.rstrip("/").split("/")[-1] if pr_url else "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if contains_bot_marker(comment_body):
+    if is_bot_event(comment_body, comment_author):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",
@@ -435,17 +447,29 @@ def handle_issue_comment_event(
     default_fixer: str = "code_fixer",
     default_triager: str = "issue_triager",
     default_drafter: str = "pr_drafter",
+    pr_tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'issue_comment' webhook event."""
     action = payload.get("action")
-    comment = payload.get("comment", {})
+    comment = payload.get("comment", {}) if isinstance(payload.get("comment"), dict) else {}
     comment_body = comment.get("body", "")
+    comment_author = comment.get("user") or comment.get("author")
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
     pr = issue.get("pull_request")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if contains_bot_marker(comment_body) and not has_explicit_command(comment_body):
+    if pr and pr_tracker and issue_number is not None and action == "created":
+        if has_change_request_marker(comment_body):
+            pr_tracker.remove_approved_pr(issue_number, repo_full_name=repo_full_name)
+        elif has_approval_marker(comment_body) and not is_bot_event(comment_body, comment_author):
+            pr_title = issue.get("title", "")
+            pr_url = issue.get("html_url", "") or issue.get("url", "")
+            issue_user = issue.get("user", {})
+            pr_author = issue_user.get("login", "") if isinstance(issue_user, dict) else str(issue_user or "")
+            pr_tracker.add_approved_pr(issue_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
+
+    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",
@@ -639,6 +663,7 @@ def route_webhook_event(
             default_fixer=default_fixer,
             default_triager=default_triager,
             default_drafter=default_drafter,
+            pr_tracker=pr_tracker,
         ),
     }
 

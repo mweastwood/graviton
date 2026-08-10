@@ -6,13 +6,101 @@ Tracks GitHub Pull Requests that are approved and ready for human merge.
 
 import json
 import logging
+import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.security import contains_bot_marker
+
 logger = logging.getLogger("graviton.pr_tracker")
+
+
+def has_approval_marker(text: str) -> bool:
+    """Check if text contains approval markers like LGTM or Approved."""
+    if not text:
+        return False
+    text_lower = text.lower()
+
+    neg_pattern = r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|un|non|dis|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b'
+    if re.search(neg_pattern, text_lower):
+        return False
+
+    negative_phrases = (
+        "not approved",
+        "unapproved",
+        "disapproved",
+        "non-approved",
+        "not yet approved",
+        "not been approved",
+        "not fully approved",
+        "not completely approved",
+        "not be approved",
+        "cannot be approved",
+        "can't be approved",
+        "won't be approved",
+        "will be approved",
+        "to be approved",
+        "should be approved",
+        "must be approved",
+        "may be approved",
+        "would be approved",
+        "could be approved",
+        "pending approval",
+        "awaiting approval",
+        "needs approval",
+        "requiring approval",
+        "requires approval",
+        "not lgtm",
+        "no lgtm",
+        "non-lgtm",
+        "un-lgtm",
+    )
+    if any(neg in text_lower for neg in negative_phrases):
+        return False
+
+    if "lgtm" in text_lower or "approved" in text_lower:
+        return True
+    return False
+
+
+def has_change_request_marker(text: str) -> bool:
+    """Check if text contains change request markers or commands."""
+    if not text:
+        return False
+    text_lower = text.lower()
+    if "/fix" in text_lower:
+        return True
+
+    cr_pattern = r'\bchanges[_\s]requested\b'
+    matches = list(re.finditer(cr_pattern, text_lower))
+    if not matches:
+        return False
+
+    neg_cr_pattern = r'\b(no|not|without|zero|never|don\'t|didn\'t|haven\'t)\b(?:\s+\w+){0,3}\s+changes[_\s]requested\b'
+    neg_matches = list(re.finditer(neg_cr_pattern, text_lower))
+
+    if len(neg_matches) >= len(matches):
+        return False
+
+    return True
+
+
+def is_bot_event(body: str, author_raw: Any = None) -> bool:
+    """Check if a review or comment event originated from a bot."""
+    if contains_bot_marker(body):
+        return True
+    if isinstance(author_raw, dict):
+        if author_raw.get("isBot") is True or author_raw.get("type") == "Bot":
+            return True
+        login = str(author_raw.get("login") or "").lower()
+    else:
+        login = str(author_raw or "").lower()
+    if login.endswith("[bot]") or "antigravity" in login:
+        return True
+    return False
 
 
 class PRTracker:
@@ -92,7 +180,7 @@ class PRTracker:
             "--limit",
             "300",
             "--json",
-            "number,title,url,author,reviewDecision,isDraft,latestReviews",
+            "number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews",
         ]
         res = subprocess.run(
             cmd,
@@ -107,18 +195,76 @@ class PRTracker:
             for item in data:
                 if not isinstance(item, dict) or item.get("isDraft") is True:
                     continue
+
+                reviews = item.get("reviews")
+                latest_reviews = item.get("latestReviews")
+                comments = item.get("comments")
+
+                events = []
+                seen_review_ids = set()
+                for rev_list in (latest_reviews, reviews):
+                    if isinstance(rev_list, list):
+                        for r in rev_list:
+                            if isinstance(r, dict):
+                                r_id = r.get("id") or (
+                                    r.get("submittedAt"),
+                                    r.get("createdAt"),
+                                    r.get("body"),
+                                    r.get("state"),
+                                    str(r.get("author")),
+                                )
+                                if r_id in seen_review_ids:
+                                    continue
+                                seen_review_ids.add(r_id)
+                                events.append({
+                                    "state": str(r.get("state") or "").upper(),
+                                    "body": r.get("body") or "",
+                                    "author": r.get("author"),
+                                    "created_at": r.get("submittedAt") or r.get("createdAt") or "",
+                                })
+
+                if isinstance(comments, list):
+                    for c in comments:
+                        if isinstance(c, dict):
+                            events.append({
+                                "state": "",
+                                "body": c.get("body") or "",
+                                "author": c.get("author"),
+                                "created_at": c.get("createdAt") or c.get("submittedAt") or "",
+                            })
+
+                events.sort(key=lambda x: str(x.get("created_at") or "1970-01-01T00:00:00Z"))
+
+                has_bot_approval = False
+                has_human_approval = False
+                has_cr = False
+                for ev in events:
+                    state = ev["state"]
+                    body = ev["body"]
+                    author = ev["author"]
+                    if state == "CHANGES_REQUESTED" or has_change_request_marker(body):
+                        has_cr = True
+                        has_human_approval = False
+                        has_bot_approval = False
+                    elif state == "DISMISSED":
+                        has_human_approval = False
+                        has_bot_approval = False
+                    elif state == "APPROVED" or (has_approval_marker(body) and not has_change_request_marker(body)):
+                        if is_bot_event(body, author):
+                            has_bot_approval = True
+                        else:
+                            has_human_approval = True
+                            has_cr = False
+
                 review_decision = str(item.get("reviewDecision") or "").upper()
-                is_approved = review_decision == "APPROVED"
-                if not is_approved and review_decision != "CHANGES_REQUESTED":
-                    latest_reviews = item.get("latestReviews")
-                    if isinstance(latest_reviews, list):
-                        states = [
-                            str(r.get("state") or "").upper()
-                            for r in latest_reviews
-                            if isinstance(r, dict)
-                        ]
-                        if "CHANGES_REQUESTED" not in states and "APPROVED" in states:
-                            is_approved = True
+
+                if has_cr or review_decision in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+                    is_approved = False
+                elif has_human_approval or review_decision == "APPROVED":
+                    is_approved = True
+                else:
+                    is_approved = False
+
                 if is_approved:
                     try:
                         num = int(item.get("number"))
