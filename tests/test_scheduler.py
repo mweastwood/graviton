@@ -247,6 +247,18 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler.stop()
         self.assertFalse(scheduler.is_running())
 
+    def test_is_due_running_job(self):
+        job = ScheduledJob(
+            job_id="test_running",
+            name="Test Running Job",
+            interval_seconds=3600,
+            agent="auditor",
+            prompt="test",
+            enabled=True,
+            is_running=True,
+        )
+        self.assertFalse(job.is_due())
+
     def test_scheduler_loop_executes_due_job(self):
         mock_runner = MagicMock()
         # Set a short interval and job due in past
@@ -277,6 +289,121 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler.stop()
 
         mock_runner.assert_called()
+
+    def test_task_manager_routing_and_running_state(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+        self.assertFalse(job.is_running)
+
+        success = scheduler.trigger_job("periodic_bug_sweep")
+        self.assertTrue(success)
+
+        # Verify task was submitted with target_id sched:periodic_bug_sweep
+        queued_or_all = tm.get_all_tasks()
+        self.assertEqual(len(queued_or_all), 1)
+        submitted_task = queued_or_all[0]
+        self.assertEqual(submitted_task.target_id, "sched:periodic_bug_sweep")
+        self.assertEqual(submitted_task.agent, job.agent)
+
+        # Verify job is_running and current_task_id tracking
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+        # Simulate task completion and update running states
+        submitted_task.status = "COMPLETED"
+        scheduler.update_running_states()
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
+
+    def test_update_running_states_resets_orphaned_is_running_when_current_task_id_none(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+        job.is_running = True
+        job.current_task_id = None
+
+        scheduler.update_running_states()
+        self.assertFalse(job.is_running)
+
+    def test_custom_handler_is_running_lifecycle(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        executed = []
+
+        def custom_handler(job):
+            self.assertTrue(job.is_running)
+            scheduler.update_running_states()
+            self.assertTrue(job.is_running)
+            executed.append(job.job_id)
+
+        scheduler.register_handler("periodic_bug_sweep", custom_handler)
+        scheduler.trigger_job("periodic_bug_sweep")
+
+        self.assertEqual(executed, ["periodic_bug_sweep"])
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertFalse(job.is_running)
+
+    def test_thread_safety_lock(self):
+        import threading
+        scheduler = TaskScheduler(config_path=self.config_path)
+        errors = []
+
+        def worker():
+            try:
+                for _ in range(20):
+                    job = ScheduledJob(
+                        job_id="thread_job",
+                        name="Thread Job",
+                        interval_seconds=3600,
+                        agent="auditor",
+                        prompt="test",
+                    )
+                    scheduler.add_job(job)
+                    scheduler.get_job("thread_job")
+                    scheduler.save_config()
+                    scheduler.remove_job("thread_job")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+
+    def test_update_running_states_persists_config_changes(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+
+        scheduler.trigger_job("periodic_bug_sweep")
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        saved_job = next(item for item in data if item["job_id"] == "periodic_bug_sweep")
+        self.assertTrue(saved_job["is_running"])
+
+        tasks = tm.get_all_tasks()
+        tasks[0].status = "COMPLETED"
+        scheduler.update_running_states()
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            data_after = json.load(f)
+        saved_job_after = next(item for item in data_after if item["job_id"] == "periodic_bug_sweep")
+        self.assertFalse(saved_job_after["is_running"])
+
 
 
 class TestIssueUtilities(unittest.TestCase):

@@ -534,6 +534,35 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("Test Bug Sweep Job", table_text)
         self.assertIn("Disabled Quality Sweep Job", table_text)
 
+    def test_scheduled_jobs_running_badge_rendering(self):
+        manager = TaskManager(max_workers=2)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(
+                [
+                    {
+                        "job_id": "running_job_1",
+                        "name": "Active Running Job",
+                        "interval_seconds": 3600,
+                        "agent": "codebase_auditor",
+                        "prompt": "Running prompt",
+                        "enabled": True,
+                        "is_running": True,
+                        "current_task_id": "task-42",
+                    }
+                ],
+                f,
+            )
+            config_path = Path(f.name)
+
+        scheduler = TaskScheduler(config_path=config_path)
+        dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
+        dashboard.active_screen = "jobs"
+
+        rendered = dashboard.render(width=80)
+        self.assertIn("RUNNING", rendered)
+        self.assertIn("running_job_1", rendered)
+        self.assertIn("Active Running Job", rendered)
+
     def test_scheduled_jobs_panel_disabled(self):
         manager = TaskManager(max_workers=2)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=None)

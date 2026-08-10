@@ -43,6 +43,9 @@ class TestTUIPanels(unittest.TestCase):
         now_dt = datetime.now(timezone.utc)
         self.assertEqual(format_remaining(job_disabled, now_dt), "DISABLED")
 
+        job_disabled_running = ScheduledJob(job_id="j1_run", name="J1 Run", agent="test", prompt="p", interval_seconds=60, enabled=False, is_running=True)
+        self.assertEqual(format_remaining(job_disabled_running, now_dt), "RUNNING")
+
         job_due = ScheduledJob(job_id="j2", name="J2", agent="test", prompt="p", interval_seconds=60, enabled=True)
         self.assertEqual(format_remaining(job_due, now_dt), "DUE")
 

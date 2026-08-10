@@ -106,6 +106,8 @@ class ScheduledJob:
         enabled: bool = True,
         last_run: Optional[str] = None,
         next_run: Optional[str] = None,
+        is_running: bool = False,
+        current_task_id: Optional[str] = None,
     ):
         self.job_id = job_id
         self.name = name
@@ -115,12 +117,14 @@ class ScheduledJob:
         self.enabled = enabled
         self.last_run = last_run
         self.next_run = next_run
+        self.is_running = is_running
+        self.current_task_id = current_task_id
 
     def is_due(self, now_dt: Optional[datetime] = None) -> bool:
         """
         Check if the job is enabled and due to run.
         """
-        if not self.enabled:
+        if not self.enabled or self.is_running:
             return False
 
         if now_dt is None:
@@ -160,6 +164,8 @@ class ScheduledJob:
             "enabled": self.enabled,
             "last_run": self.last_run,
             "next_run": self.next_run,
+            "is_running": self.is_running,
+            "current_task_id": self.current_task_id,
         }
 
     @classmethod
@@ -173,6 +179,8 @@ class ScheduledJob:
             enabled=bool(data.get("enabled", True)),
             last_run=data.get("last_run"),
             next_run=data.get("next_run"),
+            is_running=bool(data.get("is_running", False)),
+            current_task_id=data.get("current_task_id"),
         )
 
 
@@ -258,12 +266,15 @@ class TaskScheduler:
         script_path: Optional[Path] = None,
         cwd: Optional[Path] = None,
         check_interval_seconds: float = 5.0,
+        task_manager: Optional[Any] = None,
     ):
+        self._lock = threading.RLock()
         self.config_path = config_path or DEFAULT_CONFIG_PATH
         self.runner = runner
         self.script_path = script_path
         self.cwd = cwd
         self.check_interval_seconds = check_interval_seconds
+        self.task_manager = task_manager
 
         self.jobs: Dict[str, ScheduledJob] = {}
         self.job_handlers: Dict[str, Callable] = {}
@@ -274,61 +285,113 @@ class TaskScheduler:
 
     def register_handler(self, key: str, handler: Callable):
         """Register a custom handler function for a specific job_id or agent."""
-        self.job_handlers[key] = handler
+        with self._lock:
+            self.job_handlers[key] = handler
+
+    def update_running_states(self):
+        """
+        Check tasks in task_manager and update job.is_running / job.current_task_id status.
+        Only updates jobs that are managed by TaskManager.
+        """
+        if not self.task_manager:
+            return
+
+        with self._lock:
+            state_changed = False
+            for job in list(self.jobs.values()):
+                # Skip custom handler jobs as their is_running state is managed within _execute_job
+                if job.job_id in self.job_handlers or job.agent in self.job_handlers:
+                    continue
+
+                target_id = f"sched:{job.job_id}"
+                active_task = None
+                for task in self.task_manager.get_all_tasks():
+                    if task.target_id == target_id and task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
+                        active_task = task
+                        break
+
+                if active_task:
+                    if not job.is_running or job.current_task_id != active_task.id:
+                        job.is_running = True
+                        job.current_task_id = active_task.id
+                        state_changed = True
+                elif job.current_task_id:
+                    task = self.task_manager.get_task(job.current_task_id)
+                    if task and task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
+                        if not job.is_running:
+                            job.is_running = True
+                            state_changed = True
+                    else:
+                        if job.is_running or job.current_task_id is not None:
+                            job.is_running = False
+                            job.current_task_id = None
+                            state_changed = True
+                elif job.is_running:
+                    job.is_running = False
+                    state_changed = True
+
+            if state_changed:
+                self.save_config()
 
     def load_config(self):
         """
         Load schedule job definitions from config_path or fallback to default jobs.
         """
-        if self.config_path.exists():
-            try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    raw_jobs = json.load(f)
-                self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in raw_jobs}
-                logger.info(f"Loaded {len(self.jobs)} scheduled job(s) from {self.config_path}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to load schedule config from {self.config_path}: {e}")
+        with self._lock:
+            if self.config_path.exists():
+                try:
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        raw_jobs = json.load(f)
+                    self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in raw_jobs}
+                    logger.info(f"Loaded {len(self.jobs)} scheduled job(s) from {self.config_path}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to load schedule config from {self.config_path}: {e}")
 
-        # Fallback to default jobs and create file
-        self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in DEFAULT_JOBS}
-        self.save_config()
+            # Fallback to default jobs and create file
+            self.jobs = {item["job_id"]: ScheduledJob.from_dict(item) for item in DEFAULT_JOBS}
+            self.save_config()
 
     def save_config(self):
         """
         Persist current scheduled job states back to config_path.
         """
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            data = [job.to_dict() for job in self.jobs.values()]
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            logger.debug(f"Saved {len(self.jobs)} scheduled job(s) to {self.config_path}")
-        except Exception as e:
-            logger.error(f"Failed to save schedule config to {self.config_path}: {e}")
+        with self._lock:
+            try:
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                data = [job.to_dict() for job in self.jobs.values()]
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                logger.debug(f"Saved {len(self.jobs)} scheduled job(s) to {self.config_path}")
+            except Exception as e:
+                logger.error(f"Failed to save schedule config to {self.config_path}: {e}")
 
     def add_job(self, job: ScheduledJob):
         """Add or overwrite a scheduled job."""
-        self.jobs[job.job_id] = job
-        self.save_config()
+        with self._lock:
+            self.jobs[job.job_id] = job
+            self.save_config()
 
     def remove_job(self, job_id: str) -> bool:
         """Remove a scheduled job by job_id."""
-        if job_id in self.jobs:
-            del self.jobs[job_id]
-            self.save_config()
-            return True
-        return False
+        with self._lock:
+            if job_id in self.jobs:
+                del self.jobs[job_id]
+                self.save_config()
+                return True
+            return False
 
     def get_job(self, job_id: str) -> Optional[ScheduledJob]:
         """Retrieve a job by job_id."""
-        return self.jobs.get(job_id)
+        with self._lock:
+            return self.jobs.get(job_id)
 
     def trigger_job(self, job_id: str) -> bool:
         """
         Manually trigger a job immediately.
         """
-        job = self.jobs.get(job_id)
+        with self._lock:
+            job = self.jobs.get(job_id)
         if not job:
             logger.warning(f"Cannot trigger unknown job '{job_id}'")
             return False
@@ -343,22 +406,42 @@ class TaskScheduler:
         """
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
-        job.mark_executed(now_dt)
-        self.save_config()
 
-        if job.job_id in self.job_handlers:
+        with self._lock:
+            job.mark_executed(now_dt)
+            job.is_running = True
+            self.save_config()
+            handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
+
+        if handler:
             try:
-                self.job_handlers[job.job_id](job)
-                return
+                handler(job)
             except Exception as e:
                 logger.exception(f"Error executing custom handler for job '{job.job_id}': {e}")
-                return
-        elif job.agent in self.job_handlers:
+            finally:
+                with self._lock:
+                    job.is_running = False
+                    self.save_config()
+            return
+
+        if self.task_manager:
             try:
-                self.job_handlers[job.agent](job)
+                target_id = f"sched:{job.job_id}"
+                task = self.task_manager.submit_task(
+                    agent=job.agent,
+                    prompt=job.prompt,
+                    target_id=target_id,
+                )
+                with self._lock:
+                    job.current_task_id = task.id
+                    job.is_running = True
+                    self.save_config()
                 return
             except Exception as e:
-                logger.exception(f"Error executing custom handler for agent '{job.agent}': {e}")
+                logger.exception(f"Error submitting task for job '{job.job_id}': {e}")
+                with self._lock:
+                    job.is_running = False
+                    self.save_config()
                 return
 
         if self.runner:
@@ -369,6 +452,15 @@ class TaskScheduler:
                     self.runner(job.agent, job.prompt)
             except Exception as e:
                 logger.exception(f"Error executing runner for job '{job.job_id}': {e}")
+            finally:
+                with self._lock:
+                    job.is_running = False
+                    self.save_config()
+            return
+
+        with self._lock:
+            job.is_running = False
+            self.save_config()
 
     def start(self):
         """
@@ -405,14 +497,20 @@ class TaskScheduler:
         """
         while not self._stop_event.is_set():
             try:
+                self.update_running_states()
                 now_dt = datetime.now(timezone.utc)
-                for job in list(self.jobs.values()):
+                with self._lock:
+                    jobs_to_check = list(self.jobs.values())
+                for job in jobs_to_check:
                     if self._stop_event.is_set():
                         break
-                    if job.is_due(now_dt):
+                    with self._lock:
+                        due = job.is_due(now_dt)
+                    if due:
                         self._execute_job(job)
             except Exception as e:
                 logger.exception(f"Unexpected error in scheduler loop: {e}")
 
             # Interruptible sleep
             self._stop_event.wait(timeout=self.check_interval_seconds)
+
