@@ -618,9 +618,9 @@ class TestTaskScheduler(unittest.TestCase):
         import threading
         from lib.tasks import TaskManager
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
-        acquired_in_another_thread = []
+        acquired_lock_states = []
 
-        def fake_write(target_path, data, indent=2):
+        def fake_write(target_path, data, *args, **kwargs):
             # Verify self._lock is released so another thread can acquire it concurrently,
             # while self._save_lock remains held to serialize concurrent disk writes.
             def acquire_locks():
@@ -632,7 +632,7 @@ class TestTaskScheduler(unittest.TestCase):
                 if got_save_lock:
                     scheduler._save_lock.release()
 
-                acquired_in_another_thread.append(got_main_lock and not got_save_lock)
+                acquired_lock_states.append((got_main_lock, got_save_lock))
 
             t = threading.Thread(target=acquire_locks)
             t.start()
@@ -641,36 +641,44 @@ class TestTaskScheduler(unittest.TestCase):
         mock_write.side_effect = fake_write
 
         # Clear any fallback save results recorded during constructor initialization
-        acquired_in_another_thread.clear()
+        acquired_lock_states.clear()
 
         scheduler.save_state()
-        self.assertEqual(len(acquired_in_another_thread), 1)
-        self.assertTrue(acquired_in_another_thread[-1])
+        self.assertEqual(len(acquired_lock_states), 1)
+        main_lock_released, save_lock_acquired = acquired_lock_states[-1]
+        self.assertTrue(main_lock_released, "Expected main scheduler._lock to be released during file write")
+        self.assertFalse(save_lock_acquired, "Expected scheduler._save_lock to be retained during file write")
 
-        acquired_in_another_thread.clear()
+        acquired_lock_states.clear()
 
         scheduler.save_config()
-        self.assertEqual(len(acquired_in_another_thread), 1)
-        self.assertTrue(acquired_in_another_thread[-1])
+        self.assertEqual(len(acquired_lock_states), 1)
+        main_lock_released, save_lock_acquired = acquired_lock_states[-1]
+        self.assertTrue(main_lock_released, "Expected main scheduler._lock to be released during file write")
+        self.assertFalse(save_lock_acquired, "Expected scheduler._save_lock to be retained during file write")
 
-        acquired_in_another_thread.clear()
+        acquired_lock_states.clear()
 
         # Test load_state fallback save when state_path does not exist
         if self.state_path.exists():
             self.state_path.unlink()
         scheduler.load_state()
-        self.assertEqual(len(acquired_in_another_thread), 1)
-        self.assertTrue(acquired_in_another_thread[-1])
+        self.assertEqual(len(acquired_lock_states), 1)
+        main_lock_released, save_lock_acquired = acquired_lock_states[-1]
+        self.assertTrue(main_lock_released, "Expected main scheduler._lock to be released during file write")
+        self.assertFalse(save_lock_acquired, "Expected scheduler._save_lock to be retained during file write")
 
-        acquired_in_another_thread.clear()
+        acquired_lock_states.clear()
 
         # Test load_state with active TaskManager updating running states
         tm = TaskManager(max_workers=1)
         scheduler.task_manager = tm
         tm.submit_task(agent="codebase_auditor", prompt="test", target_id="sched:periodic_bug_sweep")
         scheduler.load_state()
-        self.assertEqual(len(acquired_in_another_thread), 1)
-        self.assertTrue(acquired_in_another_thread[-1])
+        self.assertEqual(len(acquired_lock_states), 1)
+        main_lock_released, save_lock_acquired = acquired_lock_states[-1]
+        self.assertTrue(main_lock_released, "Expected main scheduler._lock to be released during file write")
+        self.assertFalse(save_lock_acquired, "Expected scheduler._save_lock to be retained during file write")
 
     def test_save_lock_serializes_disk_writes(self):
         """Verify _save_lock serializes _atomic_write_json execution across concurrent save calls."""
@@ -683,7 +691,7 @@ class TestTaskScheduler(unittest.TestCase):
         max_concurrent_writes = 0
         counter_lock = threading.Lock()
 
-        def slow_write(target_path, data, indent=2):
+        def slow_write(target_path, data, *args, **kwargs):
             nonlocal max_concurrent_writes
             with counter_lock:
                 concurrent_writes.append(1)
@@ -714,7 +722,7 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         errors = []
 
-        def mock_slow_fsync(target_path, data, indent=2):
+        def mock_slow_fsync(target_path, data, *args, **kwargs):
             time.sleep(0.005)
 
         with patch("lib.scheduler._atomic_write_json", side_effect=mock_slow_fsync):
