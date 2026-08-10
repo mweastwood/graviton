@@ -248,23 +248,27 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(queued[0].prompt, "Valid task")
             self.assertEqual(manager._task_counter, 10)
 
-            # Case 3: queued_tasks with unrecognized or invalid status string (e.g. "INVALID_STATUS", "RUNNING")
+            # Case 3: queued_tasks with unrecognized or non-string status (e.g. "INVALID_STATUS", "RUNNING", 123)
             unrecognized_status_state = {
                 "task_counter": 15,
                 "queued_tasks": [
                     {"id": "task-8", "agent": "code_reviewer", "prompt": "Task invalid status", "status": "INVALID_STATUS"},
                     {"id": "task-9", "agent": "code_fixer", "prompt": "Task running status", "status": "RUNNING"},
+                    {"id": "task-10", "agent": "code_reviewer", "prompt": "Task non-string status", "status": 123},
                 ],
             }
             state_file.write_text(json.dumps(unrecognized_status_state), encoding="utf-8")
             restored_unrecognized = manager.restore_queue_state(filepath=state_file)
-            self.assertEqual(restored_unrecognized, 2)
+            self.assertEqual(restored_unrecognized, 3)
             t8 = manager.get_task("task-8")
             t9 = manager.get_task("task-9")
+            t10 = manager.get_task("task-10")
             self.assertIsNotNone(t8)
             self.assertIsNotNone(t9)
+            self.assertIsNotNone(t10)
             self.assertEqual(t8.status, TaskStatus.QUEUED)
             self.assertEqual(t9.status, TaskStatus.QUEUED)
+            self.assertEqual(t10.status, TaskStatus.QUEUED)
 
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_drain_active_tasks_timeout(self, mock_run):
@@ -444,6 +448,11 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(restored_ids, {t1.id, t2.id})
             self.assertEqual(manager2.get_task(t1.id).status, TaskStatus.QUEUED)
             self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.PAUSED_FOR_QUOTA)
+
+            stats = manager2.get_stats()
+            self.assertEqual(stats["queued"], 1)
+            self.assertEqual(stats["paused"], 1)
+            self.assertEqual(stats["total"], 2)
             manager2.stop()
 
 

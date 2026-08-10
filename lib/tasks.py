@@ -227,7 +227,7 @@ class TaskManager:
         try:
             import json
             path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            logger.info(f"Dumped {len(queued_tasks)} queued task(s) state to {path}.")
+            logger.info(f"Dumped {len(queued_tasks)} queued/quota-paused task(s) state to {path}.")
             return len(queued_tasks)
         except Exception as e:
             logger.exception(f"Failed to dump queue state to '{path}': {e}")
@@ -293,7 +293,10 @@ class TaskManager:
                             pass
 
                     restored_status = td.get("status", TaskStatus.QUEUED)
-                    if restored_status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                    if not isinstance(restored_status, str) or restored_status not in (
+                        TaskStatus.QUEUED,
+                        TaskStatus.PAUSED_FOR_QUOTA,
+                    ):
                         restored_status = TaskStatus.QUEUED
 
                     task = Task(
@@ -313,7 +316,7 @@ class TaskManager:
                     logger.warning(f"Failed to restore queued task item {td}: {e}")
                     continue
 
-        logger.info(f"Restored {restored_count} queued task(s) state from {path}.")
+        logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
         return restored_count
 
     def _prune_tasks_locked(self):
