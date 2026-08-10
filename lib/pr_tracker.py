@@ -153,36 +153,44 @@ class PRTracker:
             if not target_dirs:
                 target_dirs.append(Path(repo_root) if repo_root else Path.cwd())
 
+            success_count = 0
             for d in target_dirs:
-                repo_full_name = ""
-                git_res = subprocess.run(
-                    ["git", "remote", "get-url", "origin"],
-                    cwd=str(d),
-                    capture_output=True,
-                    text=True,
-                )
-                if git_res.returncode == 0 and git_res.stdout:
-                    origin_url = git_res.stdout.strip()
-                    if "github.com" in origin_url:
-                        parts = origin_url.removesuffix(".git").split("github.com")[-1].lstrip(":/").split("/")
-                        if len(parts) >= 2:
-                            repo_full_name = f"{parts[-2]}/{parts[-1]}"
+                try:
+                    repo_full_name = ""
+                    git_res = subprocess.run(
+                        ["git", "remote", "get-url", "origin"],
+                        cwd=str(d),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if git_res.returncode == 0 and git_res.stdout:
+                        origin_url = git_res.stdout.strip()
+                        if "github.com" in origin_url:
+                            parts = origin_url.removesuffix(".git").split("github.com")[-1].lstrip(":/").split("/")
+                            if len(parts) >= 2:
+                                repo_full_name = f"{parts[-2]}/{parts[-1]}"
 
-                prs = self._sync_single_repo(cwd=str(d))
-                for item in prs:
-                    num = item["number"]
-                    key = (repo_full_name, num)
-                    new_approved[key] = {
-                        "number": num,
-                        "repo_full_name": repo_full_name,
-                        "title": item["title"],
-                        "author": item["author"],
-                        "url": item["url"],
-                    }
+                    prs = self._sync_single_repo(cwd=str(d))
+                    for item in prs:
+                        num = item["number"]
+                        key = (repo_full_name, num)
+                        new_approved[key] = {
+                            "number": num,
+                            "repo_full_name": repo_full_name,
+                            "title": item["title"],
+                            "author": item["author"],
+                            "url": item["url"],
+                        }
+                    success_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to sync PRs for repository directory '{d}': {e}")
 
-            with self._lock:
-                self._approved_prs = new_approved
-            logger.info(f"PRTracker synced {len(new_approved)} approved PR(s) via gh CLI.")
+            if success_count > 0 or not target_dirs:
+                with self._lock:
+                    self._approved_prs = new_approved
+                logger.info(f"PRTracker synced {len(new_approved)} approved PR(s) via gh CLI.")
+            else:
+                logger.warning("PRTracker sync failed for all target directories; preserving existing approved PRs.")
         except Exception as e:
             logger.warning(f"PRTracker initial background sync skipped/failed: {e}")
 

@@ -326,10 +326,6 @@ class TaskManager:
                         attempt=int(td.get("attempt", 1)),
                         max_attempts=int(td.get("max_attempts", 3)),
                     )
-                        enqueue_time=float(td.get("enqueue_time", time.time())),
-                        attempt=int(td.get("attempt", 1)),
-                        max_attempts=int(td.get("max_attempts", 3)),
-                    )
                     self._tasks[task.id] = task
                     self._queue.put(task)
                     restored_count += 1

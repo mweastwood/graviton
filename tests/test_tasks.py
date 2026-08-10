@@ -577,10 +577,10 @@ class TestTaskManager(unittest.TestCase):
                 Path("/tmp/fake_script.sh"),
                 expected_repo_dir,
                 on_output=task.update_attempt_from_line,
+                max_attempts=3,
             )
 
             manager.stop()
->>>>>>> 1d6c5c1 (feat: manage multiple repositories under single server instance (Issue #96))
 
     @patch("subprocess.run")
     @patch("lib.tasks.run_agent_container")

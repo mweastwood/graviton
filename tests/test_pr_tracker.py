@@ -256,6 +256,53 @@ class TestPRTracker(unittest.TestCase):
         tracker.remove_approved_pr(99, repo_full_name="owner/repo")
         self.assertEqual(len(tracker.get_approved_prs()), 0)
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_resilient_to_single_repo_failure(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dir1 = Path(tmpdir) / "repo1"
+            dir2 = Path(tmpdir) / "repo2"
+            dir1.mkdir()
+            dir2.mkdir()
+            (dir1 / ".git").mkdir()
+            (dir2 / ".git").mkdir()
+
+            # repo1 git returns origin, gh raises CalledProcessError
+            mock_git1 = MagicMock(returncode=0, stdout="https://github.com/owner/repo1.git\n")
+            # repo2 git returns origin, gh succeeds
+            mock_git2 = MagicMock(returncode=0, stdout="https://github.com/owner/repo2.git\n")
+            mock_gh2 = MagicMock(returncode=0, stdout=json.dumps([{
+                "number": 10,
+                "title": "Repo2 PR",
+                "url": "https://github.com/owner/repo2/pull/10",
+                "author": {"login": "dev2"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            }]))
+
+            # We mock subprocess.run calls in sequence
+            def side_effect(cmd, cwd=None, **kwargs):
+                cmd_str = " ".join(cmd)
+                if "git remote get-url" in cmd_str:
+                    if "repo1" in str(cwd):
+                        return mock_git1
+                    return mock_git2
+                if "gh pr list" in cmd_str:
+                    if "repo1" in str(cwd):
+                        raise subprocess.CalledProcessError(1, "gh", output="", stderr="Failed")
+                    return mock_gh2
+                return MagicMock(returncode=0, stdout="")
+
+            mock_run.side_effect = side_effect
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            approved = tracker.get_approved_prs()
+            self.assertEqual(len(approved), 1)
+            self.assertEqual(approved[0]["repo_full_name"], "owner/repo2")
+            self.assertEqual(approved[0]["number"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()
