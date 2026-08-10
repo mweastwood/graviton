@@ -425,7 +425,7 @@ class TerminalDashboard:
                 self.selected_job_index -= 1
 
     def enable_selected_job(self) -> Optional[ScheduledJob]:
-        """Enable the currently selected scheduled job and save config."""
+        """Enable the currently selected scheduled job and save state."""
         if not self.scheduler:
             return None
         with getattr(self.scheduler, "_lock", nullcontext()):
@@ -435,12 +435,12 @@ class TerminalDashboard:
             if 0 <= self.selected_job_index < len(jobs_list):
                 job = jobs_list[self.selected_job_index]
                 job.enabled = True
-                self.scheduler.save_config()
+                self.scheduler.save_state()
                 return job
         return None
 
     def disable_selected_job(self) -> Optional[ScheduledJob]:
-        """Disable the currently selected scheduled job and save config."""
+        """Disable the currently selected scheduled job and save state."""
         if not self.scheduler:
             return None
         with getattr(self.scheduler, "_lock", nullcontext()):
@@ -450,12 +450,12 @@ class TerminalDashboard:
             if 0 <= self.selected_job_index < len(jobs_list):
                 job = jobs_list[self.selected_job_index]
                 job.enabled = False
-                self.scheduler.save_config()
+                self.scheduler.save_state()
                 return job
         return None
 
     def toggle_selected_job(self) -> Optional[ScheduledJob]:
-        """Toggle enable/disable state for the currently selected scheduled job and save config."""
+        """Toggle enable/disable state for the currently selected scheduled job and save state."""
         if not self.scheduler:
             return None
         with getattr(self.scheduler, "_lock", nullcontext()):
@@ -465,7 +465,7 @@ class TerminalDashboard:
             if 0 <= self.selected_job_index < len(jobs_list):
                 job = jobs_list[self.selected_job_index]
                 job.enabled = not job.enabled
-                self.scheduler.save_config()
+                self.scheduler.save_state()
                 return job
         return None
 

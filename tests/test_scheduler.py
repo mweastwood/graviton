@@ -203,19 +203,21 @@ class TestTaskScheduler(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "schedules.json"
+        self.state_path = Path(self.temp_dir.name) / ".graviton_scheduler_state.json"
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def test_load_default_jobs_if_file_missing(self):
         mock_runner = MagicMock()
-        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
         self.assertTrue(self.config_path.exists())
+        self.assertTrue(self.state_path.exists())
         self.assertIn("periodic_bug_sweep", scheduler.jobs)
         self.assertIn("periodic_quality_sweep", scheduler.jobs)
 
     def test_add_get_remove_job(self):
-        scheduler = TaskScheduler(config_path=self.config_path)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         new_job = ScheduledJob(
             job_id="custom_sweep",
             name="Custom Sweep",
@@ -229,19 +231,143 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertIsNotNone(retrieved)
         self.assertEqual(retrieved.name, "Custom Sweep")
 
+        # Verify configuration and state persistence after add_job
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config_jobs = json.load(f)
+        self.assertTrue(any(j["job_id"] == "custom_sweep" for j in config_jobs))
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+        self.assertIn("custom_sweep", state_data)
+
+        # Verify job persists across re-initialization
+        reloaded_scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        self.assertIsNotNone(reloaded_scheduler.get_job("custom_sweep"))
+
         removed = scheduler.remove_job("custom_sweep")
         self.assertTrue(removed)
         self.assertIsNone(scheduler.get_job("custom_sweep"))
 
+        # Verify configuration and state cleanup after remove_job
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config_jobs_after = json.load(f)
+        self.assertFalse(any(j["job_id"] == "custom_sweep" for j in config_jobs_after))
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data_after = json.load(f)
+        self.assertNotIn("custom_sweep", state_data_after)
+
+        # Verify job remains removed across re-initialization
+        reloaded_scheduler_2 = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        self.assertIsNone(reloaded_scheduler_2.get_job("custom_sweep"))
+
+    def test_save_config_prevents_runtime_timestamps(self):
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+
+        now_dt = datetime.now(timezone.utc)
+        job.mark_executed(now_dt)
+        scheduler.save_state()
+        scheduler.save_config()
+
+        # Check config file (schedules.json) - must have null timestamps
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config_jobs = json.load(f)
+        config_job = next(j for j in config_jobs if j["job_id"] == "periodic_bug_sweep")
+        self.assertNotIn("last_run", config_job)
+        self.assertNotIn("next_run", config_job)
+
+        # Check state file (.graviton_scheduler_state.json) - must preserve active ISO timestamps
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["last_run"])
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["next_run"])
+
     def test_trigger_job(self):
         mock_runner = MagicMock()
-        scheduler = TaskScheduler(config_path=self.config_path, runner=mock_runner)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
         success = scheduler.trigger_job("periodic_bug_sweep")
         self.assertTrue(success)
         mock_runner.assert_called_once()
 
+    def test_static_config_untouched_on_job_execution(self):
+        mock_runner = MagicMock()
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            initial_config_content = f.read()
+
+        scheduler.trigger_job("periodic_bug_sweep")
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            after_config_content = f.read()
+
+        self.assertEqual(initial_config_content, after_config_content)
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+
+        self.assertIn("periodic_bug_sweep", state_data)
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["last_run"])
+        self.assertIsNotNone(state_data["periodic_bug_sweep"]["next_run"])
+
+    def test_state_loading_and_saving(self):
+        job = ScheduledJob(
+            job_id="test_job",
+            name="Test Job",
+            interval_seconds=3600,
+            agent="codebase_auditor",
+            prompt="Audit",
+            enabled=True,
+        )
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        state_info = {
+            "test_job": {
+                "last_run": "2026-08-10T00:00:00+00:00",
+                "next_run": "2026-08-10T01:00:00+00:00",
+                "enabled": False,
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(state_info, f)
+
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        retrieved_job = scheduler.get_job("test_job")
+        self.assertIsNotNone(retrieved_job)
+        self.assertEqual(retrieved_job.last_run, "2026-08-10T00:00:00+00:00")
+        self.assertEqual(retrieved_job.next_run, "2026-08-10T01:00:00+00:00")
+        self.assertFalse(retrieved_job.enabled)
+
+    def test_state_fallback_corrupted_file(self):
+        job = ScheduledJob(
+            job_id="test_job",
+            name="Test Job",
+            interval_seconds=3600,
+            agent="codebase_auditor",
+            prompt="Audit",
+            enabled=True,
+        )
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            f.write("{invalid_json_content...")
+
+        with self.assertLogs("graviton.scheduler", level="ERROR") as cm:
+            scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+
+        self.assertTrue(any("Failed to load schedule state from" in log for log in cm.output))
+        self.assertIn("test_job", scheduler.jobs)
+        self.assertTrue(self.state_path.exists())
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            recovered_state = json.load(f)
+        self.assertIn("test_job", recovered_state)
+
     def test_start_and_stop_lifecycle(self):
-        scheduler = TaskScheduler(config_path=self.config_path, check_interval_seconds=0.1)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, check_interval_seconds=0.1)
         scheduler.start()
         self.assertTrue(scheduler.is_running())
         scheduler.stop()
@@ -261,7 +387,6 @@ class TestTaskScheduler(unittest.TestCase):
 
     def test_scheduler_loop_executes_due_job(self):
         mock_runner = MagicMock()
-        # Set a short interval and job due in past
         past_dt = datetime.now(timezone.utc) - timedelta(days=1)
         job = ScheduledJob(
             job_id="due_job",
@@ -278,11 +403,11 @@ class TestTaskScheduler(unittest.TestCase):
 
         scheduler = TaskScheduler(
             config_path=self.config_path,
+            state_path=self.state_path,
             runner=mock_runner,
             check_interval_seconds=0.05,
         )
         scheduler.start()
-        # Wait briefly for thread to loop
         import time
 
         time.sleep(0.3)
@@ -293,7 +418,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_task_manager_routing_and_running_state(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
 
         job = scheduler.get_job("periodic_bug_sweep")
         self.assertIsNotNone(job)
@@ -322,7 +447,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_update_running_states_resets_orphaned_is_running_when_current_task_id_none(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
 
         job = scheduler.get_job("periodic_bug_sweep")
         self.assertIsNotNone(job)
@@ -335,7 +460,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_custom_handler_is_running_lifecycle(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
         executed = []
 
         def custom_handler(job):
@@ -353,7 +478,7 @@ class TestTaskScheduler(unittest.TestCase):
 
     def test_thread_safety_lock(self):
         import threading
-        scheduler = TaskScheduler(config_path=self.config_path)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         errors = []
 
         def worker():
@@ -369,6 +494,8 @@ class TestTaskScheduler(unittest.TestCase):
                     scheduler.add_job(job)
                     scheduler.get_job("thread_job")
                     scheduler.save_config()
+                    scheduler.save_state()
+                    scheduler.load_state()
                     scheduler.remove_job("thread_job")
             except Exception as e:
                 errors.append(e)
@@ -381,28 +508,109 @@ class TestTaskScheduler(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
-    def test_update_running_states_persists_config_changes(self):
+    def test_update_running_states_persists_state_changes(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
 
         job = scheduler.get_job("periodic_bug_sweep")
         self.assertIsNotNone(job)
 
         scheduler.trigger_job("periodic_bug_sweep")
-        with open(self.config_path, "r", encoding="utf-8") as f:
+        with open(self.state_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        saved_job = next(item for item in data if item["job_id"] == "periodic_bug_sweep")
-        self.assertTrue(saved_job["is_running"])
+        self.assertIn("periodic_bug_sweep", data)
+        self.assertTrue(data["periodic_bug_sweep"]["is_running"])
 
-        tasks = tm.get_all_tasks()
-        tasks[0].status = "COMPLETED"
-        scheduler.update_running_states()
+        # Also verify config file does NOT contain is_running or current_task_id or timestamps
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        saved_config_job = next(item for item in config_data if item["job_id"] == "periodic_bug_sweep")
+        self.assertNotIn("is_running", saved_config_job)
+        self.assertNotIn("current_task_id", saved_config_job)
+
+    def test_load_state_resets_stale_is_running_and_current_task_id_on_startup(self):
+        """Verify process crash recovery: load_state resets is_running=False on startup to prevent deadlock."""
+        # 1. Simulate process crash by writing stale is_running=True state to disk
+        stale_state = {
+            "periodic_bug_sweep": {
+                "last_run": None,
+                "next_run": None,
+                "enabled": True,
+                "is_running": True,
+                "current_task_id": "stale-task-999",
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(stale_state, f)
+
+        # 2. Instantiate TaskScheduler without task_manager (runner mode / restart)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+
+        # 3. Verify stale is_running and current_task_id were reset to False/None on load_state
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
+
+        # 4. Verify job is_due() returns True instead of deadlocking
+        self.assertTrue(job.is_due())
+
+    def test_load_state_reconciles_is_running_with_active_task_manager(self):
+        """Verify load_state reconciles is_running when active task manager has corresponding task."""
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        submitted_task = tm.submit_task(agent="codebase_auditor", prompt="test", target_id="sched:periodic_bug_sweep")
+
+        # Create state file with stale task ID
+        stale_state = {
+            "periodic_bug_sweep": {
+                "last_run": None,
+                "next_run": None,
+                "enabled": True,
+                "is_running": True,
+                "current_task_id": "stale-task-old",
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(stale_state, f)
+
+        # Instantiate scheduler with task_manager containing active task
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
+        job = scheduler.get_job("periodic_bug_sweep")
+
+        # Verify load_state + update_running_states reconciled active task ID and is_running=True
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+    def test_atomic_file_writes_for_state_and_config(self):
+        """Verify save_state and save_config use atomic file replacement without leaving leftover temp files."""
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        job.enabled = False
+
+        scheduler.save_config()
+        scheduler.save_state()
+
+        # Check target files were correctly written
+        self.assertTrue(self.config_path.exists())
+        self.assertTrue(self.state_path.exists())
 
         with open(self.config_path, "r", encoding="utf-8") as f:
-            data_after = json.load(f)
-        saved_job_after = next(item for item in data_after if item["job_id"] == "periodic_bug_sweep")
-        self.assertFalse(saved_job_after["is_running"])
+            cfg = json.load(f)
+        saved_config_job = next(j for j in cfg if j["job_id"] == "periodic_bug_sweep")
+        self.assertFalse(saved_config_job["enabled"])
+        self.assertNotIn("last_run", saved_config_job)
+        self.assertNotIn("next_run", saved_config_job)
+        self.assertNotIn("is_running", saved_config_job)
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        self.assertFalse(st["periodic_bug_sweep"]["enabled"])
+
+        # Check no temporary files were left behind in parent directory
+        tmp_files = list(self.state_path.parent.glob("*.tmp"))
+        self.assertEqual(tmp_files, [])
 
 
 
