@@ -36,3 +36,25 @@ def contains_bot_marker(text: str) -> bool:
     if not text:
         return False
     return BOT_MARKER in text
+
+
+def is_valid_repo_name(repo_name: str) -> bool:
+    """
+    Validate that repo_name is a simple repository directory name
+    without path separators, absolute paths, or traversal components.
+
+    :param repo_name: Repository name string to validate.
+    :return: True if repo_name is valid and safe, False otherwise.
+    """
+    if not repo_name or not isinstance(repo_name, str):
+        return False
+    if "/" in repo_name or "\\" in repo_name:
+        return False
+    if repo_name in (".", ".."):
+        return False
+    from pathlib import Path
+    p = Path(repo_name)
+    if p.is_absolute() or p.name != repo_name:
+        return False
+    return True
+

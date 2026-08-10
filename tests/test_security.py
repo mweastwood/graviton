@@ -43,6 +43,23 @@ class TestSecurity(unittest.TestCase):
         self.assertFalse(contains_bot_marker("Please fix this bug in line 10."))
         self.assertTrue(contains_bot_marker(f"LGTM! {BOT_MARKER}"))
 
+    def test_is_valid_repo_name(self):
+        """Check strict repo_name validation logic."""
+        from lib.security import is_valid_repo_name
+
+        self.assertTrue(is_valid_repo_name("repo-alpha"))
+        self.assertTrue(is_valid_repo_name("graviton"))
+        self.assertTrue(is_valid_repo_name("my_repo_1"))
+
+        self.assertFalse(is_valid_repo_name("/tmp/bad"))
+        self.assertFalse(is_valid_repo_name("../bad"))
+        self.assertFalse(is_valid_repo_name(".."))
+        self.assertFalse(is_valid_repo_name("."))
+        self.assertFalse(is_valid_repo_name("a/b"))
+        self.assertFalse(is_valid_repo_name("a\\b"))
+        self.assertFalse(is_valid_repo_name(""))
+        self.assertFalse(is_valid_repo_name(None))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,8 +24,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from lib.security import verify_signature
-from lib.router import route_webhook_event, format_event_summary
+from lib.security import verify_signature, is_valid_repo_name
+from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload
 from lib.scheduler import TaskScheduler
@@ -52,6 +52,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     default_fixer: str = "code_fixer"
     default_triager: str = "issue_triager"
     default_drafter: str = "pr_drafter"
+    server_repo_name: str = get_server_repo_name(REPO_ROOT)
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
@@ -113,6 +114,8 @@ class GravitonHandler(BaseHTTPRequestHandler):
             default_triager=self.default_triager,
             default_drafter=self.default_drafter,
             pr_tracker=self.pr_tracker,
+            server_repo_name=getattr(self, "server_repo_name", get_server_repo_name(REPO_ROOT)),
+            repo_root=REPO_ROOT,
         )
 
         status = decision.get("status", "unknown")
@@ -159,15 +162,63 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 post_emoji_reaction_async(event_type, payload)
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
+                repo_full_name = decision.get("repo_full_name")
+                repo_name = decision.get("repo_name")
+                clone_url = decision.get("clone_url")
+
                 if self.task_manager:
                     try:
-                        self.task_manager.submit_task(agent=agent, prompt=prompt, target_id=target_id)
+                        self.task_manager.submit_task(
+                            agent=agent,
+                            prompt=prompt,
+                            target_id=target_id,
+                            repo_full_name=repo_full_name,
+                            repo_name=repo_name,
+                            clone_url=clone_url,
+                        )
                     except RuntimeError as e:
                         logger.warning(f"Could not submit task: {e}")
                         self._send_json(503, {"error": "Server is draining tasks for update"})
                         return
                 else:
-                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, REPO_ROOT)
+                    exec_cwd = REPO_ROOT
+                    if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
+                        if not is_valid_repo_name(repo_name):
+                            logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
+                            self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
+                            return
+                        candidate_cwd = (self.repos_dir / repo_name).resolve()
+                        repos_dir_resolved = self.repos_dir.resolve()
+                        if candidate_cwd != repos_dir_resolved and repos_dir_resolved in candidate_cwd.parents:
+                            exec_cwd = candidate_cwd
+                        else:
+                            logger.warning(f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}")
+                            self._send_json(400, {"error": f"Unsafe or invalid repo_name '{repo_name}' attempting path traversal out of {self.repos_dir}"})
+                            return
+
+                    if exec_cwd and not exec_cwd.exists() and clone_url:
+                        logger.info(f"Repository directory '{exec_cwd}' does not exist in direct execution mode. Auto-cloning from {clone_url}...")
+                        try:
+                            import subprocess
+                            exec_cwd.parent.mkdir(parents=True, exist_ok=True)
+                            subprocess.run(
+                                ["git", "clone", "--", clone_url, str(exec_cwd)],
+                                check=True,
+                                capture_output=True,
+                                text=True,
+                            )
+                            logger.info(f"Successfully auto-cloned repository to '{exec_cwd}'.")
+                        except Exception as clone_err:
+                            logger.error(f"Failed to auto-clone repository '{clone_url}' into '{exec_cwd}': {clone_err}")
+                            self._send_json(500, {"error": f"Failed to auto-clone repository '{clone_url}': {clone_err}"})
+                            return
+
+                    if exec_cwd and not exec_cwd.exists():
+                        logger.error(f"Repository directory '{exec_cwd}' does not exist.")
+                        self._send_json(400, {"error": f"Repository directory '{exec_cwd}' does not exist"})
+                        return
+
+                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
 
             # Omit internal prompt from HTTP response output
             response_payload = {k: v for k, v in decision.items() if k != "prompt"}
@@ -193,6 +244,7 @@ def main():
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="Host IP to bind (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=int(os.getenv("PORT", "8000")), help="Port to bind (default: 8000)")
     parser.add_argument("--secret", "-s", default=os.getenv("WEBHOOK_SECRET", os.getenv("GITHUB_WEBHOOK_SECRET", "")), help="GitHub webhook secret for HMAC verification")
+    parser.add_argument("--repos-dir", "--projects-dir", default=os.getenv("REPOS_DIR", os.getenv("PROJECTS_DIR", "~/graviton-repos")), help="Base directory for managed repository checkouts (env: REPOS_DIR or PROJECTS_DIR, default: ~/graviton-repos)")
     parser.add_argument("--reviewer", default=os.getenv("DEFAULT_REVIEWER", "code_reviewer"), help="Reviewer agent name (default: code_reviewer)")
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
@@ -204,11 +256,13 @@ def main():
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
     args = parser.parse_args()
 
+    repos_dir = Path(args.repos_dir).expanduser().resolve()
     GravitonHandler.secret = args.secret
     GravitonHandler.default_reviewer = args.reviewer
     GravitonHandler.default_fixer = args.fixer
     GravitonHandler.default_triager = args.triager
     GravitonHandler.default_drafter = args.drafter
+    GravitonHandler.repos_dir = repos_dir
 
     if not args.secret:
         logger.warning("No WEBHOOK_SECRET specified. HMAC signature verification is DISABLED.")
@@ -232,6 +286,7 @@ def main():
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
         quota_tracker=quota_tracker,
+        repos_dir=repos_dir,
     )
     restored_count = task_manager.restore_queue_state()
     if restored_count > 0:
@@ -256,7 +311,7 @@ def main():
     GravitonHandler.scheduler = scheduler
 
     pr_tracker = PRTracker()
-    pr_tracker.sync_in_background(repo_root=REPO_ROOT)
+    pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
     GravitonHandler.pr_tracker = pr_tracker
 
     dashboard = TerminalDashboard(

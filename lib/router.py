@@ -2,10 +2,12 @@
 GitHub Webhook Event Routing Logic for Graviton.
 """
 
+from pathlib import Path
 import re
+import subprocess
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from lib.security import contains_bot_marker
 
 _pr_review_timestamps: Dict[Any, float] = {}
@@ -74,6 +76,23 @@ def has_explicit_command(text: str) -> bool:
     return bool(re.search(r'(?<![\w/])/(?:fix|review)\b|@antigravity', text_lower))
 
 
+def _extract_repo_info(payload: Dict[str, Any]):
+    """
+    Extract repo_full_name, repo_name, and clone_url from webhook payload.
+    """
+    if not isinstance(payload, dict):
+        return None, None, None
+    repo = payload.get("repository")
+    if not isinstance(repo, dict):
+        return None, None, None
+    repo_full_name = repo.get("full_name") or None
+    repo_name = repo.get("name") or (repo_full_name.split("/")[-1] if repo_full_name and "/" in repo_full_name else None)
+    clone_url = repo.get("clone_url") or repo.get("html_url") or None
+    if repo_full_name and not clone_url:
+        clone_url = f"https://github.com/{repo_full_name}.git"
+    return repo_full_name, repo_name, clone_url
+
+
 def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Handle GitHub 'ping' webhook event."""
     return {
@@ -83,9 +102,79 @@ def handle_ping_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_push_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _get_git_remote_repo_names(repo_root: Optional[Path] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract (repo_name, repo_full_name) from git remote origin of repo_root.
+    Returns (None, None) if git command fails or url cannot be parsed.
+    """
+    if repo_root is None:
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+        except Exception:
+            return None, None
+    try:
+        git_res = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if git_res.returncode == 0 and git_res.stdout:
+            origin_url = git_res.stdout.strip()
+            clean_url = origin_url.rstrip("/").removesuffix(".git").rstrip("/")
+            if ":" in clean_url or "/" in clean_url:
+                parts = clean_url.replace(":", "/").split("/")
+                if len(parts) >= 2 and parts[-2] and parts[-1]:
+                    repo_full_name = f"{parts[-2]}/{parts[-1]}"
+                    repo_name = parts[-1]
+                    return repo_name, repo_full_name
+                elif len(parts) >= 1 and parts[-1]:
+                    return parts[-1], None
+    except Exception:
+        pass
+    return None, None
+
+
+def get_server_repo_name(repo_root: Optional[Path] = None) -> str:
+    """Get the server repository name from git remote origin or fallback to directory name."""
+    if repo_root is None:
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+        except Exception:
+            return "graviton"
+    remote_name, _ = _get_git_remote_repo_names(repo_root)
+    if remote_name:
+        return remote_name
+    return repo_root.name
+
+
+def handle_push_event(
+    payload: Dict[str, Any],
+    server_repo_name: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Handle GitHub 'push' webhook event (Self-Update & Hot Reload on main/master)."""
     ref = payload.get("ref", "")
+    repo_full_name, repo_name, _ = _extract_repo_info(payload)
+
+    if server_repo_name or repo_root is not None:
+        allowed_names = set()
+        if server_repo_name:
+            allowed_names.add(server_repo_name)
+
+        target_root = repo_root if repo_root is not None else Path(__file__).resolve().parent.parent
+        remote_name, remote_full_name = _get_git_remote_repo_names(target_root)
+        if remote_name:
+            allowed_names.add(remote_name)
+        if remote_full_name:
+            allowed_names.add(remote_full_name)
+
+        if allowed_names and repo_name not in allowed_names and repo_full_name not in allowed_names:
+            return {
+                "status": "ignored",
+                "reason": f"Push event for repository '{repo_name or repo_full_name}' is not graviton server repository",
+            }
     if ref in ("refs/heads/main", "refs/heads/master"):
         return {
             "status": "accepted",
@@ -108,13 +197,14 @@ def handle_pull_request_event(
     action = payload.get("action")
     pr = payload.get("pull_request", {}) if isinstance(payload.get("pull_request"), dict) else {}
     pr_number = payload.get("number") or pr.get("number")
+    repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
     if pr_tracker and pr_number is not None and (action in ("closed", "merged") or payload.get("merged") or pr.get("merged")):
-        pr_tracker.remove_approved_pr(pr_number)
+        pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
 
     if action in ("opened", "synchronize", "reopened"):
         if pr_number is not None and debounce_window > 0:
-            pr_key = str(pr_number)
+            pr_key = f"{repo_full_name}#{pr_number}" if repo_full_name else str(pr_number)
             now = time.time()
             with _pr_review_timestamps_lock:
                 last_time = _pr_review_timestamps.get(pr_key)
@@ -125,14 +215,26 @@ def handle_pull_request_event(
                     }
                 _pr_review_timestamps[pr_key] = now
 
-        prompt = f"Review PR #{pr_number}. Use --request-changes for any findings or code fixes."
-        return {
+        if repo_full_name:
+            prompt = f"Review PR #{pr_number} in {repo_full_name}. Use --request-changes for any findings or code fixes."
+        else:
+            prompt = f"Review PR #{pr_number}. Use --request-changes for any findings or code fixes."
+
+        res = {
             "status": "accepted",
             "action": action,
             "pr_number": pr_number,
             "agent": default_reviewer,
             "prompt": prompt,
         }
+        if repo_full_name:
+            res["repo_full_name"] = repo_full_name
+        if repo_name:
+            res["repo_name"] = repo_name
+        if clone_url:
+            res["clone_url"] = clone_url
+        return res
+
     return {
         "status": "ignored",
         "reason": f"Pull request action '{action}' does not trigger review",
@@ -155,12 +257,13 @@ def handle_pull_request_review_event(
     pr_url = pr.get("html_url", "") or pr.get("url", "")
     pr_user = pr.get("user", {}) if isinstance(pr.get("user"), dict) else {}
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
+    repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
     if pr_tracker and pr_number is not None:
         if action == "submitted" and review_state == "APPROVED":
-            pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url)
+            pr_tracker.add_approved_pr(pr_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
         elif (action == "submitted" and review_state == "CHANGES_REQUESTED") or action == "dismissed":
-            pr_tracker.remove_approved_pr(pr_number)
+            pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
 
     if contains_bot_marker(review_body) and review_state != "CHANGES_REQUESTED":
         return {
@@ -174,9 +277,12 @@ def handle_pull_request_review_event(
             "reason": "PR was not created by us",
         }
 
-    if action == "submitted" and review_state == "CHANGES_REQUESTED":
-        prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
-        return {
+    if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
+        if repo_full_name:
+            prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
+        else:
+            prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
+        res = {
             "status": "accepted",
             "action": action,
             "review_state": review_state,
@@ -184,17 +290,14 @@ def handle_pull_request_review_event(
             "agent": default_fixer,
             "prompt": prompt,
         }
+        if repo_full_name:
+            res["repo_full_name"] = repo_full_name
+        if repo_name:
+            res["repo_name"] = repo_name
+        if clone_url:
+            res["clone_url"] = clone_url
+        return res
 
-    if action == "submitted" and review_state == "COMMENTED":
-        prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
-        return {
-            "status": "accepted",
-            "action": action,
-            "review_state": review_state,
-            "pr_number": pr_number,
-            "agent": default_fixer,
-            "prompt": prompt,
-        }
     return {
         "status": "ignored",
         "reason": f"Review state '{review_state}' action '{action}' does not trigger fixer",
@@ -214,6 +317,7 @@ def handle_pull_request_review_comment_event(
     pr = payload.get("pull_request", {})
     pr_url = pr.get("html_url", "")
     pr_number = pr.get("number") or (pr_url.rstrip("/").split("/")[-1] if pr_url else "")
+    repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
     if contains_bot_marker(comment_body):
         return {
@@ -228,8 +332,11 @@ def handle_pull_request_review_comment_event(
         }
 
     if action == "created":
-        prompt = f"Resolve review comment on PR #{pr_number} in file '{file_path}' (line {line}): '{comment_body}'"
-        return {
+        if repo_full_name:
+            prompt = f"Resolve review comment on PR #{pr_number} in {repo_full_name} in file '{file_path}' (line {line}): '{comment_body}'"
+        else:
+            prompt = f"Resolve review comment on PR #{pr_number} in file '{file_path}' (line {line}): '{comment_body}'"
+        res = {
             "status": "accepted",
             "action": action,
             "pr_number": pr_number,
@@ -238,6 +345,13 @@ def handle_pull_request_review_comment_event(
             "agent": default_fixer,
             "prompt": prompt,
         }
+        if repo_full_name:
+            res["repo_full_name"] = repo_full_name
+        if repo_name:
+            res["repo_name"] = repo_name
+        if clone_url:
+            res["clone_url"] = clone_url
+        return res
     return {
         "status": "ignored",
         "reason": f"Review comment action '{action}' does not trigger fixer",
@@ -256,22 +370,36 @@ def handle_issues_event(
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")
     issue_body = issue.get("body", "")
+    repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
     if action in ("opened", "reopened", "edited"):
-        prompt = f"Triage Issue #{issue_number}: '{issue_title}' - {issue_body}"
-        return {
+        if repo_full_name:
+            prompt = f"Triage Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
+        else:
+            prompt = f"Triage Issue #{issue_number}: '{issue_title}' - {issue_body}"
+        res = {
             "status": "accepted",
             "action": action,
             "issue_number": issue_number,
             "agent": default_triager,
             "prompt": prompt,
         }
+        if repo_full_name:
+            res["repo_full_name"] = repo_full_name
+        if repo_name:
+            res["repo_name"] = repo_name
+        if clone_url:
+            res["clone_url"] = clone_url
+        return res
     elif action == "labeled":
         label = payload.get("label", {})
         label_name = label.get("name", "")
         if label_name in ("ready-for-pr", "ready-for-implementation"):
-            prompt = f"Draft initial PR to implement ready Issue #{issue_number}: '{issue_title}' - {issue_body}"
-            return {
+            if repo_full_name:
+                prompt = f"Draft initial PR to implement ready Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
+            else:
+                prompt = f"Draft initial PR to implement ready Issue #{issue_number}: '{issue_title}' - {issue_body}"
+            res = {
                 "status": "accepted",
                 "action": action,
                 "label": label_name,
@@ -279,6 +407,13 @@ def handle_issues_event(
                 "agent": default_drafter,
                 "prompt": prompt,
             }
+            if repo_full_name:
+                res["repo_full_name"] = repo_full_name
+            if repo_name:
+                res["repo_name"] = repo_name
+            if clone_url:
+                res["clone_url"] = clone_url
+            return res
         return {
             "status": "ignored",
             "reason": f"Issue label '{label_name}' does not trigger PR drafting",
@@ -304,6 +439,7 @@ def handle_issue_comment_event(
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
     pr = issue.get("pull_request")
+    repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
     if contains_bot_marker(comment_body) and not has_explicit_command(comment_body):
         return {
@@ -331,14 +467,25 @@ def handle_issue_comment_event(
                 agent = default_reviewer
             else:
                 agent = default_fixer
-            prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
-            return {
+
+            if repo_full_name:
+                prompt = f"Address comment on PR #{issue_number} in {repo_full_name}: '{comment_body}'"
+            else:
+                prompt = f"Address comment on PR #{issue_number}: '{comment_body}'"
+            res = {
                 "status": "accepted",
                 "action": action,
                 "pr_number": issue_number,
                 "agent": agent,
                 "prompt": prompt,
             }
+            if repo_full_name:
+                res["repo_full_name"] = repo_full_name
+            if repo_name:
+                res["repo_name"] = repo_name
+            if clone_url:
+                res["clone_url"] = clone_url
+            return res
 
         # 2. Comment on a pure Issue (Triage vs PR Drafting)
         else:
@@ -348,23 +495,43 @@ def handle_issue_comment_event(
             ]
             body_lower = comment_body.lower()
             if "ready-for-pr" in labels or "ready-for-implementation" in labels or "/draft-pr" in body_lower:
-                prompt = f"Draft initial PR for Issue #{issue_number} based on comment: '{comment_body}'"
-                return {
+                if repo_full_name:
+                    prompt = f"Draft initial PR for Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
+                else:
+                    prompt = f"Draft initial PR for Issue #{issue_number} based on comment: '{comment_body}'"
+                res = {
                     "status": "accepted",
                     "action": action,
                     "issue_number": issue_number,
                     "agent": default_drafter,
                     "prompt": prompt,
                 }
+                if repo_full_name:
+                    res["repo_full_name"] = repo_full_name
+                if repo_name:
+                    res["repo_name"] = repo_name
+                if clone_url:
+                    res["clone_url"] = clone_url
+                return res
             else:
-                prompt = f"Continue triage on Issue #{issue_number} based on comment: '{comment_body}'"
-                return {
+                if repo_full_name:
+                    prompt = f"Continue triage on Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
+                else:
+                    prompt = f"Continue triage on Issue #{issue_number} based on comment: '{comment_body}'"
+                res = {
                     "status": "accepted",
                     "action": action,
                     "issue_number": issue_number,
                     "agent": default_triager,
                     "prompt": prompt,
                 }
+                if repo_full_name:
+                    res["repo_full_name"] = repo_full_name
+                if repo_name:
+                    res["repo_name"] = repo_name
+                if clone_url:
+                    res["clone_url"] = clone_url
+                return res
 
     return {
         "status": "ignored",
@@ -384,6 +551,8 @@ def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
         payload = {}
 
     action = payload.get("action")
+    repo_full_name, _, _ = _extract_repo_info(payload)
+    repo_prefix = f"{repo_full_name} " if repo_full_name else ""
 
     if event_type in ("pull_request", "pull_request_review", "pull_request_review_comment"):
         pr = payload.get("pull_request")
@@ -395,7 +564,7 @@ def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
             if parts and parts[-1].isdigit():
                 pr_number = int(parts[-1])
 
-        target = f"PR #{pr_number}" if pr_number is not None and pr_number != "" else "PR"
+        target = f"{repo_prefix}PR #{pr_number}" if pr_number is not None and pr_number != "" else f"{repo_prefix}PR"
         if action:
             return f"{target} (action: {action})"
         return target
@@ -405,7 +574,7 @@ def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
         issue_dict = issue if isinstance(issue, dict) else {}
         issue_number = issue_dict.get("number") or payload.get("number")
 
-        target = f"Issue #{issue_number}" if issue_number is not None and issue_number != "" else "Issue"
+        target = f"{repo_prefix}Issue #{issue_number}" if issue_number is not None and issue_number != "" else f"{repo_prefix}Issue"
         if action:
             return f"{target} (action: {action})"
         return target
@@ -415,7 +584,7 @@ def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
         issue_dict = issue if isinstance(issue, dict) else {}
         issue_number = issue_dict.get("number") or payload.get("number")
         is_pr = bool(issue_dict.get("pull_request"))
-        prefix = "PR" if is_pr else "Issue"
+        prefix = f"{repo_prefix}PR" if is_pr else f"{repo_prefix}Issue"
 
         target = f"{prefix} #{issue_number}" if issue_number is not None and issue_number != "" else prefix
         if action:
@@ -425,16 +594,16 @@ def format_event_summary(event_type: str, payload: Dict[str, Any]) -> str:
     elif event_type == "push":
         ref = payload.get("ref", "")
         if ref:
-            return f"Branch '{ref}'"
-        return "Push"
+            return f"{repo_prefix}Branch '{ref}'".strip()
+        return f"{repo_prefix}Push".strip()
 
     elif event_type == "ping":
         return "Ping"
 
     else:
         if action:
-            return f"{event_type} (action: {action})"
-        return event_type or "Unknown"
+            return f"{repo_prefix}{event_type} (action: {action})".strip()
+        return f"{repo_prefix}{event_type}".strip() or "Unknown"
 
 
 def route_webhook_event(
@@ -446,6 +615,8 @@ def route_webhook_event(
     default_drafter: str = "pr_drafter",
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
+    server_repo_name: Optional[str] = None,
+    repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -458,11 +629,13 @@ def route_webhook_event(
     :param default_drafter: Name of the PR drafter agent.
     :param pr_tracker: Optional PRTracker instance to track approved PRs ready for merge.
     :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
+    :param server_repo_name: Optional repository name for graviton server to check on push events.
+    :param repo_root: Optional Path to server repository root directory for inspecting git remote origin.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
         "ping": handle_ping_event,
-        "push": handle_push_event,
+        "push": lambda p: handle_push_event(p, server_repo_name=server_repo_name, repo_root=repo_root),
         "pull_request": lambda p: handle_pull_request_event(
             p, default_reviewer=default_reviewer, pr_tracker=pr_tracker, debounce_window=debounce_window
         ),

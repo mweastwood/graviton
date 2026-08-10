@@ -156,8 +156,9 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(approved[0]["number"], 59)
         self.assertEqual(approved[0]["author"], "bot_reviewer")
 
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[-1][0][0]
+        self.assertIn("--limit", cmd)
+        self.assertIn("300", cmd)
         self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
 
     @patch("subprocess.run")
@@ -195,6 +196,148 @@ class TestPRTracker(unittest.TestCase):
         # Sync fails, existing state should not crash
         tracker.sync_github_prs()
         self.assertEqual(len(tracker.get_approved_prs()), 1)
+
+    def test_multi_repo_approved_prs_tracking(self):
+        tracker = PRTracker()
+        tracker.add_approved_pr(42, "Feature Alpha", "alice", "https://github.com/owner/repo-alpha/pull/42", repo_full_name="owner/repo-alpha")
+        tracker.add_approved_pr(42, "Feature Beta", "bob", "https://github.com/owner/repo-beta/pull/42", repo_full_name="owner/repo-beta")
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 2)
+        self.assertEqual(approved[0]["repo_full_name"], "owner/repo-alpha")
+        self.assertEqual(approved[0]["number"], 42)
+        self.assertEqual(approved[1]["repo_full_name"], "owner/repo-beta")
+        self.assertEqual(approved[1]["number"], 42)
+
+        # Remove PR #42 specifically for owner/repo-alpha
+        tracker.remove_approved_pr(42, repo_full_name="owner/repo-alpha")
+        remaining = tracker.get_approved_prs()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["repo_full_name"], "owner/repo-beta")
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_removesuffix_git(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = Path(tmpdir) / "reddit"
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+
+            mock_git_res = MagicMock()
+            mock_git_res.returncode = 0
+            mock_git_res.stdout = "https://github.com/owner/reddit.git\n"
+
+            mock_gh_res = MagicMock()
+            mock_gh_res.returncode = 0
+            mock_gh_res.stdout = json.dumps([{
+                "number": 1,
+                "title": "PR 1",
+                "url": "https://github.com/owner/reddit/pull/1",
+                "author": {"login": "dev"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            }])
+
+            mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            approved = tracker.get_approved_prs()
+            self.assertEqual(len(approved), 1)
+            self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
+            self.assertEqual(approved[0]["number"], 1)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_trailing_slash_urls(self, mock_run):
+        import tempfile
+        for origin_url in ["https://github.com/owner/reddit/", "git@github.com:owner/reddit.git/"]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo_dir = Path(tmpdir) / "reddit"
+                repo_dir.mkdir()
+                (repo_dir / ".git").mkdir()
+
+                mock_git_res = MagicMock()
+                mock_git_res.returncode = 0
+                mock_git_res.stdout = f"{origin_url}\n"
+
+                mock_gh_res = MagicMock()
+                mock_gh_res.returncode = 0
+                mock_gh_res.stdout = json.dumps([{
+                    "number": 1,
+                    "title": "PR 1",
+                    "url": "https://github.com/owner/reddit/pull/1",
+                    "author": {"login": "dev"},
+                    "reviewDecision": "APPROVED",
+                    "isDraft": False,
+                }])
+
+                mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+                tracker = PRTracker()
+                tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+                approved = tracker.get_approved_prs()
+                self.assertEqual(len(approved), 1)
+                self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
+                self.assertEqual(approved[0]["number"], 1)
+
+    def test_remove_approved_pr_cleans_up_empty_repo_name(self):
+        tracker = PRTracker()
+        # Add PR with empty repo_full_name
+        tracker.add_approved_pr(99, "Legacy PR", "charlie", "https://github.com/owner/repo/pull/99", repo_full_name="")
+        self.assertEqual(len(tracker.get_approved_prs()), 1)
+
+        # Removing PR #99 specifying a repo name should clean up the empty repo name entry too
+        tracker.remove_approved_pr(99, repo_full_name="owner/repo")
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_resilient_to_single_repo_failure(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dir1 = Path(tmpdir) / "repo1"
+            dir2 = Path(tmpdir) / "repo2"
+            dir1.mkdir()
+            dir2.mkdir()
+            (dir1 / ".git").mkdir()
+            (dir2 / ".git").mkdir()
+
+            # repo1 git returns origin, gh raises CalledProcessError
+            mock_git1 = MagicMock(returncode=0, stdout="https://github.com/owner/repo1.git\n")
+            # repo2 git returns origin, gh succeeds
+            mock_git2 = MagicMock(returncode=0, stdout="https://github.com/owner/repo2.git\n")
+            mock_gh2 = MagicMock(returncode=0, stdout=json.dumps([{
+                "number": 10,
+                "title": "Repo2 PR",
+                "url": "https://github.com/owner/repo2/pull/10",
+                "author": {"login": "dev2"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            }]))
+
+            # We mock subprocess.run calls in sequence
+            def side_effect(cmd, cwd=None, **kwargs):
+                cmd_str = " ".join(cmd)
+                if "git remote get-url" in cmd_str:
+                    if "repo1" in str(cwd):
+                        return mock_git1
+                    return mock_git2
+                if "gh pr list" in cmd_str:
+                    if "repo1" in str(cwd):
+                        raise subprocess.CalledProcessError(1, "gh", output="", stderr="Failed")
+                    return mock_gh2
+                return MagicMock(returncode=0, stdout="")
+
+            mock_run.side_effect = side_effect
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+            approved = tracker.get_approved_prs()
+            self.assertEqual(len(approved), 1)
+            self.assertEqual(approved[0]["repo_full_name"], "owner/repo2")
+            self.assertEqual(approved[0]["number"], 10)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ from lib.tasks import Task, TaskManager, TaskStatus
 
 class TestTaskManager(unittest.TestCase):
 
+    @classmethod
+    def setUpClass(cls):
+        Path("/tmp/fake_repo").mkdir(parents=True, exist_ok=True)
+
     def test_task_model_properties(self):
         t = Task(
             id="task-1",
@@ -510,7 +514,308 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.COMPLETED)
             manager2.stop()
 
+    def test_multi_repo_task_target_id_formatting(self):
+        manager = TaskManager()
+        t = manager.submit_task(
+            "code_reviewer",
+            "Review PR #42 in owner/repo-alpha",
+            target_id="#42",
+            repo_full_name="owner/repo-alpha",
+            repo_name="repo-alpha",
+            clone_url="https://github.com/owner/repo-alpha.git",
+        )
+        self.assertEqual(t.target_id, "owner/repo-alpha#42")
+        self.assertEqual(t.repo_full_name, "owner/repo-alpha")
+        self.assertEqual(t.repo_name, "repo-alpha")
+
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_multi_repo_workspace_resolution_and_auto_clone(self, mock_run_agent, mock_sub_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_run_agent.return_value = mock_proc
+
+            expected_repo_dir = repos_dir / "repo-alpha"
+            mock_sub_run.side_effect = lambda *args, **kwargs: (expected_repo_dir.mkdir(parents=True, exist_ok=True), MagicMock(returncode=0))[1]
+
+            manager.start()
+
+            # Submit task for repo-alpha which does NOT exist locally yet
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/repo-alpha",
+                repo_name="repo-alpha",
+                clone_url="https://github.com/owner/repo-alpha.git",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+
+            # Check that git clone was invoked for non-existent repo_dir
+            mock_sub_run.assert_called_once_with(
+                ["git", "clone", "--", "https://github.com/owner/repo-alpha.git", str(expected_repo_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Check that run_agent_container was called with cwd set to expected_repo_dir
+            mock_run_agent.assert_called_once_with(
+                "code_reviewer",
+                "Review PR #1",
+                Path("/tmp/fake_script.sh"),
+                expected_repo_dir,
+                on_output=task.update_attempt_from_line,
+                max_attempts=3,
+            )
+
+            manager.stop()
+
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_multi_repo_auto_clone_failure_marks_task_failed(self, mock_run_agent, mock_sub_run):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_sub_run.side_effect = subprocess.CalledProcessError(1, ["git", "clone"], stderr="Repository not found")
+
+            manager.start()
+
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/repo-alpha",
+                repo_name="repo-alpha",
+                clone_url="https://github.com/owner/repo-alpha.git",
+            )
+
+            for _ in range(100):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertEqual(task.return_code, -1)
+            self.assertIn("Failed to auto-clone repository", task.error_message)
+
+            mock_run_agent.assert_not_called()
+            manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_path_traversal_rejection_in_task_workspace_resolution(self, mock_run_agent):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+
+            manager.start()
+
+            # Submit task with leading slash path traversal repo_name "/tmp/bad"
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/bad",
+                repo_name="/tmp/bad",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertIn("attempting path traversal", task.error_message)
+            mock_run_agent.assert_not_called()
+            manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_valid_repo_name_in_task_workspace_resolution(self, mock_run_agent):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+            bad_dir = repos_dir / "bad"
+            bad_dir.mkdir()
+
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_run_agent.return_value = mock_proc
+
+            manager.start()
+
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/bad",
+                repo_name="bad",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+            mock_run_agent.assert_called_once()
+            called_cwd = mock_run_agent.call_args[0][3]
+            self.assertEqual(called_cwd.resolve(), bad_dir.resolve())
+            manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_path_traversal_out_of_repos_dir_marks_task_failed(self, mock_run_agent):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_server_cwd"),
+                repos_dir=repos_dir,
+            )
+
+            manager.start()
+
+            task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                target_id="#1",
+                repo_full_name="owner/bad",
+                repo_name="..",
+            )
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertIn("attempting path traversal", task.error_message)
+            mock_run_agent.assert_not_called()
+            manager.stop()
+
+    def test_submit_task_target_id_prefix_matching(self):
+        manager = TaskManager()
+        # Similar repo name prefix where target_id belongs to repo-2
+        t1 = manager.submit_task("code_reviewer", "Prompt 1", target_id="owner/repo-2#5", repo_full_name="owner/repo")
+        self.assertEqual(t1.target_id, "owner/repo#5")
+
+        # Matching repo target_id with hash prefix
+        t2 = manager.submit_task("code_reviewer", "Prompt 2", target_id="owner/repo#5", repo_full_name="owner/repo")
+        self.assertEqual(t2.target_id, "owner/repo#5")
+
+        # Issue/PR number only with leading hash
+        t3 = manager.submit_task("code_reviewer", "Prompt 3", target_id="#5", repo_full_name="owner/repo")
+        self.assertEqual(t3.target_id, "owner/repo#5")
+
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_concurrent_auto_cloning_no_race_condition(self, mock_run_agent, mock_subproc_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+            target_repo_dir = repos_dir / "myrepo"
+
+            def mock_clone(cmd, **kwargs):
+                time.sleep(0.05)
+                target_repo_dir.mkdir(parents=True, exist_ok=True)
+                res = MagicMock()
+                res.returncode = 0
+                return res
+
+            mock_subproc_run.side_effect = mock_clone
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.stdout = "Success"
+            mock_proc.stderr = ""
+            mock_run_agent.return_value = mock_proc
+
+            manager = TaskManager(
+                max_workers=2,
+                script_path=Path("/tmp/fake_script.sh"),
+                repos_dir=repos_dir,
+            )
+            manager.start()
+
+            t1 = manager.submit_task("code_reviewer", "Prompt 1", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
+            t2 = manager.submit_task("code_reviewer", "Prompt 2", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
+
+            for _ in range(50):
+                if t1.status == TaskStatus.COMPLETED and t2.status == TaskStatus.COMPLETED:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(t1.status, TaskStatus.COMPLETED)
+            self.assertEqual(t2.status, TaskStatus.COMPLETED)
+            self.assertEqual(mock_subproc_run.call_count, 1)
+            manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_nonexistent_exec_cwd_raises_error(self, mock_run_agent):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            non_existent_dir = Path(tmpdir) / "does_not_exist"
+            manager = TaskManager(
+                max_workers=1,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=non_existent_dir,
+            )
+            manager.start()
+
+            task = manager.submit_task("code_reviewer", "Test prompt")
+
+            for _ in range(50):
+                if task.status == TaskStatus.FAILED:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertIn("Target repository directory", task.error_message)
+            self.assertIn("does not exist", task.error_message)
+            mock_run_agent.assert_not_called()
+            manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

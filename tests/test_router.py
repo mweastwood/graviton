@@ -2,8 +2,10 @@
 Unit tests for lib/router.py
 """
 
+from pathlib import Path
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 from lib.router import (
     route_webhook_event,
     format_event_summary,
@@ -17,6 +19,7 @@ from lib.router import (
     handle_issues_event,
     handle_issue_comment_event,
     clear_pr_review_cache,
+    _extract_repo_info,
 )
 from lib.security import BOT_MARKER
 
@@ -806,6 +809,108 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(format_event_summary("custom_event", {"action": "sync"}), "custom_event (action: sync)")
         self.assertEqual(format_event_summary("custom_event", {}), "custom_event")
         self.assertEqual(format_event_summary("custom_event", None), "custom_event")
+
+    def test_multi_repo_pull_request_routing(self):
+        payload = {
+            "action": "opened",
+            "number": 42,
+            "repository": {
+                "name": "repo-alpha",
+                "full_name": "owner/repo-alpha",
+                "clone_url": "https://github.com/owner/repo-alpha.git",
+            },
+        }
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_reviewer")
+        self.assertEqual(res["repo_full_name"], "owner/repo-alpha")
+        self.assertEqual(res["repo_name"], "repo-alpha")
+        self.assertEqual(res["clone_url"], "https://github.com/owner/repo-alpha.git")
+        self.assertIn("Review PR #42 in owner/repo-alpha", res["prompt"])
+        self.assertEqual(format_event_summary("pull_request", payload), "owner/repo-alpha PR #42 (action: opened)")
+
+    def test_multi_repo_push_event_filtering(self):
+        payload_other = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "repo-alpha", "full_name": "owner/repo-alpha"},
+        }
+        # When server_repo_name is configured, push events for other repos are filtered
+        res_other = route_webhook_event("push", payload_other, server_repo_name="graviton")
+        self.assertEqual(res_other["status"], "ignored")
+        self.assertIn("not graviton server repository", res_other["reason"])
+
+        # When server_repo_name matches short repo_name, push event is accepted
+        res_matched = route_webhook_event("push", payload_other, server_repo_name="repo-alpha")
+        self.assertEqual(res_matched["status"], "accepted")
+        self.assertEqual(res_matched["action"], "self_update")
+
+        # When server_repo_name matches repo_full_name, push event is also accepted
+        res_full_matched = route_webhook_event("push", payload_other, server_repo_name="owner/repo-alpha")
+        self.assertEqual(res_full_matched["status"], "accepted")
+        self.assertEqual(res_full_matched["action"], "self_update")
+
+        # When server_repo_name matches neither short name nor full_name, push event is ignored
+        res_mismatch_full = route_webhook_event("push", payload_other, server_repo_name="owner/other-repo")
+        self.assertEqual(res_mismatch_full["status"], "ignored")
+
+        payload_self = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "graviton", "full_name": "mweastwood/graviton"},
+        }
+        res_self = route_webhook_event("push", payload_self)
+        self.assertEqual(res_self["status"], "accepted")
+        self.assertEqual(res_self["action"], "self_update")
+
+    def test_extract_repo_info_fallback(self):
+        # Payload with repo.name omitted, but repo.full_name provided
+        payload = {
+            "repository": {
+                "full_name": "owner/repo-alpha",
+            }
+        }
+        repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
+        self.assertEqual(repo_full_name, "owner/repo-alpha")
+        self.assertEqual(repo_name, "repo-alpha")
+        self.assertEqual(clone_url, "https://github.com/owner/repo-alpha.git")
+
+    def test_multi_repo_issues_routing(self):
+        payload = {
+            "action": "opened",
+            "issue": {"number": 96, "title": "Multi repo support", "body": "Details"},
+            "repository": {"name": "repo-beta", "full_name": "owner/repo-beta"},
+        }
+        res = route_webhook_event("issues", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["repo_full_name"], "owner/repo-beta")
+        self.assertEqual(res["clone_url"], "https://github.com/owner/repo-beta.git")
+        self.assertIn("Triage Issue #96 in owner/repo-beta", res["prompt"])
+
+    @patch("subprocess.run")
+    def test_get_server_repo_name_from_git_remote(self, mock_sub_run):
+        from lib.router import get_server_repo_name
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "git@github.com:mweastwood/graviton.git\n"
+        mock_sub_run.return_value = mock_res
+
+        name = get_server_repo_name(Path("/workspace"))
+        self.assertEqual(name, "graviton")
+
+    @patch("subprocess.run")
+    def test_push_event_matching_git_remote_origin(self, mock_sub_run):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "git@github.com:mweastwood/graviton.git\n"
+        mock_sub_run.return_value = mock_res
+
+        payload = {
+            "ref": "refs/heads/main",
+            "repository": {"name": "graviton", "full_name": "mweastwood/graviton"},
+        }
+        # Server running in directory 'workspace' with server_repo_name='workspace'
+        res = route_webhook_event("push", payload, server_repo_name="workspace", repo_root=Path("/workspace"))
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "self_update")
 
 
 if __name__ == "__main__":
