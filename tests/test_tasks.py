@@ -699,7 +699,7 @@ class TestTaskManager(unittest.TestCase):
         manager = TaskManager()
         # Similar repo name prefix where target_id belongs to repo-2
         t1 = manager.submit_task("code_reviewer", "Prompt 1", target_id="owner/repo-2#5", repo_full_name="owner/repo")
-        self.assertEqual(t1.target_id, "owner/repo#owner/repo-2#5")
+        self.assertEqual(t1.target_id, "owner/repo#5")
 
         # Matching repo target_id with hash prefix
         t2 = manager.submit_task("code_reviewer", "Prompt 2", target_id="owner/repo#5", repo_full_name="owner/repo")
@@ -709,7 +709,51 @@ class TestTaskManager(unittest.TestCase):
         t3 = manager.submit_task("code_reviewer", "Prompt 3", target_id="#5", repo_full_name="owner/repo")
         self.assertEqual(t3.target_id, "owner/repo#5")
 
+    @patch("subprocess.run")
+    @patch("lib.tasks.run_agent_container")
+    def test_concurrent_auto_cloning_no_race_condition(self, mock_run_agent, mock_subproc_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos"
+            repos_dir.mkdir()
+            target_repo_dir = repos_dir / "myrepo"
+
+            def mock_clone(cmd, **kwargs):
+                time.sleep(0.05)
+                target_repo_dir.mkdir(parents=True, exist_ok=True)
+                res = MagicMock()
+                res.returncode = 0
+                return res
+
+            mock_subproc_run.side_effect = mock_clone
+            mock_proc = MagicMock()
+            mock_proc.returncode = 0
+            mock_proc.stdout = "Success"
+            mock_proc.stderr = ""
+            mock_run_agent.return_value = mock_proc
+
+            manager = TaskManager(
+                max_workers=2,
+                script_path=Path("/tmp/fake_script.sh"),
+                repos_dir=repos_dir,
+            )
+            manager.start()
+
+            t1 = manager.submit_task("code_reviewer", "Prompt 1", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
+            t2 = manager.submit_task("code_reviewer", "Prompt 2", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
+
+            for _ in range(50):
+                if t1.status == TaskStatus.COMPLETED and t2.status == TaskStatus.COMPLETED:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(t1.status, TaskStatus.COMPLETED)
+            self.assertEqual(t2.status, TaskStatus.COMPLETED)
+            self.assertEqual(mock_subproc_run.call_count, 1)
+            manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

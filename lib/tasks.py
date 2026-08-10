@@ -123,6 +123,7 @@ class TaskManager:
 
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
+        self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
@@ -393,7 +394,7 @@ class TaskManager:
         with self._lock:
             if repo_full_name and target_id:
                 if not target_id.startswith(f"{repo_full_name}#"):
-                    target_num_str = target_id.lstrip("#")
+                    target_num_str = target_id.split("#")[-1]
                     formatted_target_id = f"{repo_full_name}#{target_num_str}"
                 else:
                     formatted_target_id = target_id
@@ -576,21 +577,23 @@ class TaskManager:
                 if not exec_cwd:
                     exec_cwd = self.cwd
 
-                if exec_cwd and not exec_cwd.exists() and task.clone_url:
-                    logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
-                    try:
-                        import subprocess
-                        exec_cwd.parent.mkdir(parents=True, exist_ok=True)
-                        subprocess.run(
-                            ["git", "clone", task.clone_url, str(exec_cwd)],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        )
-                        logger.info(f"[{worker_id}] Successfully auto-cloned repository to '{exec_cwd}'.")
-                    except Exception as clone_err:
-                        logger.error(f"[{worker_id}] Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}")
-                        raise RuntimeError(f"Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}") from clone_err
+                if exec_cwd and task.clone_url:
+                    with self._clone_lock:
+                        if not exec_cwd.exists():
+                            logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
+                            try:
+                                import subprocess
+                                exec_cwd.parent.mkdir(parents=True, exist_ok=True)
+                                subprocess.run(
+                                    ["git", "clone", task.clone_url, str(exec_cwd)],
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                )
+                                logger.info(f"[{worker_id}] Successfully auto-cloned repository to '{exec_cwd}'.")
+                            except Exception as clone_err:
+                                logger.error(f"[{worker_id}] Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}")
+                                raise RuntimeError(f"Failed to auto-clone repository '{task.clone_url}' into '{exec_cwd}': {clone_err}") from clone_err
 
                 if self.script_path and exec_cwd:
                     res = run_agent_container(

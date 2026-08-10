@@ -157,6 +157,8 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(approved[0]["author"], "bot_reviewer")
 
         cmd = mock_run.call_args_list[-1][0][0]
+        self.assertIn("--limit", cmd)
+        self.assertIn("300", cmd)
         self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
 
     @patch("subprocess.run")
@@ -245,6 +247,40 @@ class TestPRTracker(unittest.TestCase):
             self.assertEqual(len(approved), 1)
             self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
             self.assertEqual(approved[0]["number"], 1)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_trailing_slash_urls(self, mock_run):
+        import tempfile
+        for origin_url in ["https://github.com/owner/reddit/", "git@github.com:owner/reddit.git/"]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo_dir = Path(tmpdir) / "reddit"
+                repo_dir.mkdir()
+                (repo_dir / ".git").mkdir()
+
+                mock_git_res = MagicMock()
+                mock_git_res.returncode = 0
+                mock_git_res.stdout = f"{origin_url}\n"
+
+                mock_gh_res = MagicMock()
+                mock_gh_res.returncode = 0
+                mock_gh_res.stdout = json.dumps([{
+                    "number": 1,
+                    "title": "PR 1",
+                    "url": "https://github.com/owner/reddit/pull/1",
+                    "author": {"login": "dev"},
+                    "reviewDecision": "APPROVED",
+                    "isDraft": False,
+                }])
+
+                mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+                tracker = PRTracker()
+                tracker.sync_github_prs(repos_dir=Path(tmpdir))
+
+                approved = tracker.get_approved_prs()
+                self.assertEqual(len(approved), 1)
+                self.assertEqual(approved[0]["repo_full_name"], "owner/reddit")
+                self.assertEqual(approved[0]["number"], 1)
 
     def test_remove_approved_pr_cleans_up_empty_repo_name(self):
         tracker = PRTracker()
