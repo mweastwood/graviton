@@ -65,6 +65,27 @@ class TestRouter(unittest.TestCase):
         self.assertNotIn("repo_name", res_no_repo)
         self.assertNotIn("clone_url", res_no_repo)
 
+        res_partial_repo = _build_accepted_response(
+            action="labeled",
+            agent="pr_drafter",
+            prompt="Draft PR for issue #10",
+            repo_full_name="owner/repo",
+            issue_number=10,
+            label="ready-for-pr",
+        )
+        self.assertEqual(res_partial_repo, {
+            "status": "accepted",
+            "action": "labeled",
+            "issue_number": 10,
+            "label": "ready-for-pr",
+            "agent": "pr_drafter",
+            "prompt": "Draft PR for issue #10",
+            "repo_full_name": "owner/repo",
+        })
+        self.assertNotIn("repo_name", res_partial_repo)
+        self.assertNotIn("clone_url", res_partial_repo)
+
+
     def test_is_pr_created_by_us_helper(self):
         self.assertTrue(is_pr_created_by_us({}))
         self.assertTrue(is_pr_created_by_us({"number": 1}))
