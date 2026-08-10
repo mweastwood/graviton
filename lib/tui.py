@@ -4,6 +4,8 @@ Terminal UI Dashboard for Graviton Server.
 
 import collections
 import logging
+import os
+import re
 import shutil
 import sys
 import threading
@@ -185,6 +187,146 @@ class TerminalDashboard:
         )
         self._stdin_thread.start()
 
+    @staticmethod
+    def _is_incomplete_escape_sequence(raw_bytes: bytes) -> bool:
+        """Check if raw_bytes represents a partial/incomplete ANSI escape sequence or UTF-8 sequence at its end."""
+        if not raw_bytes:
+            return False
+        last_esc_idx = raw_bytes.rfind(b"\x1b")
+        if last_esc_idx != -1:
+            tail = raw_bytes[last_esc_idx:]
+            if len(tail) == 1:
+                return True
+            if tail.startswith(b"\x1b[") or tail.startswith(b"\x1bO"):
+                if len(tail) == 2:
+                    return True
+                if not any(0x40 <= b <= 0x7E and b != 0x5B for b in tail[2:]):
+                    return True
+        try:
+            raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            if e.reason == "unexpected end of data":
+                return True
+        return False
+
+    @staticmethod
+    def _split_incomplete_utf8_tail(raw_bytes: bytes) -> tuple[bytes, bytes]:
+        """Split raw_bytes into (complete_prefix, incomplete_utf8_tail)."""
+        if not raw_bytes:
+            return raw_bytes, b""
+        for k in range(1, min(4, len(raw_bytes) + 1)):
+            tail = raw_bytes[-k:]
+            try:
+                tail.decode("utf-8")
+            except UnicodeDecodeError as e:
+                if e.reason == "unexpected end of data":
+                    return raw_bytes[:-k], tail
+                else:
+                    continue
+        return raw_bytes, b""
+
+    @staticmethod
+    def _split_incomplete_escape_tail(raw_bytes: bytes) -> tuple[bytes, bytes]:
+        """Split raw_bytes into (complete_prefix, incomplete_escape_tail).
+
+        If raw_bytes ends with an incomplete multi-byte escape sequence prefix (where len(tail) > 1,
+        e.g. b"\\x1b[" or b"\\x1bO"), the incomplete tail is returned to be retained in leftover_bytes.
+        Single-byte b"\\x1b" (len(tail) == 1) is not split and remains in prefix to be processed
+        immediately as standalone ESC after timeout.
+        """
+        if not raw_bytes:
+            return raw_bytes, b""
+        last_esc_idx = raw_bytes.rfind(b"\x1b")
+        if last_esc_idx != -1:
+            tail = raw_bytes[last_esc_idx:]
+            if len(tail) > 1:
+                if tail.startswith(b"\x1b[") or tail.startswith(b"\x1bO"):
+                    if len(tail) == 2 or not any(0x40 <= b <= 0x7E and b != 0x5B for b in tail[2:]):
+                        return raw_bytes[:last_esc_idx], tail
+        return raw_bytes, b""
+
+    @staticmethod
+    def _parse_keys(raw_bytes: bytes) -> list:
+        """Tokenize raw input bytes into individual keys or ANSI escape sequences.
+
+        Handles multi-byte UTF-8 sequences by inspecting character length prior to slicing,
+        and uses errors='ignore' when decoding recognized non-standard or malformed ESC escape
+        sequences to safely bypass unparseable byte sequences.
+        """
+        if not raw_bytes:
+            return []
+        keys = []
+        i = 0
+        n = len(raw_bytes)
+        while i < n:
+            b = raw_bytes[i]
+            if b == 0x1B:  # ESC
+                if i + 1 >= n:
+                    keys.append("\x1b")
+                    i += 1
+                else:
+                    next_b = raw_bytes[i + 1]
+                    if next_b in (0x5B, 0x4F):  # '[' or 'O'
+                        term_idx = -1
+                        end_idx = n
+                        for j in range(i + 2, n):
+                            if raw_bytes[j] == 0x1B:
+                                end_idx = j
+                                break
+                            if 0x40 <= raw_bytes[j] <= 0x7E and raw_bytes[j] != 0x5B:
+                                term_idx = j
+                                break
+                        if term_idx != -1:
+                            seq = raw_bytes[i : term_idx + 1].decode("utf-8", errors="ignore")
+                            keys.append(seq)
+                            i = term_idx + 1
+                        else:
+                            seq = raw_bytes[i : end_idx].decode("utf-8", errors="ignore")
+                            keys.append(seq)
+                            i = end_idx
+                    elif next_b == 0x1B:
+                        keys.append("\x1b")
+                        i += 1
+                    else:
+                        char_len = 1
+                        for length in range(1, min(5, n - (i + 1) + 1)):
+                            try:
+                                chunk = raw_bytes[i + 1 : i + 1 + length].decode("utf-8")
+                                if len(chunk) == 1:
+                                    char_len = length
+                                    break
+                            except UnicodeDecodeError:
+                                continue
+                        seq = raw_bytes[i : i + 1 + char_len].decode("utf-8", errors="ignore")
+                        keys.append(seq)
+                        i += 1 + char_len
+            else:
+                decoded_ch = None
+                decoded_len = 0
+                for length in range(1, min(5, n - i + 1)):
+                    try:
+                        chunk = raw_bytes[i : i + length].decode("utf-8")
+                        if len(chunk) == 1:
+                            decoded_ch = chunk
+                            decoded_len = length
+                            break
+                    except UnicodeDecodeError:
+                        continue
+                if decoded_ch is not None:
+                    keys.append(decoded_ch)
+                    i += decoded_len
+                else:
+                    is_incomplete = False
+                    try:
+                        raw_bytes[i:].decode("utf-8")
+                    except UnicodeDecodeError as e:
+                        if e.reason == "unexpected end of data":
+                            is_incomplete = True
+                    if is_incomplete:
+                        break
+                    i += 1
+        return keys
+
     def _stdin_loop(self):
         """Background thread reading character hotkeys from stdin."""
         if not HAS_TERMIOS:
@@ -199,25 +341,65 @@ class TerminalDashboard:
             self._old_term_settings = None
             return
 
+        leftover_bytes = b""
         try:
             while self._running:
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+                try:
+                    rlist, _, _ = select.select([fd], [], [], 0.1)
+                except (BlockingIOError, InterruptedError):
+                    time.sleep(0.01)
+                    continue
+                except Exception:
+                    break
+
                 if rlist:
                     try:
-                        ch = sys.stdin.read(1)
+                        chunk = os.read(fd, 32)
+                    except (BlockingIOError, InterruptedError):
+                        time.sleep(0.01)
+                        continue
                     except Exception:
                         break
-                    if not ch:
+
+                    if not chunk:
                         break
-                    if ch == "\x1b":
-                        rlist_seq, _, _ = select.select([sys.stdin], [], [], 0.05)
+
+                    raw_bytes = leftover_bytes + chunk
+                    leftover_bytes = b""
+
+                    while self._running and self._is_incomplete_escape_sequence(raw_bytes):
+                        try:
+                            rlist_seq, _, _ = select.select([fd], [], [], 0.05)
+                        except (BlockingIOError, InterruptedError):
+                            time.sleep(0.01)
+                            continue
+                        except Exception:
+                            break
+
                         if rlist_seq:
                             try:
-                                seq = sys.stdin.read(2)
-                                ch = ch + seq
+                                seq_bytes = os.read(fd, 31)
+                                if not seq_bytes:
+                                    break
+                                raw_bytes = raw_bytes + seq_bytes
+                            except (BlockingIOError, InterruptedError):
+                                time.sleep(0.01)
+                                continue
                             except Exception:
-                                pass
-                    self.handle_key(ch)
+                                break
+                        else:
+                            break
+
+                    raw_bytes, leftover_esc = self._split_incomplete_escape_tail(raw_bytes)
+                    prefix, leftover_utf8 = self._split_incomplete_utf8_tail(raw_bytes)
+                    leftover_bytes = leftover_utf8 + leftover_esc
+                    for key in self._parse_keys(prefix):
+                        self.handle_key(key)
+                else:
+                    if leftover_bytes:
+                        for key in self._parse_keys(leftover_bytes):
+                            self.handle_key(key)
+                        leftover_bytes = b""
         except Exception:
             pass
         finally:
@@ -287,9 +469,9 @@ class TerminalDashboard:
     def handle_key(self, key: str):
         """Handle hotkey or navigation key press."""
         if self.active_screen == "jobs":
-            if key in ("k", "K", "up", "\x1b[A"):
+            if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
                 self.select_prev_job()
-            elif key in ("j", "J", "down", "\x1b[B"):
+            elif key in ("j", "J", "down", "\x1b[B", "\x1bOB"):
                 self.select_next_job()
             elif key in ("e", "E"):
                 self.enable_selected_job()

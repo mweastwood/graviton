@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -484,6 +485,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         scheduler.start()
@@ -570,6 +572,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
@@ -609,6 +612,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
 
         scheduler = TaskScheduler(config_path=config_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
@@ -828,7 +832,247 @@ class TestTerminalDashboard(unittest.TestCase):
 
             dashboard.stop()
 
+    def test_stdin_arrow_keys_navigation(self):
+        import os
+        import pty
+        from unittest.mock import patch
+
+        master, slave = pty.openpty()
+
+        try:
+            manager = TaskManager(max_workers=2)
+            self.addCleanup(manager.stop)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(
+                    [
+                        {"job_id": "job_1", "name": "First Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P1", "enabled": True},
+                        {"job_id": "job_2", "name": "Second Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P2", "enabled": True},
+                        {"job_id": "job_3", "name": "Third Job", "interval_seconds": 3600, "agent": "auditor", "prompt": "P3", "enabled": True},
+                    ],
+                    f,
+                )
+                config_path = Path(f.name)
+            self.addCleanup(config_path.unlink, missing_ok=True)
+
+            scheduler = TaskScheduler(config_path=config_path)
+            stream = io.StringIO()
+            dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler, out_stream=stream)
+            dashboard.active_screen = "jobs"
+            dashboard.selected_job_index = 0
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+
+            with patch("sys.stdin", mock_stdin):
+                dashboard._running = True
+                stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
+                stdin_thread.start()
+                time.sleep(0.05)
+
+                try:
+                    # Send Down arrow sequence
+                    os.write(master, b"\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Send Down arrow sequence again
+                    os.write(master, b"\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Send Up arrow sequence
+                    os.write(master, b"\x1b[A")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test streaming partial escape sequence (b"\x1b" followed after delay by b"[B")
+                    os.write(master, b"\x1b")
+                    time.sleep(0.01)
+                    os.write(master, b"[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test streaming partial escape sequence (b"\x1b[" followed after delay by b"A")
+                    os.write(master, b"\x1b[")
+                    time.sleep(0.01)
+                    os.write(master, b"A")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test multi-key chunk (b"\x1b[B\x1b[B" - 2 down arrows in a single write)
+                    dashboard.selected_job_index = 0
+                    os.write(master, b"\x1b[B\x1b[B")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test multi-key chunk (b"kk" - 2 'k' keypresses in a single write)
+                    os.write(master, b"kk")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 0)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test Application Cursor Mode (SS3) arrow sequences (\x1bOB and \x1bOA)
+                    os.write(master, b"\x1bOB")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    os.write(master, b"\x1bOA")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 0)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+
+                    # Test streaming partial multi-byte UTF-8 sequence (b"\xc3" followed by b"\xa1")
+                    os.write(master, b"\xc3")
+                    time.sleep(0.01)
+                    os.write(master, b"\xa1")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.selected_job_index, 0)
+
+                    # Send standalone ESC key
+                    os.write(master, b"\x1b")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.active_screen, "main")
+
+                finally:
+                    dashboard._running = False
+                    stdin_thread.join(timeout=1.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_stdin_idle_timeout_flushes_leftover_bytes(self):
+        """Test that idle timeout flushes and clears leftover_bytes without corrupting subsequent inputs."""
+        import os
+        import pty
+        from unittest.mock import patch
+
+        master, slave = pty.openpty()
+
+        try:
+            manager = TaskManager(max_workers=2)
+            self.addCleanup(manager.stop)
+            stream = io.StringIO()
+            dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+            dashboard.active_screen = "main"
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+
+            with patch("sys.stdin", mock_stdin):
+                dashboard._running = True
+                stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
+                stdin_thread.start()
+                time.sleep(0.05)
+
+                try:
+                    # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
+                    os.write(master, b"\x1b[")
+                    # Wait long enough for stdin to become idle and select.select to time out (>0.1s)
+                    time.sleep(0.25)
+
+                    # At this point, leftover_bytes should have been flushed/cleared.
+                    # Send a valid key (b"j") to switch to jobs screen.
+                    os.write(master, b"j")
+                    time.sleep(0.15)
+                    self.assertEqual(dashboard.active_screen, "jobs")
+                finally:
+                    dashboard._running = False
+                    stdin_thread.join(timeout=1.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_is_incomplete_escape_sequence(self):
+        # Empty or non-escape sequence
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b""))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"a"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"hello"))
+
+        # Incomplete sequences
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[1"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bO"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"j\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\x1b["))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"j\xc3"))
+        self.assertTrue(TerminalDashboard._is_incomplete_escape_sequence(b"\xe2\x82"))
+
+        # Complete sequences
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[B"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[15~"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bOA"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bOB"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1bM"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\xc3\xa1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A1"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A "))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\n"))
+        self.assertFalse(TerminalDashboard._is_incomplete_escape_sequence(b"\x1b[A\xc3\xa1"))
+
+    def test_parse_keys(self):
+        self.assertEqual(TerminalDashboard._parse_keys(b""), [])
+        self.assertEqual(TerminalDashboard._parse_keys(b"j"), ["j"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"jj"), ["j", "j"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"kk"), ["k", "k"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[B"), ["\x1b[B"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[B\x1b[B"), ["\x1b[B", "\x1b[B"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"j\x1b[A"), ["j", "\x1b[A"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1bOA"), ["\x1bOA"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1bOB"), ["\x1bOB"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1bOB\x1bOA"), ["\x1bOB", "\x1bOA"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b1"), ["\x1b1"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b"), ["\x1b"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x80\x61\x62"), ["a", "b"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[\x1b[A"), ["\x1b[", "\x1b[A"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[["), ["\x1b[["])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b[1\x1b[B"), ["\x1b[1", "\x1b[B"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\x1b[A"), ["\x1b", "\x1b[A"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"j\xc3"), ["j"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\xc3\xa1"), ["á"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\xc3\xa1"), ["\x1bá"])
+        self.assertEqual(TerminalDashboard._parse_keys(b"\x1b\xe2\x82\xac"), ["\x1b€"])
+
+    def test_split_incomplete_utf8_tail(self):
+        self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b""), (b"", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"hello"), (b"hello", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"j\xc3"), (b"j", b"\xc3"))
+        self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"\xe2\x82"), (b"", b"\xe2\x82"))
+        self.assertEqual(TerminalDashboard._split_incomplete_utf8_tail(b"\xc3\xa1"), (b"\xc3\xa1", b""))
+
+    def test_split_incomplete_escape_tail(self):
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b""), (b"", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"hello"), (b"hello", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b"), (b"\x1b", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b["), (b"", b"\x1b["))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1bO"), (b"", b"\x1bO"))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b[1;"), (b"", b"\x1b[1;"))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"\x1b[A"), (b"\x1b[A", b""))
+        self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"j\x1b["), (b"j", b"\x1b["))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
