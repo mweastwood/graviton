@@ -418,7 +418,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_task_manager_routing_and_running_state(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
 
         job = scheduler.get_job("periodic_bug_sweep")
         self.assertIsNotNone(job)
@@ -447,7 +447,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_update_running_states_resets_orphaned_is_running_when_current_task_id_none(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
 
         job = scheduler.get_job("periodic_bug_sweep")
         self.assertIsNotNone(job)
@@ -460,7 +460,7 @@ class TestTaskScheduler(unittest.TestCase):
     def test_custom_handler_is_running_lifecycle(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
-        scheduler = TaskScheduler(config_path=self.config_path, task_manager=tm)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
         executed = []
 
         def custom_handler(job):
@@ -528,16 +528,89 @@ class TestTaskScheduler(unittest.TestCase):
         saved_config_job = next(item for item in config_data if item["job_id"] == "periodic_bug_sweep")
         self.assertNotIn("is_running", saved_config_job)
         self.assertNotIn("current_task_id", saved_config_job)
+
+    def test_load_state_resets_stale_is_running_and_current_task_id_on_startup(self):
+        """Verify process crash recovery: load_state resets is_running=False on startup to prevent deadlock."""
+        # 1. Simulate process crash by writing stale is_running=True state to disk
+        stale_state = {
+            "periodic_bug_sweep": {
+                "last_run": None,
+                "next_run": None,
+                "enabled": True,
+                "is_running": True,
+                "current_task_id": "stale-task-999",
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(stale_state, f)
+
+        # 2. Instantiate TaskScheduler without task_manager (runner mode / restart)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+
+        # 3. Verify stale is_running and current_task_id were reset to False/None on load_state
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
+
+        # 4. Verify job is_due() returns True instead of deadlocking
+        self.assertTrue(job.is_due())
+
+    def test_load_state_reconciles_is_running_with_active_task_manager(self):
+        """Verify load_state reconciles is_running when active task manager has corresponding task."""
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        submitted_task = tm.submit_task(agent="codebase_auditor", prompt="test", target_id="sched:periodic_bug_sweep")
+
+        # Create state file with stale task ID
+        stale_state = {
+            "periodic_bug_sweep": {
+                "last_run": None,
+                "next_run": None,
+                "enabled": True,
+                "is_running": True,
+                "current_task_id": "stale-task-old",
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(stale_state, f)
+
+        # Instantiate scheduler with task_manager containing active task
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
+        job = scheduler.get_job("periodic_bug_sweep")
+
+        # Verify load_state + update_running_states reconciled active task ID and is_running=True
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+    def test_atomic_file_writes_for_state_and_config(self):
+        """Verify save_state and save_config use atomic file replacement without leaving leftover temp files."""
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        job.enabled = False
+
+        scheduler.save_config()
+        scheduler.save_state()
+
+        # Check target files were correctly written
+        self.assertTrue(self.config_path.exists())
+        self.assertTrue(self.state_path.exists())
+
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        saved_config_job = next(j for j in cfg if j["job_id"] == "periodic_bug_sweep")
+        self.assertFalse(saved_config_job["enabled"])
         self.assertNotIn("last_run", saved_config_job)
         self.assertNotIn("next_run", saved_config_job)
-
-        tasks = tm.get_all_tasks()
-        tasks[0].status = "COMPLETED"
-        scheduler.update_running_states()
+        self.assertNotIn("is_running", saved_config_job)
 
         with open(self.state_path, "r", encoding="utf-8") as f:
-            data_after = json.load(f)
-        self.assertFalse(data_after["periodic_bug_sweep"]["is_running"])
+            st = json.load(f)
+        self.assertFalse(st["periodic_bug_sweep"]["enabled"])
+
+        # Check no temporary files were left behind in parent directory
+        tmp_files = list(self.state_path.parent.glob("*.tmp"))
+        self.assertEqual(tmp_files, [])
 
 
 

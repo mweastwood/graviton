@@ -2,8 +2,10 @@
 Unit tests for lib/tui_panels.py (Modular panel rendering components).
 """
 
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
@@ -117,7 +119,13 @@ class TestTUIPanels(unittest.TestCase):
         empty_lines = render_scheduled_jobs_panel(width=80, scheduler=None)
         self.assertTrue(any("Scheduler disabled" in l for l in empty_lines))
 
-        scheduler = TaskScheduler(config_path=None)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_cfg, tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            config_path = Path(f_cfg.name)
+            state_path = Path(f_state.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
+        self.addCleanup(state_path.unlink, missing_ok=True)
+
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         scheduler.jobs["job-1"] = ScheduledJob(
             job_id="job-1", name="Health Check", agent="code_reviewer", prompt="Check status", interval_seconds=300
         )
@@ -128,7 +136,13 @@ class TestTUIPanels(unittest.TestCase):
         self.assertTrue(any("job-1" in l for l in table_lines))
 
     def test_render_scheduled_jobs_panel_compact_widths(self):
-        scheduler = TaskScheduler(config_path=None)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_cfg, tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            config_path = Path(f_cfg.name)
+            state_path = Path(f_state.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
+        self.addCleanup(state_path.unlink, missing_ok=True)
+
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         scheduler.jobs["job-1"] = ScheduledJob(
             job_id="job-1", name="Health Check", agent="code_reviewer", prompt="Check status", interval_seconds=300
         )

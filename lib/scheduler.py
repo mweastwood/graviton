@@ -9,8 +9,10 @@ Uses standard Python library only (threading, time, datetime, json, pathlib).
 
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,6 +20,36 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("graviton.scheduler")
+
+
+def _atomic_write_json(target_path: Path, data: Any, indent: int = 2):
+    """
+    Atomically write JSON data to target_path using a temporary file in the target directory.
+    """
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=str(target_path.parent),
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
+        ) as f:
+            tmp_path = Path(f.name)
+            json.dump(data, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "schedules.json"
 DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / ".graviton_scheduler_state.json"
@@ -369,10 +401,16 @@ class TaskScheduler:
 
     def load_state(self):
         """
-        Load runtime execution state (last_run, next_run, enabled, is_running, current_task_id) from state_path if present.
-        If state_path does not exist or is corrupted, fallback gracefully and persist initial state.
+        Load runtime execution state (last_run, next_run, enabled) from state_path if present.
+        Resets transient running states (is_running = False, current_task_id = None) on startup
+        to recover from process crashes mid-execution, unless reconciled by an active task manager.
         """
         with self._lock:
+            # Reset transient runtime execution flags for all jobs on load to recover from process crashes
+            for job in self.jobs.values():
+                job.is_running = False
+                job.current_task_id = None
+
             if self.state_path.exists():
                 try:
                     with open(self.state_path, "r", encoding="utf-8") as f:
@@ -386,10 +424,8 @@ class TaskScheduler:
                                     self.jobs[job_id].next_run = s_info["next_run"]
                                 if "enabled" in s_info:
                                     self.jobs[job_id].enabled = bool(s_info["enabled"])
-                                if "is_running" in s_info:
-                                    self.jobs[job_id].is_running = bool(s_info["is_running"])
-                                if "current_task_id" in s_info:
-                                    self.jobs[job_id].current_task_id = s_info["current_task_id"]
+                        if self.task_manager:
+                            self.update_running_states()
                         logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
                         return
                     elif isinstance(state_data, list):
@@ -403,10 +439,8 @@ class TaskScheduler:
                                         self.jobs[job_id].next_run = item["next_run"]
                                     if "enabled" in item:
                                         self.jobs[job_id].enabled = bool(item["enabled"])
-                                    if "is_running" in item:
-                                        self.jobs[job_id].is_running = bool(item["is_running"])
-                                    if "current_task_id" in item:
-                                        self.jobs[job_id].current_task_id = item["current_task_id"]
+                        if self.task_manager:
+                            self.update_running_states()
                         logger.info(f"Loaded schedule state for {len(self.jobs)} job(s) from {self.state_path}")
                         return
                 except Exception as e:
@@ -418,10 +452,10 @@ class TaskScheduler:
     def save_state(self):
         """
         Persist job execution state (last_run, next_run, enabled, is_running, current_task_id) to state_path.
+        Uses atomic file replacement to prevent file corruption during unexpected crashes.
         """
         with self._lock:
             try:
-                self.state_path.parent.mkdir(parents=True, exist_ok=True)
                 data = {
                     job_id: {
                         "last_run": job.last_run,
@@ -432,8 +466,7 @@ class TaskScheduler:
                     }
                     for job_id, job in self.jobs.items()
                 }
-                with open(self.state_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                _atomic_write_json(self.state_path, data, indent=2)
                 logger.debug(f"Saved schedule state for {len(self.jobs)} job(s) to {self.state_path}")
             except Exception as e:
                 logger.error(f"Failed to save schedule state to {self.state_path}: {e}")
@@ -442,13 +475,12 @@ class TaskScheduler:
         """
         Persist current scheduled job definitions back to config_path.
         Excludes dynamic runtime state attributes (last_run, next_run, is_running, current_task_id).
+        Uses atomic file replacement to prevent file corruption during unexpected crashes.
         """
         with self._lock:
             try:
-                self.config_path.parent.mkdir(parents=True, exist_ok=True)
                 data = [job.to_config_dict() for job in self.jobs.values()]
-                with open(self.config_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                _atomic_write_json(self.config_path, data, indent=2)
                 logger.debug(f"Saved {len(self.jobs)} scheduled job(s) to {self.config_path}")
             except Exception as e:
                 logger.error(f"Failed to save schedule config to {self.config_path}: {e}")

@@ -486,8 +486,11 @@ class TestTerminalDashboard(unittest.TestCase):
             )
             config_path = Path(f.name)
         self.addCleanup(config_path.unlink, missing_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            state_path = Path(f_state.name)
+        self.addCleanup(state_path.unlink, missing_ok=True)
 
-        scheduler = TaskScheduler(config_path=config_path)
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         scheduler.start()
 
         dashboard = TerminalDashboard(
@@ -546,15 +549,23 @@ class TestTerminalDashboard(unittest.TestCase):
                         "agent": "codebase_auditor",
                         "prompt": "Running prompt",
                         "enabled": True,
-                        "is_running": True,
-                        "current_task_id": "task-42",
                     }
                 ],
                 f,
             )
             config_path = Path(f.name)
+        self.addCleanup(config_path.unlink, missing_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            f_state.write("{}")
+            state_path = Path(f_state.name)
+        self.addCleanup(state_path.unlink, missing_ok=True)
 
-        scheduler = TaskScheduler(config_path=config_path)
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
+        job = scheduler.get_job("running_job_1")
+        self.assertIsNotNone(job)
+        job.is_running = True
+        job.current_task_id = "task-42"
+
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
         dashboard.active_screen = "jobs"
 
@@ -602,8 +613,11 @@ class TestTerminalDashboard(unittest.TestCase):
             )
             config_path = Path(f.name)
         self.addCleanup(config_path.unlink, missing_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            state_path = Path(f_state.name)
+        self.addCleanup(state_path.unlink, missing_ok=True)
 
-        scheduler = TaskScheduler(config_path=config_path)
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
         dashboard.active_screen = "jobs"
 
@@ -642,8 +656,11 @@ class TestTerminalDashboard(unittest.TestCase):
             )
             config_path = Path(f.name)
         self.addCleanup(config_path.unlink, missing_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+            state_path = Path(f_state.name)
+        self.addCleanup(state_path.unlink, missing_ok=True)
 
-        scheduler = TaskScheduler(config_path=config_path)
+        scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
 
         dashboard.handle_key("j")
@@ -882,8 +899,11 @@ class TestTerminalDashboard(unittest.TestCase):
                 )
                 config_path = Path(f.name)
             self.addCleanup(config_path.unlink, missing_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f_state:
+                state_path = Path(f_state.name)
+            self.addCleanup(state_path.unlink, missing_ok=True)
 
-            scheduler = TaskScheduler(config_path=config_path)
+            scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
             stream = io.StringIO()
             dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler, out_stream=stream)
             dashboard.active_screen = "jobs"
