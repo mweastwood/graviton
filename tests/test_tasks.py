@@ -53,14 +53,48 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(t.attempt, 2)
         self.assertEqual(t.max_attempts, 3)
 
-        t.update_attempt_from_line("Agent exited on attempt 3")
-        self.assertEqual(t.attempt, 3)
+        ignored = t.update_attempt_from_line("Agent exited on attempt 3")
+        self.assertFalse(ignored)
+        self.assertEqual(t.attempt, 2)
         self.assertEqual(t.max_attempts, 3)
 
         output = "Starting container\nAuto-continuing conversation (Attempt 3/5)...\nDone"
         t.update_attempt_from_output(output)
         self.assertEqual(t.attempt, 3)
         self.assertEqual(t.max_attempts, 5)
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_manager_submit_task_custom_max_attempts(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_run.return_value = mock_process
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        manager.start()
+
+        task = manager.submit_task("code_fixer", "Fix issue", target_id="#9", max_attempts=5)
+        self.assertEqual(task.max_attempts, 5)
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        mock_run.assert_called_once_with(
+            "code_fixer",
+            "Fix issue",
+            Path("/tmp/fake_script.sh"),
+            Path("/tmp/fake_repo"),
+            on_output=task.update_attempt_from_line,
+            max_attempts=5,
+        )
+
+        manager.stop()
 
     def test_task_manager_submit_and_execute(self):
         manager = TaskManager(max_workers=2)

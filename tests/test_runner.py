@@ -87,6 +87,20 @@ class TestRunner(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
 
+    @patch("lib.runner.run_agent_container")
+    def test_run_agent_async_default_max_attempts(self, mock_run_container):
+        mock_run_container.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Done", stderr=""
+        )
+
+        script_path = Path("/tmp/run_agent_container.sh")
+        cwd = Path("/workspace")
+        thread = run_agent_async("code_fixer", "Fix code", script_path, cwd)
+        thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=None)
+
 
 class TestAgentContainerScript(unittest.TestCase):
 
