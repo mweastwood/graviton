@@ -102,10 +102,10 @@ def format_timestamp(ts: Optional[str]) -> str:
 
 def format_remaining(job: ScheduledJob, now_dt: datetime) -> str:
     """Format time remaining until scheduled job next run."""
-    if not job.enabled:
-        return "DISABLED"
     if getattr(job, "is_running", False):
         return "RUNNING"
+    if not job.enabled:
+        return "DISABLED"
 
     next_dt = parse_iso_timestamp(job.next_run)
 
