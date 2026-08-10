@@ -2,7 +2,9 @@
 Unit tests for lib/runner.py
 """
 
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -64,7 +66,6 @@ class TestRunner(unittest.TestCase):
 class TestAgentContainerScript(unittest.TestCase):
 
     def setUp(self):
-        import tempfile
         self.temp_dir = tempfile.TemporaryDirectory()
         self.test_dir = Path(self.temp_dir.name)
 
@@ -84,7 +85,6 @@ class TestAgentContainerScript(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_continuation_retry_and_workspace_preservation(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir()
         docker_log = self.test_dir / "docker_calls.log"
@@ -147,7 +147,6 @@ fi
         self.assertIn("rm -f graviton-agent-run-", log_content)
 
     def test_fallback_to_docker_run_when_exec_fails(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir()
         docker_log = self.test_dir / "docker_calls.log"
@@ -206,7 +205,6 @@ fi
         self.assertIn("Resume from your existing work in /workspace and complete your goal", log_content)
 
     def test_remote_origin_synchronization(self):
-        import os
         # 1. Create a remote bare repository
         remote_dir = self.test_dir / "remote_repo.git"
         subprocess.run(["git", "init", "--bare", str(remote_dir)], check=True, capture_output=True)
@@ -264,7 +262,6 @@ exit 0
         self.assertEqual(sync_verified_file.read_text().strip(), "synced")
 
     def test_transcript_incomplete_triggers_continuation_retry(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         docker_log = self.test_dir / "docker_calls.log"
@@ -317,7 +314,6 @@ fi
         self.assertIn("Agent session hit step limit with unexecuted tool calls. Auto-continuing conversation (Attempt 2/2)...", proc.stdout)
 
     def test_transcript_complete_exits_cleanly(self):
-        import os
         bin_dir = self.test_dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         docker_log = self.test_dir / "docker_calls.log"
@@ -359,7 +355,6 @@ exit 0
 class TestTranscriptInspector(unittest.TestCase):
 
     def setUp(self):
-        import tempfile
         self.temp_dir = tempfile.TemporaryDirectory()
         self.test_dir = Path(self.temp_dir.name)
 
