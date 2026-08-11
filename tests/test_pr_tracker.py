@@ -135,11 +135,11 @@ class TestPRTracker(unittest.TestCase):
                 "number": 59,
                 "title": "Approved PR via latestReviews",
                 "url": "https://github.com/org/repo/pull/59",
-                "author": {"login": "bot_reviewer"},
+                "author": {"login": "dev"},
                 "reviewDecision": "",
                 "isDraft": False,
                 "latestReviews": [
-                    {"state": "APPROVED", "author": {"login": "bot_reviewer"}}
+                    {"state": "APPROVED", "author": {"login": "reviewer_alice"}}
                 ],
             },
         ]
@@ -154,12 +154,12 @@ class TestPRTracker(unittest.TestCase):
         approved = tracker.get_approved_prs()
         self.assertEqual(len(approved), 1)
         self.assertEqual(approved[0]["number"], 59)
-        self.assertEqual(approved[0]["author"], "bot_reviewer")
+        self.assertEqual(approved[0]["author"], "dev")
 
         cmd = mock_run.call_args_list[-1][0][0]
         self.assertIn("--limit", cmd)
         self.assertIn("300", cmd)
-        self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews", cmd)
+        self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews", cmd)
 
     @patch("subprocess.run")
     def test_sync_github_prs_with_latest_reviews_changes_requested_ignored(self, mock_run):
@@ -436,7 +436,497 @@ class TestPRTracker(unittest.TestCase):
             self.assertTrue(len(real_executor_instances) > 0)
             self.assertEqual(real_executor_instances[0][0], 10)  # Bound capped at 10 for 15 repos
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_with_bot_approval(self, mock_run):
+        from lib.security import BOT_MARKER
+        mock_output = [
+            {
+                "number": 107,
+                "title": "PR with bot approval summary comment",
+                "url": "https://github.com/org/repo/pull/107",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": f"Code Review Summary: Approved ✅\n\n{BOT_MARKER}",
+                        "createdAt": "2026-08-10T01:00:00Z",
+                        "author": {"login": "code_reviewer"},
+                    },
+                ],
+                "reviews": [
+                    {
+                        "state": "COMMENTED",
+                        "body": f"Code Review Summary: Approved ✅\n\n{BOT_MARKER}",
+                        "submittedAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "code_reviewer"},
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 107)
+
+    def test_has_approval_marker_glad_to_see_approved(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertTrue(has_approval_marker("glad to see this approved"))
+        self.assertTrue(has_approval_marker("happy to see this approved"))
+
+    def test_is_bot_event_rest_api_type_bot(self):
+        from lib.pr_tracker import is_bot_event
+        self.assertTrue(is_bot_event("", {"login": "dependabot", "type": "Bot"}))
+        self.assertFalse(is_bot_event("", {"login": "human_dev", "type": "User"}))
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_review_required_with_approval(self, mock_run):
+        mock_output = [
+            {
+                "number": 130,
+                "title": "PR with reviewDecision REVIEW_REQUIRED despite historical approval",
+                "url": "https://github.com/org/repo/pull/130",
+                "author": {"login": "dev"},
+                "reviewDecision": "REVIEW_REQUIRED",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "alice"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_dismissed_review_clears_approval(self, mock_run):
+        mock_output = [
+            {
+                "number": 131,
+                "title": "PR with dismissed approval review",
+                "url": "https://github.com/org/repo/pull/131",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "alice"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    },
+                    {
+                        "state": "DISMISSED",
+                        "body": "",
+                        "author": {"login": "alice"},
+                        "submittedAt": "2026-08-10T02:00:00Z",
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 0)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_timestamp_sorting_fallback(self, mock_run):
+        mock_output = [
+            {
+                "number": 132,
+                "title": "PR with undated comment and dated review",
+                "url": "https://github.com/org/repo/pull/132",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "LGTM! Approved for merge.",
+                        "createdAt": "",
+                        "author": {"login": "alice"},
+                    }
+                ],
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "body": "Please fix lint",
+                        "author": {"login": "bob"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 0)
+
+    def test_has_approval_marker_with_modal_verbs(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertTrue(has_approval_marker("Changes look good and will work as expected. Approved!"))
+        self.assertTrue(has_approval_marker("This patch should fix the issue. LGTM!"))
+        self.assertTrue(has_approval_marker("The solution would be fine. Approved."))
+        self.assertTrue(has_approval_marker("Changes could work nicely. Approved!"))
+        self.assertTrue(has_approval_marker("This must work. Approved!"))
+        self.assertTrue(has_approval_marker("It may resolve the problem. LGTM!"))
+
+        # Explicit negation / future phrasing should still be rejected
+        self.assertFalse(has_approval_marker("It will be approved after testing."))
+        self.assertFalse(has_approval_marker("It should be approved soon."))
+        self.assertFalse(has_approval_marker("It could be approved later."))
+        self.assertFalse(has_approval_marker("It would be approved if tests pass."))
+
+    def test_has_approval_marker_prefix_negations(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertFalse(has_approval_marker("This PR is disapproved."))
+        self.assertFalse(has_approval_marker("This PR is unapproved."))
+        self.assertFalse(has_approval_marker("This PR is dis-approved."))
+        self.assertFalse(has_approval_marker("This PR is non-approved."))
+
+    def test_parse_event_timestamp_and_sorting(self):
+        from lib.pr_tracker import _parse_event_timestamp
+        ts1 = _parse_event_timestamp("2026-08-10T01:00:00Z")
+        ts2 = _parse_event_timestamp("2026-08-10T03:00:00+02:00")
+        ts3 = _parse_event_timestamp("2026-08-10T01:30:00.123456Z")
+        self.assertEqual(ts1, ts2)
+        self.assertLess(ts1, ts3)
+        self.assertEqual(_parse_event_timestamp(None), 0.0)
+        self.assertEqual(_parse_event_timestamp(""), 0.0)
+        self.assertEqual(_parse_event_timestamp(True), 0.0)
+        self.assertEqual(_parse_event_timestamp(False), 0.0)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_with_user_schema_format(self, mock_run):
+        mock_output = [
+            {
+                "number": 150,
+                "title": "PR with REST user schema comment",
+                "url": "https://github.com/org/repo/pull/150",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "LGTM!",
+                        "createdAt": "2026-08-10T01:00:00Z",
+                        "user": {"login": "reviewer_bob"},
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 150)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_with_modal_verb_approval_comment(self, mock_run):
+        mock_output = [
+            {
+                "number": 140,
+                "title": "PR with positive modal verb approval phrase",
+                "url": "https://github.com/org/repo/pull/140",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "Changes look good and will work as expected. Approved!",
+                        "createdAt": "2026-08-10T01:00:00Z",
+                        "author": {"login": "reviewer_alice"},
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 140)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_approval_with_review_required(self, mock_run):
+        mock_output = [
+            {
+                "number": 145,
+                "title": "Branch protected PR with comment approval",
+                "url": "https://github.com/org/repo/pull/145",
+                "author": {"login": "dev"},
+                "reviewDecision": "REVIEW_REQUIRED",
+                "isDraft": False,
+                "comments": [
+                    {
+                        "body": "LGTM! Approved for merge.",
+                        "createdAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "reviewer_bob"},
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 145)
+        self.assertEqual(approved[0]["author"], "dev")
+
+    def test_has_approval_marker_rejects_questions_and_discussion(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertFalse(has_approval_marker("Is this PR approved?"))
+        self.assertFalse(has_approval_marker("Has this been approved?"))
+        self.assertFalse(has_approval_marker("Was this approved?"))
+        self.assertFalse(has_approval_marker("Is this approved"))
+        self.assertFalse(has_approval_marker("Why was this approved?"))
+        self.assertFalse(has_approval_marker("Fixed issue in approved pull requests panel"))
+
+    def test_has_approval_marker_perfect_tense_approvals(self):
+        from lib.pr_tracker import has_approval_marker
+        self.assertTrue(has_approval_marker("This PR has been tested and approved"))
+        self.assertTrue(has_approval_marker("I have reviewed and approved"))
+        self.assertTrue(has_approval_marker("The team has approved this PR"))
+        self.assertTrue(has_approval_marker("I have approved"))
+
+    def test_is_bot_event_agent_logins(self):
+        from lib.pr_tracker import is_bot_event
+        self.assertTrue(is_bot_event("", {"login": "code_reviewer"}))
+        self.assertTrue(is_bot_event("", {"login": "code_fixer"}))
+        self.assertTrue(is_bot_event("", "code_reviewer"))
+        self.assertTrue(is_bot_event("", "code_fixer"))
+        self.assertFalse(is_bot_event("", {"login": "human_dev"}))
+
+    def test_is_bot_event_human_usernames_with_bot_substring(self):
+        from lib.pr_tracker import is_bot_event
+        human_logins = ["chabot", "talbot", "bottomley", "robotics", "Abott", "botany"]
+        for login in human_logins:
+            self.assertFalse(is_bot_event("", login), f"Failed for string login '{login}'")
+            self.assertFalse(is_bot_event("", {"login": login, "type": "User"}), f"Failed for dict login '{login}'")
+
+        bot_logins = ["github-actions[bot]", "my-bot", "bot_helper", "bot"]
+        for login in bot_logins:
+            self.assertTrue(is_bot_event("", login), f"Failed for bot login '{login}'")
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_comment_approval_overrides_changes_requested_decision(self, mock_run):
+        mock_output = [
+            {
+                "number": 124,
+                "title": "PR with comment approval following CHANGES_REQUESTED review state",
+                "url": "https://github.com/mweastwood/graviton/pull/124",
+                "author": {"login": "dev_author"},
+                "reviewDecision": "CHANGES_REQUESTED",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "body": "/fix Action items required",
+                        "author": {"login": "chabot"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+                "comments": [
+                    {
+                        "body": "LGTM! Approved for merge.",
+                        "createdAt": "2026-08-10T02:00:00Z",
+                        "author": {"login": "chabot"},
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 124)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_subsequent_review_approval_overrides_changes_requested_decision(self, mock_run):
+        mock_output = [
+            {
+                "number": 125,
+                "title": "PR with review approval following CHANGES_REQUESTED state",
+                "url": "https://github.com/mweastwood/graviton/pull/125",
+                "author": {"login": "dev_author"},
+                "reviewDecision": "CHANGES_REQUESTED",
+                "isDraft": False,
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "body": "Please fix issues",
+                        "author": {"login": "reviewer_alice"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    },
+                    {
+                        "state": "APPROVED",
+                        "body": "Looks good now",
+                        "author": {"login": "reviewer_alice"},
+                        "submittedAt": "2026-08-10T02:00:00Z",
+                    },
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 125)
+
+    @patch("subprocess.run")
+    def test_sync_directory_custom_and_ssh_git_remote_urls(self, mock_run):
+        import tempfile
+        remote_urls = [
+            ("git@git.internal.com:custom-org/custom-repo.git", "custom-org/custom-repo"),
+            ("https://github.enterprise.corp/enterprise-org/ent-repo.git", "enterprise-org/ent-repo"),
+            ("ssh://git@git.internal.com:2222/team/project.git", "team/project"),
+        ]
+        for url, expected_repo in remote_urls:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                d = Path(tmpdir) / "repo"
+                d.mkdir()
+                (d / ".git").mkdir()
+
+                mock_git_res = MagicMock(returncode=0, stdout=f"{url}\n")
+                mock_gh_res = MagicMock(returncode=0, stdout=json.dumps([{
+                    "number": 1,
+                    "title": "Remote test PR",
+                    "url": f"https://example.com/pr/1",
+                    "author": {"login": "dev"},
+                    "reviewDecision": "APPROVED",
+                    "isDraft": False,
+                }]))
+                mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+                tracker = PRTracker()
+                repo_name, prs = tracker._sync_directory(d)
+                self.assertEqual(repo_name, expected_repo)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_review_id_numeric_type_safety(self, mock_run):
+        mock_output = [
+            {
+                "number": 200,
+                "title": "PR with numeric review IDs across review lists",
+                "url": "https://github.com/org/repo/pull/200",
+                "author": {"login": "dev"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "latestReviews": [
+                    {
+                        "id": 99999,
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "reviewer1"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+                "reviews": [
+                    {
+                        "id": "99999",
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "author": {"login": "reviewer1"},
+                        "submittedAt": "2026-08-10T01:00:00Z",
+                    }
+                ],
+            },
+        ]
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker()
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 200)
+
+    @patch("subprocess.run")
+    def test_sync_single_repo_author_dict_lacking_login_key(self, mock_run):
+        mock_output = [
+            {
+                "number": 301,
+                "title": "PR with dict author lacking login key",
+                "url": "https://github.com/org/repo/pull/301",
+                "author": {"id": 12345},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            },
+            {
+                "number": 302,
+                "title": "PR with dict author containing None login",
+                "url": "https://github.com/org/repo/pull/302",
+                "author": {"login": None},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+            },
+        ]
+        mock_res = MagicMock(returncode=0, stdout=json.dumps(mock_output))
+        mock_run.return_value = mock_res
+
+        tracker = PRTracker()
+        results = tracker._sync_single_repo(cwd="/tmp")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["number"], 301)
+        self.assertEqual(results[0]["author"], "")
+        self.assertEqual(results[1]["number"], 302)
+        self.assertEqual(results[1]["author"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
