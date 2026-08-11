@@ -309,6 +309,8 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
         rem = avail - non_flex_used
         if rem >= 2 and flex_cols:
             _allocate_flex(rem)
+        elif not flex_cols:
+            pass
         else:
             used = 0
             for idx, col in enumerate(spec.columns):
@@ -326,21 +328,17 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
         indexed_cols = list(enumerate(spec.columns))
         sorted_cols = sorted(indexed_cols, key=lambda pair: (not pair[1].is_flex, -pair[0]))
         reduction_order = [col.name for _, col in sorted_cols]
-        first_col_name = spec.columns[0].name if spec.columns else None
 
         for key in reduction_order:
+            if over <= 0:
+                break
             if key in res:
-                if key == first_col_name:
-                    res[key] = max(0, res[key] - over)
+                if res[key] >= over:
+                    res[key] -= over
                     over = 0
                 else:
-                    if res[key] >= over:
-                        res[key] -= over
-                        over = 0
-                        break
-                    else:
-                        over -= res[key]
-                        res[key] = 0
+                    over -= res[key]
+                    res[key] = 0
 
     return res
 

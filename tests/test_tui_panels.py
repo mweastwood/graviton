@@ -226,6 +226,35 @@ class TestTUIPanels(unittest.TestCase):
         cols_over = allocate_declarative_columns(over_spec, 25)
         self.assertLessEqual(sum(cols_over.values()) + 5, 25)
 
+        # Deficit reduction test with leading flex columns
+        leading_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.1, is_flex=True),
+                ColumnSpec("c2", ratio=0.1, is_flex=True),
+                ColumnSpec("c3", ratio=0.8, fixed_w=20, is_flex=False),
+            ],
+            spacing=4,
+            wide_threshold=10,
+            narrow_threshold=5,
+        )
+        cols_leading_flex = allocate_declarative_columns(leading_flex_spec, 15)
+        self.assertLessEqual(sum(cols_leading_flex.values()) + leading_flex_spec.spacing, 15)
+
+        # No-flex layout spec in intermediate width mode (bounds enforcement)
+        no_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.5, min_w=2, max_w=8, is_flex=False),
+                ColumnSpec("c2", ratio=0.5, min_w=2, max_w=8, is_flex=False),
+            ],
+            spacing=2,
+            wide_threshold=100,
+            narrow_threshold=10,
+        )
+        cols_no_flex_mid = allocate_declarative_columns(no_flex_spec, 50)
+        self.assertLessEqual(cols_no_flex_mid["c1"], 8)
+        self.assertLessEqual(cols_no_flex_mid["c2"], 8)
+        self.assertLessEqual(sum(cols_no_flex_mid.values()) + no_flex_spec.spacing, 50)
+
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
         self.assertEqual(format_interval(3600), "1h")
