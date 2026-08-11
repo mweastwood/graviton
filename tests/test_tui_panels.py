@@ -247,6 +247,8 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(format_target_for_display("octocat/Hello-World#42", 15), "Hello-World#42")
 
         # PR number preservation on truncation
+        self.assertEqual(format_target_for_display("graviton#148", 6), "..#148")
+        self.assertEqual(format_target_for_display("mweastwood/graviton#148", 6), "..#148")
         self.assertEqual(format_target_for_display("mweastwood/graviton#148", 8), "gr..#148")
         self.assertEqual(format_target_for_display("mweastwood/graviton#148", 10), "grav..#148")
         self.assertEqual(format_target_for_display("octocat/Hello-World#42", 10), "Hello..#42")
@@ -255,6 +257,10 @@ class TestTUIPanels(unittest.TestCase):
         # Targets without PR/issue numbers
         self.assertEqual(format_target_for_display("mweastwood/graviton", 10), "graviton")
         self.assertEqual(format_target_for_display("mweastwood/graviton-server-repo", 8), "gravit..")
+
+        # Non-string integer target inputs
+        self.assertEqual(format_target_for_display(148, 6), "148")
+        self.assertEqual(format_target_for_display(1234567, 6), "1234..")
 
         # Empty / None / fallback targets
         self.assertEqual(format_target_for_display(None, 8), "-")

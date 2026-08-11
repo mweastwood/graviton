@@ -146,7 +146,7 @@ def format_target_for_display(target: Optional[str], max_w: int) -> str:
         repo_part = match.group(1)
         tag_part = match.group(2)
         tag_w = get_display_width(tag_part)
-        if max_w >= tag_w + 3:
+        if max_w >= tag_w + 2:
             avail_repo_w = max_w - 2 - tag_w
             trunc_repo = truncate_to_display_width(repo_part, avail_repo_w)
             return f"{trunc_repo}..{tag_part}"
