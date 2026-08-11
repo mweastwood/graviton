@@ -4,8 +4,11 @@ Security and HMAC signature verification utilities for Graviton.
 
 import hashlib
 import hmac
+import re
+from typing import Optional
 
 BOT_MARKER = "<!-- antigravity-auto-reply -->"
+AGENT_MARKER_PATTERN = re.compile(r'<!--\s*graviton:([a-zA-Z0-9_-]+)\s*-->')
 
 
 def verify_signature(payload_bytes: bytes, secret: str, signature_header: str) -> bool:
@@ -26,16 +29,35 @@ def verify_signature(payload_bytes: bytes, secret: str, signature_header: str) -
     return hmac.compare_digest(expected_sig, computed_sig)
 
 
+def extract_agent_marker(text: str) -> Optional[str]:
+    """
+    Extract the agent name from an agent signature tag (e.g. <!-- graviton:code_reviewer -->).
+
+    :param text: Body of review comment, issue comment, or PR description.
+    :return: Agent name string if found, None otherwise.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    match = AGENT_MARKER_PATTERN.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
 def contains_bot_marker(text: str) -> bool:
     """
-    Check if the text contains the bot auto-reply HTML comment marker.
+    Check if the text contains the bot auto-reply HTML comment marker or an agent marker.
 
     :param text: Body of review comment or issue comment.
-    :return: True if text contains bot marker, False otherwise.
+    :return: True if text contains bot marker or agent signature tag, False otherwise.
     """
-    if not text:
+    if not text or not isinstance(text, str):
         return False
-    return BOT_MARKER in text
+    if BOT_MARKER in text:
+        return True
+    if extract_agent_marker(text) is not None:
+        return True
+    return False
 
 
 def is_valid_repo_name(repo_name: str) -> bool:

@@ -1083,6 +1083,90 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(len(tracker.get_approved_prs()), 1)
         self.assertEqual(tracker.get_approved_prs()[0]["number"], 126)
 
+    def test_router_extracts_author_agent_and_routes_issue_triager_to_pr_drafter(self):
+        """When issue_triager posts design spec comment on ready-for-pr issue, route to pr_drafter with author_agent."""
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 142,
+                "title": "Every agent should identify itself",
+                "body": "Issue details",
+                "labels": [{"name": "ready-for-pr"}],
+            },
+            "comment": {
+                "body": "Design Spec posted.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:issue_triager -->",
+                "user": {"login": "issue_triager"},
+            },
+        }
+
+        res = route_webhook_event("issue_comment", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "pr_drafter")
+        self.assertEqual(res["author_agent"], "issue_triager")
+        self.assertIn("Issue #142", res["prompt"])
+
+    def test_router_drops_issue_triager_self_trigger_comment(self):
+        """When issue_triager posts comment on un-triaged issue, drop as self-trigger."""
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 142,
+                "title": "Untriaged Issue",
+                "body": "Issue details",
+                "labels": [],
+            },
+            "comment": {
+                "body": "Asking for clarification...\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:issue_triager -->",
+                "user": {"login": "issue_triager"},
+            },
+        }
+
+        res = route_webhook_event("issue_comment", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot comment dropped")
+
+    def test_router_extracts_author_agent_for_code_reviewer_review(self):
+        """When code_reviewer requests changes, include author_agent='code_reviewer' in response for code_fixer."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "CHANGES_REQUESTED",
+                "body": "Please fix tests.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+            "pull_request": {
+                "number": 100,
+                "title": "Feature PR",
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_fixer")
+        self.assertEqual(res["author_agent"], "code_reviewer")
+
+    def test_router_drops_code_fixer_self_trigger_review_comment(self):
+        """When code_fixer posts review comment, drop as self-trigger."""
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": "Fixed line 20.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_fixer -->",
+                "path": "lib/security.py",
+                "line": 20,
+            },
+            "pull_request": {
+                "number": 100,
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review_comment", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot comment dropped")
+
 
 if __name__ == "__main__":
     unittest.main()

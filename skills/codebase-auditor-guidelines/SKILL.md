@@ -25,8 +25,8 @@ This skill provides comprehensive instructions for the `codebase_auditor` agent 
 
 4. **Automated Issue Filing**:
    - File new issues using `gh issue create`:
-     - Bug Sweep: `gh issue create --title "[Bug Sweep] <summary>" --body "<details & repro>\n\n<!-- antigravity-auto-reply -->" --label "bug"`
-     - Quality Sweep: `gh issue create --title "[Quality Sweep] <scope>: <recommendation>" --body "<rationale & code snippet>\n\n<!-- antigravity-auto-reply -->" --label "enhancement"`
+     - Bug Sweep: `gh issue create --title "[Bug Sweep] <summary>" --body "<details & repro>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "bug"`
+     - Quality Sweep: `gh issue create --title "[Quality Sweep] <scope>: <recommendation>" --body "<rationale & code snippet>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
 
 5. **Safety Guardrails & Bot Marker**:
-   - Always append `<!-- antigravity-auto-reply -->` to all filed issue bodies to maintain loop protection.
+   - Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:codebase_auditor -->` to all filed issue bodies to maintain loop protection.

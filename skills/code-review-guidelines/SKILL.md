@@ -52,7 +52,7 @@ This skill provides comprehensive instructions for the `code_reviewer` agent to 
    - Always ensure `<!-- antigravity-auto-reply -->` signature tag is included in the body submission.
 
 7. **Safety & Loop Protection**:
-   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:code_reviewer -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
    - **Formal Reviews for External PRs Only**: Submit formal code reviews via `gh pr review` (`--request-changes`, `--approve`, or `--comment`) when not the author. Never attempt `gh pr review` on own PRs.
    - **Triggering Fixer**: On external PRs, use `CHANGES_REQUESTED` (`--request-changes`). On own PRs, post `gh pr comment` with the explicit `/fix` trigger command so `code_fixer` can process the findings.
 
@@ -83,6 +83,7 @@ Submitted via `gh pr review <pr_number> --request-changes --body "..."` when pre
 Please resolve the actionable items above and push the fixes for re-review.
 
 <!-- antigravity-auto-reply -->
+<!-- graviton:code_reviewer -->
 ```
 
 ### 2. Template for Own PR Review with Changes Needed (`/fix` Trigger)
@@ -109,6 +110,7 @@ Submitted via `gh pr comment <pr_number> --body "..."` when reviewing our own PR
 - **Code Quality & Style**: <findings_or_none>
 
 <!-- antigravity-auto-reply -->
+<!-- graviton:code_reviewer -->
 ```
 
 ### 3. Template for APPROVE / NO_CHANGES_NEEDED
@@ -129,4 +131,5 @@ Submitted via `gh pr review <pr_number> --approve --body "..."` (for external PR
 <summary_of_changes_and_optional_notes>
 
 <!-- antigravity-auto-reply -->
+<!-- graviton:code_reviewer -->
 ```

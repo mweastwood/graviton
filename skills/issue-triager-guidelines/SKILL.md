@@ -22,4 +22,4 @@ This skill provides comprehensive instructions for the `issue_triager` agent to 
    - Once a comprehensive design specification is posted and ready for implementation, add the `ready-for-pr` label using `gh issue edit <number> --add-label ready-for-pr`.
 
 4. **Safety & Signature**:
-   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:issue_triager -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.

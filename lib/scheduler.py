@@ -64,7 +64,7 @@ DEFAULT_JOBS = [
             "Perform periodic bug sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
             "scan the codebase for previously unknown bugs (unhandled exceptions, resource leaks, broken error paths, "
             "type inconsistencies, race conditions). Deduplicate findings against open issues. For any new unknown bug, "
-            "file a new issue using `gh issue create --title \"[Bug Sweep] <summary>\" --body \"<details & repro>\\n\\n<!-- antigravity-auto-reply -->\" --label \"bug\"`."
+            "file a new issue using `gh issue create --title \"[Bug Sweep] <summary>\" --body \"<details & repro>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"bug\"`."
         ),
         "enabled": True,
         "last_run": None,
@@ -79,7 +79,7 @@ DEFAULT_JOBS = [
             "Perform periodic quality sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
             "scan the codebase for performance bottlenecks, readability concerns, or modularization issues. "
             "Deduplicate findings against open issues. For any new quality finding, file a new issue using "
-            "`gh issue create --title \"[Quality Sweep] <scope>: <recommendation>\" --body \"<rationale & code snippet>\\n\\n<!-- antigravity-auto-reply -->\" --label \"enhancement\"`."
+            "`gh issue create --title \"[Quality Sweep] <scope>: <recommendation>\" --body \"<rationale & code snippet>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
         ),
         "enabled": True,
         "last_run": None,

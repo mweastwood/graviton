@@ -27,7 +27,7 @@ This skill provides comprehensive instructions for the `pr_drafter` agent to cre
 5. **Git Operations & PR Creation**:
    - Stage modified files and create a clean git commit with a descriptive message.
    - Push changes to the remote branch (`git push origin <branch>`).
-   - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` appended to the PR body description.
+   - Open a new pull request using `gh pr create` with `<!-- antigravity-auto-reply -->` and `<!-- graviton:pr_drafter -->` appended to the PR body description.
 
 6. **Safety & Loop Protection**:
-   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+   - **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:pr_drafter -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.

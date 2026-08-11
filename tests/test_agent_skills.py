@@ -74,7 +74,7 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("mergeable", content.lower())
 
     def test_agent_system_prompts_enforce_bot_marker_signature(self):
-        for agent_name in ["code_fixer", "code_reviewer", "issue_triager", "pr_drafter"]:
+        for agent_name in ["code_fixer", "code_reviewer", "issue_triager", "pr_drafter", "codebase_auditor"]:
             spec_file = AGENTS_DIR / f"{agent_name}.json"
             with open(spec_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -84,10 +84,21 @@ class TestAgentSkillsMapping(unittest.TestCase):
                 system_prompt,
                 f"Agent '{agent_name}' system prompt must require bot signature tag",
             )
+            self.assertIn(
+                f"<!-- graviton:{agent_name} -->",
+                system_prompt,
+                f"Agent '{agent_name}' system prompt must require agent signature tag",
+            )
 
     def test_agent_skills_require_bot_marker_signature(self):
-        skill_dirs = ["code-fixer-guidelines", "code-review-guidelines", "issue-triager-guidelines", "pr-drafter-guidelines"]
-        for skill_dir_name in skill_dirs:
+        skill_mappings = [
+            ("code-fixer-guidelines", "code_fixer"),
+            ("code-review-guidelines", "code_reviewer"),
+            ("issue-triager-guidelines", "issue_triager"),
+            ("pr-drafter-guidelines", "pr_drafter"),
+            ("codebase-auditor-guidelines", "codebase_auditor"),
+        ]
+        for skill_dir_name, agent_name in skill_mappings:
             skill_path = SKILLS_DIR / skill_dir_name / "SKILL.md"
             with open(skill_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -97,8 +108,11 @@ class TestAgentSkillsMapping(unittest.TestCase):
                 content,
                 f"Skill file {skill_path} must contain bot signature tag",
             )
-            self.assertIn("gh pr create", content, f"Skill file {skill_path} must reference gh pr create")
-            self.assertIn("gh pr review", content, f"Skill file {skill_path} must reference gh pr review")
+            self.assertIn(
+                f"<!-- graviton:{agent_name} -->",
+                content,
+                f"Skill file {skill_path} must contain agent signature tag <!-- graviton:{agent_name} -->",
+            )
 
     def test_code_review_guidelines_enforces_formal_pr_reviews(self):
         skill_path = SKILLS_DIR / "code-review-guidelines" / "SKILL.md"
