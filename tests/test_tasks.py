@@ -830,8 +830,62 @@ class TestTaskManager(unittest.TestCase):
         quota.poll_live_quota.assert_called_with(force=True)
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_task_failure_return_code_triggers_quota_fetch(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+        mock_proc.stderr = "Error"
+        mock_run.return_value = mock_proc
+
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_fixer", "Test failing prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_failure_exception_triggers_quota_fetch(self, mock_run):
+        mock_run.side_effect = RuntimeError("Worker execution exception")
+
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_fixer", "Test exception prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        self.assertIn("Worker execution exception", task.error_message)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
