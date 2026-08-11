@@ -331,6 +331,16 @@ def main():
     pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
     GravitonHandler.pr_tracker = pr_tracker
 
+    def shutdown_signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
+        sys.exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, shutdown_signal_handler)
+        except (ValueError, TypeError, AttributeError):
+            pass
+
     dashboard = TerminalDashboard(
         task_manager=task_manager,
         host=args.host,
@@ -347,16 +357,6 @@ def main():
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
     logger.info("Live Terminal UI Dashboard ENABLED.")
-
-    def shutdown_signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
-        sys.exit(0)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(sig, shutdown_signal_handler)
-        except (ValueError, TypeError, AttributeError):
-            pass
 
     try:
         httpd.serve_forever()
