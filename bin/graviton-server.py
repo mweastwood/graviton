@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -346,6 +347,26 @@ def main():
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
     logger.info("Live Terminal UI Dashboard ENABLED.")
+
+    def shutdown_signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
+        if scheduler:
+            scheduler.stop()
+        if dashboard:
+            dashboard.stop()
+        if task_manager:
+            task_manager.stop()
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, shutdown_signal_handler)
+        except (ValueError, TypeError, AttributeError):
+            pass
 
     try:
         httpd.serve_forever()
