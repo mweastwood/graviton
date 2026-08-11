@@ -550,11 +550,12 @@ class TaskScheduler:
         now_dt = datetime.now(timezone.utc)
 
         with self._lock:
-            job.is_running = True
             handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
-        self.save_state()
 
         if handler:
+            with self._lock:
+                job.is_running = True
+            self.save_state()
             try:
                 with self._lock:
                     job.mark_executed(now_dt)
@@ -571,9 +572,13 @@ class TaskScheduler:
             if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, job.prompt):
                 logger.warning(f"Task acceptance suspended (quota pacing or manager state). Deferring job execution '{job.job_id}'.")
                 with self._lock:
-                    job.is_running = False
+                    job.mark_executed(now_dt)
                 self.save_state()
                 return
+
+            with self._lock:
+                job.is_running = True
+            self.save_state()
 
             try:
                 target_id = f"sched:{job.job_id}"
@@ -607,9 +612,13 @@ class TaskScheduler:
                 if is_behind or is_exhausted:
                     logger.warning(f"Task acceptance suspended (quota pacing or manager state). Deferring job execution '{job.job_id}'.")
                     with self._lock:
-                        job.is_running = False
+                        job.mark_executed(now_dt)
                     self.save_state()
                     return
+
+            with self._lock:
+                job.is_running = True
+            self.save_state()
 
             try:
                 with self._lock:

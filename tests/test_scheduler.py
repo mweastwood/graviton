@@ -603,15 +603,24 @@ class TestTaskScheduler(unittest.TestCase):
         )
         scheduler.jobs["test_paused_job"] = job
 
-        # Execute job while TaskManager is paused
-        scheduler._execute_job(job)
+        with patch.object(scheduler, "save_state", wraps=scheduler.save_state) as mock_save:
+            # Execute job while TaskManager is paused
+            scheduler._execute_job(job)
 
-        # Job should be deferred cleanly without raising exception, setting current_task_id, or setting last_run
-        self.assertFalse(job.is_running)
-        self.assertIsNone(job.current_task_id)
-        self.assertIsNone(job.last_run)
+            # Job should be deferred cleanly without raising exception or setting current_task_id, while marking execution time
+            self.assertFalse(job.is_running)
+            self.assertIsNone(job.current_task_id)
+            self.assertIsNotNone(job.last_run)
+            self.assertIsNotNone(job.next_run)
+            self.assertFalse(job.is_due())
+            self.assertEqual(len(manager.get_all_tasks()), 0)
+            # Verify save_state was only called once when deferred (avoiding unnecessary disk I/O)
+            self.assertEqual(mock_save.call_count, 1)
+
+        # Force job due again by clearing last_run and next_run to simulate next scheduled interval
+        job.last_run = None
+        job.next_run = None
         self.assertTrue(job.is_due())
-        self.assertEqual(len(manager.get_all_tasks()), 0)
 
         # Resuming TaskManager allows deferred job to be submitted on next execution cycle and updates last_run
         manager.resume()
@@ -640,11 +649,50 @@ class TestTaskScheduler(unittest.TestCase):
         )
         scheduler.jobs["test_pacing_job"] = job
 
-        scheduler._execute_job(job)
+        with patch.object(scheduler, "save_state", wraps=scheduler.save_state) as mock_save:
+            scheduler._execute_job(job)
 
-        mock_tm.submit_task.assert_not_called()
-        self.assertFalse(job.is_running)
-        self.assertIsNone(job.last_run)
+            mock_tm.submit_task.assert_not_called()
+            self.assertFalse(job.is_running)
+            self.assertIsNotNone(job.last_run)
+            self.assertIsNotNone(job.next_run)
+            self.assertFalse(job.is_due())
+            # Save state called exactly once when deferred
+            self.assertEqual(mock_save.call_count, 1)
+
+    def test_scheduler_loop_does_not_continuously_retrigger_deferred_jobs(self):
+        """Verify deferred jobs mark execution time so _scheduler_loop does not re-trigger every 5s tick."""
+        mock_tm = MagicMock()
+        mock_tm.can_accept_task.return_value = False
+
+        past_dt = datetime.now(timezone.utc) - timedelta(days=1)
+        job = ScheduledJob(
+            job_id="test_deferred_loop_job",
+            name="Test Deferred Loop Job",
+            agent="codebase_auditor",
+            prompt="Run audit",
+            enabled=True,
+            interval_seconds=3600,
+            next_run=past_dt.isoformat(),
+        )
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=mock_tm,
+            check_interval_seconds=0.05,
+        )
+        scheduler.jobs = {"test_deferred_loop_job": job}
+
+        with patch.object(scheduler, "_execute_job", wraps=scheduler._execute_job) as mock_exec:
+            scheduler.start()
+            import time
+            time.sleep(0.25)
+            scheduler.stop()
+
+            # _execute_job should be called exactly once, mark execution time, and not be continuously re-triggered
+            self.assertEqual(mock_exec.call_count, 1)
+            self.assertFalse(job.is_due())
+            mock_tm.submit_task.assert_not_called()
 
     def test_atomic_file_writes_for_state_and_config(self):
         """Verify save_state and save_config use atomic file replacement without leaving leftover temp files."""
