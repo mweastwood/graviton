@@ -5,7 +5,6 @@ Unit tests for lib/pr_tracker.py (PRTracker).
 import json
 import subprocess
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -387,10 +386,7 @@ class TestPRTracker(unittest.TestCase):
                 if "git remote get-url" in cmd_str:
                     with lock:
                         thread_ids.add(threading.get_ident())
-                    try:
-                        barrier.wait(timeout=5.0)
-                    except threading.BrokenBarrierError:
-                        pass
+                    barrier.wait(timeout=5.0)
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
                         if "git remote get-url" in cmd_str:
