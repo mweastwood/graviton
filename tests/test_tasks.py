@@ -490,15 +490,14 @@ class TestTaskManager(unittest.TestCase):
         # Submitting new non-duplicate task SUCCEEDS and queues up the task
         t_behind = manager.submit_task("code_fixer", "New task behind pacing")
         self.assertEqual(t_behind.id, "task-2")
-        self.assertIn(t_behind.status, (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA))
 
-        # Start workers while behind pacing - task should not execute
+        # Start workers while behind pacing - tasks should be popped, updated to PAUSED_FOR_QUOTA, and re-queued
         manager.start()
         time.sleep(0.3)
         self.assertEqual(len(manager.get_active_tasks()), 0)
         self.assertEqual(mock_run.call_count, 0)
-        self.assertNotEqual(t_active.status, TaskStatus.COMPLETED)
-        self.assertNotEqual(t_behind.status, TaskStatus.COMPLETED)
+        self.assertEqual(t_active.status, TaskStatus.PAUSED_FOR_QUOTA)
+        self.assertEqual(t_behind.status, TaskStatus.PAUSED_FOR_QUOTA)
 
         # Recover pacing - tasks should now be executed by worker
         quota.update_quota(100.0, remaining_percentage_5h=100.0, reset_time_5h=now)

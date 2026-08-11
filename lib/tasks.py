@@ -179,6 +179,7 @@ class TaskManager:
         """
         Return False if TaskManager is paused, draining, or stopped,
         or if quota_tracker is present and quota_tracker.state == QuotaState.EXHAUSTED.
+        Tasks can still be accepted and queued when behind quota pacing.
         Otherwise return True.
         """
         with self._lock:
@@ -583,12 +584,6 @@ class TaskManager:
             if (draining or paused) and self._running:
                 time.sleep(0.1)
                 continue
-
-            if self.quota_tracker:
-                is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
-                if self.quota_tracker.state == QuotaState.EXHAUSTED or is_behind:
-                    time.sleep(0.1)
-                    continue
 
             try:
                 task = self._queue.get(timeout=0.5)
