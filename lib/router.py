@@ -302,7 +302,7 @@ def handle_pull_request_review_event(
             "reason": "Bot self-review event dropped",
         }
 
-    if not author_agent and is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
+    if (author_agent or is_bot_event(review_body, review_author)) and review_state != "CHANGES_REQUESTED" and not has_change_request_marker(review_body):
         return {
             "status": "ignored",
             "reason": "Bot self-review event dropped",

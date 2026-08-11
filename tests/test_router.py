@@ -1167,6 +1167,29 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res["status"], "ignored")
         self.assertEqual(res["reason"], "Bot comment dropped")
 
+    def test_router_drops_bot_commented_review_without_requested_changes(self):
+        """When code_reviewer posts a COMMENTED review with an agent marker and no requested changes, drop event."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "Informational feedback.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+            "pull_request": {
+                "number": 100,
+                "title": "Feature PR",
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot self-review event dropped")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
