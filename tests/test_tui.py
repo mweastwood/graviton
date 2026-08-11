@@ -1180,7 +1180,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertFalse(dashboard._atexit_registered)
 
     @patch("lib.tui.signal.signal")
-    @patch("lib.tui.signal.getsignal", return_value=None)
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_DFL)
     def test_signal_handler_registration_and_execution(self, mock_getsignal, mock_signal):
         stream = io.StringIO()
         manager = TaskManager(max_workers=1)
@@ -1203,58 +1203,6 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.stop()
         self.assertFalse(dashboard._signals_registered)
 
-    @patch("lib.tui.signal.signal")
-    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_IGN)
-    def test_signal_handler_sig_ign(self, mock_getsignal, mock_signal):
-        stream = io.StringIO()
-        manager = TaskManager(max_workers=1)
-        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
-
-        dashboard.start()
-        self.assertTrue(dashboard._signals_registered)
-
-        # Get the registered signal handler for SIGINT
-        sigint_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGINT]
-        self.assertTrue(len(sigint_call) > 0)
-        handler_int = sigint_call[0].args[1]
-
-        # Triggering handler should return gracefully without raising KeyboardInterrupt or stopping dashboard
-        try:
-            handler_int(signal.SIGINT, None)
-        except Exception as e:
-            self.fail(f"Handler raised unexpected exception: {e}")
-        self.assertTrue(dashboard._running)
-
-        # Get the registered signal handler for SIGTERM
-        sigterm_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGTERM]
-        self.assertTrue(len(sigterm_call) > 0)
-        handler_term = sigterm_call[0].args[1]
-
-        # Triggering SIGTERM handler should return gracefully without SystemExit or stopping dashboard
-        try:
-            handler_term(signal.SIGTERM, None)
-        except Exception as e:
-            self.fail(f"Handler raised unexpected exception: {e}")
-        self.assertTrue(dashboard._running)
-
-        dashboard.stop()
-
-    @patch("lib.tui.signal.signal")
-    @patch("lib.tui.signal.getsignal", return_value=None)
-    def test_unregister_signal_handlers_fallback_to_sig_dfl(self, mock_getsignal, mock_signal):
-        stream = io.StringIO()
-        manager = TaskManager(max_workers=1)
-        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
-
-        dashboard.start()
-        mock_signal.reset_mock()
-        dashboard.stop()
-
-        # Should restore with signal.SIG_DFL when old_h is None
-        restored_calls = {c.args[0]: c.args[1] for c in mock_signal.call_args_list}
-        self.assertEqual(restored_calls.get(signal.SIGINT), signal.SIG_DFL)
-        self.assertEqual(restored_calls.get(signal.SIGTERM), signal.SIG_DFL)
-
     def test_restore_termios_emits_ansi_sequences_once(self):
         stream = io.StringIO()
         manager = TaskManager(max_workers=1)
@@ -1271,6 +1219,53 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(output2, "\033[?25h\033[0m")
 
         dashboard.stop()
+
+    @patch("lib.tui.signal.signal", side_effect=ValueError("signal only works in main thread of the main interpreter"))
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_DFL)
+    def test_register_signal_handlers_non_main_thread_does_not_pollute_state(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # _old_signal_handlers must not retain stale references when signal.signal raises ValueError
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_IGN)
+    def test_register_signal_handlers_preserves_sig_ign(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # Should not call signal.signal for SIG_IGN
+        mock_signal.assert_not_called()
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=None)
+    def test_register_signal_handlers_preserves_none_handler(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # Should not call signal.signal for native C/None handler
+        mock_signal.assert_not_called()
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
 
 
 if __name__ == "__main__":
