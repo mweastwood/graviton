@@ -257,22 +257,43 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     avail = max(0, inner_w - spec.spacing)
     res: Dict[str, int] = {}
 
+    flex_cols = [col for col in spec.columns if col.is_flex]
+    non_flex_cols = [col for col in spec.columns if not col.is_flex]
+
+    def _allocate_flex(remaining_w: int) -> None:
+        if not flex_cols:
+            return
+        if len(flex_cols) == 2:
+            w1, w2 = split_flex_columns(remaining_w)
+            res[flex_cols[0].name] = w1
+            res[flex_cols[1].name] = w2
+        elif len(flex_cols) == 1:
+            res[flex_cols[0].name] = max(0, remaining_w)
+        else:
+            total_flex_ratio = sum(col.ratio for col in flex_cols)
+            used_flex = 0
+            for i, col in enumerate(flex_cols):
+                if i == len(flex_cols) - 1:
+                    res[col.name] = max(0, remaining_w - used_flex)
+                else:
+                    r = (col.ratio / total_flex_ratio) if total_flex_ratio > 0 else (1.0 / len(flex_cols))
+                    w = max(0, int(remaining_w * r))
+                    res[col.name] = w
+                    used_flex += w
+
     if inner_w >= spec.wide_threshold:
-        fixed_used = sum(col.fixed_w for col in spec.columns if not col.is_flex and col.fixed_w is not None)
+        fixed_used = 0
+        for col in non_flex_cols:
+            w = col.fixed_w if col.fixed_w is not None else max(col.min_w, min(col.max_w or 999, int(avail * col.ratio)))
+            res[col.name] = w
+            fixed_used += w
         rem = inner_w - fixed_used - spec.spacing
-        title_w, url_w = split_flex_columns(rem)
-        for col in spec.columns:
-            if col.name == "title":
-                res["title"] = title_w
-            elif col.name == "url":
-                res["url"] = url_w
-            else:
-                res[col.name] = col.fixed_w or 0
+        _allocate_flex(rem)
     elif avail < spec.narrow_threshold:
         used = 0
-        for col in spec.columns:
-            if col.name == "url":
-                res["url"] = max(0, avail - used)
+        for idx, col in enumerate(spec.columns):
+            if idx == len(spec.columns) - 1:
+                res[col.name] = max(0, avail - used)
             else:
                 r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
                 val = max(1 if avail >= col.min_avail_threshold else 0, int(avail * r))
@@ -280,22 +301,19 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
                 used += val
     else:
         non_flex_used = 0
-        for col in spec.columns:
-            if not col.is_flex:
-                val = max(col.min_w, min(col.max_w or 999, int(avail * col.ratio)))
-                res[col.name] = val
-                non_flex_used += val
+        for col in non_flex_cols:
+            val = max(col.min_w, min(col.max_w or 999, col.fixed_w if col.fixed_w is not None else int(avail * col.ratio)))
+            res[col.name] = val
+            non_flex_used += val
 
         rem = avail - non_flex_used
-        if rem >= 2:
-            title_w, url_w = split_flex_columns(rem)
-            res["title"] = title_w
-            res["url"] = url_w
+        if rem >= 2 and flex_cols:
+            _allocate_flex(rem)
         else:
             used = 0
-            for col in spec.columns:
-                if col.name == "url":
-                    res["url"] = max(0, avail - used)
+            for idx, col in enumerate(spec.columns):
+                if idx == len(spec.columns) - 1:
+                    res[col.name] = max(0, avail - used)
                 else:
                     r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
                     val = max(1, int(avail * r))
@@ -305,11 +323,15 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     total = sum(res.values()) + spec.spacing
     if total > inner_w:
         over = total - inner_w
-        reduction_order = ["url", "title", "author", "repo", "pr"]
+        indexed_cols = list(enumerate(spec.columns))
+        sorted_cols = sorted(indexed_cols, key=lambda pair: (not pair[1].is_flex, -pair[0]))
+        reduction_order = [col.name for _, col in sorted_cols]
+        first_col_name = spec.columns[0].name if spec.columns else None
+
         for key in reduction_order:
             if key in res:
-                if key == "pr":
-                    res["pr"] = max(0, res["pr"] - over)
+                if key == first_col_name:
+                    res[key] = max(0, res[key] - over)
                     over = 0
                 else:
                     if res[key] >= over:
@@ -345,11 +367,17 @@ def allocate_scheduled_job_columns(inner_w: int) -> Tuple[int, int, int]:
         for col in SCHEDULED_JOB_COLUMN_SPECS
     }
 
-    id_w = max(min_bounds["id"], min(flex_avail - min_bounds["name"] - min_bounds["agent"], int(flex_avail * SCHEDULED_JOB_COLUMN_SPECS[0].ratio)))
-    name_w = max(min_bounds["name"], min(flex_avail - id_w - min_bounds["agent"], int(flex_avail * SCHEDULED_JOB_COLUMN_SPECS[1].ratio)))
-    agent_w = max(0, flex_avail - id_w - name_w)
+    widths: Dict[str, int] = {}
+    for idx, col in enumerate(SCHEDULED_JOB_COLUMN_SPECS):
+        if idx == len(SCHEDULED_JOB_COLUMN_SPECS) - 1:
+            widths[col.name] = max(0, flex_avail - sum(widths.values()))
+        else:
+            subsequent_min = sum(min_bounds[c.name] for c in SCHEDULED_JOB_COLUMN_SPECS[idx + 1:])
+            alloc_w = int(flex_avail * col.ratio)
+            max_allowed = flex_avail - sum(widths.values()) - subsequent_min
+            widths[col.name] = max(min_bounds[col.name], min(max_allowed, alloc_w))
 
-    return id_w, name_w, agent_w
+    return widths.get("id", 0), widths.get("name", 0), widths.get("agent", 0)
 
 
 def format_interval(sec: int) -> str:
