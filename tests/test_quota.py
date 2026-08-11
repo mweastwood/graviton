@@ -672,6 +672,16 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertEqual(tracker.window_5h.remaining_percentage, 88.0)
             self.assertEqual(tracker.window_1w.remaining_percentage, 92.0)
 
+    def test_poll_live_quota_async_exception_handled(self):
+        tracker = QuotaTracker()
+        with patch.object(tracker, "poll_live_quota", side_effect=RuntimeError("Quota API failed")):
+            with patch("lib.quota.logger.warning") as mock_warning:
+                t = tracker.poll_live_quota_async(force=True)
+                t.join(timeout=2.0)
+                self.assertFalse(t.is_alive())
+                mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
+
 
 if __name__ == "__main__":
     unittest.main()
+
