@@ -302,7 +302,7 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     else:
         non_flex_used = 0
         for col in non_flex_cols:
-            val = max(col.min_w, min(col.max_w or 999, col.fixed_w if col.fixed_w is not None else int(avail * col.ratio)))
+            val = max(col.min_w, min(col.max_w or 999, int(avail * col.ratio)))
             res[col.name] = val
             non_flex_used += val
 

@@ -686,6 +686,17 @@ class TestTUIPanels(unittest.TestCase):
         res_narrow = allocate_declarative_columns(custom_layout, 4)
         self.assertLessEqual(sum(res_narrow.values()) + 2, 4)
 
+        # Assert intermediate container width allocations (e.g., inner_w=30)
+        cols_mid = allocate_approved_pr_columns(30, has_repo=True)
+        self.assertEqual(cols_mid["pr"], 4)      # Respects min_w=4 floor
+        self.assertEqual(cols_mid["repo"], 8)    # Respects min_w=8 floor
+        self.assertEqual(cols_mid["author"], 6)  # Respects min_w=6 floor
+        # Flex columns receive allocations via split_flex_columns(rem=8)
+        exp_title, exp_url = split_flex_columns(8)
+        self.assertEqual(cols_mid["title"], exp_title)
+        self.assertEqual(cols_mid["url"], exp_url)
+        self.assertEqual(sum(cols_mid.values()) + 4, 30)
+
         for inner_w in range(0, 101):
             cols_has_repo = allocate_approved_pr_columns(inner_w, has_repo=True)
             self.assertIsInstance(cols_has_repo, dict)
