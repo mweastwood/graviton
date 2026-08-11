@@ -15,6 +15,7 @@ from lib.quota import (
     QuotaState,
     QuotaTracker,
     QuotaWindow,
+    _normalize_now_datetime,
     fetch_live_antigravity_quota,
     format_quota_badge,
     format_reset_countdown,
@@ -24,6 +25,14 @@ from lib.quota import (
 
 
 class TestQuotaTracker(unittest.TestCase):
+
+    def test_normalize_now_datetime_boolean_guard(self):
+        self.assertIsNone(_normalize_now_datetime(True))
+        self.assertIsNone(_normalize_now_datetime(False))
+        self.assertIsNone(_normalize_now_datetime(None))
+        dt = datetime.now(timezone.utc)
+        self.assertEqual(_normalize_now_datetime(dt), dt)
+        self.assertIsNotNone(_normalize_now_datetime(1700000000))
 
     def test_quota_initial_state(self):
         tracker = QuotaTracker()

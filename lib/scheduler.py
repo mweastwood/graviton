@@ -601,7 +601,7 @@ class TaskScheduler:
                 return
 
         if self.runner:
-            qt = getattr(self, "quota_tracker", None) or getattr(self.task_manager, "quota_tracker", None)
+            qt = getattr(self, "quota_tracker", None)
             if qt:
                 is_behind = False
                 if hasattr(qt, "is_behind_pacing") and callable(getattr(qt, "is_behind_pacing", None)):

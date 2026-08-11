@@ -60,6 +60,8 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     """Convert timestamp float/int or datetime object into a timezone-aware UTC datetime."""
     if now is None:
         return None
+    if isinstance(now, bool):
+        return None
     if isinstance(now, datetime):
         return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     if isinstance(now, (int, float)):
