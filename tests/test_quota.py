@@ -623,7 +623,7 @@ class TestQuotaTracker(unittest.TestCase):
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
 
-        # 1 second later: TTL (10s) not reached, must NOT retry
+        # 1 second later: TTL (60s) not reached, must NOT retry
         with patch("lib.quota.time.time", return_value=start_time + 1.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
                 tracker.poll_live_quota()

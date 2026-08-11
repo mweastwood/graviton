@@ -800,7 +800,7 @@ class QuotaTracker:
         force: bool = False,
     ) -> Tuple[QuotaWindow, QuotaWindow]:
         """
-        Fetch live Antigravity quota and update dual windows based on uniform 60s TTLs or when force is True.
+        Fetch live Antigravity quota and update dual windows based on uniform 60s TTL intervals (both 5H and 1W windows) or when force is True.
         """
         now = time.time()
         with self._lock:
