@@ -318,7 +318,7 @@ class TestPRTracker(unittest.TestCase):
 
             # We mock subprocess.run calls in sequence
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(cmd)
+                cmd_str = " ".join(str(c) for c in cmd)
                 if "git remote get-url" in cmd_str:
                     if "repo1" in str(cwd):
                         return mock_git1
@@ -381,12 +381,15 @@ class TestPRTracker(unittest.TestCase):
             barrier = threading.Barrier(num_repos)
 
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(cmd)
+                cmd_str = " ".join(str(c) for c in cmd)
                 cwd_str = str(cwd or "")
                 if "git remote get-url" in cmd_str:
                     with lock:
                         thread_ids.add(threading.get_ident())
-                    barrier.wait(timeout=5.0)
+                    try:
+                        barrier.wait(timeout=5.0)
+                    except threading.BrokenBarrierError:
+                        self.fail("Thread synchronization barrier timed out")
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
                         if "git remote get-url" in cmd_str:
