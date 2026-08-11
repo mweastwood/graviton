@@ -89,7 +89,6 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(u_w, 12)
         self.assertEqual(split_flex_columns(0), (0, 0))
         self.assertEqual(split_flex_columns(-5), (0, 0))
-
         # Allocate approved PR columns (default parameter has_repo=False)
         cols_default = allocate_approved_pr_columns(76)
         self.assertNotIn("repo", cols_default)
