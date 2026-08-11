@@ -258,6 +258,12 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(format_target_for_display("mweastwood/graviton", 10), "graviton")
         self.assertEqual(format_target_for_display("mweastwood/graviton-server-repo", 8), "gravit..")
 
+        # Trailing slash target inputs
+        self.assertEqual(format_target_for_display("mweastwood/graviton/", 8), "graviton")
+        self.assertEqual(format_target_for_display("mweastwood/graviton#148/", 10), "grav..#148")
+        self.assertEqual(format_target_for_display("/", 8), "-")
+        self.assertEqual(format_target_for_display("///", 8), "-")
+
         # Non-string integer target inputs
         self.assertEqual(format_target_for_display(148, 6), "148")
         self.assertEqual(format_target_for_display(1234567, 6), "1234..")

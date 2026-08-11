@@ -132,11 +132,13 @@ def format_target_for_display(target: Optional[str], max_w: int) -> str:
     elif not isinstance(target, str):
         target = str(target)
 
+    if "/" in target:
+        target = target.rstrip("/")
+        if "/" in target:
+            target = target.split("/")[-1]
+
     if not target:
         target = "-"
-
-    if "/" in target:
-        target = target.split("/")[-1]
 
     if get_display_width(target) <= max_w:
         return target
