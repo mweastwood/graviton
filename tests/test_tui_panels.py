@@ -11,7 +11,10 @@ from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
+    ColumnSpec,
+    TableLayoutSpec,
     allocate_approved_pr_columns,
+    allocate_declarative_columns,
     allocate_scheduled_job_columns,
     fit_to_display_width,
     format_interval,
@@ -491,6 +494,45 @@ class TestTUIPanels(unittest.TestCase):
         lines = render_event_logs_panel(width=80, log_handler=handler)
         self.assertEqual(len(lines), 5)
         self.assertTrue(any("12345" in l for l in lines))
+
+    def test_declarative_column_allocation(self):
+        col_spec = ColumnSpec(name="pr", ratio=0.15, fixed_w=8, min_w=4, max_w=8, min_avail_threshold=5)
+        self.assertEqual(col_spec.name, "pr")
+        self.assertEqual(col_spec.ratio, 0.15)
+        self.assertEqual(col_spec.fixed_w, 8)
+        self.assertEqual(col_spec.min_w, 4)
+
+        custom_layout = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, fixed_w=10, min_w=2, max_w=10, min_avail_threshold=2),
+                ColumnSpec("col2", ratio=0.5, fixed_w=10, min_w=2, max_w=10, min_avail_threshold=2),
+            ],
+            spacing=2,
+            wide_threshold=22,
+            narrow_threshold=6,
+        )
+
+        res_wide = allocate_declarative_columns(custom_layout, 30)
+        self.assertEqual(res_wide["col1"], 10)
+        self.assertEqual(res_wide["col2"], 10)
+
+        res_narrow = allocate_declarative_columns(custom_layout, 4)
+        self.assertLessEqual(sum(res_narrow.values()) + 2, 4)
+
+        for inner_w in range(0, 101):
+            cols_has_repo = allocate_approved_pr_columns(inner_w, has_repo=True)
+            self.assertIsInstance(cols_has_repo, dict)
+            self.assertIn("pr", cols_has_repo)
+            self.assertIn("repo", cols_has_repo)
+            if inner_w >= 4:
+                self.assertLessEqual(sum(cols_has_repo.values()) + 4, inner_w)
+
+            cols_no_repo = allocate_approved_pr_columns(inner_w, has_repo=False)
+            self.assertIsInstance(cols_no_repo, dict)
+            self.assertIn("pr", cols_no_repo)
+            self.assertNotIn("repo", cols_no_repo)
+            if inner_w >= 3:
+                self.assertLessEqual(sum(cols_no_repo.values()) + 3, inner_w)
 
 
 if __name__ == "__main__":
