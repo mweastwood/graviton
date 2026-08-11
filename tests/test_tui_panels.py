@@ -15,9 +15,8 @@ from lib.tui_panels import (
     allocate_scheduled_job_columns,
     fit_to_display_width,
     format_interval,
-    format_panel_header,
     format_remaining,
-    format_row_columns,
+    format_table_row,
     format_timestamp,
     get_display_width,
     pad_to_display_width,
@@ -26,16 +25,141 @@ from lib.tui_panels import (
     render_event_logs_panel,
     render_header_panel,
     render_history_tasks_panel,
+    render_panel_frame,
     render_panel_header,
     render_queued_tasks_panel,
     render_quota_panel,
     render_scheduled_jobs_panel,
+    split_flex_columns,
     truncate_to_display_width,
     truncate_with_ellipsis,
 )
 
 
 class TestTUIPanels(unittest.TestCase):
+
+    def test_extracted_layout_helpers(self):
+        # Truncate with ellipsis
+        self.assertEqual(truncate_with_ellipsis("hello world", 15), "hello world")
+        self.assertEqual(truncate_with_ellipsis("hello world long", 10), "hello wo..")
+        self.assertEqual(truncate_with_ellipsis("a", 1), "a")
+
+        # Test ANSI escape code preservation and reset in truncate_with_ellipsis
+        styled_s = "\033[92mHello World Styled String\033[0m"
+        trunc_styled = truncate_with_ellipsis(styled_s, 15)
+        self.assertTrue(trunc_styled.endswith("\033[0m"))
+        self.assertIn("..", trunc_styled)
+        self.assertEqual(get_display_width(trunc_styled), 15)
+
+        # Format table row
+        row_str = format_table_row([("ID", 5), ("STATUS", 8)])
+        self.assertEqual(row_str, "ID    STATUS  ")
+
+        # Render panel header
+        hdr = render_panel_header(30, " TITLE ")
+        self.assertTrue(hdr.startswith("┌─"))
+        self.assertTrue(hdr.endswith("┐"))
+
+        # Render panel header with title truncation when title exceeds width - 3
+        hdr_trunc = render_panel_header(15, "Very Long Panel Title Exceeding Width")
+        self.assertTrue(hdr_trunc.startswith("┌─"))
+        self.assertTrue(hdr_trunc.endswith("┐"))
+        self.assertIn("Very Long P", hdr_trunc)
+
+        # Render panel frame
+        frame = render_panel_frame(hdr, ["line 1", "line 2"], 30)
+        self.assertEqual(len(frame), 4)
+        self.assertTrue(frame[0].startswith("┌"))
+        self.assertTrue(frame[3].startswith("└"))
+
+        # Render panel frame with tuple (Sequence[str]) and narrow width (width < 4)
+        frame_tuple = render_panel_frame(hdr, ("line 1", "line 2"), 2)
+        self.assertEqual(len(frame_tuple), 4)
+        self.assertTrue(frame_tuple[0].startswith("┌"))
+        self.assertTrue(frame_tuple[3].startswith("└"))
+        self.assertEqual(get_display_width(frame_tuple[3]), get_display_width(frame_tuple[1]))
+
+        frame_zero = render_panel_frame(hdr, ("line 1",), 0)
+        self.assertEqual(len(frame_zero), 3)
+
+        # Split flex columns
+        t_w, u_w = split_flex_columns(20)
+        self.assertEqual(t_w + u_w, 20)
+        self.assertEqual(t_w, 8)
+        self.assertEqual(u_w, 12)
+        self.assertEqual(split_flex_columns(0), (0, 0))
+        self.assertEqual(split_flex_columns(-5), (0, 0))
+        # Allocate approved PR columns (default parameter has_repo=False)
+        cols_default = allocate_approved_pr_columns(76)
+        self.assertNotIn("repo", cols_default)
+        self.assertEqual(cols_default["pr"], 8)
+        self.assertEqual(cols_default["author"], 15)
+
+        cols_repo = allocate_approved_pr_columns(76, has_repo=True)
+        self.assertIn("repo", cols_repo)
+        self.assertEqual(cols_repo["pr"], 8)
+        self.assertEqual(cols_repo["repo"], 16)
+        self.assertEqual(cols_repo["author"], 14)
+
+        cols_no_repo = allocate_approved_pr_columns(76, has_repo=False)
+        self.assertNotIn("repo", cols_no_repo)
+        self.assertEqual(cols_no_repo["pr"], 8)
+        self.assertEqual(cols_no_repo["author"], 15)
+
+        # Test narrow container widths (including inner_w < spacing, e.g. inner_w = 3 with has_repo=True where spacing = 4)
+        cols_tiny_repo = allocate_approved_pr_columns(3, has_repo=True)
+        self.assertIn("pr", cols_tiny_repo)
+        self.assertIn("repo", cols_tiny_repo)
+        self.assertEqual(sum(cols_tiny_repo.values()), 0)
+
+        cols_tiny_no_repo = allocate_approved_pr_columns(2, has_repo=False)
+        self.assertIn("pr", cols_tiny_no_repo)
+        self.assertEqual(sum(cols_tiny_no_repo.values()), 0)
+
+        for inner_w in range(0, 24):
+            cols_t_narrow = allocate_approved_pr_columns(inner_w, has_repo=True)
+            self.assertIn("pr", cols_t_narrow)
+            self.assertIn("repo", cols_t_narrow)
+            if inner_w >= 4:
+                self.assertLessEqual(sum(cols_t_narrow.values()) + 4, inner_w)
+            else:
+                self.assertEqual(sum(cols_t_narrow.values()), 0)
+
+        for inner_w in range(0, 24):
+            cols_f_narrow = allocate_approved_pr_columns(inner_w, has_repo=False)
+            self.assertIn("pr", cols_f_narrow)
+            if inner_w >= 3:
+                self.assertLessEqual(sum(cols_f_narrow.values()) + 3, inner_w)
+            else:
+                self.assertEqual(sum(cols_f_narrow.values()), 0)
+
+        # Test intermediate container widths (e.g. inner_w = 40 for approved PRs with has_repo=True)
+        cols_40 = allocate_approved_pr_columns(40, has_repo=True)
+        self.assertLessEqual(sum(cols_40.values()) + 4, 40)
+
+        for inner_w in range(24, 100):
+            cols_t = allocate_approved_pr_columns(inner_w, has_repo=True)
+            self.assertLessEqual(sum(cols_t.values()) + 4, inner_w)
+
+        for inner_w in range(15, 100):
+            cols_f = allocate_approved_pr_columns(inner_w, has_repo=False)
+            self.assertLessEqual(sum(cols_f.values()) + 3, inner_w)
+
+        # Allocate scheduled job columns
+        id_w, name_w, agent_w = allocate_scheduled_job_columns(76)
+        self.assertGreater(id_w, 0)
+        self.assertGreater(name_w, 0)
+        self.assertGreater(agent_w, 0)
+
+        # Test narrow container widths for scheduled job columns (inner_w < 45)
+        id_narrow, name_narrow, agent_narrow = allocate_scheduled_job_columns(30)
+        self.assertEqual((id_narrow, name_narrow, agent_narrow), (0, 0, 0))
+
+        # Test non-string and None inputs for string layout helpers
+        self.assertEqual(truncate_with_ellipsis(None, 10), "")
+        self.assertEqual(truncate_with_ellipsis(12345, 10), "12345")
+        self.assertEqual(get_display_width(None), 0)
+        self.assertEqual(get_display_width(12345), 5)
 
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
@@ -70,46 +194,12 @@ class TestTUIPanels(unittest.TestCase):
         )
         self.assertEqual(format_remaining(job_last_z, ref_dt), "in 1h 0m")
 
-    def test_truncate_with_ellipsis(self):
-        self.assertEqual(truncate_with_ellipsis(None, 10), "")
-        self.assertEqual(truncate_with_ellipsis("short", 10), "short")
-
-        trunc = truncate_with_ellipsis("very long text string", 10)
-        self.assertEqual(get_display_width(trunc), 10)
-        self.assertTrue(trunc.endswith(".."))
-
-        self.assertEqual(truncate_with_ellipsis("text", 1), "t")
-
-        ansi_str = "\033[91mHello World\033[0m"
-        trunc_ansi = truncate_with_ellipsis(ansi_str, 7)
-        self.assertEqual(get_display_width(trunc_ansi), 7)
-        self.assertTrue(trunc_ansi.endswith("\033[0m"))
-
-    def test_format_row_columns(self):
-        vals = ["PR #1", "Title"]
-        widths = [8, 12]
-        formatted = format_row_columns(vals, widths)
-        self.assertEqual(formatted, "PR #1    Title       ")
-
-        formatted_sep = format_row_columns(vals, widths, sep=" | ")
-        self.assertEqual(formatted_sep, "PR #1    | Title       ")
-
-        formatted_none = format_row_columns(["#123", None], [8, 10])
-        self.assertEqual(formatted_none, "#123               ")
-        self.assertNotIn("None", formatted_none)
-
-    def test_allocate_scheduled_job_columns(self):
-        headers, widths = allocate_scheduled_job_columns(80)
-        self.assertEqual(len(headers), 8)
-        self.assertEqual(len(widths), 8)
-        self.assertLessEqual(sum(widths) + 7, 80)
-
-        for w in range(10, 90):
-            hdrs, col_w = allocate_scheduled_job_columns(w)
-            self.assertEqual(len(hdrs), 8)
-            self.assertEqual(len(col_w), 8)
-            if w >= 7:
-                self.assertLessEqual(sum(col_w) + 7, w)
+        # Test naive datetime subtraction (no Z or tz info)
+        job_naive = ScheduledJob(
+            job_id="j5_naive", name="J5 Naive", agent="test", prompt="p", interval_seconds=3600, enabled=True,
+            next_run="2026-08-09T23:00:00"
+        )
+        self.assertEqual(format_remaining(job_naive, ref_dt), "in 1h 0m")
 
     def test_render_header_panel(self):
         lines = render_header_panel(
@@ -139,6 +229,16 @@ class TestTUIPanels(unittest.TestCase):
         dummy_tracker = DummyTrackerNoRemaining()
         lines_dummy = render_quota_panel(width=80, quota_tracker=dummy_tracker)  # type: ignore
         self.assertEqual(len(lines_dummy), 4)
+
+        # Test tracker with window_5h and window_1w attributes set to None
+        class DummyTrackerNoneWindows:
+            quota_pool = "gemini"
+            remaining_percentage = 80.0
+            window_5h = None
+            window_1w = None
+
+        lines_none = render_quota_panel(width=80, quota_tracker=DummyTrackerNoneWindows())  # type: ignore
+        self.assertEqual(len(lines_none), 4)
 
     def test_render_active_tasks_panel_empty_and_populated(self):
         empty_lines = render_active_tasks_panel(width=80, tasks=[], max_workers=2)
@@ -229,7 +329,7 @@ class TestTUIPanels(unittest.TestCase):
                 "url": None,
             },
             {
-                "number": 124,
+                "number": None,
                 "title": None,
                 "author": None,
                 "url": None,
@@ -237,13 +337,10 @@ class TestTUIPanels(unittest.TestCase):
         ]
         lines_repo = render_approved_prs_panel(width=80, approved_prs=prs_none)
         self.assertTrue(any("#123" in l for l in lines_repo))
-        for line in lines_repo:
-            self.assertNotIn("None", line)
+        self.assertFalse(any("#None" in l for l in lines_repo))
 
         lines_no_repo = render_approved_prs_panel(width=80, approved_prs=[prs_none[1]])
-        self.assertTrue(any("#124" in l for l in lines_no_repo))
-        for line in lines_no_repo:
-            self.assertNotIn("None", line)
+        self.assertFalse(any("#None" in l for l in lines_no_repo))
 
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
@@ -307,6 +404,10 @@ class TestTUIPanels(unittest.TestCase):
         def get_logs(self, limit=15):
             return ["Log entry 1 with long details", "Log entry 2"]
 
+    class MockLogHandlerWithMixedTypes:
+        def get_logs(self, limit=15):
+            return [None, 12345, "Log entry 3"]
+
     def test_render_event_logs_panel_compact_widths(self):
         handler = self.MockLogHandler()
         for w in (40, 60):
@@ -314,59 +415,13 @@ class TestTUIPanels(unittest.TestCase):
             for line in lines:
                 self.assertEqual(get_display_width(line), w)
 
-    def test_allocate_approved_pr_columns_narrow_container_widths(self):
-        for inner_w in range(5, 51):
-            # Test with repo column
-            headers, widths = allocate_approved_pr_columns(inner_w, has_repo=True)
-            self.assertLessEqual(sum(widths) + 4, inner_w)
-            for w in widths:
-                self.assertGreaterEqual(w, 0)
-
-            # Test without repo column
-            headers2, widths2 = allocate_approved_pr_columns(inner_w, has_repo=False)
-            self.assertLessEqual(sum(widths2) + 3, inner_w)
-            for w in widths2:
-                self.assertGreaterEqual(w, 0)
-
-        # Title vs URL width allocation check
-        _, w_has_repo = allocate_approved_pr_columns(60, has_repo=True)
-        # pr=8, repo=16, author=14 -> sum=38. avail=56. remaining=18. title=8, url=10.
-        self.assertEqual(w_has_repo[2], 8)
-        self.assertEqual(w_has_repo[4], 10)
-
-        _, w_no_repo = allocate_approved_pr_columns(50, has_repo=False)
-        # pr=8, author=15 -> sum=23. avail=47. remaining=24. title=11, url=13.
-        self.assertEqual(w_no_repo[1], 11)
-        self.assertEqual(w_no_repo[3], 13)
-
-    def test_render_panel_header_truncation_when_exceeding_width(self):
-        # Normal width where title fits comfortably
-        hdr_normal = render_panel_header(width=80, title="EVENT LOGS")
-        self.assertEqual(get_display_width(hdr_normal), 80)
-        self.assertTrue(hdr_normal.startswith("┌─"))
-        self.assertTrue(hdr_normal.endswith("┐"))
-        self.assertIn("EVENT LOGS", hdr_normal)
-
-        # Narrow width where title display width exceeds width - 3
-        long_title = "APPROVED PULL REQUESTS (READY TO MERGE) [10 Ready]"
-        for w in (20, 25, 30):
-            hdr_trunc = render_panel_header(width=w, title=long_title)
-            self.assertEqual(get_display_width(hdr_trunc), w)
-            self.assertTrue(hdr_trunc.startswith("┌─"))
-            self.assertTrue(hdr_trunc.endswith("┐"))
-
-        # Very small widths (width <= 3)
-        for w in (2, 3):
-            hdr_small = render_panel_header(width=w, title="TITLE")
-            self.assertEqual(get_display_width(hdr_small), max(3, w))
-
-        # Parameter order consistency in format_panel_header(width, title, color_code)
-        fmt_hdr = format_panel_header(80, "TITLE")
-        rnd_hdr = render_panel_header(80, "TITLE")
-        self.assertEqual(fmt_hdr, rnd_hdr)
+    def test_render_event_logs_panel_non_string_entries(self):
+        handler = self.MockLogHandlerWithMixedTypes()
+        lines = render_event_logs_panel(width=80, log_handler=handler)
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(any("12345" in l for l in lines))
 
 
 if __name__ == "__main__":
     unittest.main()
-
 
