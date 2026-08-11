@@ -1218,22 +1218,24 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertTrue(len(sigint_call) > 0)
         handler_int = sigint_call[0].args[1]
 
-        # Triggering handler should return gracefully without raising KeyboardInterrupt
+        # Triggering handler should return gracefully without raising KeyboardInterrupt or stopping dashboard
         try:
             handler_int(signal.SIGINT, None)
         except Exception as e:
             self.fail(f"Handler raised unexpected exception: {e}")
+        self.assertTrue(dashboard._running)
 
         # Get the registered signal handler for SIGTERM
         sigterm_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGTERM]
         self.assertTrue(len(sigterm_call) > 0)
         handler_term = sigterm_call[0].args[1]
 
-        # Triggering SIGTERM handler should return gracefully without SystemExit
+        # Triggering SIGTERM handler should return gracefully without SystemExit or stopping dashboard
         try:
             handler_term(signal.SIGTERM, None)
         except Exception as e:
             self.fail(f"Handler raised unexpected exception: {e}")
+        self.assertTrue(dashboard._running)
 
         dashboard.stop()
 
@@ -1252,6 +1254,23 @@ class TestTerminalDashboard(unittest.TestCase):
         restored_calls = {c.args[0]: c.args[1] for c in mock_signal.call_args_list}
         self.assertEqual(restored_calls.get(signal.SIGINT), signal.SIG_DFL)
         self.assertEqual(restored_calls.get(signal.SIGTERM), signal.SIG_DFL)
+
+    def test_restore_termios_emits_ansi_sequences_once(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        dashboard._restore_termios()
+        output1 = stream.getvalue()
+        self.assertEqual(output1, "\033[?25h\033[0m")
+
+        # Second call to _restore_termios should be a no-op for ANSI sequences
+        dashboard._restore_termios()
+        output2 = stream.getvalue()
+        self.assertEqual(output2, "\033[?25h\033[0m")
+
+        dashboard.stop()
 
 
 if __name__ == "__main__":

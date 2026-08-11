@@ -138,6 +138,7 @@ class TerminalDashboard:
         self._thread: Optional[threading.Thread] = None
         self._stdin_thread: Optional[threading.Thread] = None
         self._old_term_settings: Optional[Any] = None
+        self._termios_restored = False
         self._log_redirected = False
         self._detached_handlers: list = []
         self._file_handler: Optional[logging.FileHandler] = None
@@ -152,6 +153,7 @@ class TerminalDashboard:
         """Start the background dashboard rendering loop thread and hotkey listener."""
         if self._running:
             return
+        self._termios_restored = False
         if not self._atexit_registered:
             atexit.register(self.stop)
             self._atexit_registered = True
@@ -559,12 +561,14 @@ class TerminalDashboard:
                 pass
             self._old_term_settings = None
 
-        if self.out_stream:
-            try:
-                self.out_stream.write("\033[?25h\033[0m")
-                self.out_stream.flush()
-            except Exception:
-                pass
+        if not self._termios_restored:
+            if self.out_stream:
+                try:
+                    self.out_stream.write("\033[?25h\033[0m")
+                    self.out_stream.flush()
+                except Exception:
+                    pass
+            self._termios_restored = True
 
     def _register_signal_handlers(self):
         """Register SIGINT and SIGTERM handlers to restore terminal state on exit signals."""
@@ -574,11 +578,11 @@ class TerminalDashboard:
 
         def _make_handler(orig_h):
             def _signal_handler(signum, frame):
-                self._restore_termios()
-                self.stop()
                 if orig_h == signal.SIG_IGN:
                     return
-                elif callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
+                self._restore_termios()
+                self.stop()
+                if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
                     orig_h(signum, frame)
                 elif signum == signal.SIGINT:
                     raise KeyboardInterrupt()
