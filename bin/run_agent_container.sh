@@ -160,7 +160,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   if [ -n "${CONVERSATION_ID}" ]; then
     TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${CONVERSATION_ID}/.system_generated/logs/transcript.jsonl"
     if [ -f "${TRANSCRIPT_PATH}" ]; then
-      if "${PYTHON_BIN}" "${SCRIPT_DIR}/../lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
+      if "${PYTHON_BIN}" "${GRAVITON_ROOT}/lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
         IS_INCOMPLETE=true
       fi
     fi
