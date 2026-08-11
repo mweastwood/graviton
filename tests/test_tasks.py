@@ -815,7 +815,47 @@ class TestTaskManager(unittest.TestCase):
             manager.stop()
 
 
+    def test_task_manager_pause_resume_toggle_and_is_paused(self):
+        manager = TaskManager()
+        self.assertFalse(manager.is_paused)
+        stats = manager.get_stats()
+        self.assertFalse(stats["is_paused"])
+        self.assertEqual(stats["queue_status"], "ACTIVE")
+
+        manager.pause()
+        self.assertTrue(manager.is_paused)
+        stats_paused = manager.get_stats()
+        self.assertTrue(stats_paused["is_paused"])
+        self.assertEqual(stats_paused["queue_status"], "PAUSED")
+
+        manager.resume()
+        self.assertFalse(manager.is_paused)
+        stats_resumed = manager.get_stats()
+        self.assertFalse(stats_resumed["is_paused"])
+
+        new_state = manager.toggle_pause()
+        self.assertTrue(new_state)
+        self.assertTrue(manager.is_paused)
+
+        new_state_2 = manager.toggle_pause()
+        self.assertFalse(new_state_2)
+        self.assertFalse(manager.is_paused)
+
+    def test_submit_task_raises_runtime_error_when_paused(self):
+        manager = TaskManager()
+        manager.pause()
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #1")
+        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+
+        manager.resume()
+        task = manager.submit_task("code_reviewer", "Review PR #1")
+        self.assertIsNotNone(task)
+        self.assertEqual(task.id, "task-1")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

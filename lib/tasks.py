@@ -130,6 +130,35 @@ class TaskManager:
         self._workers: List[threading.Thread] = []
         self._running = False
         self._draining = False
+        self._paused = False
+
+    @property
+    def is_paused(self) -> bool:
+        """Return True if TaskManager is currently paused and not accepting new tasks."""
+        with self._lock:
+            return self._paused
+
+    def pause(self):
+        """Pause acceptance of new tasks."""
+        with self._lock:
+            self._paused = True
+            logger.info("TaskManager paused task acceptance.")
+
+    def resume(self):
+        """Resume acceptance of new tasks."""
+        with self._lock:
+            self._paused = False
+            logger.info("TaskManager resumed task acceptance.")
+
+    def toggle_pause(self) -> bool:
+        """Toggle pause/resume state of task acceptance. Returns new is_paused state."""
+        with self._lock:
+            self._paused = not self._paused
+            if self._paused:
+                logger.info("TaskManager paused task acceptance.")
+            else:
+                logger.info("TaskManager resumed task acceptance.")
+            return self._paused
 
     @property
     def is_draining(self) -> bool:
@@ -393,6 +422,9 @@ class TaskManager:
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
+            if self._paused:
+                raise RuntimeError("TaskManager is paused and not accepting new tasks")
+
             if repo_full_name and target_id:
                 if not target_id.startswith(f"{repo_full_name}#"):
                     target_num_str = target_id.split("#")[-1]
@@ -480,7 +512,10 @@ class TaskManager:
             paused = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PAUSED_FOR_QUOTA)
 
             quota_state = self.quota_tracker.state if self.quota_tracker else QuotaState.NORMAL
-            if quota_state == QuotaState.EXHAUSTED:
+            if self._paused:
+                queue_status = "PAUSED"
+                status_str = "PAUSED"
+            elif quota_state == QuotaState.EXHAUSTED:
                 queue_status = "PAUSED_FOR_QUOTA"
                 status_str = "PAUSED_FOR_QUOTA"
             elif quota_state == QuotaState.LOW_QUOTA:
@@ -502,6 +537,7 @@ class TaskManager:
                 "quota_state": quota_state,
                 "queue_status": queue_status,
                 "status": status_str,
+                "is_paused": self._paused,
             }
 
     def _worker_loop(self, worker_id: str):
