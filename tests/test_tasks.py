@@ -446,9 +446,21 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(task2.status, TaskStatus.COMPLETED)
         manager.stop()
 
-    def test_task_manager_can_accept_task_and_pacing_rejection(self):
+    @patch("lib.tasks.run_agent_container")
+    def test_task_manager_can_accept_task_and_pacing_queueing(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = ""
+        mock_process.stderr = ""
+        mock_run.return_value = mock_process
+
         quota = QuotaTracker()
-        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager = TaskManager(
+            max_workers=1,
+            quota_tracker=quota,
+            script_path=Path("/tmp/fake_repo/script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
 
         # Initially OK
         self.assertTrue(manager.can_accept_task())
@@ -465,7 +477,8 @@ class TestTaskManager(unittest.TestCase):
             reset_time_5h=now + 15000.0,
         )
 
-        self.assertFalse(manager.can_accept_task())
+        # Tasks can still be accepted and queued up when behind pacing
+        self.assertTrue(manager.can_accept_task())
         stats = manager.get_stats()
         self.assertEqual(stats["queue_status"], "PAUSED_FOR_PACING")
         self.assertEqual(stats["status"], "BEHIND_PACING")
@@ -474,16 +487,25 @@ class TestTaskManager(unittest.TestCase):
         t_dup = manager.submit_task("code_reviewer", "Active Task prompt updated", target_id="#100")
         self.assertIs(t_dup, t_active)
 
-        # Submitting new non-duplicate task raises RuntimeError
-        with self.assertRaises(RuntimeError) as ctx:
-            manager.submit_task("code_fixer", "New task behind pacing")
-        self.assertIn("quota pacing is behind limit", str(ctx.exception))
+        # Submitting new non-duplicate task SUCCEEDS and queues up the task
+        t_behind = manager.submit_task("code_fixer", "New task behind pacing")
+        self.assertEqual(t_behind.id, "task-2")
 
-        # Recover pacing
+        # Start workers while behind pacing - tasks should be popped, updated to PAUSED_FOR_QUOTA, and re-queued
+        manager.start()
+        time.sleep(0.3)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        self.assertEqual(mock_run.call_count, 0)
+        self.assertEqual(t_active.status, TaskStatus.PAUSED_FOR_QUOTA)
+        self.assertEqual(t_behind.status, TaskStatus.PAUSED_FOR_QUOTA)
+
+        # Recover pacing - tasks should now be executed by worker
         quota.update_quota(100.0, remaining_percentage_5h=100.0, reset_time_5h=now)
-        self.assertTrue(manager.can_accept_task())
-        t_new = manager.submit_task("code_fixer", "New task after recovery")
-        self.assertEqual(t_new.id, "task-2")
+        time.sleep(0.5)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(t_active.status, TaskStatus.COMPLETED)
+        self.assertEqual(t_behind.status, TaskStatus.COMPLETED)
+        manager.stop()
 
         # Test draining rejection
         manager._draining = True

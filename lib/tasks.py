@@ -171,8 +171,6 @@ class TaskManager:
         if self._paused or self._stopped or self._draining:
             return False
         if self.quota_tracker is not None:
-            if hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:
-                return False
             if hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
                 return False
         return True
@@ -180,7 +178,8 @@ class TaskManager:
     def can_accept_task(self, agent: Optional[str] = None, prompt: Optional[str] = None) -> bool:
         """
         Return False if TaskManager is paused, draining, or stopped,
-        or if quota_tracker is present and quota_tracker.is_behind_pacing() is True or quota_tracker.state == QuotaState.EXHAUSTED.
+        or if quota_tracker is present and quota_tracker.state == QuotaState.EXHAUSTED.
+        Tasks can still be accepted and queued when behind quota pacing.
         Otherwise return True.
         """
         with self._lock:
@@ -474,8 +473,6 @@ class TaskManager:
                     raise RuntimeError("Server is draining tasks for update")
                 if self._stopped:
                     raise RuntimeError("Cannot accept new task: task manager is stopped")
-                if self.quota_tracker is not None and hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:
-                    raise RuntimeError("Cannot accept new task: quota pacing is behind limit")
                 if self.quota_tracker is not None and hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
                     raise RuntimeError("Cannot accept new task: quota is exhausted")
                 raise RuntimeError("Cannot accept new task: task admission suspended")
@@ -588,11 +585,6 @@ class TaskManager:
                 time.sleep(0.1)
                 continue
 
-            if self.quota_tracker:
-                if self.quota_tracker.state == QuotaState.EXHAUSTED:
-                    time.sleep(0.1)
-                    continue
-
             try:
                 task = self._queue.get(timeout=0.5)
             except queue.Empty:
@@ -604,7 +596,8 @@ class TaskManager:
 
             if self.quota_tracker:
                 state = self.quota_tracker.state
-                if state == QuotaState.EXHAUSTED:
+                is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
+                if state == QuotaState.EXHAUSTED or is_behind:
                     with self._lock:
                         task.status = TaskStatus.PAUSED_FOR_QUOTA
                     self._queue.put(task)
@@ -622,7 +615,11 @@ class TaskManager:
 
             # Double-check draining and pause state under lock before transitioning task to RUNNING
             with self._lock:
-                if self._draining or self._paused:
+                is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True if self.quota_tracker else False
+                is_exhausted = (self.quota_tracker and self.quota_tracker.state == QuotaState.EXHAUSTED)
+                if self._draining or self._paused or is_behind or is_exhausted:
+                    if is_behind or is_exhausted:
+                        task.status = TaskStatus.PAUSED_FOR_QUOTA
                     self._queue.put(task)
                     self._queue.task_done()
                     time.sleep(0.1)
