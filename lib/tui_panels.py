@@ -15,15 +15,22 @@ from lib.tasks import TaskManager, TaskStatus
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 
-
 def get_display_width(s: str) -> int:
     """Return visual display width of string, stripping ANSI escape codes and accounting for wide characters."""
+    if s is None:
+        s = ""
+    elif not isinstance(s, str):
+        s = str(s)
     clean_str = ANSI_REGEX.sub("", s)
     return sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in clean_str)
 
 
 def truncate_to_display_width(s: str, max_w: int) -> str:
     """Truncate string so its visual display width does not exceed max_w."""
+    if s is None:
+        s = ""
+    elif not isinstance(s, str):
+        s = str(s)
     if get_display_width(s) <= max_w:
         return s
 
@@ -57,8 +64,36 @@ def truncate_to_display_width(s: str, max_w: int) -> str:
     return "".join(res)
 
 
+def truncate_with_ellipsis(s: str, max_w: int) -> str:
+    """Truncate string with '..' suffix if display width exceeds max_w, preserving and resetting ANSI styles properly."""
+    if s is None:
+        s = ""
+    elif not isinstance(s, str):
+        s = str(s)
+    if get_display_width(s) <= max_w:
+        return s
+
+    has_ansi = bool(ANSI_REGEX.search(s))
+    if max_w >= 2:
+        trunc = truncate_to_display_width(s, max(0, max_w - 2))
+        if has_ansi:
+            if trunc.endswith("\033[0m"):
+                trunc = trunc[:-4]
+            return trunc + "..\033[0m"
+        return trunc + ".."
+
+    trunc = truncate_to_display_width(s, max_w)
+    if has_ansi and not trunc.endswith("\033[0m"):
+        trunc += "\033[0m"
+    return trunc
+
+
 def pad_to_display_width(s: str, target_w: int, align: str = "left") -> str:
     """Pad string with spaces so its visual display width matches target_w."""
+    if s is None:
+        s = ""
+    elif not isinstance(s, str):
+        s = str(s)
     cur_w = get_display_width(s)
     if cur_w >= target_w:
         return s
@@ -75,7 +110,155 @@ def pad_to_display_width(s: str, target_w: int, align: str = "left") -> str:
 
 def fit_to_display_width(s: str, target_w: int, align: str = "left") -> str:
     """Truncate and pad string so its visual display width is exactly target_w."""
+    if s is None:
+        s = ""
+    elif not isinstance(s, str):
+        s = str(s)
     return pad_to_display_width(truncate_to_display_width(s, target_w), target_w, align=align)
+
+
+def format_row_columns(values: List[Any], widths: List[int], sep: str = " ") -> str:
+    """Format row of text cells fitted to their respective column widths."""
+    return sep.join(fit_to_display_width(v, w) for v, w in zip(values, widths))
+
+
+def render_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
+    """
+    Render top border header line for a panel box with title truncation and ANSI styling.
+
+    :param width: Total panel width in characters.
+    :param title: Title text to display in header bar.
+    :param color_code: ANSI color formatting code for title text.
+    :return: Formatted top border string (e.g. '┌─ TITLE ───────┐').
+    """
+    if title is None:
+        title = ""
+    elif not isinstance(title, str):
+        title = str(title)
+    panel_title = f" {title.strip()} "
+    title_dw = get_display_width(panel_title)
+    if title_dw > width - 3:
+        panel_title = truncate_to_display_width(panel_title, max(0, width - 3))
+        title_dw = get_display_width(panel_title)
+    pad_len = max(0, width - 3 - title_dw)
+    return "┌─" + f"{color_code}{panel_title}\033[0m" + ("─" * pad_len) + "┐"
+
+
+def format_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
+    """Format top border header line for a panel box with title truncation and ANSI styling."""
+    return render_panel_header(width, title, color_code=color_code)
+
+
+def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Tuple[List[str], List[int]]:
+    """
+    Allocate column headers and widths for approved pull requests panel table.
+
+    Ensures sum of column widths plus spacing does not exceed inner_w even for narrow container widths (e.g. inner_w < 24).
+    """
+    if has_repo:
+        spacing = 4
+        avail = max(0, inner_w - spacing)
+        if inner_w < 44:
+            max_fixed = max(0, avail - 2) if avail < 5 else max(3, avail - 2)
+            min_col_w = 0 if avail < 5 else 1
+            pr_col_w = max(min_col_w, min(8, int(avail * 0.15)))
+            repo_col_w = max(min_col_w, min(16, int(avail * 0.25)))
+            author_col_w = max(min_col_w, min(14, int(avail * 0.20)))
+            fixed_sum = pr_col_w + repo_col_w + author_col_w
+            if fixed_sum > max_fixed:
+                scale = max_fixed / fixed_sum if fixed_sum > 0 else 0
+                pr_col_w = max(min_col_w, int(pr_col_w * scale))
+                repo_col_w = max(0, int(repo_col_w * scale))
+                author_col_w = max(0, max_fixed - pr_col_w - repo_col_w)
+        else:
+            pr_col_w = 8
+            repo_col_w = 16
+            author_col_w = 14
+
+        remaining = max(0, avail - pr_col_w - repo_col_w - author_col_w)
+        if remaining > 0:
+            title_col_w = max(0, (remaining - 1) // 2)
+            url_col_w = remaining - title_col_w
+        else:
+            title_col_w = 0
+            url_col_w = 0
+
+        headers = ["PR #", "REPO", "TITLE", "AUTHOR", "URL"]
+        widths = [pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w]
+    else:
+        spacing = 3
+        avail = max(0, inner_w - spacing)
+        if inner_w < 28:
+            max_fixed = max(0, avail - 2) if avail < 4 else max(2, avail - 2)
+            min_col_w = 0 if avail < 4 else 1
+            pr_col_w = max(min_col_w, min(8, int(avail * 0.20)))
+            author_col_w = max(min_col_w, min(15, int(avail * 0.30)))
+            fixed_sum = pr_col_w + author_col_w
+            if fixed_sum > max_fixed:
+                scale = max_fixed / fixed_sum if fixed_sum > 0 else 0
+                pr_col_w = max(min_col_w, int(pr_col_w * scale))
+                author_col_w = max(0, max_fixed - pr_col_w)
+        else:
+            pr_col_w = 8
+            author_col_w = 15
+
+        remaining = max(0, avail - pr_col_w - author_col_w)
+        if remaining > 0:
+            title_col_w = max(0, (remaining - 1) // 2)
+            url_col_w = remaining - title_col_w
+        else:
+            title_col_w = 0
+            url_col_w = 0
+
+        headers = ["PR #", "TITLE", "AUTHOR", "URL"]
+        widths = [pr_col_w, title_col_w, author_col_w, url_col_w]
+
+    return headers, widths
+
+
+calculate_pr_column_widths = allocate_approved_pr_columns
+
+
+def allocate_scheduled_job_columns(inner_w: int) -> Tuple[List[str], List[int]]:
+    """
+    Allocate column headers and widths for scheduled jobs panel table mode.
+
+    Ensures total sum of column widths plus spacing does not exceed inner_w even for narrow container widths (inner_w < 45).
+    """
+    num_cols = 8
+    spacers = num_cols - 1  # 7 spaces
+    if inner_w >= 45:
+        sel_w = 2
+        intv_w = 6
+        last_w = 10
+        next_w = 10
+        rem_w = 10
+        flex_avail = inner_w - 45
+
+        # Distribute flex_avail (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
+        min_scale = min(1.0, flex_avail / 52.0)
+        min_id = max(1 if flex_avail >= 3 else 0, int(8 * min_scale))
+        min_name = max(1 if flex_avail >= 2 else 0, int(12 * min_scale))
+        min_agent = max(1 if flex_avail >= 1 else 0, int(10 * min_scale))
+
+        id_w = max(min_id, min(flex_avail - min_name - min_agent, int(flex_avail * (12 / 52))))
+        name_w = max(min_name, min(flex_avail - id_w - min_agent, int(flex_avail * (24 / 52))))
+        agent_w = max(0, flex_avail - id_w - name_w)
+    else:
+        id_w = 0
+        name_w = 0
+        agent_w = 0
+        avail_cols = max(0, inner_w - spacers)
+        scale = avail_cols / 38.0
+        sel_w = max(1 if avail_cols >= 5 else 0, int(2 * scale))
+        intv_w = max(1 if avail_cols >= 4 else 0, int(6 * scale))
+        last_w = max(1 if avail_cols >= 3 else 0, int(10 * scale))
+        next_w = max(1 if avail_cols >= 2 else 0, int(10 * scale))
+        rem_w = max(0, avail_cols - sel_w - intv_w - last_w - next_w)
+
+    headers = [" ", "JOB ID", "NAME", "AGENT", "INTV", "LAST RUN", "NEXT RUN", "REMAIN"]
+    widths = [sel_w, id_w, name_w, agent_w, intv_w, last_w, next_w, rem_w]
+    return headers, widths
 
 
 def format_interval(sec: int) -> str:
@@ -189,78 +372,6 @@ def render_header_panel(
     ]
 
 
-def render_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
-    """
-    Render top border header line for a panel box with title truncation and ANSI styling.
-
-    :param width: Total panel width in characters.
-    :param title: Title text to display in header bar.
-    :param color_code: ANSI color formatting code for title text.
-    :return: Formatted top border string (e.g. '┌─ TITLE ───────┐').
-    """
-    panel_title = f" {title.strip()} "
-    title_dw = get_display_width(panel_title)
-    if title_dw > width - 3:
-        panel_title = truncate_to_display_width(panel_title, max(1, width - 3))
-        title_dw = get_display_width(panel_title)
-    pad_len = max(0, width - 3 - title_dw)
-    return "┌─" + f"{color_code}{panel_title}\033[0m" + ("─" * pad_len) + "┐"
-
-
-def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Tuple[int, int, int, int, int]:
-    """
-    Allocate column widths for approved pull requests panel table.
-
-    Note on minimum width floors:
-    Minimum width floors ensure columns retain reasonable minimum visual widths
-    even in narrow container widths (inner_w < 36 with repo, or inner_w < 26 without repo).
-    For narrow container widths (e.g. inner_w < 24), minimum width floors guarantee
-    column widths do not shrink below their minimum thresholds (e.g. PR col >= 4,
-    REPO col >= 8, AUTHOR col >= 6, TITLE col >= 1, URL col >= 1).
-
-    :param inner_w: Available inner width for table content.
-    :param has_repo: True if repository column should be included, False otherwise.
-    :return: 5-tuple of (pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w).
-             When has_repo is False, repo_col_w is returned as 0.
-    """
-    if has_repo:
-        spacing = 4
-        if inner_w < 36:
-            avail = max(1, inner_w - spacing)
-            pr_col_w = max(4, min(8, int(avail * 0.15)))
-            repo_col_w = max(8, min(16, int(avail * 0.25)))
-            author_col_w = max(6, min(14, int(avail * 0.2)))
-        else:
-            pr_col_w = 8
-            repo_col_w = 16
-            author_col_w = 14
-
-        remaining = max(2, inner_w - pr_col_w - repo_col_w - author_col_w - spacing)
-        if remaining >= 8:
-            title_col_w = max(1, remaining // 2 - 2)
-        else:
-            title_col_w = max(1, min(remaining - 1, remaining // 2))
-        url_col_w = remaining - title_col_w
-        return pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w
-    else:
-        spacing = 3
-        if inner_w < 26:
-            avail = max(1, inner_w - spacing)
-            pr_col_w = max(4, min(8, int(avail * 0.2)))
-            author_col_w = max(6, min(15, int(avail * 0.3)))
-        else:
-            pr_col_w = 8
-            author_col_w = 15
-
-        remaining = max(2, inner_w - pr_col_w - author_col_w - spacing)
-        if remaining >= 8:
-            title_col_w = max(1, remaining // 2 - 2)
-        else:
-            title_col_w = max(1, min(remaining - 1, remaining // 2))
-        url_col_w = remaining - title_col_w
-        return pr_col_w, 0, title_col_w, author_col_w, url_col_w
-
-
 def render_quota_panel(
     width: int,
     quota_tracker: Optional[QuotaTracker] = None,
@@ -330,30 +441,23 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        col_hdr = (
-            f"{fit_to_display_width('ID', 8)} "
-            f"{fit_to_display_width('AGENT', 14)} "
-            f"{fit_to_display_width('TARGET', 8)} "
-            f"{fit_to_display_width('WORKER', 9)} "
-            f"{fit_to_display_width('ATTEMPT', 7)} "
-            f"{fit_to_display_width('ELAPSED', 9)} "
-            f"{fit_to_display_width('PROMPT', 15)}"
-        )
+        headers = ["ID", "AGENT", "TARGET", "WORKER", "ATTEMPT", "ELAPSED", "PROMPT"]
+        widths = [8, 14, 8, 9, 7, 9, 15]
+        col_hdr = format_row_columns(headers, widths)
         hdr_styled = f"\033[1m{col_hdr}\033[0m"
         res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
         for t in tasks:
-            if get_display_width(t.prompt) > 15:
-                prompt_trunc = truncate_to_display_width(t.prompt, 13) + ".."
-            else:
-                prompt_trunc = t.prompt
-            id_str = fit_to_display_width(t.id, 8)
-            agent_str = fit_to_display_width(t.agent, 14)
-            target_str = fit_to_display_width(t.target_id or "-", 8)
-            worker_str = fit_to_display_width(t.worker_thread_id or "-", 9)
-            attempt_str = fit_to_display_width(f"{t.attempt}/{t.max_attempts}", 7)
-            elapsed_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 9)
-            prompt_str = fit_to_display_width(prompt_trunc, 15)
-            row = f"{id_str} {agent_str} {target_str} {worker_str} {attempt_str} {elapsed_str} {prompt_str}"
+            prompt_trunc = truncate_with_ellipsis(t.prompt, 15)
+            row_vals = [
+                t.id,
+                t.agent,
+                t.target_id or "-",
+                t.worker_thread_id or "-",
+                f"{t.attempt}/{t.max_attempts}",
+                f"{t.elapsed_time:.1f}s",
+                prompt_trunc,
+            ]
+            row = format_row_columns(row_vals, widths)
             res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
@@ -373,20 +477,21 @@ def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        col_hdr = f"{fit_to_display_width('ID', 8)} {fit_to_display_width('AGENT', 15)} {fit_to_display_width('TARGET', 10)} {fit_to_display_width('WAIT', 10)} {fit_to_display_width('PROMPT', 26)}"
+        headers = ["ID", "AGENT", "TARGET", "WAIT", "PROMPT"]
+        widths = [8, 15, 10, 10, 26]
+        col_hdr = format_row_columns(headers, widths)
         hdr_styled = f"\033[1m{col_hdr}\033[0m"
         res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
         for t in tasks:
-            if get_display_width(t.prompt) > 26:
-                prompt_trunc = truncate_to_display_width(t.prompt, 24) + ".."
-            else:
-                prompt_trunc = t.prompt
-            id_str = fit_to_display_width(t.id, 8)
-            agent_str = fit_to_display_width(t.agent, 15)
-            target_str = fit_to_display_width(t.target_id or "-", 10)
-            wait_str = fit_to_display_width(f"{t.wait_time:.1f}s", 10)
-            prompt_str = fit_to_display_width(prompt_trunc, 26)
-            row = f"{id_str} {agent_str} {target_str} {wait_str} {prompt_str}"
+            prompt_trunc = truncate_with_ellipsis(t.prompt, 26)
+            row_vals = [
+                t.id,
+                t.agent,
+                t.target_id or "-",
+                f"{t.wait_time:.1f}s",
+                prompt_trunc,
+            ]
+            row = format_row_columns(row_vals, widths)
             res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
@@ -455,31 +560,8 @@ def render_scheduled_jobs_panel(
                     sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
                     res.append(f"│ {fit_to_display_width(sep_line, inner_w)} │")
         else:
-            fixed_w = 2 + 6 + 10 + 10 + 10  # SEL, INTV, LAST RUN, NEXT RUN, REMAIN
-            num_cols = 8
-            spacers = num_cols - 1  # 7 spaces
-            flex_avail = max(1, inner_w - fixed_w - spacers)
-
-            # Distribute remaining width (weights: JOB ID: 12, NAME: 24, AGENT: 16 -> total 52)
-            min_scale = min(1.0, flex_avail / 52.0)
-            min_id = max(1 if flex_avail >= 3 else 0, int(8 * min_scale))
-            min_name = max(1 if flex_avail >= 2 else 0, int(12 * min_scale))
-            min_agent = max(1 if flex_avail >= 1 else 0, int(10 * min_scale))
-
-            id_w = max(min_id, min(flex_avail - min_name - min_agent, int(flex_avail * (12 / 52))))
-            name_w = max(min_name, min(flex_avail - id_w - min_agent, int(flex_avail * (24 / 52))))
-            agent_w = max(0, flex_avail - id_w - name_w)
-
-            col_hdr = (
-                f"{fit_to_display_width(' ', 2)} "
-                f"{fit_to_display_width('JOB ID', id_w)} "
-                f"{fit_to_display_width('NAME', name_w)} "
-                f"{fit_to_display_width('AGENT', agent_w)} "
-                f"{fit_to_display_width('INTV', 6)} "
-                f"{fit_to_display_width('LAST RUN', 10)} "
-                f"{fit_to_display_width('NEXT RUN', 10)} "
-                f"{fit_to_display_width('REMAIN', 10)}"
-            )
+            headers, widths = allocate_scheduled_job_columns(inner_w)
+            col_hdr = format_row_columns(headers, widths)
             hdr_styled = f"\033[1m{col_hdr}\033[0m"
             res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
 
@@ -489,29 +571,21 @@ def render_scheduled_jobs_panel(
                 cursor_str = "> " if is_selected else "  "
                 cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
 
-                if get_display_width(job.job_id) > id_w:
-                    id_trunc = truncate_to_display_width(job.job_id, max(1, id_w - 2)) + ".." if id_w >= 2 else truncate_to_display_width(job.job_id, id_w)
-                else:
-                    id_trunc = job.job_id
+                id_trunc = truncate_with_ellipsis(job.job_id, widths[1])
+                name_trunc = truncate_with_ellipsis(job.name, widths[2])
+                agent_trunc = truncate_with_ellipsis(job.agent, widths[3])
 
-                if get_display_width(job.name) > name_w:
-                    name_trunc = truncate_to_display_width(job.name, max(1, name_w - 2)) + ".." if name_w >= 2 else truncate_to_display_width(job.name, name_w)
-                else:
-                    name_trunc = job.name
-
-                if get_display_width(job.agent) > agent_w:
-                    agent_trunc = truncate_to_display_width(job.agent, max(1, agent_w - 2)) + ".." if agent_w >= 2 else truncate_to_display_width(job.agent, agent_w)
-                else:
-                    agent_trunc = job.agent
-
-                id_str = fit_to_display_width(id_trunc, id_w)
-                name_str = fit_to_display_width(name_trunc, name_w)
-                agent_str = fit_to_display_width(agent_trunc, agent_w)
-                interval_str = fit_to_display_width(format_interval(job.interval_seconds), 6)
-                last_run_str = fit_to_display_width(format_timestamp(job.last_run), 10)
-                next_run_str = fit_to_display_width(format_timestamp(job.next_run), 10)
-                rem_str = fit_to_display_width(format_remaining(job, now_dt), 10)
-                row = f"{cursor_styled} {id_str} {name_str} {agent_str} {interval_str} {last_run_str} {next_run_str} {rem_str}"
+                row_vals = [
+                    cursor_styled,
+                    id_trunc,
+                    name_trunc,
+                    agent_trunc,
+                    format_interval(job.interval_seconds),
+                    format_timestamp(job.last_run),
+                    format_timestamp(job.next_run),
+                    format_remaining(job, now_dt),
+                ]
+                row = format_row_columns(row_vals, widths)
                 res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
@@ -532,56 +606,25 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
         has_repo = any(bool(pr.get("repo_full_name")) for pr in approved_prs)
-        pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w = allocate_approved_pr_columns(inner_w, has_repo=has_repo)
-        if has_repo:
-            col_hdr = (
-                f"{fit_to_display_width('PR #', pr_col_w)} "
-                f"{fit_to_display_width('REPO', repo_col_w)} "
-                f"{fit_to_display_width('TITLE', title_col_w)} "
-                f"{fit_to_display_width('AUTHOR', author_col_w)} "
-                f"{fit_to_display_width('URL', url_col_w)}"
-            )
-            hdr_styled = f"\033[1m{col_hdr}\033[0m"
-            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+        headers, widths = allocate_approved_pr_columns(inner_w, has_repo=has_repo)
 
-            for pr in approved_prs:
-                num_str = f"#{pr.get('number', '')}"
+        col_hdr = format_row_columns(headers, widths)
+        hdr_styled = f"\033[1m{col_hdr}\033[0m"
+        res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
+
+        for pr in approved_prs:
+            num_str = f"#{pr.get('number', '')}"
+            title_str = pr.get("title", "")
+            author_str = pr.get("author", "")
+            url_str = pr.get("url", "")
+            if has_repo:
                 repo_str = pr.get("repo_full_name", "") or "-"
-                title_str = pr.get("title") or ""
-                author_str = pr.get("author") or ""
-                url_str = pr.get("url") or ""
+                row_vals = [num_str, repo_str, title_str, author_str, url_str]
+            else:
+                row_vals = [num_str, title_str, author_str, url_str]
 
-                pr_formatted = fit_to_display_width(num_str, pr_col_w)
-                repo_formatted = fit_to_display_width(repo_str, repo_col_w)
-                title_formatted = fit_to_display_width(title_str, title_col_w)
-                author_formatted = fit_to_display_width(author_str, author_col_w)
-                url_formatted = fit_to_display_width(url_str, url_col_w)
-
-                row = f"{pr_formatted} {repo_formatted} {title_formatted} {author_formatted} {url_formatted}"
-                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
-        else:
-            col_hdr = (
-                f"{fit_to_display_width('PR #', pr_col_w)} "
-                f"{fit_to_display_width('TITLE', title_col_w)} "
-                f"{fit_to_display_width('AUTHOR', author_col_w)} "
-                f"{fit_to_display_width('URL', url_col_w)}"
-            )
-            hdr_styled = f"\033[1m{col_hdr}\033[0m"
-            res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
-
-            for pr in approved_prs:
-                num_str = f"#{pr.get('number', '')}"
-                title_str = pr.get("title") or ""
-                author_str = pr.get("author") or ""
-                url_str = pr.get("url") or ""
-
-                pr_formatted = fit_to_display_width(num_str, pr_col_w)
-                title_formatted = fit_to_display_width(title_str, title_col_w)
-                author_formatted = fit_to_display_width(author_str, author_col_w)
-                url_formatted = fit_to_display_width(url_str, url_col_w)
-
-                row = f"{pr_formatted} {title_formatted} {author_formatted} {url_formatted}"
-                res.append(f"│ {fit_to_display_width(row, inner_w)} │")
+            row = format_row_columns(row_vals, widths)
+            res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
     return res
@@ -601,28 +644,25 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         msg_styled = f"\033[2m{msg}\033[0m"
         res.append(f"│ {fit_to_display_width(msg_styled, inner_w)} │")
     else:
-        col_hdr = (
-            f"{fit_to_display_width('ID', 8)} "
-            f"{fit_to_display_width('STATUS', 11)} "
-            f"{fit_to_display_width('AGENT', 14)} "
-            f"{fit_to_display_width('ATTEMPT', 7)} "
-            f"{fit_to_display_width('RETURN', 8)} "
-            f"{fit_to_display_width('DURATION', 9)} "
-            f"{fit_to_display_width('TARGET', 8)}"
-        )
+        headers = ["ID", "STATUS", "AGENT", "ATTEMPT", "RETURN", "DURATION", "TARGET"]
+        widths = [8, 11, 14, 7, 8, 9, 8]
+        col_hdr = format_row_columns(headers, widths)
         hdr_styled = f"\033[1m{col_hdr}\033[0m"
         res.append(f"│ {fit_to_display_width(hdr_styled, inner_w)} │")
         for t in tasks:
             status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
-            id_str = fit_to_display_width(t.id, 8)
-            status_str = fit_to_display_width(f"{status_color}{t.status}\033[0m", 11)
-            agent_str = fit_to_display_width(t.agent, 14)
-            attempt_str = fit_to_display_width(f"{t.attempt}/{t.max_attempts}", 7)
+            status_str = f"{status_color}{t.status}\033[0m"
             ret_val = str(t.return_code) if t.return_code is not None else "-"
-            ret_str = fit_to_display_width(ret_val, 8)
-            dur_str = fit_to_display_width(f"{t.elapsed_time:.1f}s", 9)
-            target_str = fit_to_display_width(t.target_id or "-", 8)
-            row = f"{id_str} {status_str} {agent_str} {attempt_str} {ret_str} {dur_str} {target_str}"
+            row_vals = [
+                t.id,
+                status_str,
+                t.agent,
+                f"{t.attempt}/{t.max_attempts}",
+                ret_val,
+                f"{t.elapsed_time:.1f}s",
+                t.target_id or "-",
+            ]
+            row = format_row_columns(row_vals, widths)
             res.append(f"│ {fit_to_display_width(row, inner_w)} │")
 
     res.append("└" + "─" * (width - 2) + "┘")
