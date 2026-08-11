@@ -178,7 +178,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                         )
                     except RuntimeError as e:
                         logger.warning(f"Could not submit task: {e}")
-                        self._send_json(503, {"error": "Server is draining tasks for update"})
+                        self._send_json(503, {"error": str(e)})
                         return
                 else:
                     exec_cwd = REPO_ROOT

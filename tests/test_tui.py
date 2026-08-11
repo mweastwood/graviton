@@ -1121,7 +1121,30 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"j\x1b["), (b"j", b"\x1b["))
 
 
+    def test_dashboard_handle_key_pause_toggle_and_rendering(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+        
+        self.assertFalse(manager.is_paused)
+        rendered_init = dashboard.render(width=80)
+        self.assertIn("[p] Pause Tasks", rendered_init)
+        self.assertNotIn("[PAUSED]", rendered_init)
+
+        dashboard.handle_key("p")
+        self.assertTrue(manager.is_paused)
+        rendered_paused = dashboard.render(width=80)
+        self.assertIn("[p] Resume Tasks", rendered_paused)
+        self.assertIn("[PAUSED]", rendered_paused)
+
+        dashboard.handle_key("P")
+        self.assertFalse(manager.is_paused)
+        rendered_resumed = dashboard.render(width=80)
+        self.assertIn("[p] Pause Tasks", rendered_resumed)
+        self.assertNotIn("[PAUSED]", rendered_resumed)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -583,6 +583,44 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertTrue(job.is_running)
         self.assertEqual(job.current_task_id, submitted_task.id)
 
+    def test_scheduler_defers_job_submission_when_task_manager_paused(self):
+        from lib.tasks import TaskManager
+        manager = TaskManager()
+        manager.pause()
+
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=manager,
+        )
+        job = ScheduledJob(
+            job_id="test_paused_job",
+            name="Test Paused Job",
+            agent="codebase_auditor",
+            prompt="Run audit",
+            enabled=True,
+            interval_seconds=3600,
+        )
+        scheduler.jobs["test_paused_job"] = job
+
+        # Execute job while TaskManager is paused
+        scheduler._execute_job(job)
+
+        # Job should be deferred cleanly without raising exception, setting current_task_id, or setting last_run
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
+        self.assertIsNone(job.last_run)
+        self.assertTrue(job.is_due())
+        self.assertEqual(len(manager.get_all_tasks()), 0)
+
+        # Resuming TaskManager allows deferred job to be submitted on next execution cycle and updates last_run
+        manager.resume()
+        scheduler._execute_job(job)
+        self.assertTrue(job.is_running)
+        self.assertIsNotNone(job.last_run)
+        self.assertIsNotNone(job.current_task_id)
+        self.assertEqual(len(manager.get_all_tasks()), 1)
+
     def test_atomic_file_writes_for_state_and_config(self):
         """Verify save_state and save_config use atomic file replacement without leaving leftover temp files."""
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)

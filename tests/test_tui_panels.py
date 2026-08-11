@@ -212,11 +212,25 @@ class TestTUIPanels(unittest.TestCase):
             reload_state="IDLE",
             uptime="01:23:45",
             active_screen="main",
+            is_paused=False,
         )
         self.assertEqual(len(lines), 5)
         self.assertTrue(lines[0].startswith("┌"))
         self.assertIn("127.0.0.1:8000", lines[2])
-        self.assertIn("Periodic Jobs", lines[3])
+        self.assertIn("[p] Pause Tasks", lines[3])
+
+        lines_paused = render_header_panel(
+            width=80,
+            host="127.0.0.1",
+            port=8000,
+            commit="a1b2c3d",
+            branch="main",
+            reload_state="IDLE",
+            uptime="01:23:45",
+            active_screen="main",
+            is_paused=True,
+        )
+        self.assertIn("[p] Resume Tasks", lines_paused[3])
 
     def test_render_quota_panel(self):
         tracker = QuotaTracker()
@@ -310,6 +324,10 @@ class TestTUIPanels(unittest.TestCase):
     def test_render_queued_tasks_panel_empty_and_populated(self):
         empty_lines = render_queued_tasks_panel(width=80, tasks=[])
         self.assertTrue(any("Task queue is empty" in l for l in empty_lines))
+        self.assertNotIn("[PAUSED]", empty_lines[0])
+
+        paused_lines = render_queued_tasks_panel(width=80, tasks=[], is_paused=True)
+        self.assertIn("[PAUSED]", paused_lines[0])
 
         task = Task(id="task-2", agent="code_fixer", prompt="Fix bug", status=TaskStatus.QUEUED)
         pop_lines = render_queued_tasks_panel(width=80, tasks=[task])

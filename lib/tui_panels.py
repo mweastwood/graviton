@@ -386,6 +386,7 @@ def render_header_panel(
     reload_state: str,
     uptime: str,
     active_screen: str = "main",
+    is_paused: bool = False,
 ) -> List[str]:
     """Render top header panel with host, port, git version, branch, uptime, and navigation state."""
     state_colors = {
@@ -412,7 +413,8 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     else:
-        nav_hint = "Nav: [j] Periodic Jobs │ [e] Event Logs"
+        pause_hint = "[p] Resume Tasks" if is_paused else "[p] Pause Tasks"
+        nav_hint = f"Nav: [j] Periodic Jobs │ [e] Event Logs │ {pause_hint}"
 
     lines = [
         line1_raw,
@@ -506,10 +508,11 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
     return render_panel_frame(header_bar, content, width)
 
 
-def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
+def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = False) -> List[str]:
     """Render pending queued tasks panel."""
     queued_cnt = len(tasks)
-    panel_title = f"TASK QUEUE (QUEUED) [{queued_cnt} Pending]"
+    paused_badge = " [PAUSED]" if is_paused else ""
+    panel_title = f"TASK QUEUE (QUEUED) [{queued_cnt} Pending]{paused_badge}"
     header_bar = render_panel_header(width, panel_title, "\033[93m\033[1m")
 
     if not tasks:

@@ -469,6 +469,24 @@ class TerminalDashboard:
                 return job
         return None
 
+    def pause(self):
+        """Pause task acceptance in TaskManager."""
+        if self.task_manager:
+            self.task_manager.pause()
+        self._force_refresh()
+
+    def resume(self):
+        """Resume task acceptance in TaskManager."""
+        if self.task_manager:
+            self.task_manager.resume()
+        self._force_refresh()
+
+    def toggle_pause(self):
+        """Toggle pause/resume state of task acceptance in TaskManager."""
+        if self.task_manager:
+            self.task_manager.toggle_pause()
+        self._force_refresh()
+
     def run_selected_job_now(self) -> bool:
         """Immediately execute the currently selected scheduled job."""
         if not self.scheduler:
@@ -509,6 +527,8 @@ class TerminalDashboard:
                 self.active_screen = "jobs"
             elif key in ("e", "E"):
                 self.active_screen = "logs"
+            elif key in ("p", "P"):
+                self.toggle_pause()
 
         self._force_refresh()
 
@@ -682,15 +702,17 @@ class TerminalDashboard:
     def _render_header(
         self, width: int, commit: str, branch: str, reload_state: str, uptime: str
     ) -> list:
+        is_paused = self.task_manager.is_paused if self.task_manager else False
         return render_header_panel(
-            width, self.host, self.port, commit, branch, reload_state, uptime, self.active_screen
+            width, self.host, self.port, commit, branch, reload_state, uptime, self.active_screen, is_paused=is_paused
         )
 
     def _render_active_tasks(self, width: int, tasks: list, max_workers: int) -> list:
         return render_active_tasks_panel(width, tasks, max_workers)
 
     def _render_queued_tasks(self, width: int, tasks: list) -> list:
-        return render_queued_tasks_panel(width, tasks)
+        is_paused = self.task_manager.is_paused if self.task_manager else False
+        return render_queued_tasks_panel(width, tasks, is_paused=is_paused)
 
     @staticmethod
     def _format_interval(sec: int) -> str:

@@ -187,14 +187,11 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.is_draining)
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
-        # Confirm new task submission succeeds while draining and stays QUEUED (workers paused)
-        task2 = manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
-        self.assertIsNotNone(task2)
-        self.assertEqual(task2.status, TaskStatus.QUEUED)
-        time.sleep(0.2)
-        # Workers must refrain from pulling new tasks while draining
-        self.assertEqual(task2.status, TaskStatus.QUEUED)
-        self.assertEqual(len(manager.get_queued_tasks()), 1)
+        # Confirm can_accept_task returns False while draining and new task submission raises RuntimeError
+        self.assertFalse(manager.can_accept_task())
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
+        self.assertIn("Server is draining tasks for update", str(ctx.exception))
 
         manager.stop()
 
@@ -223,40 +220,38 @@ class TestTaskManager(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "test_queue_state.json"
-            manager1 = TaskManager(max_workers=2)
-            manager1.start()
+            manager1 = TaskManager(max_workers=0)
 
-            # Submit task t1 and wait for worker to pick up/complete it before initiating drain
+            # Submit tasks t1 and t2 without worker threads running to test queue state serialization
             t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
-            for _ in range(50):
-                if t1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                    break
-                time.sleep(0.05)
-
-            manager1.drain_active_tasks(timeout=5.0)
             t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
 
             queued = manager1.get_queued_tasks()
-            self.assertEqual(len(queued), 1)
-            self.assertEqual(queued[0].id, t2.id)
+            self.assertEqual(len(queued), 2)
+            self.assertEqual(queued[0].id, t1.id)
+            self.assertEqual(queued[1].id, t2.id)
 
             dumped_count = manager1.dump_queue_state(filepath=state_file)
-            self.assertEqual(dumped_count, 1)
+            self.assertEqual(dumped_count, 2)
             self.assertTrue(state_file.exists())
             manager1.stop()
 
             # Restore into new manager instance
-            manager2 = TaskManager(max_workers=2)
+            manager2 = TaskManager(max_workers=0)
             restored_count = manager2.restore_queue_state(filepath=state_file)
-            self.assertEqual(restored_count, 1)
+            self.assertEqual(restored_count, 2)
             self.assertFalse(state_file.exists())
 
             restored_queued = manager2.get_queued_tasks()
-            self.assertEqual(len(restored_queued), 1)
-            self.assertEqual(restored_queued[0].id, "task-2")
-            self.assertEqual(restored_queued[0].agent, "code_fixer")
-            self.assertEqual(restored_queued[0].prompt, "Fix bug #11")
-            self.assertEqual(restored_queued[0].target_id, "#11")
+            self.assertEqual(len(restored_queued), 2)
+            self.assertEqual(restored_queued[0].id, "task-1")
+            self.assertEqual(restored_queued[0].agent, "code_reviewer")
+            self.assertEqual(restored_queued[0].prompt, "Review PR #10")
+            self.assertEqual(restored_queued[0].target_id, "#10")
+            self.assertEqual(restored_queued[1].id, "task-2")
+            self.assertEqual(restored_queued[1].agent, "code_fixer")
+            self.assertEqual(restored_queued[1].prompt, "Fix bug #11")
+            self.assertEqual(restored_queued[1].target_id, "#11")
 
             # Next submitted task should get incremental ID task-3
             t3 = manager2.submit_task("issue_triager", "Triage #12", target_id="#12")
@@ -906,6 +901,121 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertIn("Worker execution exception", task.error_message)
         quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
+
+    def test_task_manager_pause_resume_toggle_and_is_paused(self):
+        manager = TaskManager()
+        self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
+        stats = manager.get_stats()
+        self.assertFalse(stats["is_paused"])
+        self.assertEqual(stats["queue_status"], "ACTIVE")
+
+        manager.pause()
+        self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
+        stats_paused = manager.get_stats()
+        self.assertTrue(stats_paused["is_paused"])
+        self.assertEqual(stats_paused["queue_status"], "PAUSED")
+
+        manager.resume()
+        self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
+        stats_resumed = manager.get_stats()
+        self.assertFalse(stats_resumed["is_paused"])
+
+        new_state = manager.toggle_pause()
+        self.assertTrue(new_state)
+        self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
+
+        new_state_2 = manager.toggle_pause()
+        self.assertFalse(new_state_2)
+        self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
+
+    def test_submit_task_raises_runtime_error_when_paused(self):
+        manager = TaskManager()
+        manager.pause()
+        self.assertFalse(manager.can_accept_task())
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #1")
+        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+
+        manager.resume()
+        self.assertTrue(manager.can_accept_task())
+        task = manager.submit_task("code_reviewer", "Review PR #1")
+        self.assertIsNotNone(task)
+        self.assertEqual(task.id, "task-1")
+
+    def test_submit_task_deduplicates_duplicate_when_paused(self):
+        manager = TaskManager()
+        # Submit an initial task
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="owner/repo#1")
+        self.assertEqual(task1.id, "task-1")
+
+        manager.pause()
+        self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
+
+        # Duplicate task submission while paused should deduplicate and return existing active task without raising RuntimeError
+        task_dup = manager.submit_task("code_reviewer", "Review PR #1 updated prompt", target_id="owner/repo#1")
+        self.assertIs(task_dup, task1)
+
+        # New non-duplicate task submission while paused raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
+        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+
+    def test_submit_task_deduplicates_duplicate_when_draining(self):
+        manager = TaskManager()
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="owner/repo#1")
+        self.assertEqual(task1.id, "task-1")
+
+        manager.drain_active_tasks(timeout=0.01)
+        self.assertTrue(manager.is_draining)
+        self.assertFalse(manager.can_accept_task())
+
+        # Duplicate task submission while draining should deduplicate and return existing active task
+        task_dup = manager.submit_task("code_reviewer", "Review PR #1 updated prompt", target_id="owner/repo#1")
+        self.assertIs(task_dup, task1)
+
+        # New non-duplicate task submission while draining raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
+        self.assertIn("Server is draining tasks for update", str(ctx.exception))
+
+    def test_worker_loop_pauses_execution_when_task_manager_paused(self):
+        manager = TaskManager(max_workers=1)
+        manager.pause()
+        manager.start()
+
+        # Submit task manually to bypass submit_task pause check
+        with manager._lock:
+            manager._task_counter += 1
+            task = Task(
+                id=f"task-{manager._task_counter}",
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                status=TaskStatus.QUEUED,
+            )
+            manager._tasks[task.id] = task
+        manager._queue.put(task)
+
+        # Worker loop should not pop or execute task while paused
+        time.sleep(0.3)
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
+
+        # Resuming task manager allows worker to pick up and process queued task
+        manager.resume()
+        for _ in range(50):
+            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
 
 
