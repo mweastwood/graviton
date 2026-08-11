@@ -498,7 +498,7 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertEqual(polled_5h.remaining_percentage, 65.0)
             self.assertEqual(polled_1w.remaining_percentage, 20.0)
 
-    def test_differential_ttl_window_updates(self):
+    def test_uniform_ttl_window_updates(self):
         tracker = QuotaTracker()
         w5h_v1 = QuotaWindow(name="5H", remaining_percentage=90.0)
         w1w_v1 = QuotaWindow(name="1W", remaining_percentage=80.0)

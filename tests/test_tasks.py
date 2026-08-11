@@ -830,6 +830,30 @@ class TestTaskManager(unittest.TestCase):
         quota.poll_live_quota.assert_called_with(force=True)
         manager.stop()
 
+    def test_task_completion_quota_fetch_exception_handled(self):
+        quota = MagicMock(spec=QuotaTracker)
+        quota.poll_live_quota.side_effect = RuntimeError("Quota API error")
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        with self.assertLogs("graviton.tasks", level="WARNING") as cm:
+            manager.start()
+
+            task = manager.submit_task("code_reviewer", "Test prompt")
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            manager._queue.join()
+            manager.stop()
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        self.assertTrue(
+            any("Quota fetch on task finish failed: Quota API error" in log for log in cm.output)
+        )
+
+
     @patch("lib.tasks.run_agent_container")
     def test_task_failure_return_code_triggers_quota_fetch(self, mock_run):
         mock_proc = MagicMock()
