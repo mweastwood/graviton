@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
-from lib.security import contains_bot_marker
+from lib.security import contains_bot_marker, extract_agent_marker
 from lib.pr_tracker import has_approval_marker, has_change_request_marker, is_bot_event
 
 _pr_review_timestamps: Dict[Any, float] = {}
@@ -98,6 +98,7 @@ def _build_accepted_response(
     repo_full_name: Optional[str] = None,
     repo_name: Optional[str] = None,
     clone_url: Optional[str] = None,
+    author_agent: Optional[str] = None,
     **extra_fields: Any,
 ) -> Dict[str, Any]:
     """
@@ -111,6 +112,8 @@ def _build_accepted_response(
     res["agent"] = agent
     res["prompt"] = prompt
 
+    if author_agent:
+        res["author_agent"] = author_agent
     if repo_full_name:
         res["repo_full_name"] = repo_full_name
     if repo_name:
@@ -282,6 +285,8 @@ def handle_pull_request_review_event(
     pr_author = pr_user.get("login", "") if pr_user else str(pr.get("user", "") or "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
+    author_agent = extract_agent_marker(review_body)
+
     if pr_tracker and pr_number is not None:
         if action == "submitted":
             if review_state == "APPROVED" or (review_state == "COMMENTED" and has_approval_marker(review_body) and not has_change_request_marker(review_body)):
@@ -291,7 +296,13 @@ def handle_pull_request_review_event(
         elif action == "dismissed":
             pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
 
-    if is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
+    if author_agent and author_agent == default_fixer:
+        return {
+            "status": "ignored",
+            "reason": "Bot self-review event dropped",
+        }
+
+    if not author_agent and is_bot_event(review_body, review_author) and review_state != "CHANGES_REQUESTED":
         return {
             "status": "ignored",
             "reason": "Bot self-review event dropped",
@@ -320,6 +331,7 @@ def handle_pull_request_review_event(
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
+            author_agent=author_agent,
             review_state=review_state,
             pr_number=pr_number,
         )
@@ -346,7 +358,15 @@ def handle_pull_request_review_comment_event(
     pr_number = pr.get("number") or (pr_url.rstrip("/").split("/")[-1] if pr_url else "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
-    if is_bot_event(comment_body, comment_author):
+    author_agent = extract_agent_marker(comment_body)
+
+    if author_agent and author_agent == default_fixer:
+        return {
+            "status": "ignored",
+            "reason": "Bot comment dropped",
+        }
+
+    if not author_agent and is_bot_event(comment_body, comment_author):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",
@@ -370,6 +390,7 @@ def handle_pull_request_review_comment_event(
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
+            author_agent=author_agent,
             pr_number=pr_number,
             file=file_path,
             line=line,
@@ -394,7 +415,14 @@ def handle_issues_event(
     issue_body = issue.get("body", "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
+    author_agent = extract_agent_marker(issue_body)
+
     if action in ("opened", "reopened", "edited"):
+        if author_agent and author_agent == default_triager:
+            return {
+                "status": "ignored",
+                "reason": "Bot issue event dropped",
+            }
         if repo_full_name:
             prompt = f"Triage Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
         else:
@@ -406,12 +434,18 @@ def handle_issues_event(
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
+            author_agent=author_agent,
             issue_number=issue_number,
         )
     elif action == "labeled":
         label = payload.get("label", {})
         label_name = label.get("name", "")
         if label_name in ("ready-for-pr", "ready-for-implementation"):
+            if author_agent and author_agent == default_drafter:
+                return {
+                    "status": "ignored",
+                    "reason": "Bot issue event dropped",
+                }
             if repo_full_name:
                 prompt = f"Draft initial PR to implement ready Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
             else:
@@ -423,6 +457,7 @@ def handle_issues_event(
                 repo_full_name=repo_full_name,
                 repo_name=repo_name,
                 clone_url=clone_url,
+                author_agent=author_agent,
                 label=label_name,
                 issue_number=issue_number,
             )
@@ -455,6 +490,8 @@ def handle_issue_comment_event(
     pr = issue.get("pull_request")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 
+    author_agent = extract_agent_marker(comment_body)
+
     if pr and pr_tracker and issue_number is not None and action in ("created", "edited"):
         if has_change_request_marker(comment_body):
             pr_tracker.remove_approved_pr(issue_number, repo_full_name=repo_full_name)
@@ -465,7 +502,7 @@ def handle_issue_comment_event(
             pr_author = issue_user.get("login", "") if isinstance(issue_user, dict) else str(issue_user or "")
             pr_tracker.add_approved_pr(issue_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
 
-    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+    if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",
@@ -492,6 +529,18 @@ def handle_issue_comment_event(
             else:
                 agent = default_fixer
 
+            if author_agent and author_agent == agent and not has_explicit_command(comment_body):
+                return {
+                    "status": "ignored",
+                    "reason": "Bot comment dropped",
+                }
+
+            if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+                return {
+                    "status": "ignored",
+                    "reason": "Bot comment dropped",
+                }
+
             if repo_full_name:
                 prompt = f"Address comment on PR #{issue_number} in {repo_full_name}: '{comment_body}'"
             else:
@@ -503,6 +552,7 @@ def handle_issue_comment_event(
                 repo_full_name=repo_full_name,
                 repo_name=repo_name,
                 clone_url=clone_url,
+                author_agent=author_agent,
                 pr_number=issue_number,
             )
 
@@ -514,33 +564,69 @@ def handle_issue_comment_event(
             ]
             body_lower = comment_body.lower()
             if "ready-for-pr" in labels or "ready-for-implementation" in labels or "/draft-pr" in body_lower:
+                agent = default_drafter
+                if author_agent and author_agent == agent and not has_explicit_command(comment_body):
+                    return {
+                        "status": "ignored",
+                        "reason": "Bot comment dropped",
+                    }
+                if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+                    return {
+                        "status": "ignored",
+                        "reason": "Bot comment dropped",
+                    }
                 if repo_full_name:
                     prompt = f"Draft initial PR for Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
                 else:
                     prompt = f"Draft initial PR for Issue #{issue_number} based on comment: '{comment_body}'"
                 return _build_accepted_response(
                     action=action,
-                    agent=default_drafter,
+                    agent=agent,
                     prompt=prompt,
                     repo_full_name=repo_full_name,
                     repo_name=repo_name,
                     clone_url=clone_url,
+                    author_agent=author_agent,
                     issue_number=issue_number,
                 )
             else:
+                agent = default_triager
+                if author_agent and author_agent == agent and not has_explicit_command(comment_body):
+                    return {
+                        "status": "ignored",
+                        "reason": "Bot comment dropped",
+                    }
+                if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+                    return {
+                        "status": "ignored",
+                        "reason": "Bot comment dropped",
+                    }
                 if repo_full_name:
                     prompt = f"Continue triage on Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
                 else:
                     prompt = f"Continue triage on Issue #{issue_number} based on comment: '{comment_body}'"
                 return _build_accepted_response(
                     action=action,
-                    agent=default_triager,
+                    agent=agent,
                     prompt=prompt,
                     repo_full_name=repo_full_name,
                     repo_name=repo_name,
                     clone_url=clone_url,
+                    author_agent=author_agent,
                     issue_number=issue_number,
                 )
+
+    if author_agent and author_agent == default_triager and not has_explicit_command(comment_body):
+        return {
+            "status": "ignored",
+            "reason": "Bot comment dropped",
+        }
+
+    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+        return {
+            "status": "ignored",
+            "reason": "Bot comment dropped",
+        }
 
     return {
         "status": "ignored",
