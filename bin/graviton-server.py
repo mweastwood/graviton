@@ -350,16 +350,6 @@ def main():
 
     def shutdown_signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
-        if scheduler:
-            scheduler.stop()
-        if dashboard:
-            dashboard.stop()
-        if task_manager:
-            task_manager.stop()
-        try:
-            httpd.shutdown()
-        except Exception:
-            pass
         sys.exit(0)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -370,14 +360,28 @@ def main():
 
     try:
         httpd.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Stopping Graviton Webhook Server...")
     finally:
         if scheduler:
-            scheduler.stop()
-        dashboard.stop()
-        task_manager.stop()
-        httpd.shutdown()
+            try:
+                scheduler.stop()
+            except Exception:
+                pass
+        if dashboard:
+            try:
+                dashboard.stop()
+            except Exception:
+                pass
+        if task_manager:
+            try:
+                task_manager.stop()
+            except Exception:
+                pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
