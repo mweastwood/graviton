@@ -187,14 +187,11 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.is_draining)
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
-        # Confirm new task submission succeeds while draining and stays QUEUED (workers paused)
-        task2 = manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
-        self.assertIsNotNone(task2)
-        self.assertEqual(task2.status, TaskStatus.QUEUED)
-        time.sleep(0.2)
-        # Workers must refrain from pulling new tasks while draining
-        self.assertEqual(task2.status, TaskStatus.QUEUED)
-        self.assertEqual(len(manager.get_queued_tasks()), 1)
+        # Confirm can_accept_task returns False while draining and new task submission raises RuntimeError
+        self.assertFalse(manager.can_accept_task())
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
+        self.assertIn("Server is draining tasks for update", str(ctx.exception))
 
         manager.stop()
 
@@ -223,18 +220,18 @@ class TestTaskManager(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "test_queue_state.json"
-            manager1 = TaskManager(max_workers=2)
+            manager1 = TaskManager(max_workers=1)
             manager1.start()
 
-            # Submit task t1 and wait for worker to pick up/complete it before initiating drain
+            # Submit task t1 and queued task t2 before initiating drain
             t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
+            t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
             for _ in range(50):
                 if t1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
                     break
                 time.sleep(0.05)
 
             manager1.drain_active_tasks(timeout=5.0)
-            t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
 
             queued = manager1.get_queued_tasks()
             self.assertEqual(len(queued), 1)
@@ -878,6 +875,24 @@ class TestTaskManager(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
         self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+
+    def test_submit_task_deduplicates_duplicate_when_draining(self):
+        manager = TaskManager()
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="owner/repo#1")
+        self.assertEqual(task1.id, "task-1")
+
+        manager.drain_active_tasks(timeout=0.01)
+        self.assertTrue(manager.is_draining)
+        self.assertFalse(manager.can_accept_task())
+
+        # Duplicate task submission while draining should deduplicate and return existing active task
+        task_dup = manager.submit_task("code_reviewer", "Review PR #1 updated prompt", target_id="owner/repo#1")
+        self.assertIs(task_dup, task1)
+
+        # New non-duplicate task submission while draining raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
+        self.assertIn("Server is draining tasks for update", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -168,7 +168,7 @@ class TaskManager:
             return self._draining
 
     def _can_accept_task_locked(self, agent: Optional[str] = None, prompt: Optional[str] = None) -> bool:
-        if self._paused or self._stopped:
+        if self._paused or self._stopped or self._draining:
             return False
         if self.quota_tracker is not None:
             if hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:
@@ -468,6 +468,8 @@ class TaskManager:
             if not self._can_accept_task_locked(agent=agent, prompt=prompt):
                 if self._paused:
                     raise RuntimeError("TaskManager is paused and not accepting new tasks")
+                if self._draining:
+                    raise RuntimeError("Server is draining tasks for update")
                 if self._stopped:
                     raise RuntimeError("Cannot accept new task: task manager is stopped")
                 if self.quota_tracker is not None and hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:

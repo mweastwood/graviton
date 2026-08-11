@@ -552,13 +552,20 @@ class TaskScheduler:
         """
         Hand off job prompt to runner or custom handler and update job state.
         """
+        with self._lock:
+            handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
+
+        if not handler and self.task_manager and hasattr(self.task_manager, "can_accept_task"):
+            if not self.task_manager.can_accept_task(job.agent, job.prompt):
+                logger.info(f"TaskManager cannot accept task for job '{job.job_id}' right now. Deferring execution.")
+                return
+
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
 
         with self._lock:
             job.mark_executed(now_dt)
             job.is_running = True
-            handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
         self.save_state()
 
         if handler:
@@ -573,13 +580,6 @@ class TaskScheduler:
             return
 
         if self.task_manager:
-            if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, job.prompt):
-                logger.info(f"TaskManager cannot accept task for job '{job.job_id}' right now. Deferring execution.")
-                with self._lock:
-                    job.is_running = False
-                self.save_state()
-                return
-
             try:
                 target_id = f"sched:{job.job_id}"
                 task = self.task_manager.submit_task(
