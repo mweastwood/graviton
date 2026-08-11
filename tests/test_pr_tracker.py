@@ -5,6 +5,7 @@ Unit tests for lib/pr_tracker.py (PRTracker).
 import json
 import subprocess
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -366,7 +367,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_concurrent_multi_repo_sync(self, mock_run):
-        import time
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             num_repos = 5
@@ -379,13 +379,18 @@ class TestPRTracker(unittest.TestCase):
 
             thread_ids = set()
             lock = threading.Lock()
+            barrier = threading.Barrier(num_repos)
 
             def side_effect(cmd, cwd=None, **kwargs):
-                with lock:
-                    thread_ids.add(threading.get_ident())
-                time.sleep(0.01)
                 cmd_str = " ".join(cmd)
                 cwd_str = str(cwd or "")
+                if "git remote get-url" in cmd_str:
+                    with lock:
+                        thread_ids.add(threading.get_ident())
+                    try:
+                        barrier.wait(timeout=5.0)
+                    except threading.BrokenBarrierError:
+                        pass
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
                         if "git remote get-url" in cmd_str:
