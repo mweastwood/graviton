@@ -137,6 +137,12 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.get_backoff_delay(), 0.0)
         self.assertEqual(tracker.active_backoff_delay, 0.0)
 
+        # In EXHAUSTED state (0%), delay returns 0.0 float and resets active_backoff_delay
+        tracker.update_quota(0.0)
+        self.assertEqual(tracker.state, QuotaState.EXHAUSTED)
+        self.assertEqual(tracker.get_backoff_delay(), 0.0)
+        self.assertEqual(tracker.active_backoff_delay, 0.0)
+
     def test_exponential_backoff_with_attempt_parameter(self):
         tracker = QuotaTracker(base_backoff_delay=1.0, max_backoff_delay=10.0, backoff_factor=2.0)
         tracker.update_quota(10.0)  # LOW_QUOTA state
@@ -209,6 +215,7 @@ class TestQuotaTracker(unittest.TestCase):
         tracker = QuotaTracker(max_backoff_delay=10.0)
         tracker.update_quota(
             remaining_percentage=20.0,
+            remaining_percentage_5h=100.0,
             remaining_percentage_1w=20.0,
             reset_time_1w=now + 362880.0,
         )
@@ -217,6 +224,11 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertAlmostEqual(backoff, 4.0)
         self.assertTrue(tracker.is_behind_pacing(now=now))
         self.assertEqual(tracker.get_backoff_delay(now=now), 0.0)
+        self.assertEqual(tracker.pacing_status, "BEHIND_PACING")
+        self.assertEqual(tracker.pacing_status(now=now), "BEHIND_PACING")
+        ok_tracker = QuotaTracker(remaining_percentage=100.0)
+        self.assertEqual(ok_tracker.pacing_status, "OK")
+        self.assertEqual(ok_tracker.pacing_status(now=now), "OK")
 
     def test_parse_antigravity_quota_json(self):
         data = {

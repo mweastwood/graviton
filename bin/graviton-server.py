@@ -188,7 +188,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     if qt:
                         if hasattr(qt, "is_behind_pacing") and callable(getattr(qt, "is_behind_pacing", None)):
                             res = qt.is_behind_pacing()
-                            if res is True or (isinstance(res, bool) and res):
+                            if res is True:
                                 logger.warning("Task acceptance suspended due to quota pacing deficit. Skipping task submission.")
                                 self._send_json(200, {"status": "ignored", "reason": "behind_quota_pacing"})
                                 return

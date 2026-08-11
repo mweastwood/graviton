@@ -578,6 +578,17 @@ def parse_quota_headers(headers: dict) -> dict:
     return res
 
 
+class _PacingStatusResult(str):
+    def __new__(cls, tracker, now: Optional[float] = None):
+        val = "BEHIND_PACING" if tracker.is_behind_pacing(now=now) else "OK"
+        obj = super().__new__(cls, val)
+        obj._tracker = tracker
+        return obj
+
+    def __call__(self, now: Optional[float] = None) -> str:
+        return "BEHIND_PACING" if self._tracker.is_behind_pacing(now=now) else "OK"
+
+
 class QuotaTracker:
     """
     Thread-safe tracker for Antigravity API model quota levels and rate limits.
@@ -688,9 +699,9 @@ class QuotaTracker:
             return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
 
     @property
-    def pacing_status(self) -> str:
+    def pacing_status(self) -> Union[str, _PacingStatusResult]:
         """Return 'BEHIND_PACING' if either quota window is behind target pacing, else 'OK'."""
-        return "BEHIND_PACING" if self.is_behind_pacing() else "OK"
+        return _PacingStatusResult(self)
 
     def get_pacing_backoff_delay(
         self, window: Optional[QuotaWindow] = None, now: Optional[float] = None
@@ -962,14 +973,7 @@ class QuotaTracker:
         """
         with self._lock:
             current_state = self._state_unlocked()
-            if current_state == QuotaState.NORMAL:
-                self._backoff_count = 0
-                self._active_backoff_delay = 0.0
-                return 0.0
-            elif current_state == QuotaState.EXHAUSTED:
-                self._active_backoff_delay = self.max_backoff_delay
-                return self.max_backoff_delay
-            else:
+            if current_state == QuotaState.LOW_QUOTA:
                 if attempt is not None and attempt > 0:
                     exp = attempt - 1
                 else:
@@ -982,6 +986,10 @@ class QuotaTracker:
                 self._backoff_count += 1
                 self._active_backoff_delay = exp_delay
                 return exp_delay
+            else:
+                self._backoff_count = 0
+                self._active_backoff_delay = 0.0
+                return 0.0
 
     def reset_backoff(self):
         """Reset exponential backoff counter."""

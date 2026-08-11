@@ -606,7 +606,7 @@ class TaskScheduler:
                 is_behind = False
                 if hasattr(qt, "is_behind_pacing") and callable(getattr(qt, "is_behind_pacing", None)):
                     res = qt.is_behind_pacing()
-                    if res is True or (isinstance(res, bool) and res):
+                    if res is True:
                         is_behind = True
                 is_exhausted = (getattr(qt, "state", None) == QuotaState.EXHAUSTED)
                 if is_behind or is_exhausted:
