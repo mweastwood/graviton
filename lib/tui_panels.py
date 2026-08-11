@@ -5,6 +5,7 @@ Modular component rendering utilities for Graviton Server Terminal UI (TUI) pane
 import re
 import unicodedata
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -195,103 +196,141 @@ def split_flex_columns(remaining: int) -> Tuple[int, int]:
     return title_w, url_w
 
 
+@dataclass
+class ColumnSpec:
+    """Declarative specification for a panel table column."""
+
+    name: str
+    ratio: float
+    fixed_w: Optional[int] = None
+    min_w: int = 0
+    max_w: Optional[int] = None
+    min_avail_threshold: int = 0
+    is_flex: bool = False
+    narrow_ratio: Optional[float] = None
+
+
+@dataclass
+class TableLayoutSpec:
+    """Declarative layout specification for a multi-column panel table."""
+
+    columns: List[ColumnSpec]
+    spacing: int
+    wide_threshold: int
+    narrow_threshold: int
+
+
+APPROVED_PR_HAS_REPO_SPEC = TableLayoutSpec(
+    columns=[
+        ColumnSpec("pr", ratio=0.15, fixed_w=8, min_w=4, max_w=8, min_avail_threshold=5),
+        ColumnSpec("repo", ratio=0.25, fixed_w=16, min_w=8, max_w=16, min_avail_threshold=4),
+        ColumnSpec("author", ratio=0.20, fixed_w=14, min_w=6, max_w=14, min_avail_threshold=3),
+        ColumnSpec("title", ratio=0.20, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=2, is_flex=True),
+        ColumnSpec("url", ratio=0.0, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=0, is_flex=True),
+    ],
+    spacing=4,
+    wide_threshold=44,
+    narrow_threshold=20,
+)
+
+APPROVED_PR_NO_REPO_SPEC = TableLayoutSpec(
+    columns=[
+        ColumnSpec("pr", ratio=0.20, fixed_w=8, min_w=4, max_w=8, min_avail_threshold=4),
+        ColumnSpec("author", ratio=0.30, fixed_w=15, min_w=6, max_w=15, min_avail_threshold=3, narrow_ratio=0.25),
+        ColumnSpec("title", ratio=0.25, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=2, is_flex=True),
+        ColumnSpec("url", ratio=0.0, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=0, is_flex=True),
+    ],
+    spacing=3,
+    wide_threshold=28,
+    narrow_threshold=14,
+)
+
+SCHEDULED_JOB_COLUMN_SPECS = [
+    ColumnSpec("id", ratio=12 / 52, min_w=8, min_avail_threshold=3),
+    ColumnSpec("name", ratio=24 / 52, min_w=12, min_avail_threshold=2),
+    ColumnSpec("agent", ratio=16 / 52, min_w=10, min_avail_threshold=1),
+]
+
+
+def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[str, int]:
+    """Calculate column widths based on a declarative TableLayoutSpec and container inner width."""
+    avail = max(0, inner_w - spec.spacing)
+    res: Dict[str, int] = {}
+
+    if inner_w >= spec.wide_threshold:
+        fixed_used = sum(col.fixed_w for col in spec.columns if not col.is_flex and col.fixed_w is not None)
+        rem = inner_w - fixed_used - spec.spacing
+        title_w, url_w = split_flex_columns(rem)
+        for col in spec.columns:
+            if col.name == "title":
+                res["title"] = title_w
+            elif col.name == "url":
+                res["url"] = url_w
+            else:
+                res[col.name] = col.fixed_w or 0
+    elif avail < spec.narrow_threshold:
+        used = 0
+        for col in spec.columns:
+            if col.name == "url":
+                res["url"] = max(0, avail - used)
+            else:
+                r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
+                val = max(1 if avail >= col.min_avail_threshold else 0, int(avail * r))
+                res[col.name] = val
+                used += val
+    else:
+        non_flex_used = 0
+        for col in spec.columns:
+            if not col.is_flex:
+                val = max(col.min_w, min(col.max_w or 999, int(avail * col.ratio)))
+                res[col.name] = val
+                non_flex_used += val
+
+        rem = avail - non_flex_used
+        if rem >= 2:
+            title_w, url_w = split_flex_columns(rem)
+            res["title"] = title_w
+            res["url"] = url_w
+        else:
+            used = 0
+            for col in spec.columns:
+                if col.name == "url":
+                    res["url"] = max(0, avail - used)
+                else:
+                    r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
+                    val = max(1, int(avail * r))
+                    res[col.name] = val
+                    used += val
+
+    total = sum(res.values()) + spec.spacing
+    if total > inner_w:
+        over = total - inner_w
+        reduction_order = ["url", "title", "author", "repo", "pr"]
+        for key in reduction_order:
+            if key in res:
+                if key == "pr":
+                    res["pr"] = max(0, res["pr"] - over)
+                    over = 0
+                else:
+                    if res[key] >= over:
+                        res[key] -= over
+                        over = 0
+                        break
+                    else:
+                        over -= res[key]
+                        res[key] = 0
+
+    return res
+
+
 def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Dict[str, int]:
     """Calculate column widths for approved PRs panel based on container width and repo visibility.
 
     Note: Fixed columns and flex columns enforce minimum width floor values for narrow container widths,
     scaling down when necessary to ensure column widths and separators do not exceed inner_w.
     """
-    if has_repo:
-        spacing = 4
-        avail = max(0, inner_w - spacing)
-        if inner_w >= 44:
-            pr_w, repo_w, author_w = 8, 16, 14
-            fixed_used = pr_w + repo_w + author_w
-            rem = inner_w - fixed_used - spacing
-            title_w, url_w = split_flex_columns(rem)
-        elif avail < 20:
-            pr_w = max(1 if avail >= 5 else 0, int(avail * 0.15))
-            repo_w = max(1 if avail >= 4 else 0, int(avail * 0.25))
-            author_w = max(1 if avail >= 3 else 0, int(avail * 0.20))
-            title_w = max(1 if avail >= 2 else 0, int(avail * 0.20))
-            url_w = max(0, avail - pr_w - repo_w - author_w - title_w)
-        else:
-            pr_w = max(4, min(8, int(avail * 0.15)))
-            repo_w = max(8, min(16, int(avail * 0.25)))
-            author_w = max(6, min(14, int(avail * 0.20)))
-            fixed_used = pr_w + repo_w + author_w
-            rem = avail - fixed_used
-            if rem >= 2:
-                title_w, url_w = split_flex_columns(rem)
-            else:
-                pr_w = max(1, int(avail * 0.15))
-                repo_w = max(1, int(avail * 0.25))
-                author_w = max(1, int(avail * 0.20))
-                title_w = max(1, int(avail * 0.20))
-                url_w = max(0, avail - pr_w - repo_w - author_w - title_w)
-    else:
-        spacing = 3
-        avail = max(0, inner_w - spacing)
-        if inner_w >= 28:
-            pr_w, author_w = 8, 15
-            repo_w = 0
-            fixed_used = pr_w + author_w
-            rem = inner_w - fixed_used - spacing
-            title_w, url_w = split_flex_columns(rem)
-        elif avail < 14:
-            pr_w = max(1 if avail >= 4 else 0, int(avail * 0.20))
-            author_w = max(1 if avail >= 3 else 0, int(avail * 0.25))
-            title_w = max(1 if avail >= 2 else 0, int(avail * 0.25))
-            url_w = max(0, avail - pr_w - author_w - title_w)
-            repo_w = 0
-        else:
-            pr_w = max(4, min(8, int(avail * 0.20)))
-            author_w = max(6, min(15, int(avail * 0.30)))
-            repo_w = 0
-            fixed_used = pr_w + author_w
-            rem = avail - fixed_used
-            if rem >= 2:
-                title_w, url_w = split_flex_columns(rem)
-            else:
-                pr_w = max(1, int(avail * 0.20))
-                author_w = max(1, int(avail * 0.25))
-                title_w = max(1, int(avail * 0.25))
-                url_w = max(0, avail - pr_w - author_w - title_w)
-
-    total = pr_w + repo_w + title_w + author_w + url_w + spacing
-    if total > inner_w:
-        over = total - inner_w
-        if url_w >= over:
-            url_w -= over
-        else:
-            over -= url_w
-            url_w = 0
-            if title_w >= over:
-                title_w -= over
-            else:
-                over -= title_w
-                title_w = 0
-                if author_w >= over:
-                    author_w -= over
-                else:
-                    over -= author_w
-                    author_w = 0
-                    if repo_w >= over:
-                        repo_w -= over
-                    else:
-                        over -= repo_w
-                        repo_w = 0
-                        pr_w = max(0, pr_w - over)
-
-    res = {
-        "pr": pr_w,
-        "title": title_w,
-        "author": author_w,
-        "url": url_w,
-    }
-    if has_repo:
-        res["repo"] = repo_w
-    return res
+    spec = APPROVED_PR_HAS_REPO_SPEC if has_repo else APPROVED_PR_NO_REPO_SPEC
+    return allocate_declarative_columns(spec, inner_w)
 
 
 def allocate_scheduled_job_columns(inner_w: int) -> Tuple[int, int, int]:
@@ -301,12 +340,13 @@ def allocate_scheduled_job_columns(inner_w: int) -> Tuple[int, int, int]:
     flex_avail = max(0, inner_w - fixed_w - spacers)
 
     min_scale = min(1.0, flex_avail / 52.0)
-    min_id = max(1 if flex_avail >= 3 else 0, int(8 * min_scale))
-    min_name = max(1 if flex_avail >= 2 else 0, int(12 * min_scale))
-    min_agent = max(1 if flex_avail >= 1 else 0, int(10 * min_scale))
+    min_bounds = {
+        col.name: max(1 if flex_avail >= col.min_avail_threshold else 0, int(col.min_w * min_scale))
+        for col in SCHEDULED_JOB_COLUMN_SPECS
+    }
 
-    id_w = max(min_id, min(flex_avail - min_name - min_agent, int(flex_avail * (12 / 52))))
-    name_w = max(min_name, min(flex_avail - id_w - min_agent, int(flex_avail * (24 / 52))))
+    id_w = max(min_bounds["id"], min(flex_avail - min_bounds["name"] - min_bounds["agent"], int(flex_avail * SCHEDULED_JOB_COLUMN_SPECS[0].ratio)))
+    name_w = max(min_bounds["name"], min(flex_avail - id_w - min_bounds["agent"], int(flex_avail * SCHEDULED_JOB_COLUMN_SPECS[1].ratio)))
     agent_w = max(0, flex_avail - id_w - name_w)
 
     return id_w, name_w, agent_w
