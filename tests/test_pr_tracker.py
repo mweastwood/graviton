@@ -413,7 +413,7 @@ class TestPRTracker(unittest.TestCase):
                 matching = [p for p in approved if p["repo_full_name"] == f"org/repo{i}"]
                 self.assertEqual(len(matching), 1)
                 self.assertEqual(matching[0]["number"], i * 10)
-            self.assertGreater(len(thread_ids), 1)
+            self.assertEqual(len(thread_ids), num_repos)
 
     @patch("lib.pr_tracker.ThreadPoolExecutor")
     @patch("subprocess.run")
