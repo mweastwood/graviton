@@ -714,7 +714,11 @@ class TaskManager:
             finally:
                 if self.quota_tracker:
                     try:
-                        self.quota_tracker.poll_live_quota(force=True)
+                        self.quota_tracker.poll_live_quota_async(
+                            force=True,
+                            thread_name=f"AsyncQuotaPoll-{worker_id}",
+                        )
                     except Exception as poll_err:
                         logger.warning(f"[{worker_id}] Quota fetch on task finish failed: {poll_err}")
                 self._queue.task_done()
+

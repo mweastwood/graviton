@@ -3,6 +3,7 @@ Unit tests for lib/tasks.py (TaskManager and Task model).
 """
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -527,7 +528,7 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
-        mock_quota.poll_live_quota.assert_called_with(force=True)
+        mock_quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
 
         manager.stop()
 
@@ -560,7 +561,7 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task1.status, TaskStatus.FAILED)
-        mock_quota.poll_live_quota.assert_called_with(force=True)
+        mock_quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
         mock_quota.reset_mock()
 
         # 2. Test worker execution raising exception
@@ -575,7 +576,7 @@ class TestTaskManager(unittest.TestCase):
 
         self.assertEqual(task2.status, TaskStatus.FAILED)
         self.assertEqual(task2.error_message, "Worker process crashed")
-        mock_quota.poll_live_quota.assert_called_with(force=True)
+        mock_quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
 
         manager.stop()
 
@@ -967,12 +968,12 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
-        quota.poll_live_quota.assert_called_with(force=True)
+        quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
 
     def test_task_completion_quota_fetch_exception_handled(self):
         quota = MagicMock(spec=QuotaTracker)
-        quota.poll_live_quota.side_effect = RuntimeError("Quota API error")
+        quota.poll_live_quota_async.side_effect = RuntimeError("Quota API error")
         manager = TaskManager(max_workers=1, quota_tracker=quota)
         with self.assertLogs("graviton.tasks", level="WARNING") as cm:
             manager.start()
@@ -988,7 +989,7 @@ class TestTaskManager(unittest.TestCase):
             manager.stop()
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
-        quota.poll_live_quota.assert_called_with(force=True)
+        quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
         self.assertTrue(
             any("Quota fetch on task finish failed: Quota API error" in log for log in cm.output)
         )
@@ -1019,7 +1020,7 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task.status, TaskStatus.FAILED)
-        quota.poll_live_quota.assert_called_with(force=True)
+        quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
 
     @patch("lib.tasks.run_agent_container")
@@ -1044,7 +1045,7 @@ class TestTaskManager(unittest.TestCase):
 
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertIn("Worker execution exception", task.error_message)
-        quota.poll_live_quota.assert_called_with(force=True)
+        quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
 
 
@@ -1162,9 +1163,51 @@ class TestTaskManager(unittest.TestCase):
         self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_task_completion_quota_polling_is_non_blocking(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_run.return_value = mock_proc
+
+        poll_called = threading.Event()
+
+        def slow_poll_live_quota_async(force=True, thread_name=None):
+            time.sleep(0.5)
+            poll_called.set()
+            return MagicMock()
+
+        quota = MagicMock(spec=QuotaTracker)
+        quota.state = QuotaState.NORMAL
+        quota.is_behind_pacing.return_value = False
+        quota.poll_live_quota_async.side_effect = slow_poll_live_quota_async
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        start_time = time.time()
+        task = manager.submit_task("code_reviewer", "Test non-blocking prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.02)
+
+        finish_duration = time.time() - start_time
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertLess(finish_duration, 0.4)
+
+        self.assertTrue(poll_called.wait(timeout=2.0))
+        quota.poll_live_quota_async.assert_called_with(force=True, thread_name="AsyncQuotaPoll-Worker-1")
+
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
