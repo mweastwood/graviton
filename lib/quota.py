@@ -56,6 +56,18 @@ def parse_reset_time_to_timestamp(reset_time: Optional[Union[str, float, int]]) 
     return dt.timestamp() if dt is not None else None
 
 
+def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optional[datetime]:
+    """Convert timestamp float/int or datetime object into a timezone-aware UTC datetime."""
+    if now is None:
+        return None
+    if isinstance(now, datetime):
+        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    if isinstance(now, (int, float)):
+        return datetime.fromtimestamp(now, tz=timezone.utc)
+    return None
+
+
+
 class QuotaWindow:
     def __init__(
         self,
@@ -92,8 +104,8 @@ class QuotaWindow:
             return 0.0
         return max(0.0, (dt - now_dt).total_seconds())
 
-    def remaining_time_seconds(self, now: Optional[float] = None) -> float:
-        now_dt = datetime.fromtimestamp(now, tz=timezone.utc) if now is not None else None
+    def remaining_time_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
+        now_dt = _normalize_now_datetime(now)
         return self.get_remaining_seconds(now_dt)
 
     @property
@@ -106,8 +118,8 @@ class QuotaWindow:
             return 0.0
         return max(0.0, min(1.0, rem_sec / self.duration_seconds))
 
-    def time_fraction(self, now: Optional[float] = None) -> float:
-        now_dt = datetime.fromtimestamp(now, tz=timezone.utc) if now is not None else None
+    def time_fraction(self, now: Optional[Union[float, datetime]] = None) -> float:
+        now_dt = _normalize_now_datetime(now)
         return self.get_time_fraction(now_dt)
 
     def get_pacing_status(self, now_dt: Optional[datetime] = None) -> Tuple[str, float]:
@@ -124,18 +136,14 @@ class QuotaWindow:
         else:
             return "OK", 0.0
 
-    def pacing_status(self, now: Optional[float] = None) -> str:
-        now_dt = datetime.fromtimestamp(now, tz=timezone.utc) if now is not None else None
+    def pacing_status(self, now: Optional[Union[float, datetime]] = None) -> str:
+        now_dt = _normalize_now_datetime(now)
         status, _ = self.get_pacing_status(now_dt)
         return status
 
     def format_reset_countdown(self, now: Optional[Union[float, datetime]] = None) -> str:
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
-        now_dt = None
-        if isinstance(now, (int, float)):
-            now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
-        elif isinstance(now, datetime):
-            now_dt = now
+        now_dt = _normalize_now_datetime(now)
         return format_reset_countdown(res, now_dt=now_dt, window_name=self.name)
 
     def to_dict(self) -> dict:
@@ -579,13 +587,13 @@ def parse_quota_headers(headers: dict) -> dict:
 
 
 class _PacingStatusResult(str):
-    def __new__(cls, tracker, now: Optional[float] = None):
+    def __new__(cls, tracker, now: Optional[Union[float, datetime]] = None):
         val = "BEHIND_PACING" if tracker.is_behind_pacing(now=now) else "OK"
         obj = super().__new__(cls, val)
         obj._tracker = tracker
         return obj
 
-    def __call__(self, now: Optional[float] = None) -> str:
+    def __call__(self, now: Optional[Union[float, datetime]] = None) -> str:
         return "BEHIND_PACING" if self._tracker.is_behind_pacing(now=now) else "OK"
 
 
@@ -688,12 +696,12 @@ class QuotaTracker:
         with self._lock:
             return self._active_backoff_delay
 
-    def is_behind_pacing(self, now: Optional[float] = None) -> bool:
+    def is_behind_pacing(self, now: Optional[Union[float, datetime]] = None) -> bool:
         """Check if either window_5h or window_1w has pacing status 'BEHIND_PACING'."""
         with self._lock:
-            if now is None:
-                now = time.time()
-            now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+            now_dt = _normalize_now_datetime(now)
+            if now_dt is None:
+                now_dt = datetime.now(timezone.utc)
             s5, _ = self.window_5h.get_pacing_status(now_dt)
             s1, _ = self.window_1w.get_pacing_status(now_dt)
             return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
@@ -704,14 +712,14 @@ class QuotaTracker:
         return _PacingStatusResult(self)
 
     def get_pacing_backoff_delay(
-        self, window: Optional[QuotaWindow] = None, now: Optional[float] = None
+        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
     ) -> float:
         """
         Calculate proportional pacing backoff delay for a specific window or max across all windows.
         pacing_deficit = max(0.0, time_fraction - quota_fraction).
         """
         with self._lock:
-            now_dt = datetime.fromtimestamp(now, tz=timezone.utc) if now is not None else None
+            now_dt = _normalize_now_datetime(now)
             if window is not None:
                 p_status, backoff = window.get_pacing_status(now_dt)
                 if p_status == "OK":
@@ -963,7 +971,7 @@ class QuotaTracker:
                 reset_time_1w=parsed.get("reset_time_1w"),
             )
 
-    def get_backoff_delay(self, attempt: Optional[int] = None, now: Optional[float] = None) -> float:
+    def get_backoff_delay(self, attempt: Optional[int] = None) -> float:
         """
         Calculate and return exponential back-off delay during LOW_QUOTA state.
         If attempt is provided (>= 1), calculates delay based on (attempt - 1).

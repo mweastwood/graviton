@@ -223,12 +223,16 @@ class TestQuotaTracker(unittest.TestCase):
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
         self.assertAlmostEqual(backoff, 4.0)
         self.assertTrue(tracker.is_behind_pacing(now=now))
-        self.assertEqual(tracker.get_backoff_delay(now=now), 0.0)
+        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+        self.assertTrue(tracker.is_behind_pacing(now=now_dt))
+        self.assertEqual(tracker.get_backoff_delay(), 0.0)
         self.assertEqual(tracker.pacing_status, "BEHIND_PACING")
         self.assertEqual(tracker.pacing_status(now=now), "BEHIND_PACING")
+        self.assertEqual(tracker.pacing_status(now=now_dt), "BEHIND_PACING")
         ok_tracker = QuotaTracker(remaining_percentage=100.0)
         self.assertEqual(ok_tracker.pacing_status, "OK")
         self.assertEqual(ok_tracker.pacing_status(now=now), "OK")
+        self.assertEqual(ok_tracker.pacing_status(now=now_dt), "OK")
 
     def test_parse_antigravity_quota_json(self):
         data = {

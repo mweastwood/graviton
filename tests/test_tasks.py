@@ -500,7 +500,7 @@ class TestTaskManager(unittest.TestCase):
         self.assertIn("task manager is stopped", str(ctx_stop.exception))
 
     @patch("lib.tasks.run_agent_container")
-    def test_task_completion_triggers_quota_fetch(self, mock_run):
+    def test_task_completion_mocked_container_triggers_quota_fetch(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = ""
@@ -527,7 +527,7 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
-        mock_quota.poll_live_quota.assert_called_with(force=False)
+        mock_quota.poll_live_quota.assert_called_with(force=True)
 
         manager.stop()
 
