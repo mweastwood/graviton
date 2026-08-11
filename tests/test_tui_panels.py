@@ -595,6 +595,15 @@ class TestTUIPanels(unittest.TestCase):
             if inner_w >= 3:
                 self.assertLessEqual(sum(cols_no_repo.values()) + 3, inner_w)
 
+        # Test intermediate container width (inner_w=30)
+        cols_mid_pr = allocate_approved_pr_columns(30, has_repo=True)
+        self.assertGreaterEqual(cols_mid_pr["pr"], 4)
+        self.assertGreaterEqual(cols_mid_pr["repo"], 8)
+        self.assertGreaterEqual(cols_mid_pr["author"], 6)
+        self.assertGreater(cols_mid_pr["title"], 0)
+        self.assertGreater(cols_mid_pr["url"], 0)
+        self.assertEqual(sum(cols_mid_pr.values()) + 4, 30)
+
 
 if __name__ == "__main__":
     unittest.main()
