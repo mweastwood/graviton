@@ -621,6 +621,31 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertIsNotNone(job.current_task_id)
         self.assertEqual(len(manager.get_all_tasks()), 1)
 
+    def test_scheduler_skips_task_submission_when_behind_pacing(self):
+        mock_tm = MagicMock()
+        mock_tm.can_accept_task.return_value = False
+
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=mock_tm,
+        )
+        job = ScheduledJob(
+            job_id="test_pacing_job",
+            name="Test Pacing Job",
+            agent="codebase_auditor",
+            prompt="Run audit",
+            enabled=True,
+            interval_seconds=3600,
+        )
+        scheduler.jobs["test_pacing_job"] = job
+
+        scheduler._execute_job(job)
+
+        mock_tm.submit_task.assert_not_called()
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.last_run)
+
     def test_atomic_file_writes_for_state_and_config(self):
         """Verify save_state and save_config use atomic file replacement without leaving leftover temp files."""
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)

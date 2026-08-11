@@ -411,27 +411,171 @@ class TestTaskManager(unittest.TestCase):
 
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
-        # 2. Test EXHAUSTED state pauses execution
+        # 2. Test EXHAUSTED state pauses execution for pre-existing queued tasks
         quota.update_quota(0.0)
         stats = manager.get_stats()
         self.assertEqual(stats["quota_state"], QuotaState.EXHAUSTED)
         self.assertEqual(stats["queue_status"], "PAUSED_FOR_QUOTA")
         self.assertEqual(stats["status"], "PAUSED_FOR_QUOTA")
 
-        task2 = manager.submit_task("code_fixer", "Task under exhausted quota")
-        time.sleep(0.2)
+        # Submitting new task under EXHAUSTED state raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx_exh:
+            manager.submit_task("code_reviewer", "New task while exhausted")
+        self.assertIn("quota is exhausted", str(ctx_exh.exception))
 
-        # Task 2 should remain queued/paused, NOT completed
+        # Add pre-existing task directly to queue (simulating task enqueued before quota exhaustion)
+        task2 = Task(id="task-2", agent="code_fixer", prompt="Task queued before exhausted quota")
+        with manager._lock:
+            manager._tasks[task2.id] = task2
+        manager._queue.put(task2)
+
+        # Worker loop pauses task execution while quota is EXHAUSTED
+        for _ in range(10):
+            time.sleep(0.02)
+
         self.assertIn(task2.status, (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA))
 
-        # Recover quota to NORMAL
+        # 3. Recover quota to NORMAL -> worker resumes and completes task2
         quota.update_quota(100.0)
-        for _ in range(50):
+        for _ in range(100):
             if task2.status == TaskStatus.COMPLETED:
                 break
             time.sleep(0.05)
 
         self.assertEqual(task2.status, TaskStatus.COMPLETED)
+        manager.stop()
+
+    def test_task_manager_can_accept_task_and_pacing_rejection(self):
+        quota = QuotaTracker()
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+
+        # Initially OK
+        self.assertTrue(manager.can_accept_task())
+
+        # Submit active task
+        t_active = manager.submit_task("code_reviewer", "Active Task", target_id="#100")
+        self.assertEqual(t_active.id, "task-1")
+
+        # Set quota behind pacing
+        now = time.time()
+        quota.update_quota(
+            remaining_percentage=10.0,
+            remaining_percentage_5h=10.0,
+            reset_time_5h=now + 15000.0,
+        )
+
+        self.assertFalse(manager.can_accept_task())
+        stats = manager.get_stats()
+        self.assertEqual(stats["queue_status"], "PAUSED_FOR_PACING")
+        self.assertEqual(stats["status"], "BEHIND_PACING")
+
+        # Submitting duplicate task returns existing task without raising RuntimeError
+        t_dup = manager.submit_task("code_reviewer", "Active Task prompt updated", target_id="#100")
+        self.assertIs(t_dup, t_active)
+
+        # Submitting new non-duplicate task raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_fixer", "New task behind pacing")
+        self.assertIn("quota pacing is behind limit", str(ctx.exception))
+
+        # Recover pacing
+        quota.update_quota(100.0, remaining_percentage_5h=100.0, reset_time_5h=now)
+        self.assertTrue(manager.can_accept_task())
+        t_new = manager.submit_task("code_fixer", "New task after recovery")
+        self.assertEqual(t_new.id, "task-2")
+
+        # Test draining rejection
+        manager._draining = True
+        self.assertFalse(manager.can_accept_task())
+        with self.assertRaises(RuntimeError) as ctx_drain:
+            manager.submit_task("code_fixer", "New task while draining")
+        self.assertIn("draining tasks for update", str(ctx_drain.exception))
+        manager._draining = False
+
+        # Test stopped rejection
+        manager.stop()
+        self.assertFalse(manager.can_accept_task())
+        with self.assertRaises(RuntimeError) as ctx_stop:
+            manager.submit_task("code_fixer", "New task after stop")
+        self.assertIn("task manager is stopped", str(ctx_stop.exception))
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_completion_triggers_quota_fetch(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = ""
+        mock_process.stderr = ""
+        mock_run.return_value = mock_process
+
+        mock_quota = MagicMock()
+        mock_quota.state = QuotaState.NORMAL
+        mock_quota.is_behind_pacing.return_value = False
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=mock_quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        mock_quota.poll_live_quota.assert_called_with(force=False)
+
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_failure_triggers_quota_fetch(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 1
+        mock_process.stdout = ""
+        mock_process.stderr = "Error during execution"
+        mock_run.return_value = mock_process
+
+        mock_quota = MagicMock()
+        mock_quota.state = QuotaState.NORMAL
+        mock_quota.is_behind_pacing.return_value = False
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=mock_quota,
+        )
+        manager.start()
+
+        # 1. Test TaskStatus.FAILED via returncode != 0
+        task1 = manager.submit_task("code_fixer", "Fix issue", target_id="#2")
+
+        for _ in range(50):
+            if task1.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task1.status, TaskStatus.FAILED)
+        mock_quota.poll_live_quota.assert_called_with(force=True)
+        mock_quota.reset_mock()
+
+        # 2. Test worker execution raising exception
+        mock_run.side_effect = RuntimeError("Worker process crashed")
+
+        task2 = manager.submit_task("code_fixer", "Fix issue exception", target_id="#3")
+
+        for _ in range(50):
+            if task2.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task2.status, TaskStatus.FAILED)
+        self.assertEqual(task2.error_message, "Worker process crashed")
+        mock_quota.poll_live_quota.assert_called_with(force=True)
 
         manager.stop()
 
@@ -941,7 +1085,7 @@ class TestTaskManager(unittest.TestCase):
         self.assertFalse(manager.can_accept_task())
         with self.assertRaises(RuntimeError) as ctx:
             manager.submit_task("code_reviewer", "Review PR #1")
-        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+        self.assertIn("Cannot accept new task: task acceptance is paused", str(ctx.exception))
 
         manager.resume()
         self.assertTrue(manager.can_accept_task())
@@ -966,7 +1110,7 @@ class TestTaskManager(unittest.TestCase):
         # New non-duplicate task submission while paused raises RuntimeError
         with self.assertRaises(RuntimeError) as ctx:
             manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
-        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
+        self.assertIn("Cannot accept new task: task acceptance is paused", str(ctx.exception))
 
     def test_submit_task_deduplicates_duplicate_when_draining(self):
         manager = TaskManager()

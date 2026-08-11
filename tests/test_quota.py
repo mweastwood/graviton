@@ -215,7 +215,8 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
         self.assertAlmostEqual(backoff, 4.0)
-        self.assertAlmostEqual(tracker.get_backoff_delay(now=now), 4.0)
+        self.assertTrue(tracker.is_behind_pacing(now=now))
+        self.assertEqual(tracker.get_backoff_delay(now=now), 0.0)
 
     def test_parse_antigravity_quota_json(self):
         data = {
@@ -295,7 +296,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
         self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
-        self.assertIn("Backoff:", badge_1w)
+        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED)", badge_1w)
 
     def test_load_oauth_token_nested_json(self):
         import tempfile

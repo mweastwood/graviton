@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from lib.quota import QuotaState
+
 logger = logging.getLogger("graviton.scheduler")
 
 
@@ -302,6 +304,7 @@ class TaskScheduler:
         cwd: Optional[Path] = None,
         check_interval_seconds: float = 5.0,
         task_manager: Optional[Any] = None,
+        quota_tracker: Optional[Any] = None,
     ):
         self._lock = threading.RLock()
         self._save_lock = threading.Lock()
@@ -312,6 +315,7 @@ class TaskScheduler:
         self.cwd = cwd
         self.check_interval_seconds = check_interval_seconds
         self.task_manager = task_manager
+        self.quota_tracker = quota_tracker
 
         self.jobs: Dict[str, ScheduledJob] = {}
         self.job_handlers: Dict[str, Callable] = {}
@@ -542,24 +546,18 @@ class TaskScheduler:
         """
         Hand off job prompt to runner or custom handler and update job state.
         """
-        with self._lock:
-            handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
-
-        if not handler and self.task_manager and hasattr(self.task_manager, "can_accept_task"):
-            if not self.task_manager.can_accept_task(job.agent, job.prompt):
-                logger.info(f"TaskManager cannot accept task for job '{job.job_id}' right now. Deferring execution.")
-                return
-
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
 
         with self._lock:
-            job.mark_executed(now_dt)
             job.is_running = True
+            handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
         self.save_state()
 
         if handler:
             try:
+                with self._lock:
+                    job.mark_executed(now_dt)
                 handler(job)
             except Exception as e:
                 logger.exception(f"Error executing custom handler for job '{job.job_id}': {e}")
@@ -570,6 +568,13 @@ class TaskScheduler:
             return
 
         if self.task_manager:
+            if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, job.prompt):
+                logger.warning(f"Task acceptance suspended (quota pacing or manager state). Deferring job execution '{job.job_id}'.")
+                with self._lock:
+                    job.is_running = False
+                self.save_state()
+                return
+
             try:
                 target_id = f"sched:{job.job_id}"
                 task = self.task_manager.submit_task(
@@ -578,6 +583,7 @@ class TaskScheduler:
                     target_id=target_id,
                 )
                 with self._lock:
+                    job.mark_executed(now_dt)
                     job.current_task_id = task.id
                     job.is_running = True
                 self.save_state()
@@ -590,7 +596,24 @@ class TaskScheduler:
                 return
 
         if self.runner:
+            qt = getattr(self, "quota_tracker", None) or getattr(self.task_manager, "quota_tracker", None)
+            if qt:
+                is_behind = False
+                if hasattr(qt, "is_behind_pacing") and callable(getattr(qt, "is_behind_pacing", None)):
+                    res = qt.is_behind_pacing()
+                    if res is True or (isinstance(res, bool) and res):
+                        is_behind = True
+                is_exhausted = (getattr(qt, "state", None) == QuotaState.EXHAUSTED)
+                if is_behind or is_exhausted:
+                    logger.warning(f"Task acceptance suspended (quota pacing or manager state). Deferring job execution '{job.job_id}'.")
+                    with self._lock:
+                        job.is_running = False
+                    self.save_state()
+                    return
+
             try:
+                with self._lock:
+                    job.mark_executed(now_dt)
                 if self.script_path and self.cwd:
                     self.runner(job.agent, job.prompt, self.script_path, self.cwd)
                 else:

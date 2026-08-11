@@ -32,7 +32,7 @@ from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
 from lib.pr_tracker import PRTracker
-from lib.quota import QuotaTracker
+from lib.quota import QuotaTracker, QuotaState
 from lib.reactions import post_emoji_reaction_async
 
 # Setup logging
@@ -159,7 +159,6 @@ class GravitonHandler(BaseHTTPRequestHandler):
             agent = decision.get("agent")
             prompt = decision.get("prompt")
             if agent and prompt:
-                post_emoji_reaction_async(event_type, payload)
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
                 repo_full_name = decision.get("repo_full_name")
@@ -176,11 +175,28 @@ class GravitonHandler(BaseHTTPRequestHandler):
                             repo_name=repo_name,
                             clone_url=clone_url,
                         )
+                        post_emoji_reaction_async(event_type, payload)
                     except RuntimeError as e:
                         logger.warning(f"Could not submit task: {e}")
-                        self._send_json(503, {"error": str(e)})
+                        if "pacing" in str(e).lower():
+                            self._send_json(200, {"status": "ignored", "reason": "behind_quota_pacing"})
+                        else:
+                            self._send_json(503, {"error": str(e)})
                         return
                 else:
+                    qt = getattr(self, "quota_tracker", None)
+                    if qt:
+                        if hasattr(qt, "is_behind_pacing") and callable(getattr(qt, "is_behind_pacing", None)):
+                            res = qt.is_behind_pacing()
+                            if res is True or (isinstance(res, bool) and res):
+                                logger.warning("Task acceptance suspended due to quota pacing deficit. Skipping task submission.")
+                                self._send_json(200, {"status": "ignored", "reason": "behind_quota_pacing"})
+                                return
+                        if getattr(qt, "state", None) == QuotaState.EXHAUSTED:
+                            logger.warning("Task acceptance suspended due to quota exhaustion. Skipping task submission.")
+                            self._send_json(503, {"error": "Cannot accept new task: quota is exhausted"})
+                            return
+
                     exec_cwd = REPO_ROOT
                     if repo_name and hasattr(self, "repos_dir") and self.repos_dir:
                         if not is_valid_repo_name(repo_name):
@@ -218,6 +234,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                         self._send_json(400, {"error": f"Repository directory '{exec_cwd}' does not exist"})
                         return
 
+                    post_emoji_reaction_async(event_type, payload)
                     run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
 
             # Omit internal prompt from HTTP response output
@@ -304,6 +321,7 @@ def main():
         script_path=RUN_CONTAINER_SCRIPT,
         cwd=REPO_ROOT,
         task_manager=task_manager,
+        quota_tracker=quota_tracker,
     )
     scheduler.start()
     GravitonHandler.scheduler = scheduler
