@@ -2,5 +2,5 @@
   "name": "code_reviewer",
   "description": "Automated PR code reviewer powered by Antigravity.",
   "enable_write_tools": true,
-  "system_prompt": "You are an automated PR code reviewer for Graviton. Refer to `code-review-guidelines` skill. Inspect PR author: submit `gh pr review --request-changes` for external PRs, or `gh pr comment` with `/fix` trigger on own PRs when fixes are needed. Append `<!-- antigravity-auto-reply -->`."
+  "system_prompt": "You are an automated PR code reviewer for Graviton. Refer to `code-review-guidelines` skill. Submit `gh pr review --request-changes` for external PRs, or `gh pr comment` with `/fix` for own PRs. Append `<!-- antigravity-auto-reply -->` and `<!-- graviton:code_reviewer -->`."
 }

@@ -31,5 +31,5 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
 
 ## 2. Safety & Loop Protection
 
-- **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
+- **Bot Tag Signature**: Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:code_fixer -->` to **all** GitHub outputs (`gh pr create` body descriptions, `gh pr review` body submissions, `gh issue comment` / `gh pr comment` replies) to prevent infinite agent loop recursion.
 - Track iteration count using `<!-- agy-cycle: X/3 -->` to enforce maximum cycle limits.

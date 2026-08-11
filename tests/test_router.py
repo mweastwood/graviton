@@ -1083,6 +1083,274 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(len(tracker.get_approved_prs()), 1)
         self.assertEqual(tracker.get_approved_prs()[0]["number"], 126)
 
+    def test_router_extracts_author_agent_and_routes_issue_triager_to_pr_drafter(self):
+        """When issue_triager posts design spec comment on ready-for-pr issue, route to pr_drafter with author_agent."""
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 142,
+                "title": "Every agent should identify itself",
+                "body": "Issue details",
+                "labels": [{"name": "ready-for-pr"}],
+            },
+            "comment": {
+                "body": "Design Spec posted.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:issue_triager -->",
+                "user": {"login": "issue_triager"},
+            },
+        }
+
+        res = route_webhook_event("issue_comment", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "pr_drafter")
+        self.assertEqual(res["author_agent"], "issue_triager")
+        self.assertIn("Issue #142", res["prompt"])
+
+    def test_router_drops_issue_triager_self_trigger_comment(self):
+        """When issue_triager posts comment on un-triaged issue, drop as self-trigger."""
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 142,
+                "title": "Untriaged Issue",
+                "body": "Issue details",
+                "labels": [],
+            },
+            "comment": {
+                "body": "Asking for clarification...\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:issue_triager -->",
+                "user": {"login": "issue_triager"},
+            },
+        }
+
+        res = route_webhook_event("issue_comment", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot comment dropped")
+
+    def test_router_extracts_author_agent_for_code_reviewer_review(self):
+        """When code_reviewer requests changes, include author_agent='code_reviewer' in response for code_fixer."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "CHANGES_REQUESTED",
+                "body": "Please fix tests.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+            "pull_request": {
+                "number": 100,
+                "title": "Feature PR",
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_fixer")
+        self.assertEqual(res["author_agent"], "code_reviewer")
+
+    def test_router_drops_code_fixer_self_trigger_review_comment(self):
+        """When code_fixer posts review comment, drop as self-trigger."""
+        payload = {
+            "action": "created",
+            "comment": {
+                "body": "Fixed line 20.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_fixer -->",
+                "path": "lib/security.py",
+                "line": 20,
+            },
+            "pull_request": {
+                "number": 100,
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review_comment", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot comment dropped")
+
+    def test_router_drops_bot_commented_review_without_requested_changes(self):
+        """When code_reviewer posts a COMMENTED review with an agent marker and no requested changes, drop event."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "Informational feedback.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+            "pull_request": {
+                "number": 100,
+                "title": "Feature PR",
+                "html_url": "https://github.com/mweastwood/graviton/pull/100",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot self-review event dropped")
+
+    def test_router_extracts_author_agent_for_pull_request_event(self):
+        """When pr_drafter creates a PR with an agent marker in the body, include author_agent='pr_drafter' in response payload."""
+        payload = {
+            "action": "opened",
+            "number": 145,
+            "pull_request": {
+                "number": 145,
+                "body": "Initial PR implementation\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:pr_drafter -->",
+                "user": {"login": "pr_drafter"},
+            },
+        }
+
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_reviewer")
+        self.assertEqual(res["author_agent"], "pr_drafter")
+        self.assertEqual(res["pr_number"], 145)
+
+    def test_router_drops_code_reviewer_self_trigger_pr_event(self):
+        """When default_reviewer (code_reviewer) opens or synchronizes a PR containing its own agent marker, drop event as self-trigger."""
+        payload = {
+            "action": "opened",
+            "number": 146,
+            "pull_request": {
+                "number": 146,
+                "body": "PR created by reviewer\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+        }
+
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot PR event dropped")
+
+    def test_router_drops_inline_review_comment_with_agent_marker_without_command(self):
+        """Verify inline review comments carrying agent markers without explicit commands are dropped."""
+        # 1. code_reviewer marker without command
+        payload1 = {
+            "action": "created",
+            "comment": {
+                "body": "Informational inline comment.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "path": "lib/router.py",
+                "line": 42,
+            },
+            "pull_request": {
+                "number": 145,
+                "html_url": "https://github.com/mweastwood/graviton/pull/145",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res1 = route_webhook_event("pull_request_review_comment", payload1)
+        self.assertEqual(res1["status"], "ignored")
+        self.assertEqual(res1["reason"], "Bot comment dropped")
+
+        # 2. codebase_auditor marker without command
+        payload2 = {
+            "action": "created",
+            "comment": {
+                "body": "Auditor inline finding.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->",
+                "path": "lib/router.py",
+                "line": 100,
+            },
+            "pull_request": {
+                "number": 145,
+                "html_url": "https://github.com/mweastwood/graviton/pull/145",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res2 = route_webhook_event("pull_request_review_comment", payload2)
+        self.assertEqual(res2["status"], "ignored")
+        self.assertEqual(res2["reason"], "Bot comment dropped")
+
+        # 3. code_reviewer marker WITH explicit /fix command should be accepted
+        payload3 = {
+            "action": "created",
+            "comment": {
+                "body": "/fix Action items required: update logic\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "path": "lib/router.py",
+                "line": 42,
+            },
+            "pull_request": {
+                "number": 145,
+                "html_url": "https://github.com/mweastwood/graviton/pull/145",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res3 = route_webhook_event("pull_request_review_comment", payload3)
+        self.assertEqual(res3["status"], "accepted")
+        self.assertEqual(res3["agent"], "code_fixer")
+        self.assertEqual(res3["author_agent"], "code_reviewer")
+
+    def test_router_drops_issue_comment_with_agent_marker_without_command(self):
+        """Verify PR/issue comments carrying agent markers without explicit commands are dropped."""
+        # 1. PR comment with code_reviewer marker without command
+        payload1 = {
+            "action": "created",
+            "comment": {
+                "body": "Informational PR comment summary.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+            "issue": {
+                "number": 145,
+                "pull_request": {"url": "https://api.github.com/repos/mweastwood/graviton/pulls/145"},
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res1 = route_webhook_event("issue_comment", payload1)
+        self.assertEqual(res1["status"], "ignored")
+        self.assertEqual(res1["reason"], "Bot comment dropped")
+
+        # 2. PR comment with codebase_auditor marker without command
+        payload2 = {
+            "action": "created",
+            "comment": {
+                "body": "Audit summary on PR.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->",
+                "user": {"login": "codebase_auditor"},
+            },
+            "issue": {
+                "number": 145,
+                "pull_request": {"url": "https://api.github.com/repos/mweastwood/graviton/pulls/145"},
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res2 = route_webhook_event("issue_comment", payload2)
+        self.assertEqual(res2["status"], "ignored")
+        self.assertEqual(res2["reason"], "Bot comment dropped")
+
+        # 3. Issue comment on untriaged issue with codebase_auditor marker without command
+        payload3 = {
+            "action": "created",
+            "comment": {
+                "body": "Found issue in sweep.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->",
+                "user": {"login": "codebase_auditor"},
+            },
+            "issue": {
+                "number": 200,
+                "title": "Untriaged issue",
+                "labels": [],
+            },
+        }
+        res3 = route_webhook_event("issue_comment", payload3)
+        self.assertEqual(res3["status"], "ignored")
+        self.assertEqual(res3["reason"], "Bot comment dropped")
+
+        # 4. Issue comment on ready-for-pr issue with codebase_auditor marker without command
+        payload4 = {
+            "action": "created",
+            "comment": {
+                "body": "Audit finding on ready issue.\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->",
+                "user": {"login": "codebase_auditor"},
+            },
+            "issue": {
+                "number": 201,
+                "title": "Ready issue",
+                "labels": [{"name": "ready-for-pr"}],
+            },
+        }
+        res4 = route_webhook_event("issue_comment", payload4)
+        self.assertEqual(res4["status"], "ignored")
+        self.assertEqual(res4["reason"], "Bot comment dropped")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
