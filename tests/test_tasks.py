@@ -396,7 +396,8 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
-    def test_task_manager_quota_backoff_and_pause(self):
+    @patch.object(QuotaTracker, "poll_live_quota")
+    def test_task_manager_quota_backoff_and_pause(self, mock_poll_live):
         quota = QuotaTracker(remaining_percentage=10.0, base_backoff_delay=0.01)
         manager = TaskManager(max_workers=1, quota_tracker=quota)
 
