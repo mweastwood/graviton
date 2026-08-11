@@ -4,6 +4,7 @@ Unit tests for lib/pr_tracker.py (PRTracker).
 
 import json
 import subprocess
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -217,7 +218,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_sync_github_prs_removesuffix_git(self, mock_run):
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_dir = Path(tmpdir) / "reddit"
             repo_dir.mkdir()
@@ -250,7 +250,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_sync_github_prs_trailing_slash_urls(self, mock_run):
-        import tempfile
         for origin_url in ["https://github.com/owner/reddit/", "git@github.com:owner/reddit.git/"]:
             with tempfile.TemporaryDirectory() as tmpdir:
                 repo_dir = Path(tmpdir) / "reddit"
@@ -294,7 +293,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_sync_github_prs_resilient_to_single_repo_failure(self, mock_run):
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             dir1 = Path(tmpdir) / "repo1"
             dir2 = Path(tmpdir) / "repo2"
@@ -318,7 +316,7 @@ class TestPRTracker(unittest.TestCase):
 
             # We mock subprocess.run calls in sequence
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(cmd)
+                cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 if "git remote get-url" in cmd_str:
                     if "repo1" in str(cwd):
                         return mock_git1
@@ -341,7 +339,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_sync_directory_helper(self, mock_run):
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             d = Path(tmpdir) / "myrepo"
             d.mkdir()
@@ -366,7 +363,12 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_concurrent_multi_repo_sync(self, mock_run):
-        import tempfile
+        """
+        Verify that PRTracker.sync_github_prs synchronizes multiple repositories concurrently.
+
+        Uses a threading.Barrier across worker threads during git commands to ensure all repos
+        are processed in parallel and collects unique thread IDs to confirm multi-threaded execution.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             num_repos = 5
             dirs = []
@@ -376,9 +378,23 @@ class TestPRTracker(unittest.TestCase):
                 (r_dir / ".git").mkdir()
                 dirs.append(r_dir)
 
+            thread_ids = set()
+            sync_errors = []
+            lock = threading.Lock()
+            barrier = threading.Barrier(num_repos)
+
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(cmd)
+                cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 cwd_str = str(cwd or "")
+                if "git remote get-url" in cmd_str:
+                    with lock:
+                        thread_ids.add(threading.get_ident())
+                    try:
+                        barrier.wait(timeout=5.0)
+                    except threading.BrokenBarrierError:
+                        with lock:
+                            sync_errors.append("Thread synchronization barrier timed out")
+                        return MagicMock(returncode=1, stdout="")
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
                         if "git remote get-url" in cmd_str:
@@ -399,17 +415,18 @@ class TestPRTracker(unittest.TestCase):
             tracker = PRTracker()
             tracker.sync_github_prs(repos_dir=Path(tmpdir))
 
+            self.assertFalse(sync_errors, sync_errors)
             approved = tracker.get_approved_prs()
             self.assertEqual(len(approved), num_repos)
             for i in range(1, num_repos + 1):
                 matching = [p for p in approved if p["repo_full_name"] == f"org/repo{i}"]
                 self.assertEqual(len(matching), 1)
                 self.assertEqual(matching[0]["number"], i * 10)
+            self.assertEqual(len(thread_ids), num_repos)
 
     @patch("lib.pr_tracker.ThreadPoolExecutor")
     @patch("subprocess.run")
     def test_thread_pool_worker_bounds(self, mock_run, mock_executor_cls):
-        import tempfile
         from concurrent.futures import ThreadPoolExecutor
         
         # Test max_workers calculation for 15 repositories (bounded to min(10, len(target_dirs)))
@@ -825,7 +842,6 @@ class TestPRTracker(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_sync_directory_custom_and_ssh_git_remote_urls(self, mock_run):
-        import tempfile
         remote_urls = [
             ("git@git.internal.com:custom-org/custom-repo.git", "custom-org/custom-repo"),
             ("https://github.enterprise.corp/enterprise-org/ent-repo.git", "enterprise-org/ent-repo"),
