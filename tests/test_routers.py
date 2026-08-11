@@ -3,6 +3,10 @@ Unit tests for lib/routers sub-modules.
 """
 
 import unittest
+from lib.routers import (
+    _pr_review_timestamps,
+    _pr_review_timestamps_lock,
+)
 from lib.routers.base import (
     clear_pr_review_cache,
     is_pr_created_by_us,
@@ -36,6 +40,9 @@ class TestSubRoutersDirectImport(unittest.TestCase):
         self.assertEqual(res["status"], "accepted")
         self.assertEqual(res["action"], "test_action")
 
+        self.assertIsNotNone(_pr_review_timestamps)
+        self.assertIsNotNone(_pr_review_timestamps_lock)
+
     def test_push_router_direct(self):
         ping_res = handle_ping_event({"zen": "Keep it simple"})
         self.assertEqual(ping_res["status"], "accepted")
@@ -51,8 +58,60 @@ class TestSubRoutersDirectImport(unittest.TestCase):
         self.assertEqual(res["status"], "accepted")
         self.assertEqual(res["agent"], "code_reviewer")
 
+        review_payload = {
+            "action": "submitted",
+            "review": {
+                "state": "CHANGES_REQUESTED",
+                "body": "Fix issues requested <!-- graviton:user -->",
+            },
+            "pull_request": {
+                "number": 1,
+                "body": "PR description <!-- graviton:pr_drafter -->",
+                "user": {"login": "testuser"},
+            },
+            "repository": {"full_name": "owner/repo", "name": "repo"},
+        }
+        review_res = handle_pull_request_review_event(review_payload)
+        self.assertEqual(review_res["status"], "accepted")
+        self.assertEqual(review_res["agent"], "code_fixer")
+
+        comment_payload = {
+            "action": "created",
+            "comment": {
+                "body": "Change this line",
+                "path": "lib/routers/__init__.py",
+                "line": 10,
+            },
+            "pull_request": {
+                "number": 1,
+                "body": "PR description <!-- graviton:pr_drafter -->",
+                "html_url": "https://github.com/owner/repo/pull/1",
+            },
+            "repository": {"full_name": "owner/repo", "name": "repo"},
+        }
+        comment_res = handle_pull_request_review_comment_event(comment_payload)
+        self.assertEqual(comment_res["status"], "accepted")
+        self.assertEqual(comment_res["agent"], "code_fixer")
+
     def test_issue_router_direct(self):
         payload = {"action": "opened", "issue": {"number": 10, "title": "Test Issue", "body": "Issue body"}}
         res = handle_issues_event(payload)
         self.assertEqual(res["status"], "accepted")
         self.assertEqual(res["agent"], "issue_triager")
+
+        comment_payload = {
+            "action": "created",
+            "comment": {
+                "body": "/fix Action items required: update tests",
+            },
+            "issue": {
+                "number": 10,
+                "pull_request": {"html_url": "https://github.com/owner/repo/pull/10"},
+                "body": "PR description <!-- graviton:pr_drafter -->",
+            },
+            "repository": {"full_name": "owner/repo", "name": "repo"},
+        }
+        comment_res = handle_issue_comment_event(comment_payload)
+        self.assertEqual(comment_res["status"], "accepted")
+        self.assertEqual(comment_res["agent"], "code_fixer")
+

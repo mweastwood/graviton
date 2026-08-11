@@ -6,6 +6,8 @@ from lib.routers.base import (
     _build_accepted_response,
     _extract_repo_info,
     _get_git_remote_repo_names,
+    _pr_review_timestamps,
+    _pr_review_timestamps_lock,
     clear_pr_review_cache,
     get_server_repo_name,
     has_explicit_command,
@@ -33,6 +35,8 @@ __all__ = [
     "_extract_repo_info",
     "_build_accepted_response",
     "_get_git_remote_repo_names",
+    "_pr_review_timestamps",
+    "_pr_review_timestamps_lock",
     "handle_ping_event",
     "handle_push_event",
     "handle_pull_request_event",
@@ -41,3 +45,4 @@ __all__ = [
     "handle_issues_event",
     "handle_issue_comment_event",
 ]
+
