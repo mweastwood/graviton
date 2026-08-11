@@ -1188,6 +1188,40 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(res["status"], "ignored")
         self.assertEqual(res["reason"], "Bot self-review event dropped")
 
+    def test_router_extracts_author_agent_for_pull_request_event(self):
+        """When pr_drafter creates a PR with an agent marker in the body, include author_agent='pr_drafter' in response payload."""
+        payload = {
+            "action": "opened",
+            "number": 145,
+            "pull_request": {
+                "number": 145,
+                "body": "Initial PR implementation\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:pr_drafter -->",
+                "user": {"login": "pr_drafter"},
+            },
+        }
+
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_reviewer")
+        self.assertEqual(res["author_agent"], "pr_drafter")
+        self.assertEqual(res["pr_number"], 145)
+
+    def test_router_drops_code_reviewer_self_trigger_pr_event(self):
+        """When default_reviewer (code_reviewer) opens or synchronizes a PR containing its own agent marker, drop event as self-trigger."""
+        payload = {
+            "action": "opened",
+            "number": 146,
+            "pull_request": {
+                "number": 146,
+                "body": "PR created by reviewer\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:code_reviewer -->",
+                "user": {"login": "code_reviewer"},
+            },
+        }
+
+        res = route_webhook_event("pull_request", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Bot PR event dropped")
+
 
 if __name__ == "__main__":
     unittest.main()

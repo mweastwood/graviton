@@ -232,7 +232,16 @@ def handle_pull_request_event(
     if pr_tracker and pr_number is not None and (action in ("closed", "merged") or payload.get("merged") or pr.get("merged")):
         pr_tracker.remove_approved_pr(pr_number, repo_full_name=repo_full_name)
 
+    pr_body = pr.get("body", "") or ""
+    author_agent = extract_agent_marker(pr_body)
+
     if action in ("opened", "synchronize", "reopened"):
+        if author_agent and author_agent == default_reviewer:
+            return {
+                "status": "ignored",
+                "reason": "Bot PR event dropped",
+            }
+
         if pr_number is not None and debounce_window > 0:
             pr_key = f"{repo_full_name}#{pr_number}" if repo_full_name else str(pr_number)
             now = time.time()
@@ -257,6 +266,7 @@ def handle_pull_request_event(
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
+            author_agent=author_agent,
             pr_number=pr_number,
         )
 
