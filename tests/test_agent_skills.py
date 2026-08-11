@@ -176,7 +176,17 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("Verification Checklist", content)
         self.assertIn("<!-- antigravity-auto-reply -->", content)
 
+    def test_run_agent_container_mounts_server_level_skills(self):
+        script_path = REPO_ROOT / "bin" / "run_agent_container.sh"
+        with open(script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("GRAVITON_ROOT=", content)
+        self.assertIn('SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/skills:/root/.gemini/config/skills:ro")', content)
+        self.assertNotIn("${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -53,15 +53,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GRAVITON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 AGY_BIN_MOUNT=()
 if command -v agy &>/dev/null; then
   AGY_BIN_MOUNT=(-v "$(command -v agy):/usr/local/bin/agy:ro")
 fi
 
-# Mount repository skills directory if present into container global config
+# Mount server-level skills directory into container global config
 SKILLS_MOUNT=()
-if [ -d "${TEMP_WORKSPACE}/skills" ]; then
-  SKILLS_MOUNT=(-v "${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro")
+if [ -d "${GRAVITON_ROOT}/skills" ]; then
+  SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/skills:/root/.gemini/config/skills:ro")
 fi
 
 # Pass user SSH keys, gh configuration, and antigravity-cli directory if present
@@ -115,7 +118,6 @@ MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-3}"
 ATTEMPT=1
 EXIT_CODE=0
 AGENT_LOG="${TEMP_WORKSPACE}/agent_output.log"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
 
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
@@ -158,7 +160,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   if [ -n "${CONVERSATION_ID}" ]; then
     TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${CONVERSATION_ID}/.system_generated/logs/transcript.jsonl"
     if [ -f "${TRANSCRIPT_PATH}" ]; then
-      if "${PYTHON_BIN}" "${SCRIPT_DIR}/../lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
+      if "${PYTHON_BIN}" "${GRAVITON_ROOT}/lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
         IS_INCOMPLETE=true
       fi
     fi
