@@ -135,30 +135,30 @@ class TaskManager:
 
     @property
     def is_paused(self) -> bool:
-        """Return True if TaskManager is currently paused and not accepting new tasks."""
+        """Return True if TaskManager is currently paused and not accepting new tasks or executing queued tasks."""
         with self._lock:
             return self._paused
 
     def pause(self):
-        """Pause acceptance of new tasks."""
+        """Pause acceptance of new tasks and worker execution of queued tasks."""
         with self._lock:
             self._paused = True
-            logger.info("TaskManager paused task acceptance.")
+            logger.info("TaskManager paused task acceptance and worker execution.")
 
     def resume(self):
-        """Resume acceptance of new tasks."""
+        """Resume acceptance of new tasks and worker execution of queued tasks."""
         with self._lock:
             self._paused = False
-            logger.info("TaskManager resumed task acceptance.")
+            logger.info("TaskManager resumed task acceptance and worker execution.")
 
     def toggle_pause(self) -> bool:
-        """Toggle pause/resume state of task acceptance. Returns new is_paused state."""
+        """Toggle pause/resume state of task acceptance and worker execution. Returns new is_paused state."""
         with self._lock:
             self._paused = not self._paused
             if self._paused:
-                logger.info("TaskManager paused task acceptance.")
+                logger.info("TaskManager paused task acceptance and worker execution.")
             else:
-                logger.info("TaskManager resumed task acceptance.")
+                logger.info("TaskManager resumed task acceptance and worker execution.")
             return self._paused
 
     @property
@@ -573,8 +573,9 @@ class TaskManager:
         while self._running:
             with self._lock:
                 draining = self._draining
+                paused = self._paused
 
-            if draining and self._running:
+            if (draining or paused) and self._running:
                 time.sleep(0.1)
                 continue
 
@@ -610,9 +611,9 @@ class TaskManager:
                         )
                         time.sleep(delay)
 
-            # Double-check draining under lock before transitioning task to RUNNING
+            # Double-check draining and pause state under lock before transitioning task to RUNNING
             with self._lock:
-                if self._draining:
+                if self._draining or self._paused:
                     self._queue.put(task)
                     self._queue.task_done()
                     time.sleep(0.1)

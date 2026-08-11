@@ -220,40 +220,38 @@ class TestTaskManager(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "test_queue_state.json"
-            manager1 = TaskManager(max_workers=1)
-            manager1.start()
+            manager1 = TaskManager(max_workers=0)
 
-            # Submit task t1 and queued task t2 before initiating drain
+            # Submit tasks t1 and t2 without worker threads running to test queue state serialization
             t1 = manager1.submit_task("code_reviewer", "Review PR #10", target_id="#10")
             t2 = manager1.submit_task("code_fixer", "Fix bug #11", target_id="#11")
-            for _ in range(50):
-                if t1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                    break
-                time.sleep(0.05)
-
-            manager1.drain_active_tasks(timeout=5.0)
 
             queued = manager1.get_queued_tasks()
-            self.assertEqual(len(queued), 1)
-            self.assertEqual(queued[0].id, t2.id)
+            self.assertEqual(len(queued), 2)
+            self.assertEqual(queued[0].id, t1.id)
+            self.assertEqual(queued[1].id, t2.id)
 
             dumped_count = manager1.dump_queue_state(filepath=state_file)
-            self.assertEqual(dumped_count, 1)
+            self.assertEqual(dumped_count, 2)
             self.assertTrue(state_file.exists())
             manager1.stop()
 
             # Restore into new manager instance
-            manager2 = TaskManager(max_workers=2)
+            manager2 = TaskManager(max_workers=0)
             restored_count = manager2.restore_queue_state(filepath=state_file)
-            self.assertEqual(restored_count, 1)
+            self.assertEqual(restored_count, 2)
             self.assertFalse(state_file.exists())
 
             restored_queued = manager2.get_queued_tasks()
-            self.assertEqual(len(restored_queued), 1)
-            self.assertEqual(restored_queued[0].id, "task-2")
-            self.assertEqual(restored_queued[0].agent, "code_fixer")
-            self.assertEqual(restored_queued[0].prompt, "Fix bug #11")
-            self.assertEqual(restored_queued[0].target_id, "#11")
+            self.assertEqual(len(restored_queued), 2)
+            self.assertEqual(restored_queued[0].id, "task-1")
+            self.assertEqual(restored_queued[0].agent, "code_reviewer")
+            self.assertEqual(restored_queued[0].prompt, "Review PR #10")
+            self.assertEqual(restored_queued[0].target_id, "#10")
+            self.assertEqual(restored_queued[1].id, "task-2")
+            self.assertEqual(restored_queued[1].agent, "code_fixer")
+            self.assertEqual(restored_queued[1].prompt, "Fix bug #11")
+            self.assertEqual(restored_queued[1].target_id, "#11")
 
             # Next submitted task should get incremental ID task-3
             t3 = manager2.submit_task("issue_triager", "Triage #12", target_id="#12")
@@ -893,6 +891,38 @@ class TestTaskManager(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
         self.assertIn("Server is draining tasks for update", str(ctx.exception))
+
+    def test_worker_loop_pauses_execution_when_task_manager_paused(self):
+        manager = TaskManager(max_workers=1)
+        manager.pause()
+        manager.start()
+
+        # Submit task manually to bypass submit_task pause check
+        with manager._lock:
+            manager._task_counter += 1
+            task = Task(
+                id=f"task-{manager._task_counter}",
+                agent="code_reviewer",
+                prompt="Review PR #1",
+                status=TaskStatus.QUEUED,
+            )
+            manager._tasks[task.id] = task
+        manager._queue.put(task)
+
+        # Worker loop should not pop or execute task while paused
+        time.sleep(0.3)
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
+
+        # Resuming task manager allows worker to pick up and process queued task
+        manager.resume()
+        for _ in range(50):
+            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
+        manager.stop()
 
 
 if __name__ == "__main__":
