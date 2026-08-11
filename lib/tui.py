@@ -571,25 +571,27 @@ class TerminalDashboard:
         if self._signals_registered:
             return
         self._signals_registered = True
+
+        def _make_handler(orig_h):
+            def _signal_handler(signum, frame):
+                self._restore_termios()
+                self.stop()
+                if orig_h == signal.SIG_IGN:
+                    return
+                elif callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
+                    orig_h(signum, frame)
+                elif signum == signal.SIGINT:
+                    raise KeyboardInterrupt()
+                else:
+                    sys.exit(128 + signum)
+
+            return _signal_handler
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 prev_handler = signal.getsignal(sig)
                 self._old_signal_handlers[sig] = prev_handler
-
-                def _make_handler(sig_num, orig_h):
-                    def _signal_handler(signum, frame):
-                        self._restore_termios()
-                        self.stop()
-                        if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
-                            orig_h(signum, frame)
-                        elif signum == signal.SIGINT:
-                            raise KeyboardInterrupt()
-                        else:
-                            sys.exit(128 + signum)
-
-                    return _signal_handler
-
-                signal.signal(sig, _make_handler(sig, prev_handler))
+                signal.signal(sig, _make_handler(prev_handler))
             except (ValueError, TypeError, AttributeError):
                 pass
 
@@ -599,8 +601,8 @@ class TerminalDashboard:
             return
         for sig, old_h in self._old_signal_handlers.items():
             try:
-                if old_h is not None:
-                    signal.signal(sig, old_h)
+                handler = old_h if old_h is not None else signal.SIG_DFL
+                signal.signal(sig, handler)
             except (ValueError, TypeError, AttributeError):
                 pass
         self._old_signal_handlers.clear()

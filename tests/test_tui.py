@@ -1203,6 +1203,56 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.stop()
         self.assertFalse(dashboard._signals_registered)
 
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_IGN)
+    def test_signal_handler_sig_ign(self, mock_getsignal, mock_signal):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        self.assertTrue(dashboard._signals_registered)
+
+        # Get the registered signal handler for SIGINT
+        sigint_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGINT]
+        self.assertTrue(len(sigint_call) > 0)
+        handler_int = sigint_call[0].args[1]
+
+        # Triggering handler should return gracefully without raising KeyboardInterrupt
+        try:
+            handler_int(signal.SIGINT, None)
+        except Exception as e:
+            self.fail(f"Handler raised unexpected exception: {e}")
+
+        # Get the registered signal handler for SIGTERM
+        sigterm_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGTERM]
+        self.assertTrue(len(sigterm_call) > 0)
+        handler_term = sigterm_call[0].args[1]
+
+        # Triggering SIGTERM handler should return gracefully without SystemExit
+        try:
+            handler_term(signal.SIGTERM, None)
+        except Exception as e:
+            self.fail(f"Handler raised unexpected exception: {e}")
+
+        dashboard.stop()
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=None)
+    def test_unregister_signal_handlers_fallback_to_sig_dfl(self, mock_getsignal, mock_signal):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        mock_signal.reset_mock()
+        dashboard.stop()
+
+        # Should restore with signal.SIG_DFL when old_h is None
+        restored_calls = {c.args[0]: c.args[1] for c in mock_signal.call_args_list}
+        self.assertEqual(restored_calls.get(signal.SIGINT), signal.SIG_DFL)
+        self.assertEqual(restored_calls.get(signal.SIGTERM), signal.SIG_DFL)
+
 
 if __name__ == "__main__":
     unittest.main()
