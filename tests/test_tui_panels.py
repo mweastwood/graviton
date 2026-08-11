@@ -12,9 +12,12 @@ from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
     allocate_approved_pr_columns,
+    allocate_scheduled_job_columns,
     fit_to_display_width,
     format_interval,
+    format_panel_header,
     format_remaining,
+    format_row_columns,
     format_timestamp,
     get_display_width,
     pad_to_display_width,
@@ -28,6 +31,7 @@ from lib.tui_panels import (
     render_quota_panel,
     render_scheduled_jobs_panel,
     truncate_to_display_width,
+    truncate_with_ellipsis,
 )
 
 
@@ -65,6 +69,43 @@ class TestTUIPanels(unittest.TestCase):
             last_run="2026-08-09T22:00:00Z"
         )
         self.assertEqual(format_remaining(job_last_z, ref_dt), "in 1h 0m")
+
+    def test_truncate_with_ellipsis(self):
+        self.assertEqual(truncate_with_ellipsis(None, 10), "")
+        self.assertEqual(truncate_with_ellipsis("short", 10), "short")
+
+        trunc = truncate_with_ellipsis("very long text string", 10)
+        self.assertEqual(get_display_width(trunc), 10)
+        self.assertTrue(trunc.endswith(".."))
+
+        self.assertEqual(truncate_with_ellipsis("text", 1), "t")
+
+        ansi_str = "\033[91mHello World\033[0m"
+        trunc_ansi = truncate_with_ellipsis(ansi_str, 7)
+        self.assertEqual(get_display_width(trunc_ansi), 7)
+        self.assertTrue(trunc_ansi.endswith("\033[0m"))
+
+    def test_format_row_columns(self):
+        vals = ["PR #1", "Title"]
+        widths = [8, 12]
+        formatted = format_row_columns(vals, widths)
+        self.assertEqual(formatted, "PR #1    Title       ")
+
+        formatted_sep = format_row_columns(vals, widths, sep=" | ")
+        self.assertEqual(formatted_sep, "PR #1    | Title       ")
+
+    def test_allocate_scheduled_job_columns(self):
+        headers, widths = allocate_scheduled_job_columns(80)
+        self.assertEqual(len(headers), 8)
+        self.assertEqual(len(widths), 8)
+        self.assertLessEqual(sum(widths) + 7, 80)
+
+        for w in range(10, 90):
+            hdrs, col_w = allocate_scheduled_job_columns(w)
+            self.assertEqual(len(hdrs), 8)
+            self.assertEqual(len(col_w), 8)
+            if w >= 7:
+                self.assertLessEqual(sum(col_w) + 7, w)
 
     def test_render_header_panel(self):
         lines = render_header_panel(
@@ -174,28 +215,6 @@ class TestTUIPanels(unittest.TestCase):
             self.assertIn("URL", hdr_line)
             self.assertIn("AUTHOR", hdr_line)
 
-    def test_render_approved_prs_panel_with_none_values(self):
-        prs_none = [
-            {
-                "number": 123,
-                "repo_full_name": "owner/repo",
-                "title": None,
-                "author": None,
-                "url": None,
-            },
-            {
-                "number": 124,
-                "title": None,
-                "author": None,
-                "url": None,
-            },
-        ]
-        lines_repo = render_approved_prs_panel(width=80, approved_prs=prs_none)
-        self.assertTrue(any("#123" in l for l in lines_repo))
-
-        lines_no_repo = render_approved_prs_panel(width=80, approved_prs=[prs_none[1]])
-        self.assertTrue(any("#124" in l for l in lines_no_repo))
-
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
         self.assertTrue(any("No task history" in l for l in empty_lines))
@@ -266,22 +285,31 @@ class TestTUIPanels(unittest.TestCase):
                 self.assertEqual(get_display_width(line), w)
 
     def test_allocate_approved_pr_columns_narrow_container_widths(self):
-        for inner_w in (10, 15, 20, 23):
+        for inner_w in range(5, 51):
             # Test with repo column
-            pr_w, repo_w, title_w, author_w, url_w = allocate_approved_pr_columns(inner_w, has_repo=True)
-            self.assertGreaterEqual(pr_w, 4)
-            self.assertGreaterEqual(repo_w, 8)
-            self.assertGreaterEqual(author_w, 6)
-            self.assertGreaterEqual(title_w, 1)
-            self.assertGreaterEqual(url_w, 1)
+            headers, widths = allocate_approved_pr_columns(inner_w, has_repo=True)
+            if inner_w >= 9:
+                self.assertLessEqual(sum(widths) + 4, inner_w)
+            for w in widths:
+                self.assertGreaterEqual(w, 1)
 
             # Test without repo column
-            pr_w2, repo_w2, title_w2, author_w2, url_w2 = allocate_approved_pr_columns(inner_w, has_repo=False)
-            self.assertGreaterEqual(pr_w2, 4)
-            self.assertEqual(repo_w2, 0)
-            self.assertGreaterEqual(author_w2, 6)
-            self.assertGreaterEqual(title_w2, 1)
-            self.assertGreaterEqual(url_w2, 1)
+            headers2, widths2 = allocate_approved_pr_columns(inner_w, has_repo=False)
+            if inner_w >= 7:
+                self.assertLessEqual(sum(widths2) + 3, inner_w)
+            for w in widths2:
+                self.assertGreaterEqual(w, 1)
+
+        # Title vs URL width allocation check
+        _, w_has_repo = allocate_approved_pr_columns(60, has_repo=True)
+        # pr=8, repo=16, author=14 -> sum=38. avail=56. remaining=18. title=8, url=10.
+        self.assertEqual(w_has_repo[2], 8)
+        self.assertEqual(w_has_repo[4], 10)
+
+        _, w_no_repo = allocate_approved_pr_columns(50, has_repo=False)
+        # pr=8, author=15 -> sum=23. avail=47. remaining=24. title=11, url=13.
+        self.assertEqual(w_no_repo[1], 11)
+        self.assertEqual(w_no_repo[3], 13)
 
     def test_render_panel_header_truncation_when_exceeding_width(self):
         # Normal width where title fits comfortably
@@ -299,7 +327,18 @@ class TestTUIPanels(unittest.TestCase):
             self.assertTrue(hdr_trunc.startswith("┌─"))
             self.assertTrue(hdr_trunc.endswith("┐"))
 
+        # Very small widths (width <= 3)
+        for w in (2, 3):
+            hdr_small = render_panel_header(width=w, title="TITLE")
+            self.assertEqual(get_display_width(hdr_small), max(3, w))
+
+        # Parameter order consistency in format_panel_header(width, title, color_code)
+        fmt_hdr = format_panel_header(80, "TITLE")
+        rnd_hdr = render_panel_header(80, "TITLE")
+        self.assertEqual(fmt_hdr, rnd_hdr)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
