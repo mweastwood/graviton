@@ -121,6 +121,40 @@ def format_table_row(items: Sequence[Tuple[str, int]], sep: str = " ") -> str:
     return sep.join(fit_to_display_width(val, w) for val, w in items)
 
 
+def format_target_for_display(target: Optional[str], max_w: int) -> str:
+    """
+    Format target string for display in TUI panels.
+    - Removes username/org prefix if present (e.g., 'mweastwood/graviton#148' -> 'graviton#148').
+    - Preserves PR/issue number suffix when clipping is necessary (e.g., 'gr..#148').
+    """
+    if target is None:
+        target = "-"
+    elif not isinstance(target, str):
+        target = str(target)
+
+    if not target:
+        target = "-"
+
+    if "/" in target:
+        target = target.split("/")[-1]
+
+    if get_display_width(target) <= max_w:
+        return target
+
+    match = re.search(r"^(.*?)(#\d+)$", target)
+    if match:
+        repo_part = match.group(1)
+        tag_part = match.group(2)
+        tag_w = get_display_width(tag_part)
+        if max_w >= tag_w + 3:
+            avail_repo_w = max_w - 2 - tag_w
+            trunc_repo = truncate_to_display_width(repo_part, avail_repo_w)
+            return f"{trunc_repo}..{tag_part}"
+
+    return truncate_with_ellipsis(target, max_w)
+
+
+
 def render_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
     """Build top border line for a TUI panel with styled title."""
     if title is None:
@@ -437,6 +471,7 @@ def render_quota_panel(
 
 def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) -> List[str]:
     """Render active running tasks panel."""
+    inner_w = max(0, width - 4)
     active_cnt = len(tasks)
     panel_title = f"ACTIVE TASKS (RUNNING) [{active_cnt}/{max_workers} Workers Active]"
     header_bar = render_panel_header(width, panel_title, "\033[94m\033[1m")
@@ -445,27 +480,24 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
+    target_w = max(8, inner_w - 42)
     cols = [
         ("ID", 8),
         ("AGENT", 14),
-        ("TARGET", 8),
-        ("WORKER", 9),
+        ("TARGET", target_w),
         ("ATTEMPT", 7),
         ("ELAPSED", 9),
-        ("PROMPT", 15),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
     for t in tasks:
-        prompt_trunc = truncate_with_ellipsis(t.prompt, 15)
+        target_str = format_target_for_display(t.target_id, target_w)
         row_cells = [
             (t.id, 8),
             (t.agent, 14),
-            (t.target_id or "-", 8),
-            (t.worker_thread_id or "-", 9),
+            (target_str, target_w),
             (f"{t.attempt}/{t.max_attempts}", 7),
             (f"{t.elapsed_time:.1f}s", 9),
-            (prompt_trunc, 15),
         ]
         content.append(format_table_row(row_cells))
 
@@ -493,10 +525,11 @@ def render_queued_tasks_panel(width: int, tasks: List[Any]) -> List[str]:
 
     for t in tasks:
         prompt_trunc = truncate_with_ellipsis(t.prompt, 26)
+        target_str = format_target_for_display(t.target_id, 10)
         row_cells = [
             (t.id, 8),
             (t.agent, 15),
-            (t.target_id or "-", 10),
+            (target_str, 10),
             (f"{t.wait_time:.1f}s", 10),
             (prompt_trunc, 26),
         ]
@@ -693,6 +726,7 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
         status_str = f"{status_color}{t.status}\033[0m"
         ret_val = str(t.return_code) if t.return_code is not None else "-"
+        target_str = format_target_for_display(t.target_id, 8)
         row_cells = [
             (t.id, 8),
             (status_str, 11),
@@ -700,7 +734,7 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
             (f"{t.attempt}/{t.max_attempts}", 7),
             (ret_val, 8),
             (f"{t.elapsed_time:.1f}s", 9),
-            (t.target_id or "-", 8),
+            (target_str, 8),
         ]
         content.append(format_table_row(row_cells))
 

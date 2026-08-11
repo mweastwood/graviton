@@ -17,6 +17,7 @@ from lib.tui_panels import (
     format_interval,
     format_remaining,
     format_table_row,
+    format_target_for_display,
     format_timestamp,
     get_display_width,
     pad_to_display_width,
@@ -240,6 +241,27 @@ class TestTUIPanels(unittest.TestCase):
         lines_none = render_quota_panel(width=80, quota_tracker=DummyTrackerNoneWindows())  # type: ignore
         self.assertEqual(len(lines_none), 4)
 
+    def test_format_target_for_display(self):
+        # Username removal when space is sufficient
+        self.assertEqual(format_target_for_display("mweastwood/graviton#148", 20), "graviton#148")
+        self.assertEqual(format_target_for_display("octocat/Hello-World#42", 15), "Hello-World#42")
+
+        # PR number preservation on truncation
+        self.assertEqual(format_target_for_display("mweastwood/graviton#148", 8), "gr..#148")
+        self.assertEqual(format_target_for_display("mweastwood/graviton#148", 10), "grav..#148")
+        self.assertEqual(format_target_for_display("octocat/Hello-World#42", 10), "Hello..#42")
+        self.assertEqual(format_target_for_display("octocat/Hello-World#42", 8), "Hel..#42")
+
+        # Targets without PR/issue numbers
+        self.assertEqual(format_target_for_display("mweastwood/graviton", 10), "graviton")
+        self.assertEqual(format_target_for_display("mweastwood/graviton-server-repo", 8), "gravit..")
+
+        # Empty / None / fallback targets
+        self.assertEqual(format_target_for_display(None, 8), "-")
+        self.assertEqual(format_target_for_display("", 8), "-")
+        self.assertEqual(format_target_for_display("-", 8), "-")
+        self.assertEqual(format_target_for_display("#148", 8), "#148")
+
     def test_render_active_tasks_panel_empty_and_populated(self):
         empty_lines = render_active_tasks_panel(width=80, tasks=[], max_workers=2)
         self.assertTrue(any("No active tasks" in l for l in empty_lines))
@@ -247,12 +269,31 @@ class TestTUIPanels(unittest.TestCase):
         task = Task(
             id="task-1",
             agent="code_reviewer",
+            target_id="mweastwood/graviton#148",
             prompt="Review PR",
             status=TaskStatus.RUNNING,
             worker_thread_id="Worker-1",
         )
         pop_lines = render_active_tasks_panel(width=80, tasks=[task], max_workers=2)
-        self.assertTrue(any("task-1" in l for l in pop_lines))
+        header_line = pop_lines[1]
+        self.assertIn("ID", header_line)
+        self.assertIn("AGENT", header_line)
+        self.assertIn("TARGET", header_line)
+        self.assertIn("ATTEMPT", header_line)
+        self.assertIn("ELAPSED", header_line)
+        self.assertNotIn("WORKER", header_line)
+        self.assertNotIn("PROMPT", header_line)
+
+        row_line = pop_lines[2]
+        self.assertIn("task-1", row_line)
+        self.assertIn("graviton#148", row_line)
+        self.assertNotIn("mweastwood/", row_line)
+
+        # Narrow width test (width=45 -> inner_w=41 -> target_w=8 -> gr..#148)
+        narrow_lines = render_active_tasks_panel(width=45, tasks=[task], max_workers=2)
+        narrow_row = narrow_lines[2]
+        self.assertIn("gr..#148", narrow_row)
+
 
     def test_render_queued_tasks_panel_empty_and_populated(self):
         empty_lines = render_queued_tasks_panel(width=80, tasks=[])
