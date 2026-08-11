@@ -94,6 +94,10 @@ class TestTUIPanels(unittest.TestCase):
         formatted_sep = format_row_columns(vals, widths, sep=" | ")
         self.assertEqual(formatted_sep, "PR #1    | Title       ")
 
+        formatted_none = format_row_columns(["#123", None], [8, 10])
+        self.assertEqual(formatted_none, "#123               ")
+        self.assertNotIn("None", formatted_none)
+
     def test_allocate_scheduled_job_columns(self):
         headers, widths = allocate_scheduled_job_columns(80)
         self.assertEqual(len(headers), 8)
@@ -215,6 +219,32 @@ class TestTUIPanels(unittest.TestCase):
             self.assertIn("URL", hdr_line)
             self.assertIn("AUTHOR", hdr_line)
 
+    def test_render_approved_prs_panel_with_none_values(self):
+        prs_none = [
+            {
+                "number": 123,
+                "repo_full_name": "owner/repo",
+                "title": None,
+                "author": None,
+                "url": None,
+            },
+            {
+                "number": 124,
+                "title": None,
+                "author": None,
+                "url": None,
+            },
+        ]
+        lines_repo = render_approved_prs_panel(width=80, approved_prs=prs_none)
+        self.assertTrue(any("#123" in l for l in lines_repo))
+        for line in lines_repo:
+            self.assertNotIn("None", line)
+
+        lines_no_repo = render_approved_prs_panel(width=80, approved_prs=[prs_none[1]])
+        self.assertTrue(any("#124" in l for l in lines_no_repo))
+        for line in lines_no_repo:
+            self.assertNotIn("None", line)
+
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
         self.assertTrue(any("No task history" in l for l in empty_lines))
@@ -288,17 +318,15 @@ class TestTUIPanels(unittest.TestCase):
         for inner_w in range(5, 51):
             # Test with repo column
             headers, widths = allocate_approved_pr_columns(inner_w, has_repo=True)
-            if inner_w >= 9:
-                self.assertLessEqual(sum(widths) + 4, inner_w)
+            self.assertLessEqual(sum(widths) + 4, inner_w)
             for w in widths:
-                self.assertGreaterEqual(w, 1)
+                self.assertGreaterEqual(w, 0)
 
             # Test without repo column
             headers2, widths2 = allocate_approved_pr_columns(inner_w, has_repo=False)
-            if inner_w >= 7:
-                self.assertLessEqual(sum(widths2) + 3, inner_w)
+            self.assertLessEqual(sum(widths2) + 3, inner_w)
             for w in widths2:
-                self.assertGreaterEqual(w, 1)
+                self.assertGreaterEqual(w, 0)
 
         # Title vs URL width allocation check
         _, w_has_repo = allocate_approved_pr_columns(60, has_repo=True)

@@ -119,7 +119,7 @@ def fit_to_display_width(s: str, target_w: int, align: str = "left") -> str:
 
 def format_row_columns(values: List[Any], widths: List[int], sep: str = " ") -> str:
     """Format row of text cells fitted to their respective column widths."""
-    return sep.join(fit_to_display_width(str(v), w) for v, w in zip(values, widths))
+    return sep.join(fit_to_display_width(v, w) for v, w in zip(values, widths))
 
 
 def render_panel_header(width: int, title: str, color_code: str = "\033[96m\033[1m") -> str:
@@ -157,48 +157,58 @@ def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Tuple[
     """
     if has_repo:
         spacing = 4
-        avail = max(5, inner_w - spacing)
+        avail = max(0, inner_w - spacing)
         if inner_w < 44:
-            max_fixed = max(3, avail - 2)
-            pr_col_w = max(1, min(8, int(avail * 0.15)))
-            repo_col_w = max(1, min(16, int(avail * 0.25)))
-            author_col_w = max(1, min(14, int(avail * 0.20)))
+            max_fixed = max(0, avail - 2) if avail < 5 else max(3, avail - 2)
+            min_col_w = 0 if avail < 5 else 1
+            pr_col_w = max(min_col_w, min(8, int(avail * 0.15)))
+            repo_col_w = max(min_col_w, min(16, int(avail * 0.25)))
+            author_col_w = max(min_col_w, min(14, int(avail * 0.20)))
             fixed_sum = pr_col_w + repo_col_w + author_col_w
             if fixed_sum > max_fixed:
-                scale = max_fixed / fixed_sum
-                pr_col_w = max(1, int(pr_col_w * scale))
-                repo_col_w = max(1, int(repo_col_w * scale))
-                author_col_w = max(1, max_fixed - pr_col_w - repo_col_w)
+                scale = max_fixed / fixed_sum if fixed_sum > 0 else 0
+                pr_col_w = max(min_col_w, int(pr_col_w * scale))
+                repo_col_w = max(0, int(repo_col_w * scale))
+                author_col_w = max(0, max_fixed - pr_col_w - repo_col_w)
         else:
             pr_col_w = 8
             repo_col_w = 16
             author_col_w = 14
 
-        remaining = max(2, avail - pr_col_w - repo_col_w - author_col_w)
-        title_col_w = max(1, (remaining - 1) // 2)
-        url_col_w = max(1, remaining - title_col_w)
+        remaining = max(0, avail - pr_col_w - repo_col_w - author_col_w)
+        if remaining > 0:
+            title_col_w = max(0, (remaining - 1) // 2)
+            url_col_w = remaining - title_col_w
+        else:
+            title_col_w = 0
+            url_col_w = 0
 
         headers = ["PR #", "REPO", "TITLE", "AUTHOR", "URL"]
         widths = [pr_col_w, repo_col_w, title_col_w, author_col_w, url_col_w]
     else:
         spacing = 3
-        avail = max(4, inner_w - spacing)
+        avail = max(0, inner_w - spacing)
         if inner_w < 28:
-            max_fixed = max(2, avail - 2)
-            pr_col_w = max(1, min(8, int(avail * 0.20)))
-            author_col_w = max(1, min(15, int(avail * 0.30)))
+            max_fixed = max(0, avail - 2) if avail < 4 else max(2, avail - 2)
+            min_col_w = 0 if avail < 4 else 1
+            pr_col_w = max(min_col_w, min(8, int(avail * 0.20)))
+            author_col_w = max(min_col_w, min(15, int(avail * 0.30)))
             fixed_sum = pr_col_w + author_col_w
             if fixed_sum > max_fixed:
-                scale = max_fixed / fixed_sum
-                pr_col_w = max(1, int(pr_col_w * scale))
-                author_col_w = max(1, max_fixed - pr_col_w)
+                scale = max_fixed / fixed_sum if fixed_sum > 0 else 0
+                pr_col_w = max(min_col_w, int(pr_col_w * scale))
+                author_col_w = max(0, max_fixed - pr_col_w)
         else:
             pr_col_w = 8
             author_col_w = 15
 
-        remaining = max(2, avail - pr_col_w - author_col_w)
-        title_col_w = max(1, (remaining - 1) // 2)
-        url_col_w = max(1, remaining - title_col_w)
+        remaining = max(0, avail - pr_col_w - author_col_w)
+        if remaining > 0:
+            title_col_w = max(0, (remaining - 1) // 2)
+            url_col_w = remaining - title_col_w
+        else:
+            title_col_w = 0
+            url_col_w = 0
 
         headers = ["PR #", "TITLE", "AUTHOR", "URL"]
         widths = [pr_col_w, title_col_w, author_col_w, url_col_w]
