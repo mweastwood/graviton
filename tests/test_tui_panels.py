@@ -166,6 +166,67 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(get_display_width(None), 0)
         self.assertEqual(get_display_width(12345), 5)
 
+    def test_declarative_column_allocation(self):
+        # Custom TableLayoutSpec with flex columns using non-standard column names
+        custom_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("job_id", ratio=0.2, fixed_w=10, min_w=4, max_w=10, min_avail_threshold=3),
+                ColumnSpec("description", ratio=0.5, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=2, is_flex=True),
+                ColumnSpec("endpoint_url", ratio=0.3, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=0, is_flex=True),
+            ],
+            spacing=3,
+            wide_threshold=40,
+            narrow_threshold=15,
+        )
+
+        # Wide mode (inner_w >= wide_threshold)
+        cols_wide = allocate_declarative_columns(custom_flex_spec, 50)
+        self.assertEqual(cols_wide["job_id"], 10)
+        self.assertGreater(cols_wide["description"], 0)
+        self.assertGreater(cols_wide["endpoint_url"], 0)
+        self.assertLessEqual(sum(cols_wide.values()) + 3, 50)
+
+        # Fallback / intermediate mode (narrow_threshold <= avail < wide_threshold)
+        cols_mid = allocate_declarative_columns(custom_flex_spec, 30)
+        self.assertGreater(cols_mid["job_id"], 0)
+        self.assertGreater(cols_mid["description"], 0)
+        self.assertGreater(cols_mid["endpoint_url"], 0)
+        self.assertLessEqual(sum(cols_mid.values()) + 3, 30)
+
+        # Narrow mode (avail < narrow_threshold)
+        cols_narrow = allocate_declarative_columns(custom_flex_spec, 10)
+        self.assertIn("job_id", cols_narrow)
+        self.assertIn("description", cols_narrow)
+        self.assertIn("endpoint_url", cols_narrow)
+        self.assertLessEqual(sum(cols_narrow.values()) + 3, 10)
+
+        # Single flex column layout spec
+        single_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("code", ratio=0.3, fixed_w=8, min_w=4),
+                ColumnSpec("details", ratio=0.7, is_flex=True),
+            ],
+            spacing=2,
+            wide_threshold=30,
+            narrow_threshold=10,
+        )
+        cols_single_flex = allocate_declarative_columns(single_flex_spec, 40)
+        self.assertEqual(cols_single_flex["code"], 8)
+        self.assertEqual(cols_single_flex["details"], 40 - 8 - 2)
+
+        # Deficit reduction test on custom layout spec
+        over_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.4, fixed_w=20, min_w=10),
+                ColumnSpec("col2", ratio=0.6, fixed_w=20, min_w=10, is_flex=True),
+            ],
+            spacing=5,
+            wide_threshold=30,
+            narrow_threshold=10,
+        )
+        cols_over = allocate_declarative_columns(over_spec, 25)
+        self.assertLessEqual(sum(cols_over.values()) + 5, 25)
+
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
         self.assertEqual(format_interval(3600), "1h")
