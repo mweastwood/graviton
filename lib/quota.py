@@ -623,7 +623,7 @@ class QuotaTracker:
         self._backoff_count = 0
         self._active_backoff_delay = 0.0
 
-        self.interval_5h = 10.0
+        self.interval_5h = 60.0
         self.interval_1w = 60.0
         self._last_fetch_5h: float = 0.0
         self._last_fetch_1w: float = 0.0
@@ -800,8 +800,7 @@ class QuotaTracker:
         force: bool = False,
     ) -> Tuple[QuotaWindow, QuotaWindow]:
         """
-        Fetch live Antigravity quota and update dual windows based on differential TTLs
-        (10s for 5H window, 60s for 1W window) or when force is True.
+        Fetch live Antigravity quota and update dual windows based on uniform 60s TTL intervals (both 5H and 1W windows) or when force is True.
         """
         now = time.time()
         with self._lock:

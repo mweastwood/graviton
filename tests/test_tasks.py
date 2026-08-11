@@ -396,7 +396,8 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
-    def test_task_manager_quota_backoff_and_pause(self):
+    @patch.object(QuotaTracker, "poll_live_quota")
+    def test_task_manager_quota_backoff_and_pause(self, mock_poll_live):
         quota = QuotaTracker(remaining_percentage=10.0, base_backoff_delay=0.01)
         manager = TaskManager(max_workers=1, quota_tracker=quota)
 
@@ -814,8 +815,102 @@ class TestTaskManager(unittest.TestCase):
             mock_run_agent.assert_not_called()
             manager.stop()
 
+    def test_task_completion_triggers_quota_fetch(self):
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Test prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
+    def test_task_completion_quota_fetch_exception_handled(self):
+        quota = MagicMock(spec=QuotaTracker)
+        quota.poll_live_quota.side_effect = RuntimeError("Quota API error")
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        with self.assertLogs("graviton.tasks", level="WARNING") as cm:
+            manager.start()
+
+            task = manager.submit_task("code_reviewer", "Test prompt")
+
+            for _ in range(50):
+                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    break
+                time.sleep(0.05)
+
+            manager._queue.join()
+            manager.stop()
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        self.assertTrue(
+            any("Quota fetch on task finish failed: Quota API error" in log for log in cm.output)
+        )
+
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_failure_return_code_triggers_quota_fetch(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+        mock_proc.stderr = "Error"
+        mock_run.return_value = mock_proc
+
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_fixer", "Test failing prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_task_failure_exception_triggers_quota_fetch(self, mock_run):
+        mock_run.side_effect = RuntimeError("Worker execution exception")
+
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_fixer", "Test exception prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        self.assertIn("Worker execution exception", task.error_message)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
