@@ -376,7 +376,7 @@ def handle_pull_request_review_comment_event(
             "reason": "Bot comment dropped",
         }
 
-    if not author_agent and is_bot_event(comment_body, comment_author):
+    if (author_agent or is_bot_event(comment_body, comment_author)) and not has_explicit_command(comment_body):
         return {
             "status": "ignored",
             "reason": "Bot comment dropped",
@@ -512,11 +512,20 @@ def handle_issue_comment_event(
             pr_author = issue_user.get("login", "") if isinstance(issue_user, dict) else str(issue_user or "")
             pr_tracker.add_approved_pr(issue_number, pr_title, pr_author, pr_url, repo_full_name=repo_full_name)
 
-    if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot comment dropped",
-        }
+    if (author_agent or is_bot_event(comment_body, comment_author)) and not has_explicit_command(comment_body):
+        labels_raw = issue.get("labels", []) if isinstance(issue, dict) else []
+        labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in labels_raw]
+        is_triager_transition = bool(
+            not pr
+            and author_agent
+            and author_agent == default_triager
+            and ("ready-for-pr" in labels or "ready-for-implementation" in labels)
+        )
+        if not is_triager_transition:
+            return {
+                "status": "ignored",
+                "reason": "Bot comment dropped",
+            }
 
     if action == "created":
         # 1. Comment on a Pull Request
@@ -539,13 +548,7 @@ def handle_issue_comment_event(
             else:
                 agent = default_fixer
 
-            if author_agent and author_agent == agent and not has_explicit_command(comment_body):
-                return {
-                    "status": "ignored",
-                    "reason": "Bot comment dropped",
-                }
-
-            if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+            if author_agent and author_agent == agent:
                 return {
                     "status": "ignored",
                     "reason": "Bot comment dropped",
@@ -575,12 +578,7 @@ def handle_issue_comment_event(
             body_lower = comment_body.lower()
             if "ready-for-pr" in labels or "ready-for-implementation" in labels or "/draft-pr" in body_lower:
                 agent = default_drafter
-                if author_agent and author_agent == agent and not has_explicit_command(comment_body):
-                    return {
-                        "status": "ignored",
-                        "reason": "Bot comment dropped",
-                    }
-                if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+                if author_agent and author_agent == agent:
                     return {
                         "status": "ignored",
                         "reason": "Bot comment dropped",
@@ -601,12 +599,7 @@ def handle_issue_comment_event(
                 )
             else:
                 agent = default_triager
-                if author_agent and author_agent == agent and not has_explicit_command(comment_body):
-                    return {
-                        "status": "ignored",
-                        "reason": "Bot comment dropped",
-                    }
-                if not author_agent and is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
+                if author_agent and author_agent == agent:
                     return {
                         "status": "ignored",
                         "reason": "Bot comment dropped",
@@ -625,18 +618,6 @@ def handle_issue_comment_event(
                     author_agent=author_agent,
                     issue_number=issue_number,
                 )
-
-    if author_agent and author_agent == default_triager and not has_explicit_command(comment_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot comment dropped",
-        }
-
-    if is_bot_event(comment_body, comment_author) and not has_explicit_command(comment_body):
-        return {
-            "status": "ignored",
-            "reason": "Bot comment dropped",
-        }
 
     return {
         "status": "ignored",
