@@ -3,6 +3,7 @@ Unit tests for lib/tasks.py (TaskManager and Task model).
 """
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -1162,9 +1163,54 @@ class TestTaskManager(unittest.TestCase):
         self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_task_completion_quota_polling_is_non_blocking(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_run.return_value = mock_proc
+
+        poll_called = threading.Event()
+
+        def slow_poll_live_quota(force=True):
+            time.sleep(0.5)
+            poll_called.set()
+
+        quota = MagicMock(spec=QuotaTracker)
+        quota.state = QuotaState.NORMAL
+        quota.is_behind_pacing.return_value = False
+        quota.poll_live_quota.side_effect = slow_poll_live_quota
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=quota,
+        )
+        manager.start()
+
+        start_time = time.time()
+        task = manager.submit_task("code_reviewer", "Test non-blocking prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.02)
+
+        finish_duration = time.time() - start_time
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertLess(finish_duration, 0.4)
+
+        self.assertTrue(poll_called.wait(timeout=2.0))
+        quota.poll_live_quota.assert_called_with(force=True)
+
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

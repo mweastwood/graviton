@@ -661,9 +661,21 @@ class TestQuotaTracker(unittest.TestCase):
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
 
+    def test_poll_live_quota_async(self):
+        tracker = QuotaTracker()
+        w5h = QuotaWindow(name="5H", remaining_percentage=88.0)
+        w1w = QuotaWindow(name="1W", remaining_percentage=92.0)
+
+        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
+            t = tracker.poll_live_quota_async(force=True)
+            t.join(timeout=2.0)
+            self.assertEqual(tracker.window_5h.remaining_percentage, 88.0)
+            self.assertEqual(tracker.window_1w.remaining_percentage, 92.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

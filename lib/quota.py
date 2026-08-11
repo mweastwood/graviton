@@ -907,6 +907,30 @@ class QuotaTracker:
 
             return self.window_5h, self.window_1w
 
+    def poll_live_quota_async(
+        self,
+        token: Optional[str] = None,
+        quota_pool: Optional[str] = None,
+        force: bool = True,
+    ) -> threading.Thread:
+        """
+        Trigger live quota polling asynchronously in a background daemon thread
+        to prevent blocking worker execution threads.
+        """
+        def _runner():
+            try:
+                self.poll_live_quota(token=token, quota_pool=quota_pool, force=force)
+            except Exception as err:
+                logger.warning(f"Async live quota poll failed: {err}")
+
+        t = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name="QuotaTrackerAsyncPollThread",
+        )
+        t.start()
+        return t
+
     def start_background_polling(
         self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
     ):
