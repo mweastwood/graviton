@@ -305,8 +305,6 @@ def main():
         cwd=REPO_ROOT,
         task_manager=task_manager,
     )
-    scheduler.register_handler("periodic_quota_fetch", lambda job: quota_tracker.poll_live_quota())
-    scheduler.register_handler("quota_fetcher", lambda job: quota_tracker.poll_live_quota())
     scheduler.start()
     GravitonHandler.scheduler = scheduler
 

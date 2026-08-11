@@ -523,16 +523,15 @@ class TestQuotaTracker(unittest.TestCase):
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
                 self.assertEqual(w_1w.remaining_percentage, 80.0)
 
-        # 12 seconds later: 5H TTL (10s) expired -> fetch triggers and updates BOTH windows from API payload
+        # 12 seconds later: 60s TTL not expired yet -> should not fetch
         with patch("lib.quota.time.time", return_value=start_time + 12.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
-                self.assertEqual(mock_fetch.call_count, 1)
-                # 5H and 1W windows updated to v2 (70% and 60%) from fresh API response
-                self.assertEqual(w_5h.remaining_percentage, 70.0)
-                self.assertEqual(w_1w.remaining_percentage, 60.0)
+                self.assertEqual(mock_fetch.call_count, 0)
+                self.assertEqual(w_5h.remaining_percentage, 90.0)
+                self.assertEqual(w_1w.remaining_percentage, 80.0)
 
-        # 62 seconds later: 60s TTL also expired
+        # 62 seconds later: 60s TTL expired -> fetch triggers and updates BOTH windows from API payload
         with patch("lib.quota.time.time", return_value=start_time + 62.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
@@ -630,8 +629,8 @@ class TestQuotaTracker(unittest.TestCase):
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 0)
 
-        # 10 seconds later: TTL expired, retries API call
-        with patch("lib.quota.time.time", return_value=start_time + 10.0):
+        # 60 seconds later: TTL expired, retries API call
+        with patch("lib.quota.time.time", return_value=start_time + 60.0):
             with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)

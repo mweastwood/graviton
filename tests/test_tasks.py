@@ -814,6 +814,22 @@ class TestTaskManager(unittest.TestCase):
             mock_run_agent.assert_not_called()
             manager.stop()
 
+    def test_task_completion_triggers_quota_fetch(self):
+        quota = MagicMock(spec=QuotaTracker)
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Test prompt")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        quota.poll_live_quota.assert_called_with(force=True)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
