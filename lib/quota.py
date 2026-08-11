@@ -912,6 +912,7 @@ class QuotaTracker:
         token: Optional[str] = None,
         quota_pool: Optional[str] = None,
         force: bool = True,
+        thread_name: str = "QuotaTrackerAsyncPollThread",
     ) -> threading.Thread:
         """
         Trigger live quota polling asynchronously in a background daemon thread
@@ -926,7 +927,7 @@ class QuotaTracker:
         t = threading.Thread(
             target=_runner,
             daemon=True,
-            name="QuotaTrackerAsyncPollThread",
+            name=thread_name,
         )
         t.start()
         return t
