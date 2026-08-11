@@ -818,40 +818,66 @@ class TestTaskManager(unittest.TestCase):
     def test_task_manager_pause_resume_toggle_and_is_paused(self):
         manager = TaskManager()
         self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
         stats = manager.get_stats()
         self.assertFalse(stats["is_paused"])
         self.assertEqual(stats["queue_status"], "ACTIVE")
 
         manager.pause()
         self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
         stats_paused = manager.get_stats()
         self.assertTrue(stats_paused["is_paused"])
         self.assertEqual(stats_paused["queue_status"], "PAUSED")
 
         manager.resume()
         self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
         stats_resumed = manager.get_stats()
         self.assertFalse(stats_resumed["is_paused"])
 
         new_state = manager.toggle_pause()
         self.assertTrue(new_state)
         self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
 
         new_state_2 = manager.toggle_pause()
         self.assertFalse(new_state_2)
         self.assertFalse(manager.is_paused)
+        self.assertTrue(manager.can_accept_task())
 
     def test_submit_task_raises_runtime_error_when_paused(self):
         manager = TaskManager()
         manager.pause()
+        self.assertFalse(manager.can_accept_task())
         with self.assertRaises(RuntimeError) as ctx:
             manager.submit_task("code_reviewer", "Review PR #1")
         self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
 
         manager.resume()
+        self.assertTrue(manager.can_accept_task())
         task = manager.submit_task("code_reviewer", "Review PR #1")
         self.assertIsNotNone(task)
         self.assertEqual(task.id, "task-1")
+
+    def test_submit_task_deduplicates_duplicate_when_paused(self):
+        manager = TaskManager()
+        # Submit an initial task
+        task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="owner/repo#1")
+        self.assertEqual(task1.id, "task-1")
+
+        manager.pause()
+        self.assertTrue(manager.is_paused)
+        self.assertFalse(manager.can_accept_task())
+
+        # Duplicate task submission while paused should deduplicate and return existing active task without raising RuntimeError
+        task_dup = manager.submit_task("code_reviewer", "Review PR #1 updated prompt", target_id="owner/repo#1")
+        self.assertIs(task_dup, task1)
+
+        # New non-duplicate task submission while paused raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
+        self.assertIn("TaskManager is paused and not accepting new tasks", str(ctx.exception))
 
 
 if __name__ == "__main__":

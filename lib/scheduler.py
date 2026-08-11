@@ -573,6 +573,13 @@ class TaskScheduler:
             return
 
         if self.task_manager:
+            if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, job.prompt):
+                logger.info(f"TaskManager cannot accept task for job '{job.job_id}' right now. Deferring execution.")
+                with self._lock:
+                    job.is_running = False
+                self.save_state()
+                return
+
             try:
                 target_id = f"sched:{job.job_id}"
                 task = self.task_manager.submit_task(
