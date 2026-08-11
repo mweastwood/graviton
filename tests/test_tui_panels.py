@@ -165,7 +165,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(get_display_width(None), 0)
         self.assertEqual(get_display_width(12345), 5)
 
-    def test_declarative_column_allocation(self):
+    def test_declarative_column_allocation_custom_specs(self):
         # Custom TableLayoutSpec with flex columns using non-standard column names
         custom_flex_spec = TableLayoutSpec(
             columns=[
