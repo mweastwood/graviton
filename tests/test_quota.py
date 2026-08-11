@@ -15,6 +15,7 @@ from lib.quota import (
     QuotaState,
     QuotaTracker,
     QuotaWindow,
+    _normalize_now_datetime,
     fetch_live_antigravity_quota,
     format_quota_badge,
     format_reset_countdown,
@@ -24,6 +25,14 @@ from lib.quota import (
 
 
 class TestQuotaTracker(unittest.TestCase):
+
+    def test_normalize_now_datetime_boolean_guard(self):
+        self.assertIsNone(_normalize_now_datetime(True))
+        self.assertIsNone(_normalize_now_datetime(False))
+        self.assertIsNone(_normalize_now_datetime(None))
+        dt = datetime.now(timezone.utc)
+        self.assertEqual(_normalize_now_datetime(dt), dt)
+        self.assertIsNotNone(_normalize_now_datetime(1700000000))
 
     def test_quota_initial_state(self):
         tracker = QuotaTracker()
@@ -137,6 +146,12 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.get_backoff_delay(), 0.0)
         self.assertEqual(tracker.active_backoff_delay, 0.0)
 
+        # In EXHAUSTED state (0%), delay returns 0.0 float and resets active_backoff_delay
+        tracker.update_quota(0.0)
+        self.assertEqual(tracker.state, QuotaState.EXHAUSTED)
+        self.assertEqual(tracker.get_backoff_delay(), 0.0)
+        self.assertEqual(tracker.active_backoff_delay, 0.0)
+
     def test_exponential_backoff_with_attempt_parameter(self):
         tracker = QuotaTracker(base_backoff_delay=1.0, max_backoff_delay=10.0, backoff_factor=2.0)
         tracker.update_quota(10.0)  # LOW_QUOTA state
@@ -209,13 +224,24 @@ class TestQuotaTracker(unittest.TestCase):
         tracker = QuotaTracker(max_backoff_delay=10.0)
         tracker.update_quota(
             remaining_percentage=20.0,
+            remaining_percentage_5h=100.0,
             remaining_percentage_1w=20.0,
             reset_time_1w=now + 362880.0,
         )
         self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
         self.assertAlmostEqual(backoff, 4.0)
-        self.assertAlmostEqual(tracker.get_backoff_delay(now=now), 4.0)
+        self.assertTrue(tracker.is_behind_pacing(now=now))
+        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+        self.assertTrue(tracker.is_behind_pacing(now=now_dt))
+        self.assertEqual(tracker.get_backoff_delay(), 0.0)
+        self.assertEqual(tracker.pacing_status, "BEHIND_PACING")
+        self.assertEqual(tracker.pacing_status(now=now), "BEHIND_PACING")
+        self.assertEqual(tracker.pacing_status(now=now_dt), "BEHIND_PACING")
+        ok_tracker = QuotaTracker(remaining_percentage=100.0)
+        self.assertEqual(ok_tracker.pacing_status, "OK")
+        self.assertEqual(ok_tracker.pacing_status(now=now), "OK")
+        self.assertEqual(ok_tracker.pacing_status(now=now_dt), "OK")
 
     def test_parse_antigravity_quota_json(self):
         data = {
@@ -295,7 +321,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
         self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
-        self.assertIn("Backoff:", badge_1w)
+        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED)", badge_1w)
 
     def test_load_oauth_token_nested_json(self):
         import tempfile

@@ -173,12 +173,14 @@ class TaskManager:
         if self.quota_tracker is not None:
             if hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:
                 return False
+            if hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
+                return False
         return True
 
     def can_accept_task(self, agent: Optional[str] = None, prompt: Optional[str] = None) -> bool:
         """
-        Return False if TaskManager is paused or stopped,
-        or if quota_tracker is present and quota_tracker.is_behind_pacing() is True.
+        Return False if TaskManager is paused, draining, or stopped,
+        or if quota_tracker is present and quota_tracker.is_behind_pacing() is True or quota_tracker.state == QuotaState.EXHAUSTED.
         Otherwise return True.
         """
         with self._lock:
@@ -467,13 +469,15 @@ class TaskManager:
 
             if not self._can_accept_task_locked(agent=agent, prompt=prompt):
                 if self._paused:
-                    raise RuntimeError("TaskManager is paused and not accepting new tasks")
+                    raise RuntimeError("Cannot accept new task: task acceptance is paused")
                 if self._draining:
                     raise RuntimeError("Server is draining tasks for update")
                 if self._stopped:
                     raise RuntimeError("Cannot accept new task: task manager is stopped")
                 if self.quota_tracker is not None and hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True:
                     raise RuntimeError("Cannot accept new task: quota pacing is behind limit")
+                if self.quota_tracker is not None and hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
+                    raise RuntimeError("Cannot accept new task: quota is exhausted")
                 raise RuntimeError("Cannot accept new task: task admission suspended")
 
             self._task_counter += 1
@@ -541,12 +545,17 @@ class TaskManager:
             paused = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PAUSED_FOR_QUOTA)
 
             quota_state = self.quota_tracker.state if self.quota_tracker else QuotaState.NORMAL
+            is_behind = (self.quota_tracker.is_behind_pacing() is True) if self.quota_tracker else False
+
             if self._paused:
                 queue_status = "PAUSED"
                 status_str = "PAUSED"
             elif quota_state == QuotaState.EXHAUSTED:
                 queue_status = "PAUSED_FOR_QUOTA"
                 status_str = "PAUSED_FOR_QUOTA"
+            elif is_behind:
+                queue_status = "PAUSED_FOR_PACING"
+                status_str = "BEHIND_PACING"
             elif quota_state == QuotaState.LOW_QUOTA:
                 queue_status = "BACKING_OFF"
                 status_str = "RUNNING"

@@ -855,7 +855,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertIn("GEMINI 5H QUOTA: 65%", rendered)
         self.assertIn("GEMINI 1W QUOTA: 20%", rendered)
         self.assertIn("PACING: BEHIND", rendered)
-        self.assertIn("Backoff:", rendered)
+        self.assertIn("NEW TASKS SUSPENDED", rendered)
 
     def test_quota_fetch_latency_does_not_stall_tui_render(self):
         quota = QuotaTracker(remaining_percentage=90.0, quota_pool="gemini")

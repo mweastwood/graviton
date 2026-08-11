@@ -137,6 +137,8 @@ class TestGravitonHandler(unittest.TestCase):
         handler.secret = ""
         handler.default_reviewer = "code_reviewer"
         handler.task_manager = None
+        handler.repos_dir = None
+        handler.quota_tracker = None
 
         GravitonHandler.do_POST(handler)
 
@@ -518,6 +520,74 @@ class TestGravitonHandler(unittest.TestCase):
             args, _ = handler._send_json.call_args
             self.assertEqual(args[0], 400)
             self.assertIn("attempting path traversal", args[1]["error"])
+
+    @patch("graviton_server.post_emoji_reaction_async")
+    def test_do_post_with_task_manager_pacing_rejection(self, mock_post_reaction):
+        mock_tm = MagicMock()
+        mock_tm.submit_task.side_effect = RuntimeError("Cannot accept new task: quota pacing is behind limit")
+
+        payload = json.dumps({"action": "opened", "number": 15}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+
+        mock_tm.submit_task.assert_called_once()
+        mock_post_reaction.assert_not_called()
+        handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "behind_quota_pacing"})
+
+    @patch("graviton_server.post_emoji_reaction_async")
+    def test_do_post_with_task_manager_runtime_error_503(self, mock_post_reaction):
+        mock_tm = MagicMock()
+        mock_tm.submit_task.side_effect = RuntimeError("Cannot accept new task: task acceptance is paused")
+
+        payload = json.dumps({"action": "opened", "number": 16}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+
+        mock_tm.submit_task.assert_called_once()
+        mock_post_reaction.assert_not_called()
+        handler._send_json.assert_called_once_with(503, {"error": "Cannot accept new task: task acceptance is paused"})
+
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.run_agent_async")
+    def test_do_post_direct_execution_pacing_rejection(self, mock_run_async, mock_post_reaction):
+        mock_qt = MagicMock()
+        mock_qt.is_behind_pacing.return_value = True
+
+        payload = json.dumps({"action": "opened", "number": 17}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.task_manager = None
+        handler.quota_tracker = mock_qt
+
+        GravitonHandler.do_POST(handler)
+
+        mock_run_async.assert_not_called()
+        mock_post_reaction.assert_not_called()
+        handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "behind_quota_pacing"})
 
 
 if __name__ == "__main__":
