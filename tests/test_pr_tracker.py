@@ -318,7 +318,7 @@ class TestPRTracker(unittest.TestCase):
 
             # We mock subprocess.run calls in sequence
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(str(c) for c in cmd)
+                cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 if "git remote get-url" in cmd_str:
                     if "repo1" in str(cwd):
                         return mock_git1
@@ -377,11 +377,12 @@ class TestPRTracker(unittest.TestCase):
                 dirs.append(r_dir)
 
             thread_ids = set()
+            sync_errors = []
             lock = threading.Lock()
             barrier = threading.Barrier(num_repos)
 
             def side_effect(cmd, cwd=None, **kwargs):
-                cmd_str = " ".join(str(c) for c in cmd)
+                cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 cwd_str = str(cwd or "")
                 if "git remote get-url" in cmd_str:
                     with lock:
@@ -389,7 +390,8 @@ class TestPRTracker(unittest.TestCase):
                     try:
                         barrier.wait(timeout=5.0)
                     except threading.BrokenBarrierError:
-                        self.fail("Thread synchronization barrier timed out")
+                        with lock:
+                            sync_errors.append("Thread synchronization barrier timed out")
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
                         if "git remote get-url" in cmd_str:
@@ -410,6 +412,7 @@ class TestPRTracker(unittest.TestCase):
             tracker = PRTracker()
             tracker.sync_github_prs(repos_dir=Path(tmpdir))
 
+            self.assertFalse(sync_errors, sync_errors)
             approved = tracker.get_approved_prs()
             self.assertEqual(len(approved), num_repos)
             for i in range(1, num_repos + 1):
