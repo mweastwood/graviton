@@ -69,6 +69,12 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(t.attempt, 3)
         self.assertEqual(t.max_attempts, 5)
 
+        # Ensure max_attempts does not regress when parsing earlier log lines after expansion
+        t.max_attempts = 6
+        t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)...")
+        self.assertEqual(t.attempt, 2)
+        self.assertEqual(t.max_attempts, 6)
+
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_submit_task_custom_max_attempts(self, mock_run):
         mock_process = MagicMock()

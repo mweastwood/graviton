@@ -70,7 +70,7 @@ class Task:
         if match:
             self.attempt = int(match.group(1))
             if match.group(2):
-                self.max_attempts = int(match.group(2))
+                self.max_attempts = max(self.max_attempts, int(match.group(2)))
             return True
         return False
 

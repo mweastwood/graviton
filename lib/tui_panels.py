@@ -522,12 +522,12 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
         msg_styled = "\033[2m(Task queue is empty)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    target_w = max(8, inner_w - 42)
+    target_w = max(8, inner_w - 51)
     cols = [
         ("ID", 8),
         ("AGENT", 14),
         ("TARGET", target_w),
-        ("ATTEMPT", 7),
+        ("ATTEMPT", 16),
         ("WAIT", 9),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
@@ -540,7 +540,7 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
             (t.id, 8),
             (t.agent, 14),
             (target_str, target_w),
-            (att_str, 7),
+            (att_str, 16),
             (f"{t.wait_time:.1f}s", 9),
         ]
         content.append(format_table_row(row_cells))
@@ -725,12 +725,12 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
     target_w = max(8, inner_w - 63)
     cols = [
         ("ID", 8),
-        ("STATUS", 11),
-        ("AGENT", 14),
+        ("STATUS", 9),
+        ("AGENT", 10),
         ("TARGET", target_w),
-        ("ATTEMPT", 7),
-        ("RETURN", 8),
-        ("DURATION", 9),
+        ("ATTEMPT", 16),
+        ("RETURN", 6),
+        ("DURATION", 8),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
@@ -743,12 +743,12 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
         row_cells = [
             (t.id, 8),
-            (status_str, 11),
-            (t.agent, 14),
+            (status_str, 9),
+            (t.agent, 10),
             (target_str, target_w),
-            (att_str, 7),
-            (ret_val, 8),
-            (f"{t.elapsed_time:.1f}s", 9),
+            (att_str, 16),
+            (ret_val, 6),
+            (f"{t.elapsed_time:.1f}s", 8),
         ]
         content.append(format_table_row(row_cells))
 
