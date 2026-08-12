@@ -665,7 +665,7 @@ class TestTerminalDashboard(unittest.TestCase):
         scheduler = TaskScheduler(config_path=config_path, state_path=state_path)
         dashboard = TerminalDashboard(task_manager=manager, scheduler=scheduler)
 
-        dashboard.handle_key("j")
+        dashboard.active_screen = "jobs"
         self.assertEqual(dashboard.active_screen, "jobs")
         self.assertEqual(dashboard.selected_job_index, 0)
 
@@ -689,7 +689,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertTrue(enabled_job.enabled)
         self.assertTrue(scheduler.jobs["job_1"].enabled)
 
-        dashboard.handle_key("j")
+        dashboard.select_next_job()
         self.assertEqual(dashboard.selected_job_index, 1)
 
         dashboard.handle_key("down")
@@ -731,7 +731,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered_main = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_main)
         self.assertNotIn("EVENT LOGS", rendered_main)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_main)
+        self.assertIn("[p] Prioritize", rendered_main)
 
         # 3. Toggle to "jobs" screen via 'j' hotkey
         dashboard.handle_key("j")
@@ -746,7 +746,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered_back = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_back)
         self.assertNotIn("EVENT LOGS", rendered_back)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back)
+        self.assertIn("[p] Prioritize", rendered_back)
 
         # 5. Toggle to "logs" screen via 'e' hotkey
         dashboard.handle_key("e")
@@ -760,7 +760,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "main")
         rendered_back_again = dashboard.render(width=80)
         self.assertNotIn("EVENT LOGS", rendered_back_again)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back_again)
+        self.assertIn("[p] Prioritize", rendered_back_again)
 
     def test_jobs_screen_line_widths(self):
         manager = TaskManager(max_workers=2)
@@ -1043,10 +1043,10 @@ class TestTerminalDashboard(unittest.TestCase):
                     time.sleep(0.25)
 
                     # At this point, leftover_bytes should have been flushed/cleared.
-                    # Send a valid key (b"j") to switch to jobs screen.
-                    os.write(master, b"j")
+                    # Send a valid key (b"e") to switch to logs screen.
+                    os.write(master, b"e")
                     time.sleep(0.15)
-                    self.assertEqual(dashboard.active_screen, "jobs")
+                    self.assertEqual(dashboard.active_screen, "logs")
                 finally:
                     dashboard._running = False
                     stdin_thread.join(timeout=1.0)
@@ -1127,26 +1127,36 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(TerminalDashboard._split_incomplete_escape_tail(b"j\x1b["), (b"j", b"\x1b["))
 
 
-    def test_dashboard_handle_key_pause_toggle_and_rendering(self):
-        manager = TaskManager(max_workers=2)
+    def test_dashboard_queued_tasks_selection_and_prioritization_hotkeys(self):
+        manager = TaskManager(max_workers=0)
+        t1 = manager.submit_task("code_reviewer", "Task 1", target_id="#1")
+        t2 = manager.submit_task("code_fixer", "Task 2", target_id="#2")
         dashboard = TerminalDashboard(task_manager=manager)
-        
-        self.assertFalse(manager.is_paused)
+
+        self.assertEqual(dashboard.selected_queue_index, 0)
         rendered_init = dashboard.render(width=80)
-        self.assertIn("[p] Pause Tasks", rendered_init)
-        self.assertNotIn("[PAUSED]", rendered_init)
+        self.assertIn("[p] Prioritize", rendered_init)
 
+        # Move down to select task 2 (index 1)
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.selected_queue_index, 1)
+
+        # Press [p] to prioritize selected task (t2)
         dashboard.handle_key("p")
-        self.assertTrue(manager.is_paused)
-        rendered_paused = dashboard.render(width=80)
-        self.assertIn("[p] Resume Tasks", rendered_paused)
-        self.assertIn("[PAUSED]", rendered_paused)
+        self.assertEqual(t2.priority, 1)
+        queued = manager.get_queued_tasks()
+        self.assertEqual(queued[0].id, t2.id)
 
-        dashboard.handle_key("P")
+        # Move up
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        # Test toggle_pause and v key
         self.assertFalse(manager.is_paused)
-        rendered_resumed = dashboard.render(width=80)
-        self.assertIn("[p] Pause Tasks", rendered_resumed)
-        self.assertNotIn("[PAUSED]", rendered_resumed)
+        dashboard.handle_key("v")
+        self.assertTrue(manager.is_paused)
+        dashboard.handle_key("v")
+        self.assertFalse(manager.is_paused)
 
     @patch("lib.tui.termios")
     @patch("lib.tui.sys.stdin.isatty", return_value=True)

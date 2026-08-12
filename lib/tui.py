@@ -134,6 +134,7 @@ class TerminalDashboard:
 
         self.active_screen: str = "main"
         self.selected_job_index: int = 0
+        self.selected_queue_index: int = 0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stdin_thread: Optional[threading.Thread] = None
@@ -442,6 +443,37 @@ class TerminalDashboard:
             if self.selected_job_index > 0:
                 self.selected_job_index -= 1
 
+    def select_next_queued_task(self):
+        """Select next queued task in the TUI queue selector."""
+        if not self.task_manager:
+            return
+        queued_tasks = self.task_manager.get_queued_tasks()
+        num_tasks = len(queued_tasks)
+        if num_tasks > 0:
+            self.selected_queue_index = min(self.selected_queue_index + 1, num_tasks - 1)
+        else:
+            self.selected_queue_index = 0
+
+    def select_prev_queued_task(self):
+        """Select previous queued task in the TUI queue selector."""
+        if not self.task_manager:
+            return
+        if self.selected_queue_index > 0:
+            self.selected_queue_index -= 1
+
+    def prioritize_selected_task(self) -> bool:
+        """Bump priority of the currently selected queued task."""
+        if not self.task_manager:
+            return False
+        queued_tasks = self.task_manager.get_queued_tasks()
+        if not queued_tasks:
+            self.selected_queue_index = 0
+            return False
+        self.selected_queue_index = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
+        task = queued_tasks[self.selected_queue_index]
+        res = self.task_manager.prioritize_task(task.id, priority_bump=1)
+        return res
+
     def enable_selected_job(self) -> Optional[ScheduledJob]:
         """Enable the currently selected scheduled job and save state."""
         if not self.scheduler:
@@ -541,11 +573,17 @@ class TerminalDashboard:
             if key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
         elif self.active_screen == "main":
-            if key in ("j", "J"):
+            if key in ("up", "\x1b[A", "\x1bOA"):
+                self.select_prev_queued_task()
+            elif key in ("down", "\x1b[B", "\x1bOB"):
+                self.select_next_queued_task()
+            elif key in ("p", "P"):
+                self.prioritize_selected_task()
+            elif key in ("j", "J"):
                 self.active_screen = "jobs"
             elif key in ("e", "E"):
                 self.active_screen = "logs"
-            elif key in ("p", "P", "v", "V"):
+            elif key in ("v", "V"):
                 self.toggle_pause()
 
         self._force_refresh()
@@ -783,7 +821,9 @@ class TerminalDashboard:
 
     def _render_queued_tasks(self, width: int, tasks: list) -> list:
         is_paused = self.task_manager.is_paused if self.task_manager else False
-        return render_queued_tasks_panel(width, tasks, is_paused=is_paused)
+        return render_queued_tasks_panel(
+            width, tasks, is_paused=is_paused, selected_queue_index=self.selected_queue_index
+        )
 
     @staticmethod
     def _format_interval(sec: int) -> str:

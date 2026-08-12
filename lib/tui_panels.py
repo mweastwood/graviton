@@ -413,8 +413,7 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     else:
-        pause_hint = "[p] Resume Tasks" if is_paused else "[p] Pause Tasks"
-        nav_hint = f"Nav: [j] Periodic Jobs │ [e] Event Logs │ {pause_hint}"
+        nav_hint = "Nav: [↑/↓] Select Task │ [p] Prioritize │ [j] Periodic Jobs │ [e] Event Logs"
 
     lines = [
         line1_raw,
@@ -511,7 +510,12 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
     return render_panel_frame(header_bar, content, width)
 
 
-def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = False) -> List[str]:
+def render_queued_tasks_panel(
+    width: int,
+    tasks: List[Any],
+    is_paused: bool = False,
+    selected_queue_index: int = 0,
+) -> List[str]:
     """Render pending queued tasks panel."""
     inner_w = max(0, width - 4)
     queued_cnt = len(tasks)
@@ -523,9 +527,16 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
         msg_styled = "\033[2m(Task queue is empty)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    target_w = max(8, inner_w - 51)
+    if tasks:
+        selected_queue_index = max(0, min(selected_queue_index, len(tasks) - 1))
+    else:
+        selected_queue_index = 0
+
+    target_w = max(8, inner_w - 61)
     cols = [
+        (" ", 2),
         ("ID", 8),
+        ("PRIO", 6),
         ("AGENT", 14),
         ("TARGET", target_w),
         ("ATTEMPT", 16),
@@ -533,12 +544,18 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
-    for t in tasks:
+    for idx, t in enumerate(tasks):
+        is_selected = (idx == selected_queue_index)
+        cursor_str = "> " if is_selected else "  "
+        cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
+        prio_str = str(getattr(t, "priority", 0))
         target_str = format_target_for_display(t.target_id, target_w)
         is_cached = getattr(t, "requeue_count", 0) > 0
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
         row_cells = [
+            (cursor_styled, 2),
             (t.id, 8),
+            (prio_str, 6),
             (t.agent, 14),
             (target_str, target_w),
             (att_str, 16),
