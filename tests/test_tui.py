@@ -733,27 +733,31 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertNotIn("EVENT LOGS", rendered_main)
         self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_main)
 
-        # 3. Toggle to "jobs" screen
-        dashboard.active_screen = "jobs"
+        # 3. Toggle to "jobs" screen via 'j' hotkey
+        dashboard.handle_key("j")
+        self.assertEqual(dashboard.active_screen, "jobs")
         rendered_jobs = dashboard.render(width=80)
         self.assertIn("SCHEDULED JOBS", rendered_jobs)
         self.assertIn("Press [Esc] to return to Main Screen", rendered_jobs)
 
-        # 4. Toggle back to "main" screen
-        dashboard.active_screen = "main"
+        # 4. Toggle back to "main" screen via 'Esc' key
+        dashboard.handle_key("\x1b")
+        self.assertEqual(dashboard.active_screen, "main")
         rendered_back = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_back)
         self.assertNotIn("EVENT LOGS", rendered_back)
         self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back)
 
-        # 5. Toggle to "logs" screen
-        dashboard.active_screen = "logs"
+        # 5. Toggle to "logs" screen via 'e' hotkey
+        dashboard.handle_key("e")
+        self.assertEqual(dashboard.active_screen, "logs")
         rendered_logs = dashboard.render(width=80)
         self.assertIn("EVENT LOGS", rendered_logs)
         self.assertIn("Press [Esc] to return to Main Screen", rendered_logs)
 
-        # 6. Toggle back to "main" screen
-        dashboard.active_screen = "main"
+        # 6. Toggle back to "main" screen via 'Esc' key
+        dashboard.handle_key("\x1b")
+        self.assertEqual(dashboard.active_screen, "main")
         rendered_back_again = dashboard.render(width=80)
         self.assertNotIn("EVENT LOGS", rendered_back_again)
         self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back_again)

@@ -157,6 +157,7 @@ class TaskManager:
         """Resume acceptance of new tasks and worker execution of queued tasks."""
         with self._lock:
             self._paused = False
+            self._rebuild_queue_locked()
             logger.info("TaskManager resumed task acceptance and worker execution.")
 
     def toggle_pause(self) -> bool:
@@ -166,8 +167,30 @@ class TaskManager:
             if self._paused:
                 logger.info("TaskManager paused task acceptance and worker execution.")
             else:
+                self._rebuild_queue_locked()
                 logger.info("TaskManager resumed task acceptance and worker execution.")
             return self._paused
+
+    def _rebuild_queue_locked(self):
+        """
+        Rebuild internal queue from self._tasks for queued and quota-paused tasks.
+        Must be called while holding self._lock.
+        """
+        while True:
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except (queue.Empty, ValueError):
+                break
+
+        for task in self._tasks.values():
+            if task.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                self._queue.put(task)
+
+    def rebuild_queue(self):
+        """Rebuild internal task queue from active task registry."""
+        with self._lock:
+            self._rebuild_queue_locked()
 
     @property
     def is_draining(self) -> bool:
@@ -395,11 +418,12 @@ class TaskManager:
                         requeue_count=int(td.get("requeue_count", 0)),
                     )
                     self._tasks[task.id] = task
-                    self._queue.put(task)
                     restored_count += 1
                 except Exception as e:
                     logger.warning(f"Failed to restore queued task item {td}: {e}")
                     continue
+
+            self._rebuild_queue_locked()
 
         logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
         return restored_count
@@ -602,56 +626,67 @@ class TaskManager:
 
     def _worker_loop(self, worker_id: str):
         while self._running:
+            task = None
             with self._lock:
-                draining = self._draining
-                paused = self._paused
+                if not (self._draining or self._paused) and self._running:
+                    try:
+                        task = self._queue.get_nowait()
+                    except (queue.Empty, ValueError):
+                        task = None
 
-            if (draining or paused) and self._running:
-                time.sleep(0.1)
-                continue
+            if task is None:
+                with self._lock:
+                    draining = self._draining
+                    paused = self._paused
 
-            try:
-                task = self._queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
+                if (draining or paused) and self._running:
+                    time.sleep(0.1)
+                    continue
+
+                try:
+                    task = self._queue.get(timeout=0.5)
+                except (queue.Empty, ValueError):
+                    continue
 
             if task is None or not self._running:
+                if task is None and not self._running:
+                    break
                 self._queue.task_done()
                 break
 
-            if self.quota_tracker:
-                state = self.quota_tracker.state
-                is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
-                if state == QuotaState.EXHAUSTED or is_behind:
-                    with self._lock:
-                        task.status = TaskStatus.PAUSED_FOR_QUOTA
-                    self._queue.put(task)
-                    self._queue.task_done()
-                    time.sleep(0.1)
-                    continue
-                elif state == QuotaState.LOW_QUOTA:
-                    delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)
-                    if delay > 0:
-                        logger.info(
-                            f"[{worker_id}] LOW_QUOTA ({self.quota_tracker.remaining_percentage:.1f}%). "
-                            f"Applying back-off delay of {delay:.2f}s..."
-                        )
-                        time.sleep(delay)
-
-            # Double-check draining and pause state under lock before transitioning task to RUNNING
             with self._lock:
-                is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True if self.quota_tracker else False
-                is_exhausted = (self.quota_tracker and self.quota_tracker.state == QuotaState.EXHAUSTED)
-                if self._draining or self._paused or is_behind or is_exhausted:
-                    if is_behind or is_exhausted:
-                        task.status = TaskStatus.PAUSED_FOR_QUOTA
+                if task.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                    self._queue.task_done()
+                    continue
+
+                if self._draining or self._paused:
                     self._queue.put(task)
                     self._queue.task_done()
                     time.sleep(0.1)
                     continue
+
+                if self.quota_tracker:
+                    state = self.quota_tracker.state
+                    is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
+                    if state == QuotaState.EXHAUSTED or is_behind:
+                        task.status = TaskStatus.PAUSED_FOR_QUOTA
+                        self._queue.put(task)
+                        self._queue.task_done()
+                        time.sleep(0.1)
+                        continue
+
                 task.status = TaskStatus.RUNNING
                 task.start_time = time.time()
                 task.worker_thread_id = worker_id
+
+            if self.quota_tracker and self.quota_tracker.state == QuotaState.LOW_QUOTA:
+                delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)
+                if delay > 0:
+                    logger.info(
+                        f"[{worker_id}] LOW_QUOTA ({self.quota_tracker.remaining_percentage:.1f}%). "
+                        f"Applying back-off delay of {delay:.2f}s..."
+                    )
+                    time.sleep(delay)
 
             logger.info(f"[{worker_id}] Executing task '{task.id}' ({task.agent}): '{task.prompt}'")
 

@@ -545,7 +545,7 @@ class TerminalDashboard:
                 self.active_screen = "jobs"
             elif key in ("e", "E"):
                 self.active_screen = "logs"
-            elif key in ("p", "P"):
+            elif key in ("p", "P", "v", "V"):
                 self.toggle_pause()
 
         self._force_refresh()
