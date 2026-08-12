@@ -626,20 +626,31 @@ class TaskManager:
 
     def _worker_loop(self, worker_id: str):
         while self._running:
+            task = None
             with self._lock:
-                draining = self._draining
-                paused = self._paused
+                if not (self._draining or self._paused) and self._running:
+                    try:
+                        task = self._queue.get_nowait()
+                    except (queue.Empty, ValueError):
+                        task = None
 
-            if (draining or paused) and self._running:
-                time.sleep(0.1)
-                continue
+            if task is None:
+                with self._lock:
+                    draining = self._draining
+                    paused = self._paused
 
-            try:
-                task = self._queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
+                if (draining or paused) and self._running:
+                    time.sleep(0.1)
+                    continue
+
+                try:
+                    task = self._queue.get(timeout=0.5)
+                except (queue.Empty, ValueError):
+                    continue
 
             if task is None or not self._running:
+                if task is None and not self._running:
+                    break
                 self._queue.task_done()
                 break
 

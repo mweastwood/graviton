@@ -218,7 +218,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(len(lines), 5)
         self.assertTrue(lines[0].startswith("┌"))
         self.assertIn("127.0.0.1:8000", lines[2])
-        self.assertIn("[v] Pause Tasks", lines[3])
+        self.assertIn("[p] Pause Tasks", lines[3])
 
         lines_paused = render_header_panel(
             width=80,
@@ -231,7 +231,7 @@ class TestTUIPanels(unittest.TestCase):
             active_screen="main",
             is_paused=True,
         )
-        self.assertIn("[v] Resume Tasks", lines_paused[3])
+        self.assertIn("[p] Resume Tasks", lines_paused[3])
 
     def test_render_quota_panel(self):
         tracker = QuotaTracker()

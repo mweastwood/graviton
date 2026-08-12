@@ -413,7 +413,7 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     else:
-        pause_hint = "[v] Resume Tasks" if is_paused else "[v] Pause Tasks"
+        pause_hint = "[p] Resume Tasks" if is_paused else "[p] Pause Tasks"
         nav_hint = f"Nav: [j] Periodic Jobs │ [e] Event Logs │ {pause_hint}"
 
     lines = [

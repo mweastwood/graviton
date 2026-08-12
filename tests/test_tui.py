@@ -1133,19 +1133,19 @@ class TestTerminalDashboard(unittest.TestCase):
         
         self.assertFalse(manager.is_paused)
         rendered_init = dashboard.render(width=80)
-        self.assertIn("[v] Pause Tasks", rendered_init)
+        self.assertIn("[p] Pause Tasks", rendered_init)
         self.assertNotIn("[PAUSED]", rendered_init)
 
-        dashboard.handle_key("v")
+        dashboard.handle_key("p")
         self.assertTrue(manager.is_paused)
         rendered_paused = dashboard.render(width=80)
-        self.assertIn("[v] Resume Tasks", rendered_paused)
+        self.assertIn("[p] Resume Tasks", rendered_paused)
         self.assertIn("[PAUSED]", rendered_paused)
 
-        dashboard.handle_key("V")
+        dashboard.handle_key("P")
         self.assertFalse(manager.is_paused)
         rendered_resumed = dashboard.render(width=80)
-        self.assertIn("[v] Pause Tasks", rendered_resumed)
+        self.assertIn("[p] Pause Tasks", rendered_resumed)
         self.assertNotIn("[PAUSED]", rendered_resumed)
 
     @patch("lib.tui.termios")

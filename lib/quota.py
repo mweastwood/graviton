@@ -826,10 +826,8 @@ class QuotaTracker:
                 return window.format_pacing_countdown(norm_dt)
             rec_5h = self.window_5h.get_pacing_recovery_seconds(norm_dt)
             rec_1w = self.window_1w.get_pacing_recovery_seconds(norm_dt)
-            if rec_1w > rec_5h:
-                return self.window_1w.format_pacing_countdown(norm_dt)
-            else:
-                return self.window_5h.format_pacing_countdown(norm_dt)
+            target_window = self.window_1w if rec_1w > rec_5h else self.window_5h
+            return target_window.format_pacing_countdown(norm_dt)
 
     def update_quota(
         self,
