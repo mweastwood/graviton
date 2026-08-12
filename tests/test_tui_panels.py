@@ -227,6 +227,54 @@ class TestTUIPanels(unittest.TestCase):
         cols_over = allocate_declarative_columns(over_spec, 25)
         self.assertLessEqual(sum(cols_over.values()) + 5, 25)
 
+    def test_declarative_flex_columns_distinct_ratios(self):
+        """Verify two flex columns with distinct ratios allocate proportionally according to ColumnSpec.ratio."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("colA", ratio=0.8, is_flex=True),
+                ColumnSpec("colB", ratio=0.2, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=10,
+            narrow_threshold=5,
+        )
+        res = allocate_declarative_columns(spec, 100)
+        self.assertEqual(res["colA"], 80)
+        self.assertEqual(res["colB"], 20)
+
+    def test_declarative_intermediate_fallback_non_flex_bounds(self):
+        """Verify non-flex column min_w/max_w constraints are preserved in intermediate mode when rem < 2."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("non_flex", ratio=0.5, min_w=10, max_w=15, is_flex=False),
+                ColumnSpec("flex1", ratio=0.5, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=5,
+        )
+        # avail = 11, non_flex gets max(10, min(15, int(11*0.5))) = 10.
+        # rem = 11 - 10 = 1 (< 2).
+        res = allocate_declarative_columns(spec, 11)
+        self.assertEqual(res["non_flex"], 10)
+        self.assertEqual(res["flex1"], 1)
+
+    def test_declarative_narrow_mode_last_column_min_avail_threshold(self):
+        """Verify last column in narrow mode respects min_avail_threshold."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_avail_threshold=1),
+                ColumnSpec("col2", ratio=0.5, min_avail_threshold=10),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=20,
+        )
+        # avail = 5 < narrow_threshold (20).
+        # col2 has min_avail_threshold=10 > avail(5), so col2 should be 0.
+        res = allocate_declarative_columns(spec, 5)
+        self.assertEqual(res["col2"], 0)
+
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
         self.assertEqual(format_interval(3600), "1h")

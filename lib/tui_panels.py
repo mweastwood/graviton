@@ -263,23 +263,38 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     def _allocate_flex(remaining_w: int) -> None:
         if not flex_cols:
             return
-        if len(flex_cols) == 2:
+        if len(flex_cols) == 1:
+            res[flex_cols[0].name] = max(0, remaining_w)
+        elif spec in (APPROVED_PR_HAS_REPO_SPEC, APPROVED_PR_NO_REPO_SPEC):
             w1, w2 = split_flex_columns(remaining_w)
             res[flex_cols[0].name] = w1
             res[flex_cols[1].name] = w2
-        elif len(flex_cols) == 1:
-            res[flex_cols[0].name] = max(0, remaining_w)
         else:
             total_flex_ratio = sum(col.ratio for col in flex_cols)
-            used_flex = 0
-            for i, col in enumerate(flex_cols):
-                if i == len(flex_cols) - 1:
-                    res[col.name] = max(0, remaining_w - used_flex)
-                else:
-                    r = (col.ratio / total_flex_ratio) if total_flex_ratio > 0 else (1.0 / len(flex_cols))
-                    w = max(0, int(remaining_w * r))
-                    res[col.name] = w
-                    used_flex += w
+            if total_flex_ratio > 0:
+                used_flex = 0
+                for i, col in enumerate(flex_cols):
+                    if i == len(flex_cols) - 1:
+                        res[col.name] = max(0, remaining_w - used_flex)
+                    else:
+                        r = col.ratio / total_flex_ratio
+                        w = max(0, int(remaining_w * r))
+                        res[col.name] = w
+                        used_flex += w
+            elif len(flex_cols) == 2:
+                w1, w2 = split_flex_columns(remaining_w)
+                res[flex_cols[0].name] = w1
+                res[flex_cols[1].name] = w2
+            else:
+                used_flex = 0
+                for i, col in enumerate(flex_cols):
+                    if i == len(flex_cols) - 1:
+                        res[col.name] = max(0, remaining_w - used_flex)
+                    else:
+                        r = 1.0 / len(flex_cols)
+                        w = max(0, int(remaining_w * r))
+                        res[col.name] = w
+                        used_flex += w
 
     if inner_w >= spec.wide_threshold:
         fixed_used = 0
@@ -293,7 +308,7 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
         used = 0
         for idx, col in enumerate(spec.columns):
             if idx == len(spec.columns) - 1:
-                res[col.name] = max(0, avail - used)
+                res[col.name] = max(0, avail - used) if avail >= col.min_avail_threshold else 0
             else:
                 r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
                 val = max(1 if avail >= col.min_avail_threshold else 0, int(avail * r))
@@ -307,18 +322,8 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
             non_flex_used += val
 
         rem = avail - non_flex_used
-        if rem >= 2 and flex_cols:
+        if flex_cols:
             _allocate_flex(rem)
-        elif flex_cols:
-            used = 0
-            for idx, col in enumerate(spec.columns):
-                if idx == len(spec.columns) - 1:
-                    res[col.name] = max(0, avail - used)
-                else:
-                    r = col.narrow_ratio if col.narrow_ratio is not None else col.ratio
-                    val = max(1, int(avail * r))
-                    res[col.name] = val
-                    used += val
 
     total = sum(res.values()) + spec.spacing
     if total > inner_w:
