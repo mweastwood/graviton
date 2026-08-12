@@ -29,26 +29,45 @@ RUN_ID="$(date +%s)_${RANDOM}"
 TEMP_WORKSPACE="/tmp/graviton-workspaces/run-${RUN_ID}"
 mkdir -p "${TEMP_WORKSPACE}"
 
-# Fast local git clone to ensure an isolated .git index and working copy
-git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
+CACHE_DIR="${GRAVITON_WORKSPACE_CACHE_DIR:-}"
+RESTORED_FROM_CACHE=false
 
-# Restore original remote origin URL (git clone --local sets origin to the local host folder)
-ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
-if [ -n "${ORIGIN_URL}" ]; then
-  git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
-  git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
-  BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
-  if [ "${BASE_BRANCH}" = "HEAD" ]; then
-    BASE_BRANCH="main"
+if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
+  echo "Restoring workspace from cache: ${CACHE_DIR}"
+  cp -a "${CACHE_DIR}/." "${TEMP_WORKSPACE}/"
+  RESTORED_FROM_CACHE=true
+else
+  # Fast local git clone to ensure an isolated .git index and working copy
+  git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
+
+  # Restore original remote origin URL (git clone --local sets origin to the local host folder)
+  ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
+  if [ -n "${ORIGIN_URL}" ]; then
+    git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
+    git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
+    BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+    if [ "${BASE_BRANCH}" = "HEAD" ]; then
+      BASE_BRANCH="main"
+    fi
+    git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
+    git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
   fi
-  git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
-  git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
 fi
 
 # Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
 CONTAINER_NAME="graviton-agent-run-${RUN_ID}"
 cleanup() {
   docker rm -f "${CONTAINER_NAME}" &>/dev/null || true
+  if [ -n "${CACHE_DIR}" ]; then
+    if [ "${EXIT_CODE:-1}" -ne 0 ]; then
+      echo "Syncing workspace to cache: ${CACHE_DIR}"
+      mkdir -p "${CACHE_DIR}"
+      cp -a "${TEMP_WORKSPACE}/." "${CACHE_DIR}/" 2>/dev/null || true
+    else
+      echo "Cleaning up workspace cache on success: ${CACHE_DIR}"
+      rm -rf "${CACHE_DIR}" 2>/dev/null || true
+    fi
+  fi
   rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -115,7 +134,7 @@ set -e
 
 # Launch container with retry / continuation loop for turn & timeout limits
 MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-3}"
-ATTEMPT=1
+ATTEMPT="${GRAVITON_INITIAL_ATTEMPT:-1}"
 EXIT_CODE=0
 AGENT_LOG="${TEMP_WORKSPACE}/agent_output.log"
 PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
@@ -123,7 +142,7 @@ PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
 
-  if [ $ATTEMPT -eq 1 ]; then
+  if [ $ATTEMPT -eq 1 ] && [ "$RESTORED_FROM_CACHE" = false ]; then
     AGY_ARGS+=(--prompt "${PROMPT}")
   else
     echo "Agent session hit step limit with unexecuted tool calls. Auto-continuing conversation (Attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."

@@ -36,6 +36,7 @@ class Task:
     repo_name: Optional[str] = None
     clone_url: Optional[str] = None
     repo_dir: Optional[Path] = None
+    cached_workspace_dir: Optional[Path] = None
     status: str = TaskStatus.QUEUED
     enqueue_time: float = field(default_factory=time.time)
     start_time: Optional[float] = None
@@ -45,6 +46,9 @@ class Task:
     error_message: Optional[str] = None
     attempt: int = 1
     max_attempts: int = 3
+    max_total_attempts: int = 6
+    attempts_per_batch: int = 3
+    requeue_count: int = 0
 
     @property
     def elapsed_time(self) -> float:
@@ -87,6 +91,7 @@ class Task:
             "repo_name": self.repo_name,
             "clone_url": self.clone_url,
             "repo_dir": str(self.repo_dir) if self.repo_dir else None,
+            "cached_workspace_dir": str(self.cached_workspace_dir) if self.cached_workspace_dir else None,
             "status": self.status,
             "enqueue_time": self.enqueue_time,
             "start_time": self.start_time,
@@ -97,6 +102,9 @@ class Task:
             "wait_time": round(self.wait_time, 2),
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
+            "max_total_attempts": self.max_total_attempts,
+            "attempts_per_batch": self.attempts_per_batch,
+            "requeue_count": self.requeue_count,
         }
 
 
@@ -365,6 +373,9 @@ class TaskManager:
                         restored_status = TaskStatus.QUEUED
                     repo_dir_val = Path(td["repo_dir"]) if td.get("repo_dir") else None
 
+                    cached_workspace_dir_val = (
+                        Path(td["cached_workspace_dir"]) if td.get("cached_workspace_dir") else None
+                    )
                     task = Task(
                         id=str(task_id),
                         agent=str(agent),
@@ -374,10 +385,14 @@ class TaskManager:
                         repo_name=td.get("repo_name"),
                         clone_url=td.get("clone_url"),
                         repo_dir=repo_dir_val,
+                        cached_workspace_dir=cached_workspace_dir_val,
                         status=restored_status,
                         enqueue_time=float(td.get("enqueue_time", time.time())),
                         attempt=int(td.get("attempt", 1)),
                         max_attempts=int(td.get("max_attempts", 3)),
+                        max_total_attempts=int(td.get("max_total_attempts", 6)),
+                        attempts_per_batch=int(td.get("attempts_per_batch", 3)),
+                        requeue_count=int(td.get("requeue_count", 0)),
                     )
                     self._tasks[task.id] = task
                     self._queue.put(task)
@@ -437,6 +452,9 @@ class TaskManager:
         prompt: str,
         target_id: Optional[str] = None,
         max_attempts: Optional[int] = None,
+        max_total_attempts: Optional[int] = None,
+        attempts_per_batch: Optional[int] = None,
+        cached_workspace_dir: Optional[Path] = None,
         repo_full_name: Optional[str] = None,
         repo_name: Optional[str] = None,
         clone_url: Optional[str] = None,
@@ -479,6 +497,10 @@ class TaskManager:
 
             self._task_counter += 1
             task_id = f"task-{self._task_counter}"
+            tot_att = max_total_attempts if max_total_attempts is not None else 6
+            batch_att = attempts_per_batch if attempts_per_batch is not None else 3
+            initial_max_att = max_attempts if max_attempts is not None else min(batch_att, tot_att)
+
             task = Task(
                 id=task_id,
                 agent=agent,
@@ -488,9 +510,12 @@ class TaskManager:
                 repo_name=repo_name,
                 clone_url=clone_url,
                 repo_dir=Path(repo_dir) if repo_dir else None,
+                cached_workspace_dir=Path(cached_workspace_dir) if cached_workspace_dir else None,
                 status=TaskStatus.QUEUED,
                 enqueue_time=time.time(),
-                max_attempts=max_attempts if max_attempts is not None else 3,
+                max_attempts=initial_max_att,
+                max_total_attempts=tot_att,
+                attempts_per_batch=batch_att,
             )
             self._tasks[task_id] = task
             self._prune_tasks_locked()
@@ -670,6 +695,11 @@ class TaskManager:
                     logger.error(f"[{worker_id}] Target repository directory '{exec_cwd}' does not exist.")
                     raise RuntimeError(f"Target repository directory '{exec_cwd}' does not exist.")
 
+                if not task.cached_workspace_dir:
+                    task.cached_workspace_dir = Path(f"/tmp/graviton-workspaces/cache/{task.id}")
+
+                initial_att = task.attempt + 1 if task.requeue_count > 0 else 1
+
                 if self.script_path and exec_cwd:
                     res = run_agent_container(
                         task.agent,
@@ -678,6 +708,8 @@ class TaskManager:
                         exec_cwd,
                         on_output=task.update_attempt_from_line,
                         max_attempts=task.max_attempts,
+                        cached_workspace_dir=task.cached_workspace_dir,
+                        initial_attempt=initial_att,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()
@@ -690,15 +722,50 @@ class TaskManager:
                     stderr_output = ""
 
                 with self._lock:
-                    task.finish_time = time.time()
-                    task.return_code = return_code
                     if return_code == 0:
+                        task.finish_time = time.time()
+                        task.return_code = return_code
                         task.status = TaskStatus.COMPLETED
                         logger.info(f"[{worker_id}] Task '{task.id}' COMPLETED successfully.")
+                        if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                            import shutil
+                            shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
                     else:
-                        task.status = TaskStatus.FAILED
-                        task.error_message = stderr_output or f"Process exited with code {return_code}"
-                        logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
+                        if task.attempt >= task.max_attempts:
+                            if task.attempt < task.max_total_attempts:
+                                old_max = task.max_attempts
+                                task.max_attempts = min(task.attempt + task.attempts_per_batch, task.max_total_attempts)
+                                task.requeue_count += 1
+                                task.status = TaskStatus.QUEUED
+                                task.finish_time = None
+                                task.return_code = return_code
+                                task.error_message = stderr_output or f"Process exited with code {return_code}"
+                                self._queue.put(task)
+                                logger.info(
+                                    f"[{worker_id}] Task '{task.id}' hit {task.attempt}/{old_max} attempts. "
+                                    f"Cached workspace and re-queued for attempts {task.attempt + 1}..{task.max_attempts}."
+                                )
+                            else:
+                                task.finish_time = time.time()
+                                task.return_code = return_code
+                                task.status = TaskStatus.FAILED
+                                task.error_message = stderr_output or f"Process exited with code {return_code}"
+                                logger.error(
+                                    f"[{worker_id}] Task '{task.id}' FAILED after reaching max_total_attempts "
+                                    f"({task.attempt}/{task.max_total_attempts})."
+                                )
+                                if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                                    import shutil
+                                    shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                        else:
+                            task.finish_time = time.time()
+                            task.return_code = return_code
+                            task.status = TaskStatus.FAILED
+                            task.error_message = stderr_output or f"Process exited with code {return_code}"
+                            logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
+                            if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                                import shutil
+                                shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
                     self._prune_tasks_locked()
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")

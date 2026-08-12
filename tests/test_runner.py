@@ -73,6 +73,35 @@ class TestRunner(unittest.TestCase):
         _, kwargs = mock_popen.call_args
         self.assertEqual(kwargs["env"].get("MAX_AGENT_RETRIES"), "5")
 
+    @patch("subprocess.Popen")
+    def test_run_agent_container_with_cached_workspace_dir_and_initial_attempt(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = []
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        script_path = Path("/tmp/run_agent_container.sh")
+        cwd = Path("/workspace")
+        cache_dir = Path("/tmp/graviton-workspaces/cache/task-1")
+
+        res = run_agent_container(
+            "code_reviewer",
+            "Review PR",
+            script_path,
+            cwd,
+            max_attempts=6,
+            cached_workspace_dir=cache_dir,
+            initial_attempt=4,
+        )
+
+        self.assertEqual(mock_popen.call_count, 1)
+        _, kwargs = mock_popen.call_args
+        self.assertEqual(kwargs["env"].get("MAX_AGENT_RETRIES"), "6")
+        self.assertEqual(kwargs["env"].get("GRAVITON_WORKSPACE_CACHE_DIR"), str(cache_dir))
+        self.assertEqual(kwargs["env"].get("GRAVITON_INITIAL_ATTEMPT"), "4")
+
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async(self, mock_run_container):
         mock_run_container.return_value = subprocess.CompletedProcess(
@@ -85,7 +114,15 @@ class TestRunner(unittest.TestCase):
         thread.join(timeout=2.0)
 
         self.assertFalse(thread.is_alive())
-        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
+        mock_run_container.assert_called_once_with(
+            "code_fixer",
+            "Fix code",
+            script_path,
+            cwd,
+            max_attempts=4,
+            cached_workspace_dir=None,
+            initial_attempt=None,
+        )
 
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async_default_max_attempts(self, mock_run_container):
@@ -99,7 +136,15 @@ class TestRunner(unittest.TestCase):
         thread.join(timeout=2.0)
 
         self.assertFalse(thread.is_alive())
-        mock_run_container.assert_called_once_with("code_fixer", "Fix code", script_path, cwd, max_attempts=None)
+        mock_run_container.assert_called_once_with(
+            "code_fixer",
+            "Fix code",
+            script_path,
+            cwd,
+            max_attempts=None,
+            cached_workspace_dir=None,
+            initial_attempt=None,
+        )
 
 
 class TestAgentContainerScript(unittest.TestCase):
@@ -427,9 +472,6 @@ fi
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env["HOME"] = str(mock_home)
-        if "MAX_AGENT_RETRIES" in env:
-            del env["MAX_AGENT_RETRIES"]
-
         proc = subprocess.run(
             [str(self.script_path), "code_fixer", "Fix issue default retries"],
             cwd=str(self.repo_dir),
@@ -440,6 +482,84 @@ fi
 
         self.assertEqual(proc.returncode, 0)
         self.assertIn("Auto-continuing conversation (Attempt 2/3)...", proc.stdout)
+
+    def test_workspace_caching_and_restoration_in_container_script(self):
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls.log"
+        cache_dir = self.test_dir / "test_workspace_cache"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+
+HOST_WS=""
+for arg in "$@"; do
+    if [[ "$arg" == *":/workspace"* ]]; then
+        HOST_WS="${{arg%%:/workspace*}}"
+    fi
+done
+
+if [ -n "$HOST_WS" ]; then
+    echo "$HOST_WS" > "{self.test_dir}/last_ws_cache_test.txt"
+fi
+LAST_WS="$(cat "{self.test_dir}/last_ws_cache_test.txt" 2>/dev/null || echo "")"
+
+if [ "$1" = "run" ] && [ "$2" = "-d" ]; then
+    exit 0
+elif [ "$1" = "exec" ]; then
+    if [ ! -f "$LAST_WS/work_attempt_1.txt" ]; then
+        # First pass: edit workspace and fail to trigger exhaustion sync
+        echo "attempt 1 work" > "$LAST_WS/work_attempt_1.txt"
+        exit 1
+    else
+        # Second pass (restored from cache): verify work_attempt_1.txt exists!
+        echo "attempt 4 continuation" > "$LAST_WS/work_attempt_4.txt"
+        exit 0
+    fi
+else
+    exit 0
+fi
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        # Pass 1: run container with MAX_AGENT_RETRIES=1 and GRAVITON_WORKSPACE_CACHE_DIR
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["MAX_AGENT_RETRIES"] = "1"
+        env["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cache_dir)
+        env["GRAVITON_INITIAL_ATTEMPT"] = "1"
+
+        proc1 = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue #163"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(proc1.returncode, 0)
+        self.assertIn("Syncing workspace to cache:", proc1.stdout)
+        self.assertTrue(cache_dir.exists())
+        self.assertTrue((cache_dir / "work_attempt_1.txt").exists())
+
+        # Pass 2: run container with restored cache, initial attempt 4, MAX_AGENT_RETRIES=6
+        env["MAX_AGENT_RETRIES"] = "6"
+        env["GRAVITON_INITIAL_ATTEMPT"] = "4"
+
+        proc2 = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue #163"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc2.returncode, 0)
+        self.assertIn("Restoring workspace from cache:", proc2.stdout)
+        self.assertIn("Cleaning up workspace cache on success:", proc2.stdout)
+        self.assertFalse(cache_dir.exists())
 
 
 class TestTranscriptInspector(unittest.TestCase):

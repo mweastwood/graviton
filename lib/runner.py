@@ -52,6 +52,8 @@ def run_agent_container(
     cwd: Path,
     on_output: Optional[Callable[[str], None]] = None,
     max_attempts: Optional[int] = None,
+    cached_workspace_dir: Optional[Path] = None,
+    initial_attempt: Optional[int] = None,
 ) -> subprocess.CompletedProcess:
     """
     Execute the agent container script synchronously.
@@ -62,6 +64,8 @@ def run_agent_container(
     :param cwd: Working directory (repository root).
     :param on_output: Optional callback function invoked for each line of stdout/stderr output.
     :param max_attempts: Optional maximum agent retry attempt limit (sets MAX_AGENT_RETRIES env var).
+    :param cached_workspace_dir: Optional path to workspace cache directory (sets GRAVITON_WORKSPACE_CACHE_DIR env var).
+    :param initial_attempt: Optional initial attempt number to resume execution pass (sets GRAVITON_INITIAL_ATTEMPT env var).
     :return: subprocess.CompletedProcess instance.
     """
     cmd = [str(script_path), agent_name, prompt]
@@ -70,6 +74,10 @@ def run_agent_container(
     env = os.environ.copy()
     if max_attempts is not None:
         env["MAX_AGENT_RETRIES"] = str(max_attempts)
+    if cached_workspace_dir is not None:
+        env["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cached_workspace_dir)
+    if initial_attempt is not None:
+        env["GRAVITON_INITIAL_ATTEMPT"] = str(initial_attempt)
 
     process = subprocess.Popen(
         cmd,
@@ -118,6 +126,8 @@ def run_agent_async(
     script_path: Path,
     cwd: Path,
     max_attempts: Optional[int] = None,
+    cached_workspace_dir: Optional[Path] = None,
+    initial_attempt: Optional[int] = None,
 ) -> threading.Thread:
     """
     Execute the agent container asynchronously in a background daemon thread.
@@ -127,11 +137,21 @@ def run_agent_async(
     :param script_path: Path to run_agent_container.sh.
     :param cwd: Working directory.
     :param max_attempts: Optional maximum agent retry attempt limit.
+    :param cached_workspace_dir: Optional path to workspace cache directory.
+    :param initial_attempt: Optional initial attempt number to resume execution pass.
     :return: Started daemon Thread instance.
     """
     def worker():
         try:
-            result = run_agent_container(agent_name, prompt, script_path, cwd, max_attempts=max_attempts)
+            result = run_agent_container(
+                agent_name,
+                prompt,
+                script_path,
+                cwd,
+                max_attempts=max_attempts,
+                cached_workspace_dir=cached_workspace_dir,
+                initial_attempt=initial_attempt,
+            )
             if result.returncode == 0:
                 logger.info(f"Agent '{agent_name}' finished successfully for prompt: '{prompt}'")
                 if result.stdout:
