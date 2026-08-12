@@ -329,9 +329,32 @@ class TestTUIPanels(unittest.TestCase):
         paused_lines = render_queued_tasks_panel(width=80, tasks=[], is_paused=True)
         self.assertIn("[PAUSED]", paused_lines[0])
 
-        task = Task(id="task-2", agent="code_fixer", prompt="Fix bug", status=TaskStatus.QUEUED)
+        task = Task(
+            id="task-2",
+            agent="code_fixer",
+            target_id="mweastwood/graviton#148",
+            prompt="Fix bug",
+            status=TaskStatus.QUEUED,
+        )
         pop_lines = render_queued_tasks_panel(width=80, tasks=[task])
-        self.assertTrue(any("task-2" in l for l in pop_lines))
+        header_line = pop_lines[1]
+        self.assertIn("ID", header_line)
+        self.assertIn("AGENT", header_line)
+        self.assertIn("TARGET", header_line)
+        self.assertIn("ATTEMPT", header_line)
+        self.assertIn("WAIT", header_line)
+        self.assertNotIn("PROMPT", header_line)
+
+        row_line = pop_lines[2]
+        self.assertIn("task-2", row_line)
+        self.assertIn("graviton#148", row_line)
+        self.assertNotIn("mweastwood/", row_line)
+        self.assertIn("1/3", row_line)
+
+        # Narrow width test
+        narrow_lines = render_queued_tasks_panel(width=45, tasks=[task])
+        narrow_row = narrow_lines[2]
+        self.assertIn("gr..#148", narrow_row)
 
     def test_render_scheduled_jobs_panel(self):
         empty_lines = render_scheduled_jobs_panel(width=80, scheduler=None)
@@ -420,12 +443,33 @@ class TestTUIPanels(unittest.TestCase):
         task = Task(
             id="task-3",
             agent="issue_triager",
+            target_id="mweastwood/graviton#148",
             prompt="Triage issue",
             status=TaskStatus.COMPLETED,
             return_code=0,
         )
         pop_lines = render_history_tasks_panel(width=80, tasks=[task], stats={"completed": 1, "failed": 0})
-        self.assertTrue(any("task-3" in l for l in pop_lines))
+        header_line = pop_lines[1]
+        self.assertIn("ID", header_line)
+        self.assertIn("STATUS", header_line)
+        self.assertIn("AGENT", header_line)
+        self.assertIn("TARGET", header_line)
+        self.assertIn("ATTEMPT", header_line)
+        self.assertIn("RETURN", header_line)
+        self.assertIn("DURATION", header_line)
+
+        # Ensure TARGET column is positioned after AGENT and before ATTEMPT
+        agent_idx = header_line.index("AGENT")
+        target_idx = header_line.index("TARGET")
+        attempt_idx = header_line.index("ATTEMPT")
+        self.assertLess(agent_idx, target_idx)
+        self.assertLess(target_idx, attempt_idx)
+
+        row_line = pop_lines[2]
+        self.assertIn("task-3", row_line)
+        self.assertIn("graviton#148", row_line)
+        self.assertNotIn("mweastwood/", row_line)
+        self.assertIn("1/3", row_line)
 
     def test_render_event_logs_panel(self):
         empty_lines = render_event_logs_panel(width=80, log_handler=None)
