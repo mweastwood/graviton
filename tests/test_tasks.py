@@ -1494,6 +1494,57 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(restored_task.requeue_count, 1)
             manager2.stop()
 
+    def test_rebuild_queue_locked_and_rebuild_queue(self):
+        manager = TaskManager(max_workers=0)
+        t1 = manager.submit_task("code_fixer", "Task 1", target_id="#1")
+        t2 = manager.submit_task("code_reviewer", "Task 2", target_id="#2")
+        t3 = manager.submit_task("issue_triager", "Task 3", target_id="#3")
+
+        with manager._lock:
+            t1.status = TaskStatus.QUEUED
+            t2.status = TaskStatus.PAUSED_FOR_QUOTA
+            t3.status = TaskStatus.COMPLETED
+
+        manager.rebuild_queue()
+        queued_ids = []
+        while not manager._queue.empty():
+            task = manager._queue.get_nowait()
+            queued_ids.append(task.id)
+
+        self.assertIn(t1.id, queued_ids)
+        self.assertIn(t2.id, queued_ids)
+        self.assertNotIn(t3.id, queued_ids)
+        manager.stop()
+
+    def test_queue_rebuild_race_condition_prevention(self):
+        manager = TaskManager(max_workers=0)
+        task = manager.submit_task("code_fixer", "Task race prevention", target_id="#100")
+
+        # Worker gets task from queue (simulating _queue.get())
+        popped = manager._queue.get_nowait()
+        self.assertEqual(popped.id, task.id)
+
+        # Before worker acquires lock, rebuild_queue runs and re-inserts task into queue
+        manager.rebuild_queue()
+        self.assertEqual(manager._queue.qsize(), 1)
+
+        # First worker acquires lock and transitions task to RUNNING
+        with manager._lock:
+            self.assertIn(popped.status, (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA))
+            popped.status = TaskStatus.RUNNING
+            popped.start_time = time.time()
+
+        # Second worker pops duplicate item from queue
+        dup_popped = manager._queue.get_nowait()
+        self.assertEqual(dup_popped.id, task.id)
+
+        # Second worker checks status under lock; status is RUNNING, so task is skipped
+        with manager._lock:
+            is_valid = dup_popped.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
+            self.assertFalse(is_valid)
+
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,16 +95,20 @@ class QuotaWindow:
         self.reset_time = str(res) if res is not None else None
         self.reset_timestamp = parse_reset_time_to_timestamp(res)
 
-    def get_remaining_seconds(self, now_dt: Optional[datetime] = None) -> float:
+    def get_remaining_seconds(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
         if res is None:
             return 0.0
-        if now_dt is None:
-            now_dt = datetime.now(timezone.utc)
+        effective_now = now_dt if now_dt is not None else now
+        now_dt_norm = _normalize_now_datetime(effective_now)
+        if now_dt_norm is None:
+            now_dt_norm = datetime.now(timezone.utc)
         dt = parse_reset_time_to_datetime(res)
         if dt is None:
             return 0.0
-        return max(0.0, (dt - now_dt).total_seconds())
+        return max(0.0, (dt - now_dt_norm).total_seconds())
 
     def remaining_time_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
         now_dt = _normalize_now_datetime(now)
@@ -114,8 +118,11 @@ class QuotaWindow:
     def quota_fraction(self) -> float:
         return max(0.0, min(1.0, float(self.remaining_percentage) / 100.0))
 
-    def get_time_fraction(self, now_dt: Optional[datetime] = None) -> float:
-        rem_sec = self.get_remaining_seconds(now_dt)
+    def get_time_fraction(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        effective_now = now_dt if now_dt is not None else now
+        rem_sec = self.get_remaining_seconds(effective_now)
         if self.duration_seconds <= 0:
             return 0.0
         return max(0.0, min(1.0, rem_sec / self.duration_seconds))
@@ -124,12 +131,15 @@ class QuotaWindow:
         now_dt = _normalize_now_datetime(now)
         return self.get_time_fraction(now_dt)
 
-    def get_pacing_status(self, now_dt: Optional[datetime] = None) -> Tuple[str, float]:
+    def get_pacing_status(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> Tuple[str, float]:
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
         if res is None:
             return "OK", 0.0
+        effective_now = now_dt if now_dt is not None else now
         q_frac = self.quota_fraction
-        t_frac = self.get_time_fraction(now_dt)
+        t_frac = self.get_time_fraction(effective_now)
 
         if q_frac < t_frac:
             deficit = t_frac - q_frac
@@ -143,18 +153,23 @@ class QuotaWindow:
         status, _ = self.get_pacing_status(now_dt)
         return status
 
-    def get_pacing_recovery_seconds(self, now_dt: Optional[datetime] = None) -> float:
-        pacing_status, _ = self.get_pacing_status(now_dt)
+    def get_pacing_recovery_seconds(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        effective_now = now_dt if now_dt is not None else now
+        norm_dt = _normalize_now_datetime(effective_now)
+        pacing_status, _ = self.get_pacing_status(norm_dt)
         if pacing_status != "BEHIND_PACING":
             return 0.0
-        rem_sec = self.get_remaining_seconds(now_dt)
+        rem_sec = self.get_remaining_seconds(norm_dt)
         q_frac = self.quota_fraction
         recovery = rem_sec - (q_frac * self.duration_seconds)
         return max(0.0, float(recovery))
 
-    def pacing_recovery_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
-        now_dt = _normalize_now_datetime(now)
-        return self.get_pacing_recovery_seconds(now_dt)
+    def pacing_recovery_seconds(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        return self.get_pacing_recovery_seconds(now_dt=now_dt, now=now)
 
     def format_pacing_countdown(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
@@ -164,7 +179,7 @@ class QuotaWindow:
         rec_sec = self.get_pacing_recovery_seconds(norm_dt)
         if rec_sec <= 0:
             return "00:00:00"
-        if rec_sec >= 86400 or (self.name and self.name.lower() == "1w"):
+        if rec_sec >= 86400:
             days = int(rec_sec // 86400)
             hours = int((rec_sec % 86400) // 3600)
             return f"{days}d {hours:02d}h"
@@ -732,14 +747,17 @@ class QuotaTracker:
         with self._lock:
             return self._active_backoff_delay
 
-    def is_behind_pacing(self, now: Optional[Union[float, datetime]] = None) -> bool:
+    def is_behind_pacing(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> bool:
         """Check if either window_5h or window_1w has pacing status 'BEHIND_PACING'."""
         with self._lock:
-            now_dt = _normalize_now_datetime(now)
-            if now_dt is None:
-                now_dt = datetime.now(timezone.utc)
-            s5, _ = self.window_5h.get_pacing_status(now_dt)
-            s1, _ = self.window_1w.get_pacing_status(now_dt)
+            effective_now = now_dt if now_dt is not None else now
+            norm_dt = _normalize_now_datetime(effective_now)
+            if norm_dt is None:
+                norm_dt = datetime.now(timezone.utc)
+            s5, _ = self.window_5h.get_pacing_status(norm_dt)
+            s1, _ = self.window_1w.get_pacing_status(norm_dt)
             return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
 
     @property
@@ -748,55 +766,70 @@ class QuotaTracker:
         return _PacingStatusResult(self)
 
     def get_pacing_backoff_delay(
-        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+        self,
+        window: Optional[QuotaWindow] = None,
+        now_dt: Optional[Union[float, datetime]] = None,
+        now: Optional[Union[float, datetime]] = None,
     ) -> float:
         """
         Calculate proportional pacing backoff delay for a specific window or max across all windows.
         pacing_deficit = max(0.0, time_fraction - quota_fraction).
         """
         with self._lock:
-            now_dt = _normalize_now_datetime(now)
+            effective_now = now_dt if now_dt is not None else now
+            norm_dt = _normalize_now_datetime(effective_now)
             if window is not None:
-                p_status, backoff = window.get_pacing_status(now_dt)
+                p_status, backoff = window.get_pacing_status(norm_dt)
                 if p_status == "OK":
                     return 0.0
                 return min(self.max_backoff_delay, backoff)
 
-            _, d5 = self.window_5h.get_pacing_status(now_dt)
-            _, d1 = self.window_1w.get_pacing_status(now_dt)
+            _, d5 = self.window_5h.get_pacing_status(norm_dt)
+            _, d1 = self.window_1w.get_pacing_status(norm_dt)
             return max(d5, d1)
 
     def get_pacing_recovery_seconds(
-        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+        self,
+        window: Optional[QuotaWindow] = None,
+        now_dt: Optional[Union[float, datetime]] = None,
+        now: Optional[Union[float, datetime]] = None,
     ) -> float:
         """Calculate pacing recovery time in seconds for a specific window or max across all dual windows."""
         with self._lock:
-            now_dt = _normalize_now_datetime(now)
+            effective_now = now_dt if now_dt is not None else now
+            norm_dt = _normalize_now_datetime(effective_now)
             if window is not None:
-                return window.get_pacing_recovery_seconds(now_dt)
-            rec_5h = self.window_5h.get_pacing_recovery_seconds(now_dt)
-            rec_1w = self.window_1w.get_pacing_recovery_seconds(now_dt)
+                return window.get_pacing_recovery_seconds(norm_dt)
+            rec_5h = self.window_5h.get_pacing_recovery_seconds(norm_dt)
+            rec_1w = self.window_1w.get_pacing_recovery_seconds(norm_dt)
             return max(rec_5h, rec_1w)
 
     def pacing_recovery_seconds(
-        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+        self,
+        window: Optional[QuotaWindow] = None,
+        now_dt: Optional[Union[float, datetime]] = None,
+        now: Optional[Union[float, datetime]] = None,
     ) -> float:
-        return self.get_pacing_recovery_seconds(window=window, now=now)
+        return self.get_pacing_recovery_seconds(window=window, now_dt=now_dt, now=now)
 
     def format_pacing_countdown(
-        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+        self,
+        window: Optional[QuotaWindow] = None,
+        now_dt: Optional[Union[float, datetime]] = None,
+        now: Optional[Union[float, datetime]] = None,
     ) -> str:
         """Format pacing recovery countdown string for a specific window or max across all dual windows."""
         with self._lock:
-            now_dt = _normalize_now_datetime(now)
+            effective_now = now_dt if now_dt is not None else now
+            norm_dt = _normalize_now_datetime(effective_now)
             if window is not None:
-                return window.format_pacing_countdown(now_dt)
-            rec_5h = self.window_5h.get_pacing_recovery_seconds(now_dt)
-            rec_1w = self.window_1w.get_pacing_recovery_seconds(now_dt)
+                return window.format_pacing_countdown(norm_dt)
+            rec_5h = self.window_5h.get_pacing_recovery_seconds(norm_dt)
+            rec_1w = self.window_1w.get_pacing_recovery_seconds(norm_dt)
             if rec_1w > rec_5h:
-                return self.window_1w.format_pacing_countdown(now_dt)
+                return self.window_1w.format_pacing_countdown(norm_dt)
             else:
-                return self.window_5h.format_pacing_countdown(now_dt)
+                return self.window_5h.format_pacing_countdown(norm_dt)
 
     def update_quota(
         self,

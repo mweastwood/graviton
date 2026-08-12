@@ -359,6 +359,62 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(window=w_5h_behind, now=now_dt), 1800.0)
         self.assertEqual(tracker.format_pacing_countdown(window=w_5h_behind, now=now_dt), "00:30:00")
 
+    def test_1w_window_subday_pacing_recovery_formatting(self):
+        # 1W window with sub-day recovery duration (e.g., 30 minutes / 1800s recovery)
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        # reset in 3h 30m (12600s), remaining_percentage = 80.0% (q=0.8)
+        # recovery = 12600 - (0.8 * 12600) = 2520s (42m) -> should format as 00:42:00
+        w_1w_subday = QuotaWindow(
+            name="1W",
+            duration_seconds=604800.0,
+            remaining_percentage=99.0, # q = 0.99
+            reset_time="2026-08-09T08:36:00Z", # rem = 12600s, t_frac = 12600/604800 = 0.020833
+        )
+        # 99.0% > 2.0833% time fraction, so pacing is OK
+        # Let's set remaining percentage to 1.0% (q = 0.01) so q_frac < t_frac (behind pacing)
+        # rem = 12600s, recovery = 12600 - (0.01 * 604800) = 12600 - 6048 = 6552s (1h 49m 12s)
+        # Or for exactly 30 minutes recovery (1800s):
+        # recovery = rem_sec - (q_frac * 604800) = 1800
+        # If q_frac = 0.1 (10%), q_frac * 604800 = 60480. rem_sec = 62280s.
+        w_1w_30m = QuotaWindow(
+            name="1W",
+            duration_seconds=604800.0,
+            remaining_percentage=10.0,
+            reset_time="2026-08-09T22:24:00Z", # rem = 62280s (17h 18m)
+        )
+        rec_sec = w_1w_30m.get_pacing_recovery_seconds(now_dt)
+        self.assertAlmostEqual(rec_sec, 1800.0)
+        self.assertEqual(w_1w_30m.format_pacing_countdown(now_dt), "00:30:00")
+
+    def test_get_pacing_recovery_seconds_timestamp_normalization(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        ts_float = now_dt.timestamp()
+        ts_int = int(ts_float)
+        naive_dt = datetime(2026, 8, 9, 5, 6, 0)
+
+        w_5h_behind = QuotaWindow(
+            name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z"
+        )
+        # Passing float timestamp, int timestamp, and naive datetime as now_dt must not raise TypeError
+        self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt=ts_float), 1800.0)
+        self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt=ts_int), 1800.0)
+        self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt=naive_dt), 1800.0)
+
+    def test_quota_tracker_now_dt_keyword_argument_support(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z")
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+
+        tracker = QuotaTracker()
+        tracker.update_windows(w_5h, w_1w)
+
+        # Call QuotaTracker methods passing now_dt=... as keyword parameter
+        self.assertTrue(tracker.is_behind_pacing(now_dt=now_dt))
+        self.assertAlmostEqual(tracker.get_pacing_backoff_delay(now_dt=now_dt), 1.0)
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now_dt=now_dt), 1800.0)
+        self.assertAlmostEqual(tracker.pacing_recovery_seconds(now_dt=now_dt), 1800.0)
+        self.assertEqual(tracker.format_pacing_countdown(now_dt=now_dt), "00:30:00")
+
     def test_load_oauth_token_nested_json(self):
         import tempfile
         from pathlib import Path

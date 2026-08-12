@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
@@ -218,7 +218,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(len(lines), 5)
         self.assertTrue(lines[0].startswith("┌"))
         self.assertIn("127.0.0.1:8000", lines[2])
-        self.assertIn("[p] Pause Tasks", lines[3])
+        self.assertIn("[v] Pause Tasks", lines[3])
 
         lines_paused = render_header_panel(
             width=80,
@@ -231,7 +231,7 @@ class TestTUIPanels(unittest.TestCase):
             active_screen="main",
             is_paused=True,
         )
-        self.assertIn("[p] Resume Tasks", lines_paused[3])
+        self.assertIn("[v] Resume Tasks", lines_paused[3])
 
     def test_render_quota_panel(self):
         tracker = QuotaTracker()
@@ -268,6 +268,19 @@ class TestTUIPanels(unittest.TestCase):
         lines_behind = render_quota_panel(width=110, quota_tracker=tracker_behind, now_dt=now_dt)
         self.assertEqual(len(lines_behind), 4)
         self.assertTrue(any("RESUME IN 00:30:00" in line for line in lines_behind))
+
+        # Verify now_dt propagation to get_pacing_status
+        mock_w5h = QuotaWindow(name="5H", remaining_percentage=80.0)
+        mock_w5h.get_pacing_status = MagicMock(return_value=("OK", 0.0))
+        mock_w1w = QuotaWindow(name="1W", remaining_percentage=100.0)
+        mock_w1w.get_pacing_status = MagicMock(return_value=("OK", 0.0))
+        tracker_mock = QuotaTracker()
+        tracker_mock.window_5h = mock_w5h
+        tracker_mock.window_1w = mock_w1w
+        custom_now = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
+        render_quota_panel(width=80, quota_tracker=tracker_mock, now_dt=custom_now)
+        mock_w5h.get_pacing_status.assert_called_with(custom_now)
+        mock_w1w.get_pacing_status.assert_called_with(custom_now)
 
     def test_format_target_for_display(self):
         # Username removal when space is sufficient

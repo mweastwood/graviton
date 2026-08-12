@@ -413,7 +413,7 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     else:
-        pause_hint = "[p] Resume Tasks" if is_paused else "[p] Pause Tasks"
+        pause_hint = "[v] Resume Tasks" if is_paused else "[v] Pause Tasks"
         nav_hint = f"Nav: [j] Periodic Jobs │ [e] Event Logs │ {pause_hint}"
 
     lines = [
@@ -450,8 +450,8 @@ def render_quota_panel(
     badge_5h_text = format_quota_badge(w_5h, now_dt=now_dt, quota_pool=pool)
     badge_1w_text = format_quota_badge(w_1w, now_dt=now_dt, quota_pool=pool)
 
-    status_5h, _ = w_5h.get_pacing_status()
-    status_1w, _ = w_1w.get_pacing_status()
+    status_5h, _ = w_5h.get_pacing_status(now_dt)
+    status_1w, _ = w_1w.get_pacing_status(now_dt)
 
     color_5h = (
         "\033[92m\033[1m"
