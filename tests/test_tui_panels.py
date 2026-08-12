@@ -255,6 +255,31 @@ class TestTUIPanels(unittest.TestCase):
         self.assertLessEqual(cols_no_flex_mid["c2"], 8)
         self.assertLessEqual(sum(cols_no_flex_mid.values()) + no_flex_spec.spacing, 50)
 
+        # Zero max width test (max_w=0) in both intermediate and wide modes
+        zero_max_w_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.5, min_w=0, max_w=0, is_flex=False),
+                ColumnSpec("c2", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+            ],
+            spacing=2,
+            wide_threshold=100,
+            narrow_threshold=10,
+        )
+        cols_zero_max_mid = allocate_declarative_columns(zero_max_w_spec, 50)
+        self.assertEqual(cols_zero_max_mid["c1"], 0)
+
+        zero_max_w_wide_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.5, min_w=0, max_w=0, is_flex=False),
+                ColumnSpec("c2", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+            ],
+            spacing=2,
+            wide_threshold=30,
+            narrow_threshold=10,
+        )
+        cols_zero_max_wide = allocate_declarative_columns(zero_max_w_wide_spec, 50)
+        self.assertEqual(cols_zero_max_wide["c1"], 0)
+
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
         self.assertEqual(format_interval(3600), "1h")
