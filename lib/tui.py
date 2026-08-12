@@ -2,11 +2,13 @@
 Terminal UI Dashboard for Graviton Server.
 """
 
+import atexit
 import collections
 import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -136,9 +138,13 @@ class TerminalDashboard:
         self._thread: Optional[threading.Thread] = None
         self._stdin_thread: Optional[threading.Thread] = None
         self._old_term_settings: Optional[Any] = None
+        self._termios_restored = False
         self._log_redirected = False
         self._detached_handlers: list = []
         self._file_handler: Optional[logging.FileHandler] = None
+        self._atexit_registered = False
+        self._signals_registered = False
+        self._old_signal_handlers: dict = {}
 
         self._git_info_cache: Optional[Tuple[str, str]] = None
         self._git_info_last_fetch: float = 0.0
@@ -147,6 +153,11 @@ class TerminalDashboard:
         """Start the background dashboard rendering loop thread and hotkey listener."""
         if self._running:
             return
+        self._termios_restored = False
+        if not self._atexit_registered:
+            atexit.register(self.stop)
+            self._atexit_registered = True
+        self._register_signal_handlers()
         if self.enable_log_redirection:
             self._attach_log_redirection()
         quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
@@ -167,6 +178,13 @@ class TerminalDashboard:
         if self._stdin_thread and self._stdin_thread.is_alive():
             self._stdin_thread.join(timeout=1.0)
         self._restore_termios()
+        self._unregister_signal_handlers()
+        if self._atexit_registered:
+            try:
+                atexit.unregister(self.stop)
+            except Exception:
+                pass
+            self._atexit_registered = False
         quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
         if quota_tr and hasattr(quota_tr, "stop_background_polling"):
             quota_tr.stop_background_polling()
@@ -533,15 +551,68 @@ class TerminalDashboard:
         self._force_refresh()
 
     def _restore_termios(self):
-        """Restore original terminal attributes if previously modified."""
+        """Restore original terminal attributes if previously modified, restore cursor, and reset formatting."""
         if self._old_term_settings is not None and HAS_TERMIOS:
             try:
                 if sys.stdin.isatty():
                     fd = sys.stdin.fileno()
-                    termios.tcsetattr(fd, termios.TCSADRAIN, self._old_term_settings)
+                    termios.tcsetattr(fd, termios.TCSAFLUSH, self._old_term_settings)
             except Exception:
                 pass
             self._old_term_settings = None
+
+        if not self._termios_restored:
+            if self.out_stream:
+                try:
+                    self.out_stream.write("\033[?25h\033[0m")
+                    self.out_stream.flush()
+                except Exception:
+                    pass
+            self._termios_restored = True
+
+    def _register_signal_handlers(self):
+        """Register SIGINT and SIGTERM handlers to restore terminal state on exit signals."""
+        if self._signals_registered:
+            return
+        self._signals_registered = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                prev_handler = signal.getsignal(sig)
+                if prev_handler in (signal.SIG_IGN, None):
+                    continue
+
+                def _make_handler(sig_num, orig_h):
+                    def _signal_handler(signum, frame):
+                        self._restore_termios()
+                        self.stop()
+                        if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
+                            orig_h(signum, frame)
+                        elif signum == signal.SIGINT:
+                            raise KeyboardInterrupt()
+                        else:
+                            sys.exit(128 + signum)
+
+                    return _signal_handler
+
+                new_handler = _make_handler(sig, prev_handler)
+                signal.signal(sig, new_handler)
+                self._old_signal_handlers[sig] = prev_handler
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+    def _unregister_signal_handlers(self):
+        """Restore previous signal handlers if registered."""
+        if not self._signals_registered:
+            return
+        for sig, old_h in list(self._old_signal_handlers.items()):
+            try:
+                if old_h is not None:
+                    signal.signal(sig, old_h)
+            except (ValueError, TypeError, AttributeError):
+                pass
+        self._old_signal_handlers.clear()
+        self._signals_registered = False
 
     def _force_refresh(self):
         """Force an immediate dashboard frame render and output flush."""

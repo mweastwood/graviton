@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -330,6 +331,16 @@ def main():
     pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
     GravitonHandler.pr_tracker = pr_tracker
 
+    def shutdown_signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
+        sys.exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, shutdown_signal_handler)
+        except (ValueError, TypeError, AttributeError):
+            pass
+
     dashboard = TerminalDashboard(
         task_manager=task_manager,
         host=args.host,
@@ -349,14 +360,28 @@ def main():
 
     try:
         httpd.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Stopping Graviton Webhook Server...")
     finally:
         if scheduler:
-            scheduler.stop()
-        dashboard.stop()
-        task_manager.stop()
-        httpd.shutdown()
+            try:
+                scheduler.stop()
+            except Exception:
+                pass
+        if dashboard:
+            try:
+                dashboard.stop()
+            except Exception:
+                pass
+        if task_manager:
+            try:
+                task_manager.stop()
+            except Exception:
+                pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

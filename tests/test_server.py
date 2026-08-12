@@ -4,6 +4,7 @@ Integration/HTTP unit tests for bin/graviton-server.py
 
 import importlib.util
 import json
+import signal
 import sys
 import unittest
 from io import BytesIO
@@ -588,6 +589,88 @@ class TestGravitonHandler(unittest.TestCase):
         mock_run_async.assert_not_called()
         mock_post_reaction.assert_not_called()
         handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "behind_quota_pacing"})
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    @patch("graviton_server.signal.signal")
+    def test_server_signal_shutdown_non_blocking(
+        self, mock_signal_func, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+
+        registered_handlers = {}
+
+        def fake_signal(sig, handler):
+            registered_handlers[sig] = handler
+
+        mock_signal_func.side_effect = fake_signal
+
+        def fake_serve_forever():
+            handler = registered_handlers.get(signal.SIGINT)
+            self.assertIsNotNone(handler)
+            handler(signal.SIGINT, None)
+
+        mock_server.serve_forever.side_effect = fake_serve_forever
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_dashboard_inst.stop.assert_called_once()
+        mock_tm_inst.stop.assert_called_once()
+        mock_server.server_close.assert_called_once()
+        mock_server.shutdown.assert_not_called()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    @patch("graviton_server.signal.signal")
+    def test_signal_handler_registered_before_dashboard_start(
+        self, mock_signal_func, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        call_order = []
+
+        def track_signal(sig, handler):
+            call_order.append(("signal", sig))
+
+        def track_dashboard_start():
+            call_order.append(("dashboard_start",))
+
+        mock_signal_func.side_effect = track_signal
+        mock_dashboard_inst.start.side_effect = track_dashboard_start
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        self.assertIn(("signal", signal.SIGINT), call_order)
+        self.assertIn(("signal", signal.SIGTERM), call_order)
+        self.assertIn(("dashboard_start",), call_order)
+
+        sigint_index = call_order.index(("signal", signal.SIGINT))
+        sigterm_index = call_order.index(("signal", signal.SIGTERM))
+        dashboard_index = call_order.index(("dashboard_start",))
+
+        self.assertLess(sigint_index, dashboard_index)
+        self.assertLess(sigterm_index, dashboard_index)
 
 
 if __name__ == "__main__":

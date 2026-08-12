@@ -5,6 +5,8 @@ Unit tests for lib/tui.py (TerminalDashboard).
 import io
 import json
 import logging
+import signal
+import sys
 import tempfile
 import threading
 import time
@@ -1141,6 +1143,129 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered_resumed = dashboard.render(width=80)
         self.assertIn("[p] Pause Tasks", rendered_resumed)
         self.assertNotIn("[PAUSED]", rendered_resumed)
+
+    @patch("lib.tui.termios")
+    @patch("lib.tui.sys.stdin.isatty", return_value=True)
+    def test_restore_termios_tcsaflush_and_ansi_cursor_restoration(self, mock_isatty, mock_termios):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+        mock_termios.TCSAFLUSH = 2
+        dashboard._old_term_settings = [1, 2, 3, 4]
+
+        dashboard._restore_termios()
+
+        mock_termios.tcsetattr.assert_called_once_with(sys.stdin.fileno(), mock_termios.TCSAFLUSH, [1, 2, 3, 4])
+        self.assertIsNone(dashboard._old_term_settings)
+        self.assertIn("\033[?25h\033[0m", stream.getvalue())
+
+        # Second call must be idempotent
+        mock_termios.tcsetattr.reset_mock()
+        dashboard._restore_termios()
+        mock_termios.tcsetattr.assert_not_called()
+
+    @patch("lib.tui.atexit.register")
+    @patch("lib.tui.atexit.unregister")
+    def test_atexit_registration_and_cleanup(self, mock_unregister, mock_register):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        mock_register.assert_called_once_with(dashboard.stop)
+        self.assertTrue(dashboard._atexit_registered)
+
+        dashboard.stop()
+        mock_unregister.assert_called_once_with(dashboard.stop)
+        self.assertFalse(dashboard._atexit_registered)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_DFL)
+    def test_signal_handler_registration_and_execution(self, mock_getsignal, mock_signal):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        self.assertTrue(dashboard._signals_registered)
+        self.assertIn(signal.SIGINT, dashboard._old_signal_handlers)
+        self.assertIn(signal.SIGTERM, dashboard._old_signal_handlers)
+
+        # Get the registered signal handler for SIGINT
+        sigint_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGINT]
+        self.assertTrue(len(sigint_call) > 0)
+        handler = sigint_call[0].args[1]
+
+        # Triggering handler should restore termios and raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+
+        dashboard.stop()
+        self.assertFalse(dashboard._signals_registered)
+
+    def test_restore_termios_emits_ansi_sequences_once(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        dashboard._restore_termios()
+        output1 = stream.getvalue()
+        self.assertEqual(output1, "\033[?25h\033[0m")
+
+        # Second call to _restore_termios should be a no-op for ANSI sequences
+        dashboard._restore_termios()
+        output2 = stream.getvalue()
+        self.assertEqual(output2, "\033[?25h\033[0m")
+
+        dashboard.stop()
+
+    @patch("lib.tui.signal.signal", side_effect=ValueError("signal only works in main thread of the main interpreter"))
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_DFL)
+    def test_register_signal_handlers_non_main_thread_does_not_pollute_state(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # _old_signal_handlers must not retain stale references when signal.signal raises ValueError
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_IGN)
+    def test_register_signal_handlers_preserves_sig_ign(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # Should not call signal.signal for SIG_IGN
+        mock_signal.assert_not_called()
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=None)
+    def test_register_signal_handlers_preserves_none_handler(self, mock_getsignal, mock_signal):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        dashboard._register_signal_handlers()
+
+        self.assertTrue(dashboard._signals_registered)
+        # Should not call signal.signal for native C/None handler
+        mock_signal.assert_not_called()
+        self.assertEqual(dashboard._old_signal_handlers, {})
+
+        dashboard._unregister_signal_handlers()
+        self.assertFalse(dashboard._signals_registered)
 
 
 if __name__ == "__main__":
