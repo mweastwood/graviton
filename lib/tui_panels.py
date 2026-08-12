@@ -510,6 +510,7 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
 
 def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = False) -> List[str]:
     """Render pending queued tasks panel."""
+    inner_w = max(0, width - 4)
     queued_cnt = len(tasks)
     paused_badge = " [PAUSED]" if is_paused else ""
     panel_title = f"TASK QUEUE (QUEUED) [{queued_cnt} Pending]{paused_badge}"
@@ -519,24 +520,24 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
         msg_styled = "\033[2m(Task queue is empty)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
+    target_w = max(8, inner_w - 42)
     cols = [
         ("ID", 8),
-        ("AGENT", 15),
-        ("TARGET", 10),
-        ("WAIT", 10),
-        ("PROMPT", 26),
+        ("AGENT", 14),
+        ("TARGET", target_w),
+        ("ATTEMPT", 7),
+        ("WAIT", 9),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
     for t in tasks:
-        prompt_trunc = truncate_with_ellipsis(t.prompt, 26)
-        target_str = format_target_for_display(t.target_id, 10)
+        target_str = format_target_for_display(t.target_id, target_w)
         row_cells = [
             (t.id, 8),
-            (t.agent, 15),
-            (target_str, 10),
-            (f"{t.wait_time:.1f}s", 10),
-            (prompt_trunc, 26),
+            (t.agent, 14),
+            (target_str, target_w),
+            (f"{t.attempt}/{t.max_attempts}", 7),
+            (f"{t.wait_time:.1f}s", 9),
         ]
         content.append(format_table_row(row_cells))
 
@@ -707,6 +708,7 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
 
 def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, Any]) -> List[str]:
     """Render task execution history panel."""
+    inner_w = max(0, width - 4)
     passed = stats.get("completed", 0)
     failed = stats.get("failed", 0)
     panel_title = f"TASK HISTORY (COMPLETED & FAILED) [Passed: {passed} | Failed: {failed}]"
@@ -716,14 +718,15 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         msg_styled = "\033[2m(No task history recorded yet)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
+    target_w = max(8, inner_w - 63)
     cols = [
         ("ID", 8),
         ("STATUS", 11),
         ("AGENT", 14),
+        ("TARGET", target_w),
         ("ATTEMPT", 7),
         ("RETURN", 8),
         ("DURATION", 9),
-        ("TARGET", 8),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
@@ -731,15 +734,15 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
         status_str = f"{status_color}{t.status}\033[0m"
         ret_val = str(t.return_code) if t.return_code is not None else "-"
-        target_str = format_target_for_display(t.target_id, 8)
+        target_str = format_target_for_display(t.target_id, target_w)
         row_cells = [
             (t.id, 8),
             (status_str, 11),
             (t.agent, 14),
+            (target_str, target_w),
             (f"{t.attempt}/{t.max_attempts}", 7),
             (ret_val, 8),
             (f"{t.elapsed_time:.1f}s", 9),
-            (target_str, 8),
         ]
         content.append(format_table_row(row_cells))
 
