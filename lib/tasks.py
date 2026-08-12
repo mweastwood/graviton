@@ -499,7 +499,7 @@ class TaskManager:
             task_id = f"task-{self._task_counter}"
             tot_att = max_total_attempts if max_total_attempts is not None else 6
             batch_att = attempts_per_batch if attempts_per_batch is not None else 3
-            initial_max_att = max_attempts if max_attempts is not None else min(batch_att, tot_att)
+            initial_max_att = min(max_attempts if max_attempts is not None else batch_att, tot_att)
 
             task = Task(
                 id=task_id,

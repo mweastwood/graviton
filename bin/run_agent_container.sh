@@ -31,6 +31,7 @@ mkdir -p "${TEMP_WORKSPACE}"
 
 CACHE_DIR="${GRAVITON_WORKSPACE_CACHE_DIR:-}"
 RESTORED_FROM_CACHE=false
+EXIT_CODE=1
 
 if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
   echo "Restoring workspace from cache: ${CACHE_DIR}"
@@ -61,6 +62,7 @@ cleanup() {
   if [ -n "${CACHE_DIR}" ]; then
     if [ "${EXIT_CODE:-1}" -ne 0 ]; then
       echo "Syncing workspace to cache: ${CACHE_DIR}"
+      rm -rf "${CACHE_DIR}" 2>/dev/null || true
       mkdir -p "${CACHE_DIR}"
       cp -a "${TEMP_WORKSPACE}/." "${CACHE_DIR}/" 2>/dev/null || true
     else
@@ -135,7 +137,6 @@ set -e
 # Launch container with retry / continuation loop for turn & timeout limits
 MAX_ATTEMPTS="${MAX_AGENT_RETRIES:-3}"
 ATTEMPT="${GRAVITON_INITIAL_ATTEMPT:-1}"
-EXIT_CODE=0
 AGENT_LOG="${TEMP_WORKSPACE}/agent_output.log"
 PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
 

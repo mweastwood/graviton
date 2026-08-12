@@ -527,7 +527,7 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
         ("ID", 8),
         ("AGENT", 14),
         ("TARGET", target_w),
-        ("ATTEMPT", 16),
+        ("ATTEMPT", 7),
         ("WAIT", 9),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
@@ -540,7 +540,7 @@ def render_queued_tasks_panel(width: int, tasks: List[Any], is_paused: bool = Fa
             (t.id, 8),
             (t.agent, 14),
             (target_str, target_w),
-            (att_str, 16),
+            (att_str, 7),
             (f"{t.wait_time:.1f}s", 9),
         ]
         content.append(format_table_row(row_cells))
@@ -727,12 +727,8 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         ("ID", 8),
         ("STATUS", 11),
         ("AGENT", 14),
-<<<<<<< HEAD
         ("TARGET", target_w),
         ("ATTEMPT", 7),
-=======
-        ("ATTEMPT", 16),
->>>>>>> 982083f (feat(tasks): implement attempt exhaustion handling and workspace caching for Issue #163)
         ("RETURN", 8),
         ("DURATION", 9),
     ]
@@ -742,23 +738,15 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
         status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
         status_str = f"{status_color}{t.status}\033[0m"
         ret_val = str(t.return_code) if t.return_code is not None else "-"
-<<<<<<< HEAD
         target_str = format_target_for_display(t.target_id, target_w)
-=======
-        target_str = format_target_for_display(t.target_id, 8)
-        is_cached = (getattr(t, "requeue_count", 0) > 0 or getattr(t, "cached_workspace_dir", None) is not None)
+        is_cached = getattr(t, "requeue_count", 0) > 0
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
->>>>>>> 982083f (feat(tasks): implement attempt exhaustion handling and workspace caching for Issue #163)
         row_cells = [
             (t.id, 8),
             (status_str, 11),
             (t.agent, 14),
-<<<<<<< HEAD
             (target_str, target_w),
-            (f"{t.attempt}/{t.max_attempts}", 7),
-=======
-            (att_str, 16),
->>>>>>> 982083f (feat(tasks): implement attempt exhaustion handling and workspace caching for Issue #163)
+            (att_str, 7),
             (ret_val, 8),
             (f"{t.elapsed_time:.1f}s", 9),
         ]

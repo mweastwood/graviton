@@ -104,6 +104,22 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    def test_task_manager_submit_task_max_attempts_exceeding_max_total_attempts_capped(self):
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        task = manager.submit_task(
+            "code_fixer",
+            "Fix issue",
+            target_id="#99",
+            max_attempts=10,
+            max_total_attempts=6,
+        )
+        self.assertEqual(task.max_attempts, 6)
+        self.assertEqual(task.max_total_attempts, 6)
+
     def test_task_manager_submit_and_execute(self):
         manager = TaskManager(max_workers=2)
         manager.start()
