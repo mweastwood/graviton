@@ -283,8 +283,7 @@ def is_duplicate_issue(
     """
     Check if proposed title overlaps significantly with an existing issue title
     using normalized exact matching and token set similarity to prevent false positives
-    from short issue titles. Pre-tokenizes issue titles prior to the matching loop to
-    reduce redundant regex scanning and set creation operations.
+    from short issue titles.
     """
     if not proposed_title or not isinstance(proposed_title, str):
         return False
@@ -299,8 +298,6 @@ def is_duplicate_issue(
     p_clean = _normalize_title(proposed_title)
     p_tokens = tokenize_title(proposed_title)
 
-    # Pre-tokenize / extract existing issue properties prior to matching loop
-    prepared = []
     for issue in existing_issues:
         if not isinstance(issue, dict):
             continue
@@ -308,29 +305,29 @@ def is_duplicate_issue(
         if not isinstance(ex_raw, str) or not ex_raw:
             continue
 
-        ex_norm = issue.get("_norm_title") or ex_raw.strip().lower()
+        ex_norm = issue.get("_norm_title") if "_norm_title" in issue else ex_raw.strip().lower()
         ex_clean = issue.get("_clean_title") if "_clean_title" in issue else _normalize_title(ex_raw)
 
-        ex_tokens = issue.get("_tokens")
-        if ex_tokens is None:
-            ex_tokens = issue.get("tokens")
-        if ex_tokens is None:
-            ex_tokens = tokenize_title(ex_raw)
-
-        prepared.append((ex_norm, ex_clean, ex_tokens))
-
-    for ex_norm, ex_clean, ex_tokens in prepared:
         # Exact match (raw or normalized without bracket tags)
         if p_norm == ex_norm or (p_clean and p_clean == ex_clean):
             return True
 
         # Token set similarity (Jaccard similarity)
-        if p_tokens and ex_tokens:
-            intersection = p_tokens & ex_tokens
-            union = p_tokens | ex_tokens
-            jaccard = len(intersection) / len(union)
-            if jaccard >= similarity_threshold:
-                return True
+        if p_tokens:
+            ex_tokens = issue.get("_tokens")
+            if ex_tokens is None:
+                ex_tokens = issue.get("tokens")
+            if ex_tokens is None:
+                ex_tokens = tokenize_title(ex_raw)
+            elif not isinstance(ex_tokens, set):
+                ex_tokens = set(ex_tokens)
+
+            if ex_tokens:
+                intersection = p_tokens & ex_tokens
+                union = p_tokens | ex_tokens
+                jaccard = len(intersection) / len(union)
+                if jaccard >= similarity_threshold:
+                    return True
 
     return False
 

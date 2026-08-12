@@ -920,12 +920,41 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertTrue(is_duplicate_issue("[Quality Sweep] Decouple panel rendering into dedicated components", pretokenized_existing))
         self.assertFalse(is_duplicate_issue("Completely new bug report", pretokenized_existing))
 
-        # Test with custom 'tokens' key pre-populated in issue dict
-        custom_tokens_issue = [
+        # Test with custom 'tokens' key pre-populated in issue dict (set, list, tuple)
+        custom_tokens_set = [
             {"title": "Custom pretokenized issue", "tokens": {"custom", "pretokenized", "issue"}}
         ]
-        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_issue))
-        self.assertTrue(is_duplicate_issue("custom pretokenized issue", custom_tokens_issue))
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_set))
+
+        custom_tokens_list = [
+            {"title": "Custom pretokenized issue", "tokens": ["custom", "pretokenized", "issue"]}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_list))
+
+        custom_tokens_tuple = [
+            {"title": "Custom pretokenized issue", "_tokens": ("custom", "pretokenized", "issue")}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_tuple))
+
+        # Test non-set tokens with non-matching title to force token similarity check without TypeError
+        non_set_tokens_non_match = [
+            {"title": "Custom pretokenized issue", "tokens": ["custom", "pretokenized", "issue"]}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue detailed", non_set_tokens_non_match))
+        self.assertFalse(is_duplicate_issue("Unrelated issue title", non_set_tokens_non_match))
+
+        # Test _norm_title fallback consistency
+        custom_norm_issue = [
+            {"title": "Raw Title", "_norm_title": "raw title"}
+        ]
+        self.assertTrue(is_duplicate_issue("raw title", custom_norm_issue))
+
+        # Short-circuit test: Exact match on first item should return True immediately
+        short_circuit_issues = [
+            {"title": "exact match title"},
+            {"title": "broken token container issue", "tokens": 12345}  # invalid token type
+        ]
+        self.assertTrue(is_duplicate_issue("exact match title", short_circuit_issues))
 
         # Multiple bracket prefix tag stripping matching
         self.assertTrue(is_duplicate_issue("Decouple panel rendering into dedicated components", existing))
