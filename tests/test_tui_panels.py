@@ -356,6 +356,20 @@ class TestTUIPanels(unittest.TestCase):
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#148", narrow_row)
 
+        # Test cached task attempt formatting without truncation
+        task_cached = Task(
+            id="task-2c",
+            agent="code_fixer",
+            target_id="mweastwood/graviton#148",
+            prompt="Fix bug",
+            status=TaskStatus.QUEUED,
+            attempt=3,
+            max_attempts=6,
+            requeue_count=1,
+        )
+        cached_lines = render_queued_tasks_panel(width=80, tasks=[task_cached])
+        self.assertIn("3/6 (cached)", cached_lines[2])
+
     def test_render_scheduled_jobs_panel(self):
         empty_lines = render_scheduled_jobs_panel(width=80, scheduler=None)
         self.assertTrue(any("Scheduler disabled" in l for l in empty_lines))
@@ -470,6 +484,21 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
         self.assertIn("1/3", row_line)
+
+        # Test cached task attempt formatting in history panel without truncation
+        task_cached = Task(
+            id="task-3c",
+            agent="issue_triager",
+            target_id="mweastwood/graviton#148",
+            prompt="Triage issue",
+            status=TaskStatus.COMPLETED,
+            return_code=0,
+            attempt=3,
+            max_attempts=6,
+            requeue_count=1,
+        )
+        cached_lines = render_history_tasks_panel(width=80, tasks=[task_cached], stats={"completed": 2, "failed": 0})
+        self.assertIn("3/6 (cached)", cached_lines[2])
 
     def test_render_event_logs_panel(self):
         empty_lines = render_event_logs_panel(width=80, log_handler=None)

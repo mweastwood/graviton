@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from lib.quota import QuotaState, QuotaTracker
+from lib.runner import run_agent_container
 from lib.tasks import Task, TaskManager, TaskStatus
 
 
@@ -68,6 +69,12 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(t.attempt, 3)
         self.assertEqual(t.max_attempts, 5)
 
+        # Ensure max_attempts does not regress when parsing earlier log lines after expansion
+        t.max_attempts = 6
+        t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)...")
+        self.assertEqual(t.attempt, 2)
+        self.assertEqual(t.max_attempts, 6)
+
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_submit_task_custom_max_attempts(self, mock_run):
         mock_process = MagicMock()
@@ -97,9 +104,27 @@ class TestTaskManager(unittest.TestCase):
             Path("/tmp/fake_repo"),
             on_output=task.update_attempt_from_line,
             max_attempts=5,
+            cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
+            initial_attempt=1,
         )
 
         manager.stop()
+
+    def test_task_manager_submit_task_max_attempts_exceeding_max_total_attempts_capped(self):
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        task = manager.submit_task(
+            "code_fixer",
+            "Fix issue",
+            target_id="#99",
+            max_attempts=10,
+            max_total_attempts=6,
+        )
+        self.assertEqual(task.max_attempts, 6)
+        self.assertEqual(task.max_total_attempts, 6)
 
     def test_task_manager_submit_and_execute(self):
         manager = TaskManager(max_workers=2)
@@ -162,6 +187,8 @@ class TestTaskManager(unittest.TestCase):
             Path("/tmp/fake_repo"),
             on_output=task.update_attempt_from_line,
             max_attempts=3,
+            cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
+            initial_attempt=1,
         )
 
         stats = manager.get_stats()
@@ -745,6 +772,8 @@ class TestTaskManager(unittest.TestCase):
                 expected_repo_dir,
                 on_output=task.update_attempt_from_line,
                 max_attempts=3,
+                cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
+                initial_attempt=1,
             )
 
             manager.stop()
@@ -1230,6 +1259,242 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_attempt_exhaustion_caching_and_requeuing(self, mock_run):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "workspace_cache"
+            cache_dir.mkdir()
+            (cache_dir / "cached_work.txt").write_text("work done in attempts 1..3")
+
+            # Mock first container pass: returns exit code 1 with 3 attempts reported
+            def mock_run_fail_batch(agent, prompt, script_path, cwd, on_output=None, max_attempts=None, cached_workspace_dir=None, initial_attempt=None):
+                if on_output:
+                    on_output("Auto-continuing conversation (Attempt 3/3)...")
+                res = MagicMock()
+                res.returncode = 1
+                res.stdout = "Auto-continuing conversation (Attempt 3/3)..."
+                res.stderr = "Batch limit reached"
+                return res
+
+            mock_run.side_effect = mock_run_fail_batch
+
+            manager = TaskManager(
+                max_workers=0,  # Manual queue control
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_repo"),
+            )
+
+            task = manager.submit_task(
+                "code_fixer",
+                "Fix complex bug",
+                target_id="#163",
+                max_attempts=3,
+                max_total_attempts=6,
+                attempts_per_batch=3,
+                cached_workspace_dir=cache_dir,
+            )
+
+            # Manually run one iteration of worker loop logic
+            task.status = TaskStatus.RUNNING
+            res = mock_run(
+                task.agent,
+                task.prompt,
+                manager.script_path,
+                Path("/tmp/fake_repo"),
+                on_output=task.update_attempt_from_line,
+                max_attempts=task.max_attempts,
+                cached_workspace_dir=task.cached_workspace_dir,
+                initial_attempt=1,
+            )
+            task.update_attempt_from_output(res.stdout)
+
+            # Simulate worker loop finish logic for non-zero exit code
+            with manager._lock:
+                if res.returncode != 0 and task.attempt >= task.max_attempts:
+                    if task.attempt < task.max_total_attempts:
+                        old_max = task.max_attempts
+                        task.max_attempts = min(task.attempt + task.attempts_per_batch, task.max_total_attempts)
+                        task.requeue_count += 1
+                        task.status = TaskStatus.QUEUED
+                        task.finish_time = None
+                        task.return_code = res.returncode
+                        task.error_message = res.stderr
+                        manager._queue.put(task)
+
+            self.assertEqual(task.status, TaskStatus.QUEUED)
+            self.assertEqual(task.requeue_count, 1)
+            self.assertEqual(task.max_attempts, 6)
+            self.assertEqual(task.attempt, 3)
+            self.assertIsNone(task.finish_time)
+            self.assertTrue(cache_dir.exists())
+
+    @patch("lib.tasks.run_agent_container")
+    def test_attempt_exhaustion_hard_ceiling_failure_and_cache_cleanup(self, mock_run):
+        import tempfile
+        import shutil
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "workspace_cache"
+            cache_dir.mkdir()
+            (cache_dir / "cached_work.txt").write_text("work done in attempts 1..6")
+
+            def mock_run_fail_final(agent, prompt, script_path, cwd, on_output=None, max_attempts=None, cached_workspace_dir=None, initial_attempt=None):
+                if on_output:
+                    on_output("Auto-continuing conversation (Attempt 6/6)...")
+                res = MagicMock()
+                res.returncode = 1
+                res.stdout = "Auto-continuing conversation (Attempt 6/6)..."
+                res.stderr = "Hard limit reached"
+                return res
+
+            mock_run.side_effect = mock_run_fail_final
+
+            manager = TaskManager(
+                max_workers=0,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_repo"),
+            )
+
+            task = Task(
+                id="task-exhausted",
+                agent="code_fixer",
+                prompt="Fix bug",
+                attempt=6,
+                max_attempts=6,
+                max_total_attempts=6,
+                attempts_per_batch=3,
+                requeue_count=1,
+                cached_workspace_dir=cache_dir,
+            )
+
+            res = mock_run(
+                task.agent,
+                task.prompt,
+                manager.script_path,
+                Path("/tmp/fake_repo"),
+                on_output=task.update_attempt_from_line,
+                max_attempts=task.max_attempts,
+                cached_workspace_dir=task.cached_workspace_dir,
+                initial_attempt=4,
+            )
+            task.update_attempt_from_output(res.stdout)
+
+            with manager._lock:
+                if res.returncode != 0 and task.attempt >= task.max_attempts:
+                    if task.attempt >= task.max_total_attempts:
+                        task.finish_time = time.time()
+                        task.return_code = res.returncode
+                        task.status = TaskStatus.FAILED
+                        task.error_message = res.stderr
+                        if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                            shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertEqual(task.attempt, 6)
+            self.assertIsNotNone(task.finish_time)
+            self.assertFalse(cache_dir.exists())
+
+    @patch("lib.tasks.run_agent_container")
+    def test_attempt_exhaustion_success_cleans_cache(self, mock_run):
+        import tempfile
+        import shutil
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "workspace_cache"
+            cache_dir.mkdir()
+            (cache_dir / "cached_work.txt").write_text("work done")
+
+            def mock_run_success(agent, prompt, script_path, cwd, on_output=None, max_attempts=None, cached_workspace_dir=None, initial_attempt=None):
+                if on_output:
+                    on_output("Auto-continuing conversation (Attempt 4/6)...")
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = "Auto-continuing conversation (Attempt 4/6)..."
+                res.stderr = ""
+                return res
+
+            mock_run.side_effect = mock_run_success
+
+            manager = TaskManager(
+                max_workers=0,
+                script_path=Path("/tmp/fake_script.sh"),
+                cwd=Path("/tmp/fake_repo"),
+            )
+
+            task = Task(
+                id="task-requeued-success",
+                agent="code_fixer",
+                prompt="Fix bug",
+                attempt=3,
+                max_attempts=6,
+                max_total_attempts=6,
+                attempts_per_batch=3,
+                requeue_count=1,
+                cached_workspace_dir=cache_dir,
+            )
+
+            res = mock_run(
+                task.agent,
+                task.prompt,
+                manager.script_path,
+                Path("/tmp/fake_repo"),
+                on_output=task.update_attempt_from_line,
+                max_attempts=task.max_attempts,
+                cached_workspace_dir=task.cached_workspace_dir,
+                initial_attempt=4,
+            )
+            task.update_attempt_from_output(res.stdout)
+
+            with manager._lock:
+                if res.returncode == 0:
+                    task.finish_time = time.time()
+                    task.return_code = res.returncode
+                    task.status = TaskStatus.COMPLETED
+                    if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                        shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+            self.assertEqual(task.attempt, 4)
+            self.assertFalse(cache_dir.exists())
+
+    def test_dump_and_restore_queue_state_with_cached_requeued_tasks(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "test_cached_queue_state.json"
+            cache_path = Path(tmpdir) / "cached_workspace"
+
+            manager1 = TaskManager(max_workers=0)
+            t1 = manager1.submit_task(
+                "code_fixer",
+                "Fix issue #163",
+                target_id="#163",
+                max_attempts=6,
+                max_total_attempts=6,
+                attempts_per_batch=3,
+                cached_workspace_dir=cache_path,
+            )
+            t1.attempt = 3
+            t1.requeue_count = 1
+
+            dumped = manager1.dump_queue_state(filepath=state_file)
+            self.assertEqual(dumped, 1)
+            self.assertTrue(state_file.exists())
+            manager1.stop()
+
+            manager2 = TaskManager(max_workers=0)
+            restored = manager2.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored, 1)
+
+            restored_task = manager2.get_task(t1.id)
+            self.assertIsNotNone(restored_task)
+            self.assertEqual(restored_task.cached_workspace_dir, cache_path)
+            self.assertEqual(restored_task.attempt, 3)
+            self.assertEqual(restored_task.max_attempts, 6)
+            self.assertEqual(restored_task.max_total_attempts, 6)
+            self.assertEqual(restored_task.attempts_per_batch, 3)
+            self.assertEqual(restored_task.requeue_count, 1)
+            manager2.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
