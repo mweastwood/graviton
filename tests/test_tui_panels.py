@@ -697,6 +697,38 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(cols_mid["url"], exp_url)
         self.assertEqual(sum(cols_mid.values()) + 4, 30)
 
+        # Test leading flex columns deficit reduction
+        spec_leading_flex = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.1, is_flex=True),
+                ColumnSpec("c2", ratio=0.1, is_flex=True),
+                ColumnSpec("c3", ratio=0.8, fixed_w=20, is_flex=False),
+            ],
+            spacing=4,
+            wide_threshold=10,
+            narrow_threshold=5,
+        )
+        cols_leading_flex = allocate_declarative_columns(spec_leading_flex, 15)
+        self.assertLessEqual(sum(cols_leading_flex.values()) + spec_leading_flex.spacing, 15)
+        self.assertEqual(cols_leading_flex["c3"], 11)
+        self.assertEqual(cols_leading_flex["c1"], 0)
+        self.assertEqual(cols_leading_flex["c2"], 0)
+
+        # Test no-flex column specs in intermediate width mode
+        spec_no_flex = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+                ColumnSpec("col2", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+            ],
+            spacing=2,
+            wide_threshold=40,
+            narrow_threshold=5,
+        )
+        cols_no_flex = allocate_declarative_columns(spec_no_flex, 30)
+        self.assertEqual(cols_no_flex["col1"], 10)
+        self.assertEqual(cols_no_flex["col2"], 10)
+        self.assertLessEqual(sum(cols_no_flex.values()) + spec_no_flex.spacing, 30)
+
         for inner_w in range(0, 101):
             cols_has_repo = allocate_approved_pr_columns(inner_w, has_repo=True)
             self.assertIsInstance(cols_has_repo, dict)
