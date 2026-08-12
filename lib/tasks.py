@@ -562,6 +562,7 @@ class TaskManager:
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
+                self._queue.task_done()
             except queue.Empty:
                 break
 

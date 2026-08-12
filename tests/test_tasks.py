@@ -1581,6 +1581,41 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(queued[1].priority, 1)
             manager2.stop()
 
+    def test_rebuild_queue_unfinished_tasks_balance(self):
+        manager = TaskManager(max_workers=0)
+        t1 = manager.submit_task("agent1", "Prompt 1", target_id="#1")
+        t2 = manager.submit_task("agent2", "Prompt 2", target_id="#2")
+
+        # Prioritize tasks to trigger multiple _rebuild_queue_locked calls
+        manager.prioritize_task(t1.id)
+        manager.prioritize_task(t2.id)
+        manager.prioritize_task(t1.id)
+
+        # There are 2 queued tasks, so unfinished_tasks counter should equal 2
+        self.assertEqual(manager._queue.unfinished_tasks, 2)
+
+        # Simulate worker popping and marking tasks done
+        task_a = manager._queue.get_nowait()
+        manager._queue.task_done()
+        task_b = manager._queue.get_nowait()
+        manager._queue.task_done()
+
+        # Counter should be 0 and join() must return cleanly without hanging
+        self.assertEqual(manager._queue.unfinished_tasks, 0)
+
+        join_completed = False
+
+        def wait_join():
+            nonlocal join_completed
+            manager._queue.join()
+            join_completed = True
+
+        join_thread = threading.Thread(target=wait_join)
+        join_thread.start()
+        join_thread.join(timeout=1.0)
+        self.assertTrue(join_completed)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
