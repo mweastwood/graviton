@@ -429,6 +429,7 @@ def render_quota_panel(
     width: int,
     quota_tracker: Optional[QuotaTracker] = None,
     task_manager: Optional[TaskManager] = None,
+    now_dt: Optional[datetime] = None,
 ) -> List[str]:
     """Render model quota panel for 5-hour and 1-week windows."""
     quota_tr = quota_tracker or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
@@ -446,8 +447,8 @@ def render_quota_panel(
         w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
 
-    badge_5h_text = format_quota_badge(w_5h, quota_pool=pool)
-    badge_1w_text = format_quota_badge(w_1w, quota_pool=pool)
+    badge_5h_text = format_quota_badge(w_5h, now_dt=now_dt, quota_pool=pool)
+    badge_1w_text = format_quota_badge(w_1w, now_dt=now_dt, quota_pool=pool)
 
     status_5h, _ = w_5h.get_pacing_status()
     status_1w, _ = w_1w.get_pacing_status()

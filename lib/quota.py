@@ -143,6 +143,37 @@ class QuotaWindow:
         status, _ = self.get_pacing_status(now_dt)
         return status
 
+    def get_pacing_recovery_seconds(self, now_dt: Optional[datetime] = None) -> float:
+        pacing_status, _ = self.get_pacing_status(now_dt)
+        if pacing_status != "BEHIND_PACING":
+            return 0.0
+        rem_sec = self.get_remaining_seconds(now_dt)
+        q_frac = self.quota_fraction
+        recovery = rem_sec - (q_frac * self.duration_seconds)
+        return max(0.0, float(recovery))
+
+    def pacing_recovery_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
+        now_dt = _normalize_now_datetime(now)
+        return self.get_pacing_recovery_seconds(now_dt)
+
+    def format_pacing_countdown(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> str:
+        effective_now = now_dt if now_dt is not None else now
+        norm_dt = _normalize_now_datetime(effective_now)
+        rec_sec = self.get_pacing_recovery_seconds(norm_dt)
+        if rec_sec <= 0:
+            return "00:00:00"
+        if rec_sec >= 86400 or (self.name and self.name.lower() == "1w"):
+            days = int(rec_sec // 86400)
+            hours = int((rec_sec % 86400) // 3600)
+            return f"{days}d {hours:02d}h"
+        else:
+            hours = int(rec_sec // 3600)
+            mins = int((rec_sec % 3600) // 60)
+            secs = int(rec_sec % 60)
+            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
     def format_reset_countdown(self, now: Optional[Union[float, datetime]] = None) -> str:
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
         now_dt = _normalize_now_datetime(now)
@@ -158,6 +189,8 @@ class QuotaWindow:
             "reset_timestamp": self.reset_timestamp,
             "pacing_status": pacing_status,
             "backoff_delay": backoff,
+            "pacing_recovery_seconds": round(self.get_pacing_recovery_seconds(), 1),
+            "pacing_recovery_countdown": self.format_pacing_countdown(),
         }
 
 
@@ -201,7 +234,8 @@ def format_quota_badge(
     pacing_status, backoff = window.get_pacing_status(now_dt)
 
     if pacing_status == "BEHIND_PACING":
-        pacing_str = "PACING: BEHIND (NEW TASKS SUSPENDED)"
+        recovery_cd = window.format_pacing_countdown(now_dt)
+        pacing_str = f"PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN {recovery_cd})"
     else:
         pacing_str = "PACING: OK"
 
@@ -731,6 +765,38 @@ class QuotaTracker:
             _, d5 = self.window_5h.get_pacing_status(now_dt)
             _, d1 = self.window_1w.get_pacing_status(now_dt)
             return max(d5, d1)
+
+    def get_pacing_recovery_seconds(
+        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        """Calculate pacing recovery time in seconds for a specific window or max across all dual windows."""
+        with self._lock:
+            now_dt = _normalize_now_datetime(now)
+            if window is not None:
+                return window.get_pacing_recovery_seconds(now_dt)
+            rec_5h = self.window_5h.get_pacing_recovery_seconds(now_dt)
+            rec_1w = self.window_1w.get_pacing_recovery_seconds(now_dt)
+            return max(rec_5h, rec_1w)
+
+    def pacing_recovery_seconds(
+        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        return self.get_pacing_recovery_seconds(window=window, now=now)
+
+    def format_pacing_countdown(
+        self, window: Optional[QuotaWindow] = None, now: Optional[Union[float, datetime]] = None
+    ) -> str:
+        """Format pacing recovery countdown string for a specific window or max across all dual windows."""
+        with self._lock:
+            now_dt = _normalize_now_datetime(now)
+            if window is not None:
+                return window.format_pacing_countdown(now_dt)
+            rec_5h = self.window_5h.get_pacing_recovery_seconds(now_dt)
+            rec_1w = self.window_1w.get_pacing_recovery_seconds(now_dt)
+            if rec_1w > rec_5h:
+                return self.window_1w.format_pacing_countdown(now_dt)
+            else:
+                return self.window_5h.format_pacing_countdown(now_dt)
 
     def update_quota(
         self,
