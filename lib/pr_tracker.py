@@ -18,6 +18,18 @@ from lib.security import contains_bot_marker
 
 logger = logging.getLogger("graviton.pr_tracker")
 
+_QUESTION_PATTERN = re.compile(r'\b(how|when|why|what|if|whether)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b')
+_INVERTED_QUESTION_PATTERN = re.compile(r'(?:^|[\.\!\?\n;])\s*\b(is|was)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b')
+_NOUN_PHRASE_PATTERN = re.compile(r'\bapproved\s+(pull\s+requests?|prs?|panel|box|list|section|screen|widget|table|feature)\b')
+_PREPOSITION_PATTERN = re.compile(r'\b(in|of|from|on|about|view|show|display|fix|fixed|update|updated)\s+approved\b')
+_MULTI_WORD_NEG_PATTERN = re.compile(r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b')
+_PREFIX_NEG_PATTERN = re.compile(r'\b(un|non|dis)[-\s]?(approved|lgtm)\b')
+_CR_PATTERN = re.compile(r'\bchanges[_\s]requested\b')
+_NEG_CR_PATTERN = re.compile(r'\b(no|not|without|zero|never|don\'t|didn\'t|haven\'t)\b(?:\s+\w+){0,3}\s+changes[_\s]requested\b')
+_BOT_LOGIN_PATTERN = re.compile(r'(?:^|[-_])bot(?:[-_]|$)')
+_ORIGIN_URL_PATTERN = re.compile(r'[:/]([^/]+/[^/]+)$')
+
+
 
 def _parse_event_timestamp(ts: Any) -> float:
     """Parse an ISO timestamp string or numeric timestamp to float epoch seconds for chronological sorting."""
@@ -57,20 +69,14 @@ def has_approval_marker(text: str) -> bool:
     if "?" in text_lower:
         return False
 
-    question_pattern = r'\b(how|when|why|what|if|whether)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
-    inverted_question_pattern = r'(?:^|[\.\!\?\n;])\s*\b(is|was)\b(?:\s+\w+){0,4}\s+(approved|lgtm)\b'
-    if re.search(question_pattern, text_lower) or re.search(inverted_question_pattern, text_lower):
+    if _QUESTION_PATTERN.search(text_lower) or _INVERTED_QUESTION_PATTERN.search(text_lower):
         return False
 
     # Reject discussion / noun phrases (e.g. "approved pull requests panel", "in approved prs")
-    noun_phrase_pattern = r'\bapproved\s+(pull\s+requests?|prs?|panel|box|list|section|screen|widget|table|feature)\b'
-    preposition_pattern = r'\b(in|of|from|on|about|view|show|display|fix|fixed|update|updated)\s+approved\b'
-    if re.search(noun_phrase_pattern, text_lower) or re.search(preposition_pattern, text_lower):
+    if _NOUN_PHRASE_PATTERN.search(text_lower) or _PREPOSITION_PATTERN.search(text_lower):
         return False
 
-    multi_word_neg = r'\b(not|no|cannot|can\'t|won\'t|don\'t|doesn\'t|never|needs?|requires?|awaiting|pending)\b(?:\s+\w+){0,3}\s+(approved|lgtm)\b'
-    prefix_neg = r'\b(un|non|dis)[-\s]?(approved|lgtm)\b'
-    if re.search(multi_word_neg, text_lower) or re.search(prefix_neg, text_lower):
+    if _MULTI_WORD_NEG_PATTERN.search(text_lower) or _PREFIX_NEG_PATTERN.search(text_lower):
         return False
 
     negative_phrases = (
@@ -124,13 +130,11 @@ def has_change_request_marker(text: str) -> bool:
     if "/fix" in text_lower:
         return True
 
-    cr_pattern = r'\bchanges[_\s]requested\b'
-    matches = list(re.finditer(cr_pattern, text_lower))
+    matches = list(_CR_PATTERN.finditer(text_lower))
     if not matches:
         return False
 
-    neg_cr_pattern = r'\b(no|not|without|zero|never|don\'t|didn\'t|haven\'t)\b(?:\s+\w+){0,3}\s+changes[_\s]requested\b'
-    neg_matches = list(re.finditer(neg_cr_pattern, text_lower))
+    neg_matches = list(_NEG_CR_PATTERN.finditer(text_lower))
 
     if len(neg_matches) >= len(matches):
         return False
@@ -152,7 +156,7 @@ def is_bot_event(body: str, author_raw: Any = None) -> bool:
         return False
     if login.endswith("[bot]"):
         return True
-    if re.search(r'(?:^|[-_])bot(?:[-_]|$)', login):
+    if _BOT_LOGIN_PATTERN.search(login):
         return True
     explicit_bots = (
         "antigravity",
@@ -362,7 +366,7 @@ class PRTracker:
         if git_res.returncode == 0 and git_res.stdout:
             origin_url = git_res.stdout.strip()
             clean_url = origin_url.strip().rstrip("/").removesuffix(".git").rstrip("/")
-            match = re.search(r'[:/]([^/]+/[^/]+)$', clean_url)
+            match = _ORIGIN_URL_PATTERN.search(clean_url)
             if match:
                 repo_full_name = match.group(1)
 
