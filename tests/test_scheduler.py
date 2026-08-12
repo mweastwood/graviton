@@ -16,6 +16,8 @@ from lib.scheduler import (
     fetch_open_issues,
     is_duplicate_issue,
     parse_iso_timestamp,
+    pretokenize_issues,
+    tokenize_title,
 )
 
 
@@ -875,6 +877,43 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertEqual(_normalize_title(None), "")
         self.assertEqual(_normalize_title(123), "")
 
+    def test_tokenize_title(self):
+        self.assertEqual(tokenize_title("[Bug Sweep] Memory leak in runner thread"), {"memory", "leak", "in", "runner", "thread"})
+        self.assertEqual(tokenize_title("  [Tag1]   [Tag2]  Fix race condition  "), {"fix", "race", "condition"})
+        self.assertEqual(tokenize_title(""), set())
+        self.assertEqual(tokenize_title(None), set())
+        self.assertEqual(tokenize_title(123), set())
+
+    def test_pretokenize_issues(self):
+        raw_issues = [
+            {"number": 1, "title": "[Bug Sweep] Memory leak in runner thread"},
+            {"number": 2, "title": "Unhandled exception"},
+            None,
+            "invalid element",
+            {"number": 3, "title": None},
+        ]
+        pretokenized = pretokenize_issues(raw_issues)
+        self.assertIn("_norm_title", pretokenized[0])
+        self.assertIn("_clean_title", pretokenized[0])
+        self.assertIn("_tokens", pretokenized[0])
+        self.assertEqual(pretokenized[0]["_clean_title"], "memory leak in runner thread")
+        self.assertEqual(pretokenized[0]["_tokens"], {"memory", "leak", "in", "runner", "thread"})
+        self.assertEqual(pretokenized[1]["_tokens"], {"unhandled", "exception"})
+
+        # Test pretokenization optimization converting list/tuple tokens to set
+        list_tokens_issue = [{"title": "test issue", "tokens": ["test", "issue"]}]
+        pretokenized_list = pretokenize_issues(list_tokens_issue)
+        self.assertIsInstance(pretokenized_list[0]["_tokens"], set)
+        self.assertEqual(pretokenized_list[0]["_tokens"], {"test", "issue"})
+
+        # Test fallback for non-iterable tokens and non-string normalized titles
+        non_iterable_tokens_issue = [{"title": "test issue", "tokens": 12345, "_norm_title": None, "_clean_title": 123}]
+        pretokenized_non_iter = pretokenize_issues(non_iterable_tokens_issue)
+        self.assertIsInstance(pretokenized_non_iter[0]["_tokens"], set)
+        self.assertEqual(pretokenized_non_iter[0]["_tokens"], {"test", "issue"})
+        self.assertEqual(pretokenized_non_iter[0]["_norm_title"], "test issue")
+        self.assertEqual(pretokenized_non_iter[0]["_clean_title"], "test issue")
+
     def test_is_duplicate_issue(self):
         existing = [
             {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
@@ -888,6 +927,59 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing))
         self.assertTrue(is_duplicate_issue("[Bug Sweep] Memory leak in runner thread", existing))
         self.assertTrue(is_duplicate_issue("Memory leak in runner thread", existing))
+
+        # Test with pre-tokenized existing issues list
+        pretokenized_existing = pretokenize_issues(list(existing))
+        self.assertTrue(is_duplicate_issue("Memory leak in runner thread", pretokenized_existing))
+        self.assertTrue(is_duplicate_issue("[Quality Sweep] Decouple panel rendering into dedicated components", pretokenized_existing))
+        self.assertFalse(is_duplicate_issue("Completely new bug report", pretokenized_existing))
+
+        # Test with custom 'tokens' key pre-populated in issue dict (set, list, tuple)
+        custom_tokens_set = [
+            {"title": "Custom pretokenized issue", "tokens": {"custom", "pretokenized", "issue"}}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_set))
+
+        custom_tokens_list = [
+            {"title": "Custom pretokenized issue", "tokens": ["custom", "pretokenized", "issue"]}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_list))
+
+        custom_tokens_tuple = [
+            {"title": "Custom pretokenized issue", "_tokens": ("custom", "pretokenized", "issue")}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_tuple))
+
+        # Test non-set tokens with non-matching title to force token similarity check without TypeError
+        non_set_tokens_non_match = [
+            {"title": "Custom pretokenized issue", "tokens": ["custom", "pretokenized", "issue"]}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue detailed", non_set_tokens_non_match))
+        self.assertFalse(is_duplicate_issue("Unrelated issue title", non_set_tokens_non_match))
+
+        # Test non-iterable tokens/tokens container evaluated against non-matching proposed title
+        invalid_token_containers = [
+            {"title": "test issue title", "tokens": 12345},
+            {"title": "another test issue", "_tokens": 67890},
+            {"title": "float token issue", "tokens": 12.34},
+            {"title": "bool token issue", "_tokens": True},
+            {"title": "none norm issue", "_norm_title": None, "_clean_title": 123},
+        ]
+        self.assertFalse(is_duplicate_issue("completely unrelated title", invalid_token_containers))
+        self.assertTrue(is_duplicate_issue("test issue title", invalid_token_containers))
+
+        # Test _norm_title fallback consistency
+        custom_norm_issue = [
+            {"title": "Raw Title", "_norm_title": "raw title"}
+        ]
+        self.assertTrue(is_duplicate_issue("raw title", custom_norm_issue))
+
+        # Short-circuit test: Exact match on first item should return True immediately
+        short_circuit_issues = [
+            {"title": "exact match title"},
+            {"title": "broken token container issue", "tokens": 12345}  # invalid token type
+        ]
+        self.assertTrue(is_duplicate_issue("exact match title", short_circuit_issues))
 
         # Multiple bracket prefix tag stripping matching
         self.assertTrue(is_duplicate_issue("Decouple panel rendering into dedicated components", existing))
