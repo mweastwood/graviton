@@ -218,6 +218,7 @@ class TableLayoutSpec:
     spacing: int
     wide_threshold: int
     narrow_threshold: int
+    use_split_flex: bool = False
 
 
 APPROVED_PR_HAS_REPO_SPEC = TableLayoutSpec(
@@ -231,6 +232,7 @@ APPROVED_PR_HAS_REPO_SPEC = TableLayoutSpec(
     spacing=4,
     wide_threshold=44,
     narrow_threshold=20,
+    use_split_flex=True,
 )
 
 APPROVED_PR_NO_REPO_SPEC = TableLayoutSpec(
@@ -243,6 +245,7 @@ APPROVED_PR_NO_REPO_SPEC = TableLayoutSpec(
     spacing=3,
     wide_threshold=28,
     narrow_threshold=14,
+    use_split_flex=True,
 )
 
 SCHEDULED_JOB_COLUMN_SPECS = [
@@ -265,7 +268,7 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
             return
         if len(flex_cols) == 1:
             res[flex_cols[0].name] = max(0, remaining_w)
-        elif spec in (APPROVED_PR_HAS_REPO_SPEC, APPROVED_PR_NO_REPO_SPEC):
+        elif spec.use_split_flex and len(flex_cols) == 2:
             w1, w2 = split_flex_columns(remaining_w)
             res[flex_cols[0].name] = w1
             res[flex_cols[1].name] = w2
@@ -281,7 +284,7 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
                         w = max(0, int(remaining_w * r))
                         res[col.name] = w
                         used_flex += w
-            elif len(flex_cols) == 2:
+            elif spec.use_split_flex and len(flex_cols) == 2:
                 w1, w2 = split_flex_columns(remaining_w)
                 res[flex_cols[0].name] = w1
                 res[flex_cols[1].name] = w2

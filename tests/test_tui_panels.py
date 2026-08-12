@@ -792,6 +792,15 @@ class TestTUIPanels(unittest.TestCase):
             if inner_w >= 3:
                 self.assertLessEqual(sum(cols_no_repo.values()) + 3, inner_w)
 
+            id_w, name_w, agent_w = allocate_scheduled_job_columns(inner_w)
+            self.assertGreaterEqual(id_w, 0)
+            self.assertGreaterEqual(name_w, 0)
+            self.assertGreaterEqual(agent_w, 0)
+            if inner_w >= 45:
+                self.assertLessEqual(id_w + name_w + agent_w + 45, inner_w)
+            else:
+                self.assertEqual((id_w, name_w, agent_w), (0, 0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()
