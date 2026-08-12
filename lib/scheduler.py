@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from lib.quota import QuotaState
 
@@ -243,7 +243,7 @@ def _normalize_title(title: str) -> str:
     return cleaned.strip()
 
 
-def tokenize_title(title: str) -> set:
+def tokenize_title(title: str) -> Set[str]:
     """Extract token set from issue title after normalizing bracketed tags."""
     if not title or not isinstance(title, str):
         return set()
@@ -267,11 +267,23 @@ def pretokenize_issues(existing_issues: List[Dict[str, Any]]) -> List[Dict[str, 
         ex_raw = issue.get("title", "")
         if not isinstance(ex_raw, str) or not ex_raw:
             continue
-        if "_norm_title" not in issue:
+        if "_norm_title" not in issue or not isinstance(issue["_norm_title"], str):
             issue["_norm_title"] = ex_raw.strip().lower()
-        if "_clean_title" not in issue:
+        if "_clean_title" not in issue or not isinstance(issue["_clean_title"], str):
             issue["_clean_title"] = _normalize_title(ex_raw)
-        if "_tokens" not in issue and "tokens" not in issue:
+
+        tokens_val = issue.get("_tokens")
+        if tokens_val is None:
+            tokens_val = issue.get("tokens")
+
+        if isinstance(tokens_val, set):
+            issue["_tokens"] = tokens_val
+        elif isinstance(tokens_val, (list, tuple)):
+            try:
+                issue["_tokens"] = set(tokens_val)
+            except (TypeError, ValueError):
+                issue["_tokens"] = tokenize_title(ex_raw)
+        else:
             issue["_tokens"] = tokenize_title(ex_raw)
 
     return existing_issues
@@ -305,8 +317,13 @@ def is_duplicate_issue(
         if not isinstance(ex_raw, str) or not ex_raw:
             continue
 
-        ex_norm = issue.get("_norm_title") if "_norm_title" in issue else ex_raw.strip().lower()
-        ex_clean = issue.get("_clean_title") if "_clean_title" in issue else _normalize_title(ex_raw)
+        ex_norm = issue.get("_norm_title")
+        if not isinstance(ex_norm, str):
+            ex_norm = ex_raw.strip().lower()
+
+        ex_clean = issue.get("_clean_title")
+        if not isinstance(ex_clean, str):
+            ex_clean = _normalize_title(ex_raw)
 
         # Exact match (raw or normalized without bracket tags)
         if p_norm == ex_norm or (p_clean and p_clean == ex_clean):
@@ -317,10 +334,16 @@ def is_duplicate_issue(
             ex_tokens = issue.get("_tokens")
             if ex_tokens is None:
                 ex_tokens = issue.get("tokens")
-            if ex_tokens is None:
+
+            if isinstance(ex_tokens, set):
+                pass
+            elif isinstance(ex_tokens, (list, tuple)):
+                try:
+                    ex_tokens = set(ex_tokens)
+                except (TypeError, ValueError):
+                    ex_tokens = tokenize_title(ex_raw)
+            else:
                 ex_tokens = tokenize_title(ex_raw)
-            elif not isinstance(ex_tokens, set):
-                ex_tokens = set(ex_tokens)
 
             if ex_tokens:
                 intersection = p_tokens & ex_tokens
@@ -330,7 +353,6 @@ def is_duplicate_issue(
                     return True
 
     return False
-
 
 
 class TaskScheduler:

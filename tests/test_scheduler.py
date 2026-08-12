@@ -900,6 +900,20 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertEqual(pretokenized[0]["_tokens"], {"memory", "leak", "in", "runner", "thread"})
         self.assertEqual(pretokenized[1]["_tokens"], {"unhandled", "exception"})
 
+        # Test pretokenization optimization converting list/tuple tokens to set
+        list_tokens_issue = [{"title": "test issue", "tokens": ["test", "issue"]}]
+        pretokenized_list = pretokenize_issues(list_tokens_issue)
+        self.assertIsInstance(pretokenized_list[0]["_tokens"], set)
+        self.assertEqual(pretokenized_list[0]["_tokens"], {"test", "issue"})
+
+        # Test fallback for non-iterable tokens and non-string normalized titles
+        non_iterable_tokens_issue = [{"title": "test issue", "tokens": 12345, "_norm_title": None, "_clean_title": 123}]
+        pretokenized_non_iter = pretokenize_issues(non_iterable_tokens_issue)
+        self.assertIsInstance(pretokenized_non_iter[0]["_tokens"], set)
+        self.assertEqual(pretokenized_non_iter[0]["_tokens"], {"test", "issue"})
+        self.assertEqual(pretokenized_non_iter[0]["_norm_title"], "test issue")
+        self.assertEqual(pretokenized_non_iter[0]["_clean_title"], "test issue")
+
     def test_is_duplicate_issue(self):
         existing = [
             {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
@@ -942,6 +956,17 @@ class TestIssueUtilities(unittest.TestCase):
         ]
         self.assertTrue(is_duplicate_issue("Custom pretokenized issue detailed", non_set_tokens_non_match))
         self.assertFalse(is_duplicate_issue("Unrelated issue title", non_set_tokens_non_match))
+
+        # Test non-iterable tokens/tokens container evaluated against non-matching proposed title
+        invalid_token_containers = [
+            {"title": "test issue title", "tokens": 12345},
+            {"title": "another test issue", "_tokens": 67890},
+            {"title": "float token issue", "tokens": 12.34},
+            {"title": "bool token issue", "_tokens": True},
+            {"title": "none norm issue", "_norm_title": None, "_clean_title": 123},
+        ]
+        self.assertFalse(is_duplicate_issue("completely unrelated title", invalid_token_containers))
+        self.assertTrue(is_duplicate_issue("test issue title", invalid_token_containers))
 
         # Test _norm_title fallback consistency
         custom_norm_issue = [
