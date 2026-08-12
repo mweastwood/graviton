@@ -243,26 +243,23 @@ def _normalize_title(title: str) -> str:
     return cleaned.strip()
 
 
-def is_duplicate_issue(
-    proposed_title: str, existing_issues: List[Dict[str, Any]], similarity_threshold: float = 0.7
-) -> bool:
+def tokenize_title(title: str) -> set:
+    """Extract token set from issue title after normalizing bracketed tags."""
+    if not title or not isinstance(title, str):
+        return set()
+    clean = _normalize_title(title)
+    if not clean:
+        return set()
+    return set(re.findall(r"\w+", clean))
+
+
+def pretokenize_issues(existing_issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Check if proposed title overlaps significantly with an existing issue title
-    using normalized exact matching and token set similarity to prevent false positives
-    from short issue titles.
+    Pre-tokenize a list of existing issues in place by attaching pre-computed token sets
+    and normalized title strings to reduce redundant computations during duplicate detection.
     """
-    if not proposed_title or not isinstance(proposed_title, str):
-        return False
-
-    p_norm = proposed_title.strip().lower()
-    p_clean = _normalize_title(proposed_title)
-    p_tokens = set(re.findall(r"\w+", p_clean))
-
-    if not p_norm:
-        return False
-
     if not existing_issues or not isinstance(existing_issues, list):
-        return False
+        return existing_issues if isinstance(existing_issues, list) else []
 
     for issue in existing_issues:
         if not isinstance(issue, dict):
@@ -270,24 +267,73 @@ def is_duplicate_issue(
         ex_raw = issue.get("title", "")
         if not isinstance(ex_raw, str) or not ex_raw:
             continue
-        ex_norm = ex_raw.strip().lower()
-        ex_clean = _normalize_title(ex_raw)
+        if "_norm_title" not in issue:
+            issue["_norm_title"] = ex_raw.strip().lower()
+        if "_clean_title" not in issue:
+            issue["_clean_title"] = _normalize_title(ex_raw)
+        if "_tokens" not in issue and "tokens" not in issue:
+            issue["_tokens"] = tokenize_title(ex_raw)
 
+    return existing_issues
+
+
+def is_duplicate_issue(
+    proposed_title: str, existing_issues: List[Dict[str, Any]], similarity_threshold: float = 0.7
+) -> bool:
+    """
+    Check if proposed title overlaps significantly with an existing issue title
+    using normalized exact matching and token set similarity to prevent false positives
+    from short issue titles. Pre-tokenizes issue titles prior to the matching loop to
+    reduce redundant regex scanning and set creation operations.
+    """
+    if not proposed_title or not isinstance(proposed_title, str):
+        return False
+
+    p_norm = proposed_title.strip().lower()
+    if not p_norm:
+        return False
+
+    if not existing_issues or not isinstance(existing_issues, list):
+        return False
+
+    p_clean = _normalize_title(proposed_title)
+    p_tokens = tokenize_title(proposed_title)
+
+    # Pre-tokenize / extract existing issue properties prior to matching loop
+    prepared = []
+    for issue in existing_issues:
+        if not isinstance(issue, dict):
+            continue
+        ex_raw = issue.get("title", "")
+        if not isinstance(ex_raw, str) or not ex_raw:
+            continue
+
+        ex_norm = issue.get("_norm_title") or ex_raw.strip().lower()
+        ex_clean = issue.get("_clean_title") if "_clean_title" in issue else _normalize_title(ex_raw)
+
+        ex_tokens = issue.get("_tokens")
+        if ex_tokens is None:
+            ex_tokens = issue.get("tokens")
+        if ex_tokens is None:
+            ex_tokens = tokenize_title(ex_raw)
+
+        prepared.append((ex_norm, ex_clean, ex_tokens))
+
+    for ex_norm, ex_clean, ex_tokens in prepared:
         # Exact match (raw or normalized without bracket tags)
         if p_norm == ex_norm or (p_clean and p_clean == ex_clean):
             return True
 
         # Token set similarity (Jaccard similarity)
-        if p_tokens:
-            ex_tokens = set(re.findall(r"\w+", ex_clean))
-            if ex_tokens:
-                intersection = p_tokens & ex_tokens
-                union = p_tokens | ex_tokens
-                jaccard = len(intersection) / len(union)
-                if jaccard >= similarity_threshold:
-                    return True
+        if p_tokens and ex_tokens:
+            intersection = p_tokens & ex_tokens
+            union = p_tokens | ex_tokens
+            jaccard = len(intersection) / len(union)
+            if jaccard >= similarity_threshold:
+                return True
 
     return False
+
 
 
 class TaskScheduler:

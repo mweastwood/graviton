@@ -16,6 +16,8 @@ from lib.scheduler import (
     fetch_open_issues,
     is_duplicate_issue,
     parse_iso_timestamp,
+    pretokenize_issues,
+    tokenize_title,
 )
 
 
@@ -875,6 +877,29 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertEqual(_normalize_title(None), "")
         self.assertEqual(_normalize_title(123), "")
 
+    def test_tokenize_title(self):
+        self.assertEqual(tokenize_title("[Bug Sweep] Memory leak in runner thread"), {"memory", "leak", "in", "runner", "thread"})
+        self.assertEqual(tokenize_title("  [Tag1]   [Tag2]  Fix race condition  "), {"fix", "race", "condition"})
+        self.assertEqual(tokenize_title(""), set())
+        self.assertEqual(tokenize_title(None), set())
+        self.assertEqual(tokenize_title(123), set())
+
+    def test_pretokenize_issues(self):
+        raw_issues = [
+            {"number": 1, "title": "[Bug Sweep] Memory leak in runner thread"},
+            {"number": 2, "title": "Unhandled exception"},
+            None,
+            "invalid element",
+            {"number": 3, "title": None},
+        ]
+        pretokenized = pretokenize_issues(raw_issues)
+        self.assertIn("_norm_title", pretokenized[0])
+        self.assertIn("_clean_title", pretokenized[0])
+        self.assertIn("_tokens", pretokenized[0])
+        self.assertEqual(pretokenized[0]["_clean_title"], "memory leak in runner thread")
+        self.assertEqual(pretokenized[0]["_tokens"], {"memory", "leak", "in", "runner", "thread"})
+        self.assertEqual(pretokenized[1]["_tokens"], {"unhandled", "exception"})
+
     def test_is_duplicate_issue(self):
         existing = [
             {"number": 1, "title": "Unhandled null pointer exception in router.py", "body": "..."},
@@ -888,6 +913,19 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing))
         self.assertTrue(is_duplicate_issue("[Bug Sweep] Memory leak in runner thread", existing))
         self.assertTrue(is_duplicate_issue("Memory leak in runner thread", existing))
+
+        # Test with pre-tokenized existing issues list
+        pretokenized_existing = pretokenize_issues(list(existing))
+        self.assertTrue(is_duplicate_issue("Memory leak in runner thread", pretokenized_existing))
+        self.assertTrue(is_duplicate_issue("[Quality Sweep] Decouple panel rendering into dedicated components", pretokenized_existing))
+        self.assertFalse(is_duplicate_issue("Completely new bug report", pretokenized_existing))
+
+        # Test with custom 'tokens' key pre-populated in issue dict
+        custom_tokens_issue = [
+            {"title": "Custom pretokenized issue", "tokens": {"custom", "pretokenized", "issue"}}
+        ]
+        self.assertTrue(is_duplicate_issue("Custom pretokenized issue", custom_tokens_issue))
+        self.assertTrue(is_duplicate_issue("custom pretokenized issue", custom_tokens_issue))
 
         # Multiple bracket prefix tag stripping matching
         self.assertTrue(is_duplicate_issue("Decouple panel rendering into dedicated components", existing))
