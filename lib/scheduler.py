@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from lib.quota import QuotaState
 
@@ -220,18 +220,51 @@ class ScheduledJob:
         )
 
 
-def fetch_open_issues(cwd: Optional[Path] = None) -> List[Dict[str, Any]]:
+_issues_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_issues_cache_lock = threading.Lock()
+
+
+def fetch_open_issues(
+    cwd: Optional[Path] = None, ttl: float = 60.0, force: bool = False, timeout: float = 30.0
+) -> List[Dict[str, Any]]:
     """
     Execute `gh issue list --state open --json number,title,body,labels` to retrieve open issues.
+    Caches results for `ttl` seconds to avoid redundant gh CLI subprocess execution.
     """
+    cwd_key = str(Path(cwd).resolve()) if cwd else ""
+    now = time.time()
+
+    if not force:
+        with _issues_cache_lock:
+            if cwd_key in _issues_cache:
+                cached_time, cached_data = _issues_cache[cwd_key]
+                if (now - cached_time) < ttl:
+                    return cached_data
+
     cmd = ["gh", "issue", "list", "--state", "open", "--json", "number,title,body,labels"]
     try:
-        res = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, timeout=30)
-        if res.returncode == 0 and res.stdout.strip():
-            return json.loads(res.stdout)
+        res = subprocess.run(
+            cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, timeout=timeout
+        )
+        if res.returncode == 0:
+            stdout_str = res.stdout.strip()
+            data = json.loads(stdout_str) if stdout_str else []
+            if isinstance(data, list):
+                with _issues_cache_lock:
+                    _issues_cache[cwd_key] = (now, data)
+                return data
+        logger.warning(
+            f"gh issue list returned exit code {res.returncode}: {res.stderr.strip() if res.stderr else ''}"
+        )
+        with _issues_cache_lock:
+            if cwd_key in _issues_cache:
+                return _issues_cache[cwd_key][1]
         return []
     except Exception as e:
         logger.warning(f"Failed to fetch open issues via gh CLI: {e}")
+        with _issues_cache_lock:
+            if cwd_key in _issues_cache:
+                return _issues_cache[cwd_key][1]
         return []
 
 
@@ -359,6 +392,16 @@ class TaskScheduler:
     """
     Periodic task scheduler manager running in a background daemon thread.
     """
+    _all_save_threads: Set[threading.Thread] = set()
+    _all_save_threads_lock: threading.Lock = threading.Lock()
+
+    @classmethod
+    def wait_all_saves(cls, timeout: float = 5.0) -> None:
+        """Wait for all active background save operations across all scheduler instances to complete."""
+        with cls._all_save_threads_lock:
+            threads = list(cls._all_save_threads)
+        for t in threads:
+            t.join(timeout=timeout)
 
     def __init__(
         self,
@@ -373,6 +416,12 @@ class TaskScheduler:
     ):
         self._lock = threading.RLock()
         self._save_lock = threading.Lock()
+        self._state_version: int = 0
+        self._latest_written_state_version: int = 0
+        self._config_version: int = 0
+        self._latest_written_config_version: int = 0
+        self._active_save_threads: Set[threading.Thread] = set()
+
         self.config_path = config_path or DEFAULT_CONFIG_PATH
         self.state_path = state_path or DEFAULT_STATE_PATH
         self.runner = runner
@@ -389,6 +438,13 @@ class TaskScheduler:
 
         self.load_config()
         self.load_state()
+
+    def wait_for_saves(self, timeout: float = 5.0) -> None:
+        """Wait for all active background save operations for this scheduler instance to complete."""
+        with self._lock:
+            threads = list(self._active_save_threads)
+        for t in threads:
+            t.join(timeout=timeout)
 
     def register_handler(self, key: str, handler: Callable):
         """Register a custom handler function for a specific job_id or agent."""
@@ -438,7 +494,7 @@ class TaskScheduler:
                     state_changed = True
 
         if state_changed:
-            self.save_state()
+            self.save_state(async_save=True)
 
     def load_config(self):
         """
@@ -526,49 +582,99 @@ class TaskScheduler:
                 # Fallback / Migration: Save initial execution state to state_path
                 self.save_state()
 
-    def save_state(self):
+    def save_state(self, async_save: bool = False):
         """
         Persist job execution state (last_run, next_run, enabled, is_running, current_task_id) to state_path.
         Uses atomic file replacement to prevent file corruption during unexpected crashes.
-        State snapshot is captured under self._lock context, while synchronous file writing and fsync
-        are serialized via self._save_lock outside self._lock to avoid blocking concurrent scheduler operations.
+        State snapshot is captured under self._lock context. If async_save is True, file writing
+        and fsync execute asynchronously on a background thread to prevent blocking critical scheduler threads.
         """
-        with self._save_lock:
-            with self._lock:
-                data = {
-                    job_id: {
-                        "last_run": job.last_run,
-                        "next_run": job.next_run,
-                        "enabled": job.enabled,
-                        "is_running": job.is_running,
-                        "current_task_id": job.current_task_id,
-                    }
-                    for job_id, job in self.jobs.items()
+        with self._lock:
+            self._state_version += 1
+            version = self._state_version
+            data = {
+                job_id: {
+                    "last_run": job.last_run,
+                    "next_run": job.next_run,
+                    "enabled": job.enabled,
+                    "is_running": job.is_running,
+                    "current_task_id": job.current_task_id,
                 }
+                for job_id, job in self.jobs.items()
+            }
 
-            try:
-                _atomic_write_json(self.state_path, data, indent=2)
-                logger.debug(f"Saved schedule state for {len(data)} job(s) to {self.state_path}")
-            except Exception as e:
-                logger.error(f"Failed to save schedule state to {self.state_path}: {e}")
+        def _do_write():
+            with self._save_lock:
+                if version < self._latest_written_state_version:
+                    return
+                try:
+                    _atomic_write_json(self.state_path, data, indent=2)
+                    self._latest_written_state_version = version
+                    logger.debug(f"Saved schedule state for {len(data)} job(s) to {self.state_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save schedule state to {self.state_path}: {e}")
 
-    def save_config(self):
+        if async_save:
+            def _worker():
+                try:
+                    _do_write()
+                finally:
+                    with self._lock:
+                        self._active_save_threads.discard(t)
+                    with TaskScheduler._all_save_threads_lock:
+                        TaskScheduler._all_save_threads.discard(t)
+
+            t = threading.Thread(target=_worker, daemon=True, name="SchedulerStateSave")
+            with self._lock:
+                self._active_save_threads.add(t)
+            with TaskScheduler._all_save_threads_lock:
+                TaskScheduler._all_save_threads.add(t)
+            t.start()
+        else:
+            _do_write()
+
+    def save_config(self, async_save: bool = False):
         """
         Persist current scheduled job definitions back to config_path.
         Excludes dynamic runtime state attributes (last_run, next_run, is_running, current_task_id).
         Uses atomic file replacement to prevent file corruption during unexpected crashes.
-        State snapshot is captured under self._lock context, while synchronous file writing and fsync
-        are serialized via self._save_lock outside self._lock to avoid blocking concurrent scheduler operations.
+        State snapshot is captured under self._lock context. If async_save is True, file writing
+        and fsync execute asynchronously on a background thread.
         """
-        with self._save_lock:
-            with self._lock:
-                data = [job.to_config_dict() for job in self.jobs.values()]
+        with self._lock:
+            self._config_version += 1
+            version = self._config_version
+            data = [job.to_config_dict() for job in self.jobs.values()]
 
-            try:
-                _atomic_write_json(self.config_path, data, indent=2)
-                logger.debug(f"Saved {len(data)} scheduled job(s) to {self.config_path}")
-            except Exception as e:
-                logger.error(f"Failed to save schedule config to {self.config_path}: {e}")
+        def _do_write():
+            with self._save_lock:
+                if version < self._latest_written_config_version:
+                    return
+                try:
+                    _atomic_write_json(self.config_path, data, indent=2)
+                    self._latest_written_config_version = version
+                    logger.debug(f"Saved {len(data)} scheduled job(s) to {self.config_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save schedule config to {self.config_path}: {e}")
+
+        if async_save:
+            def _worker():
+                try:
+                    _do_write()
+                finally:
+                    with self._lock:
+                        self._active_save_threads.discard(t)
+                    with TaskScheduler._all_save_threads_lock:
+                        TaskScheduler._all_save_threads.discard(t)
+
+            t = threading.Thread(target=_worker, daemon=True, name="SchedulerConfigSave")
+            with self._lock:
+                self._active_save_threads.add(t)
+            with TaskScheduler._all_save_threads_lock:
+                TaskScheduler._all_save_threads.add(t)
+            t.start()
+        else:
+            _do_write()
 
     def add_job(self, job: ScheduledJob):
         """Add or overwrite a scheduled job."""
@@ -725,6 +831,7 @@ class TaskScheduler:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
+        self.wait_for_saves(timeout=timeout)
         logger.info("TaskScheduler stopped.")
 
     def is_running(self) -> bool:

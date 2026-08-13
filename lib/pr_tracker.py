@@ -9,6 +9,7 @@ import logging
 import re
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,9 +177,11 @@ class PRTracker:
     Thread-safe tracker for GitHub Pull Requests awaiting human merge across single or multiple repositories.
     """
 
-    def __init__(self):
+    def __init__(self, cache_ttl: float = 60.0):
         self._lock = threading.Lock()
         self._approved_prs: Dict[Any, Dict[str, Any]] = {}
+        self._last_sync_time: float = 0.0
+        self._cache_ttl: float = cache_ttl
 
     def add_approved_pr(
         self,
@@ -256,6 +259,7 @@ class PRTracker:
             capture_output=True,
             text=True,
             check=True,
+            timeout=30,
         )
         data = json.loads(res.stdout)
         results = []
@@ -374,12 +378,24 @@ class PRTracker:
         return repo_full_name, prs
 
     def sync_github_prs(
-        self, repo_root: Optional[Path] = None, repos_dir: Optional[Path] = None
+        self,
+        repo_root: Optional[Path] = None,
+        repos_dir: Optional[Path] = None,
+        force: bool = False,
+        ttl: Optional[float] = None,
     ) -> None:
         """
         Synchronize approved PRs state using `gh pr list`.
         Fetch open PRs across repo_root and managed repositories inside repos_dir.
+        Caches results for `ttl` seconds unless force=True.
         """
+        effective_ttl = self._cache_ttl if ttl is None else ttl
+        now = time.time()
+        if not force:
+            with self._lock:
+                if self._last_sync_time > 0 and (now - self._last_sync_time) < effective_ttl:
+                    return
+
         try:
             new_approved = {}
             target_dirs = []
@@ -421,6 +437,7 @@ class PRTracker:
             if success_count > 0 or not target_dirs:
                 with self._lock:
                     self._approved_prs = new_approved
+                    self._last_sync_time = time.time()
                 logger.info(f"PRTracker synced {len(new_approved)} approved PR(s) via gh CLI.")
             else:
                 logger.warning("PRTracker sync failed for all target directories; preserving existing approved PRs.")

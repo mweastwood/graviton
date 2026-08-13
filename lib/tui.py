@@ -149,6 +149,8 @@ class TerminalDashboard:
 
         self._git_info_cache: Optional[Tuple[str, str]] = None
         self._git_info_last_fetch: float = 0.0
+        self._need_refresh: bool = False
+        self._refresh_event: threading.Event = threading.Event()
 
     def start(self):
         """Start the background dashboard rendering loop thread and hotkey listener."""
@@ -174,6 +176,8 @@ class TerminalDashboard:
     def stop(self):
         """Stop the dashboard rendering loop and stdin listener."""
         self._running = False
+        if hasattr(self, "_refresh_event"):
+            self._refresh_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         if self._stdin_thread and self._stdin_thread.is_alive():
@@ -659,14 +663,17 @@ class TerminalDashboard:
         self._signals_registered = False
 
     def _force_refresh(self):
-        """Force an immediate dashboard frame render and output flush."""
-        try:
-            if self._running and self.out_stream:
+        """Signal the rendering loop to trigger an immediate frame refresh off the input listener thread."""
+        self._need_refresh = True
+        if hasattr(self, "_refresh_event"):
+            self._refresh_event.set()
+        if not self._running and self.out_stream:
+            try:
                 frame = self.render()
                 self.out_stream.write("\033[H\033[2J" + frame + "\n")
                 self.out_stream.flush()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     def invalidate_git_cache(self):
         """Invalidate cached git metadata to force a fresh fetch on next render."""
@@ -868,10 +875,12 @@ class TerminalDashboard:
 
     def _refresh_loop(self):
         while self._running:
+            self._need_refresh = False
+            self._refresh_event.clear()
             try:
                 frame = self.render()
                 self.out_stream.write("\033[H\033[2J" + frame + "\n")
                 self.out_stream.flush()
             except Exception:
                 pass
-            time.sleep(self.refresh_interval)
+            self._refresh_event.wait(timeout=self.refresh_interval)
