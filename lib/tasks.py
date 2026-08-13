@@ -38,6 +38,7 @@ class Task:
     repo_dir: Optional[Path] = None
     cached_workspace_dir: Optional[Path] = None
     status: str = TaskStatus.QUEUED
+    priority: int = 0
     enqueue_time: float = field(default_factory=time.time)
     start_time: Optional[float] = None
     finish_time: Optional[float] = None
@@ -93,6 +94,7 @@ class Task:
             "repo_dir": str(self.repo_dir) if self.repo_dir else None,
             "cached_workspace_dir": str(self.cached_workspace_dir) if self.cached_workspace_dir else None,
             "status": self.status,
+            "priority": self.priority,
             "enqueue_time": self.enqueue_time,
             "start_time": self.start_time,
             "finish_time": self.finish_time,
@@ -411,6 +413,7 @@ class TaskManager:
                         cached_workspace_dir=cached_workspace_dir_val,
                         status=restored_status,
                         enqueue_time=float(td.get("enqueue_time", time.time())),
+                        priority=int(td.get("priority", 0)),
                         attempt=int(td.get("attempt", 1)),
                         max_attempts=int(td.get("max_attempts", 3)),
                         max_total_attempts=int(td.get("max_total_attempts", 6)),
@@ -422,6 +425,7 @@ class TaskManager:
                 except Exception as e:
                     logger.warning(f"Failed to restore queued task item {td}: {e}")
                     continue
+            self._rebuild_queue_locked()
 
             self._rebuild_queue_locked()
 
@@ -475,6 +479,7 @@ class TaskManager:
         agent: str,
         prompt: str,
         target_id: Optional[str] = None,
+        priority: int = 0,
         max_attempts: Optional[int] = None,
         max_total_attempts: Optional[int] = None,
         attempts_per_batch: Optional[int] = None,
@@ -536,6 +541,7 @@ class TaskManager:
                 repo_dir=Path(repo_dir) if repo_dir else None,
                 cached_workspace_dir=Path(cached_workspace_dir) if cached_workspace_dir else None,
                 status=TaskStatus.QUEUED,
+                priority=priority,
                 enqueue_time=time.time(),
                 max_attempts=initial_max_att,
                 max_total_attempts=tot_att,
@@ -543,10 +549,54 @@ class TaskManager:
             )
             self._tasks[task_id] = task
             self._prune_tasks_locked()
+            self._rebuild_queue_locked()
 
-        self._queue.put(task)
         logger.info(f"Task '{task_id}' submitted (agent: {agent}, target: {formatted_target_id}).")
         return task
+
+    def _rebuild_queue_locked(self):
+        """
+        Rebuild self._queue with pending queued tasks sorted by highest priority first,
+        then by enqueue_time. Must be called while holding self._lock.
+        Preserves any queued None stop sentinels.
+        """
+        sentinel_count = 0
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+                if item is None:
+                    sentinel_count += 1
+                self._queue.task_done()
+            except queue.Empty:
+                break
+
+        queued_tasks = [
+            t for t in self._tasks.values()
+            if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
+        ]
+        queued_tasks.sort(key=lambda t: (-t.priority, t.enqueue_time))
+
+        for t in queued_tasks:
+            self._queue.put(t)
+
+        for _ in range(sentinel_count):
+            self._queue.put(None)
+
+    def prioritize_task(self, task_id: str, priority_bump: int = 1) -> bool:
+        """
+        Increment priority for specified queued task and re-order pending queued tasks.
+        Returns True if task was found and prioritized, False otherwise.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            if task.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                return False
+            task.priority += priority_bump
+            self._rebuild_queue_locked()
+            logger.info(f"Prioritized task '{task_id}': new priority={task.priority}.")
+            return True
 
     def get_task(self, task_id: str) -> Optional[Task]:
         with self._lock:
@@ -554,9 +604,11 @@ class TaskManager:
 
     def get_queued_tasks(self) -> List[Task]:
         with self._lock:
-            return [
+            tasks = [
                 t for t in self._tasks.values() if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
             ]
+            tasks.sort(key=lambda t: (-t.priority, t.enqueue_time))
+            return tasks
 
     def get_active_tasks(self) -> List[Task]:
         with self._lock:
@@ -628,57 +680,51 @@ class TaskManager:
         while self._running:
             task = None
             with self._lock:
-                if not (self._draining or self._paused) and self._running:
+                draining = self._draining
+                paused = self._paused
+
+                if (draining or paused) and self._running:
+                    task = None
+                elif not self._queue.empty():
                     try:
-                        task = self._queue.get_nowait()
-                    except (queue.Empty, ValueError):
+                        item = self._queue.get_nowait()
+                        if item is None:
+                            self._queue.task_done()
+                            break
+
+                        if item.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                            self._queue.task_done()
+                            task = None
+                        else:
+                            is_behind = (
+                                hasattr(self.quota_tracker, "is_behind_pacing")
+                                and self.quota_tracker.is_behind_pacing() is True
+                                if self.quota_tracker
+                                else False
+                            )
+                            is_exhausted = (
+                                self.quota_tracker is not None
+                                and self.quota_tracker.state == QuotaState.EXHAUSTED
+                            )
+                            if self._draining or self._paused or is_behind or is_exhausted:
+                                if is_behind or is_exhausted:
+                                    item.status = TaskStatus.PAUSED_FOR_QUOTA
+                                self._queue.put(item)
+                                self._queue.task_done()
+                                task = None
+                            else:
+                                item.status = TaskStatus.RUNNING
+                                item.start_time = time.time()
+                                item.worker_thread_id = worker_id
+                                task = item
+                    except queue.Empty:
                         task = None
 
             if task is None:
-                with self._lock:
-                    draining = self._draining
-                    paused = self._paused
-
-                if (draining or paused) and self._running:
-                    time.sleep(0.1)
-                    continue
-
-                try:
-                    task = self._queue.get(timeout=0.5)
-                except (queue.Empty, ValueError):
-                    continue
-
-            if task is None or not self._running:
-                if task is None and not self._running:
+                if not self._running:
                     break
-                self._queue.task_done()
-                break
-
-            with self._lock:
-                if task.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
-                    self._queue.task_done()
-                    continue
-
-                if self._draining or self._paused:
-                    self._queue.put(task)
-                    self._queue.task_done()
-                    time.sleep(0.1)
-                    continue
-
-                if self.quota_tracker:
-                    state = self.quota_tracker.state
-                    is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
-                    if state == QuotaState.EXHAUSTED or is_behind:
-                        task.status = TaskStatus.PAUSED_FOR_QUOTA
-                        self._queue.put(task)
-                        self._queue.task_done()
-                        time.sleep(0.1)
-                        continue
-
-                task.status = TaskStatus.RUNNING
-                task.start_time = time.time()
-                task.worker_thread_id = worker_id
-
+                time.sleep(0.05)
+                continue
             if self.quota_tracker and self.quota_tracker.state == QuotaState.LOW_QUOTA:
                 delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)
                 if delay > 0:
@@ -775,7 +821,7 @@ class TaskManager:
                                 task.finish_time = None
                                 task.return_code = return_code
                                 task.error_message = stderr_output or f"Process exited with code {return_code}"
-                                self._queue.put(task)
+                                self._rebuild_queue_locked()
                                 logger.info(
                                     f"[{worker_id}] Task '{task.id}' hit {task.attempt}/{old_max} attempts. "
                                     f"Cached workspace and re-queued for attempts {task.attempt + 1}..{task.max_attempts}."

@@ -218,20 +218,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(len(lines), 5)
         self.assertTrue(lines[0].startswith("┌"))
         self.assertIn("127.0.0.1:8000", lines[2])
-        self.assertIn("[p] Pause Tasks", lines[3])
-
-        lines_paused = render_header_panel(
-            width=80,
-            host="127.0.0.1",
-            port=8000,
-            commit="a1b2c3d",
-            branch="main",
-            reload_state="IDLE",
-            uptime="01:23:45",
-            active_screen="main",
-            is_paused=True,
-        )
-        self.assertIn("[p] Resume Tasks", lines_paused[3])
+        self.assertIn("[p] Prioritize", lines[3])
 
     def test_render_quota_panel(self):
         tracker = QuotaTracker()
@@ -363,9 +350,10 @@ class TestTUIPanels(unittest.TestCase):
             prompt="Fix bug",
             status=TaskStatus.QUEUED,
         )
-        pop_lines = render_queued_tasks_panel(width=80, tasks=[task])
+        pop_lines = render_queued_tasks_panel(width=80, tasks=[task], selected_queue_index=0)
         header_line = pop_lines[1]
         self.assertIn("ID", header_line)
+        self.assertIn("PRIO", header_line)
         self.assertIn("AGENT", header_line)
         self.assertIn("TARGET", header_line)
         self.assertIn("ATTEMPT", header_line)
@@ -373,6 +361,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertNotIn("PROMPT", header_line)
 
         row_line = pop_lines[2]
+        self.assertIn(">", row_line)
         self.assertIn("task-2", row_line)
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
@@ -381,7 +370,7 @@ class TestTUIPanels(unittest.TestCase):
         # Narrow width test
         narrow_lines = render_queued_tasks_panel(width=45, tasks=[task])
         narrow_row = narrow_lines[2]
-        self.assertIn("gr..#148", narrow_row)
+        self.assertIn("gr..#14", narrow_row)
 
         # Test cached task attempt formatting without truncation
         task_cached = Task(

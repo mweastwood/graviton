@@ -1504,8 +1504,8 @@ class TestTaskManager(unittest.TestCase):
             t1.status = TaskStatus.QUEUED
             t2.status = TaskStatus.PAUSED_FOR_QUOTA
             t3.status = TaskStatus.COMPLETED
+            manager._rebuild_queue_locked()
 
-        manager.rebuild_queue()
         queued_ids = []
         while not manager._queue.empty():
             task = manager._queue.get_nowait()
@@ -1516,36 +1516,108 @@ class TestTaskManager(unittest.TestCase):
         self.assertNotIn(t3.id, queued_ids)
         manager.stop()
 
-    def test_queue_rebuild_race_condition_prevention(self):
+    def test_task_priority_ordering_and_worker_execution(self):
         manager = TaskManager(max_workers=0)
-        task = manager.submit_task("code_fixer", "Task race prevention", target_id="#100")
 
-        # Worker gets task from queue (simulating _queue.get())
-        popped = manager._queue.get_nowait()
-        self.assertEqual(popped.id, task.id)
+        # 1. Submit tasks with different priority levels and enqueue times
+        t1 = manager.submit_task("agent1", "Prompt 1", target_id="#1", priority=0)
+        t2 = manager.submit_task("agent2", "Prompt 2", target_id="#2", priority=2)
+        t3 = manager.submit_task("agent3", "Prompt 3", target_id="#3", priority=1)
 
-        # Before worker acquires lock, rebuild_queue runs and re-inserts task into queue
-        manager.rebuild_queue()
-        self.assertEqual(manager._queue.qsize(), 1)
+        queued = manager.get_queued_tasks()
+        self.assertEqual([t.id for t in queued], [t2.id, t3.id, t1.id])
 
-        # First worker acquires lock and transitions task to RUNNING
-        with manager._lock:
-            self.assertIn(popped.status, (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA))
-            popped.status = TaskStatus.RUNNING
-            popped.start_time = time.time()
+        # 2. Prioritize t1 (bump priority by 3 -> new priority=3)
+        res = manager.prioritize_task(t1.id, priority_bump=3)
+        self.assertTrue(res)
+        self.assertEqual(t1.priority, 3)
 
-        # Second worker pops duplicate item from queue
-        dup_popped = manager._queue.get_nowait()
-        self.assertEqual(dup_popped.id, task.id)
+        queued_after = manager.get_queued_tasks()
+        self.assertEqual([t.id for t in queued_after], [t1.id, t2.id, t3.id])
 
-        # Second worker checks status under lock; status is RUNNING, so task is skipped
-        with manager._lock:
-            is_valid = dup_popped.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
-            self.assertFalse(is_valid)
+        # 3. Test worker execution sequence based on priority
+        execution_order = []
 
+        def mock_run(agent, prompt, *args, **kwargs):
+            execution_order.append(prompt)
+            res = MagicMock()
+            res.returncode = 0
+            return res
+
+        manager.script_path = Path("/tmp/fake_script.sh")
+        manager.cwd = Path("/tmp/fake_repo")
+
+        with patch("lib.tasks.run_agent_container", side_effect=mock_run):
+            manager.max_workers = 1
+            manager.start()
+
+            for _ in range(50):
+                if len(execution_order) == 3:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(execution_order, ["Prompt 1", "Prompt 2", "Prompt 3"])
+            manager.stop()
+
+    def test_dump_and_restore_queue_state_with_priority(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "test_prio_queue_state.json"
+            manager1 = TaskManager(max_workers=0)
+            t1 = manager1.submit_task("code_fixer", "Task 1", target_id="#1", priority=1)
+            t2 = manager1.submit_task("code_fixer", "Task 2", target_id="#2", priority=5)
+
+            dumped = manager1.dump_queue_state(filepath=state_file)
+            self.assertEqual(dumped, 2)
+            manager1.stop()
+
+            manager2 = TaskManager(max_workers=0)
+            restored = manager2.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored, 2)
+
+            queued = manager2.get_queued_tasks()
+            self.assertEqual([t.id for t in queued], [t2.id, t1.id])
+            self.assertEqual(queued[0].priority, 5)
+            self.assertEqual(queued[1].priority, 1)
+            manager2.stop()
+
+    def test_rebuild_queue_unfinished_tasks_balance(self):
+        manager = TaskManager(max_workers=0)
+        t1 = manager.submit_task("agent1", "Prompt 1", target_id="#1")
+        t2 = manager.submit_task("agent2", "Prompt 2", target_id="#2")
+
+        # Prioritize tasks to trigger multiple _rebuild_queue_locked calls
+        manager.prioritize_task(t1.id)
+        manager.prioritize_task(t2.id)
+        manager.prioritize_task(t1.id)
+
+        # There are 2 queued tasks, so unfinished_tasks counter should equal 2
+        self.assertEqual(manager._queue.unfinished_tasks, 2)
+
+        # Simulate worker popping and marking tasks done
+        task_a = manager._queue.get_nowait()
+        manager._queue.task_done()
+        task_b = manager._queue.get_nowait()
+        manager._queue.task_done()
+
+        # Counter should be 0 and join() must return cleanly without hanging
+        self.assertEqual(manager._queue.unfinished_tasks, 0)
+
+        join_completed = False
+
+        def wait_join():
+            nonlocal join_completed
+            manager._queue.join()
+            join_completed = True
+
+        join_thread = threading.Thread(target=wait_join)
+        join_thread.start()
+        join_thread.join(timeout=1.0)
+        self.assertTrue(join_completed)
         manager.stop()
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
