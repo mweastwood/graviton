@@ -641,8 +641,11 @@ fi
     def test_githooks_pre_commit_configuration(self):
         githooks_dir = self.repo_dir / ".githooks"
         githooks_dir.mkdir()
+        aux_script = githooks_dir / "check-fmt.sh"
+        aux_script.write_text("#!/bin/sh\necho 'auxiliary script executed' >> hook_output.txt\nexit 0\n")
+        aux_script.chmod(0o644)
         pre_commit_hook = githooks_dir / "pre-commit"
-        pre_commit_hook.write_text("#!/bin/sh\necho 'pre-commit hook executed' > hook_output.txt\nexit 0\n")
+        pre_commit_hook.write_text("#!/bin/sh\n\"$(dirname \"$0\")/check-fmt.sh\"\necho 'pre-commit hook executed' >> hook_output.txt\nexit 0\n")
         subprocess.run(["git", "add", ".githooks"], cwd=str(self.repo_dir), check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add pre-commit hook"], cwd=str(self.repo_dir), check=True, capture_output=True)
 
@@ -742,6 +745,54 @@ exit 0
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(hook_failed_verified.exists())
         self.assertEqual(hook_failed_verified.read_text().strip(), "hook_failed_as_expected")
+
+    def test_githooks_directory_only_configuration(self):
+        githooks_dir = self.repo_dir / ".githooks"
+        githooks_dir.mkdir()
+        gitkeep = githooks_dir / ".gitkeep"
+        gitkeep.write_text("")
+        subprocess.run(["git", "add", ".githooks"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add empty .githooks directory"], cwd=str(self.repo_dir), check=True, capture_output=True)
+
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        hooks_config_verified = self.test_dir / "hooks_config_verified.txt"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+HOST_WS=""
+for arg in "$@"; do
+    if [[ "$arg" == *":/workspace"* ]]; then
+        HOST_WS="${{arg%%:/workspace*}}"
+    fi
+done
+
+if [ -n "$HOST_WS" ]; then
+    HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
+    if [ "$HOOK_PATH" = ".githooks" ]; then
+        echo "hooks_path_configured" > "{hooks_config_verified}"
+    fi
+fi
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Test empty githooks dir"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(hooks_config_verified.exists())
+        self.assertEqual(hooks_config_verified.read_text().strip(), "hooks_path_configured")
+
 
 
 class TestTranscriptInspector(unittest.TestCase):
