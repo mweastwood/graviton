@@ -702,45 +702,36 @@ class QuotaTracker:
             "claude-3-5-haiku",
         ]
 
-        p = str(self.quota_pool).lower()
-        if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
-            self.claude_window_5h = window_5h or QuotaWindow(
+        def default_5h():
+            return QuotaWindow(
                 name="5H",
                 duration_seconds=18000.0,
                 remaining_percentage=self._remaining_percentage,
                 reset_time=str(reset_time) if reset_time is not None else None,
             )
-            self.claude_window_1w = window_1w or QuotaWindow(
+
+        def default_1w():
+            return QuotaWindow(
                 name="1W", duration_seconds=604800.0, remaining_percentage=100.0
             )
-            self.gemini_window_5h = QuotaWindow(
-                name="5H",
-                duration_seconds=18000.0,
-                remaining_percentage=self._remaining_percentage,
-                reset_time=str(reset_time) if reset_time is not None else None,
-            )
-            self.gemini_window_1w = QuotaWindow(
-                name="1W", duration_seconds=604800.0, remaining_percentage=100.0
-            )
+
+        if quota_pool is None:
+            self.gemini_window_5h = window_5h or default_5h()
+            self.gemini_window_1w = window_1w or default_1w()
+            self.claude_window_5h = window_5h or default_5h()
+            self.claude_window_1w = window_1w or default_1w()
         else:
-            self.gemini_window_5h = window_5h or QuotaWindow(
-                name="5H",
-                duration_seconds=18000.0,
-                remaining_percentage=self._remaining_percentage,
-                reset_time=str(reset_time) if reset_time is not None else None,
-            )
-            self.gemini_window_1w = window_1w or QuotaWindow(
-                name="1W", duration_seconds=604800.0, remaining_percentage=100.0
-            )
-            self.claude_window_5h = QuotaWindow(
-                name="5H",
-                duration_seconds=18000.0,
-                remaining_percentage=self._remaining_percentage,
-                reset_time=str(reset_time) if reset_time is not None else None,
-            )
-            self.claude_window_1w = QuotaWindow(
-                name="1W", duration_seconds=604800.0, remaining_percentage=100.0
-            )
+            p = str(quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_5h = window_5h or default_5h()
+                self.claude_window_1w = window_1w or default_1w()
+                self.gemini_window_5h = default_5h()
+                self.gemini_window_1w = default_1w()
+            else:
+                self.gemini_window_5h = window_5h or default_5h()
+                self.gemini_window_1w = window_1w or default_1w()
+                self.claude_window_5h = default_5h()
+                self.claude_window_1w = default_1w()
 
         self.base_backoff_delay = base_backoff_delay
         self.max_backoff_delay = max_backoff_delay
@@ -1052,15 +1043,19 @@ class QuotaTracker:
         """Update 5h and 1w dual quota windows."""
         with self._lock:
             now = time.time()
-            pk = _normalize_pool_key(quota_pool)
-            self._last_fetch_5h[pk] = now
-            self._last_fetch_1w[pk] = now
             if quota_pool is None:
+                self._last_fetch_5h["gemini"] = now
+                self._last_fetch_5h["claude_gpt"] = now
+                self._last_fetch_1w["gemini"] = now
+                self._last_fetch_1w["claude_gpt"] = now
                 self.gemini_window_5h = window_5h
                 self.gemini_window_1w = window_1w
                 self.claude_window_5h = window_5h
                 self.claude_window_1w = window_1w
             else:
+                pk = _normalize_pool_key(quota_pool)
+                self._last_fetch_5h[pk] = now
+                self._last_fetch_1w[pk] = now
                 p = str(quota_pool).lower()
                 if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
                     self.claude_window_5h = window_5h

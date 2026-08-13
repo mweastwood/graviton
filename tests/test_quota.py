@@ -906,10 +906,42 @@ class TestQuotaTracker(unittest.TestCase):
     def test_window_1w_init_parameter_routing(self):
         custom_w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=65.0)
 
-        # 3rd party pool initialization
         # Gemini pool initialization
         t_gemini = QuotaTracker(window_1w=custom_w1, quota_pool="gemini")
         self.assertEqual(t_gemini.gemini_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_gemini.claude_window_1w.remaining_percentage, 100.0)
+
+        # 3rd party pool initialization
+        t_claude = QuotaTracker(window_1w=custom_w1, quota_pool="claude_gpt")
+        self.assertEqual(t_claude.claude_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_claude.gemini_window_1w.remaining_percentage, 100.0)
+
+        # Un-scoped initialization (quota_pool is None)
+        t_unscoped = QuotaTracker(window_1w=custom_w1, quota_pool=None)
+        self.assertEqual(t_unscoped.gemini_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_unscoped.claude_window_1w.remaining_percentage, 65.0)
+
+    def test_update_windows_unscoped_ttl_timestamp_tracking(self):
+        tracker = QuotaTracker()
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0)
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0)
+
+        now_time = 5000.0
+        with patch("lib.quota.time.time", return_value=now_time):
+            tracker.update_windows(w_5h, w_1w, quota_pool=None)
+
+            # Both pool TTL timestamps should be populated
+            self.assertEqual(tracker._last_fetch_5h.get("gemini"), now_time)
+            self.assertEqual(tracker._last_fetch_5h.get("claude_gpt"), now_time)
+            self.assertEqual(tracker._last_fetch_1w.get("gemini"), now_time)
+            self.assertEqual(tracker._last_fetch_1w.get("claude_gpt"), now_time)
+
+        # Subsequent live quota polls for both pools within TTL should NOT trigger API fetch
+        with patch("lib.quota.time.time", return_value=now_time + 10.0):
+            with patch("lib.quota.fetch_live_antigravity_quota") as mock_fetch:
+                tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=False)
+                tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=False)
+                mock_fetch.assert_not_called()
 
     def test_update_windows_claude_gpt_does_not_overwrite_primary_gemini_metrics(self):
         tracker = QuotaTracker(quota_pool="gemini")
