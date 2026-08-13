@@ -382,17 +382,18 @@ class PRTracker:
         repo_root: Optional[Path] = None,
         repos_dir: Optional[Path] = None,
         force: bool = False,
-        ttl: float = 60.0,
+        ttl: Optional[float] = None,
     ) -> None:
         """
         Synchronize approved PRs state using `gh pr list`.
         Fetch open PRs across repo_root and managed repositories inside repos_dir.
         Caches results for `ttl` seconds unless force=True.
         """
+        effective_ttl = self._cache_ttl if ttl is None else ttl
         now = time.time()
         if not force:
             with self._lock:
-                if (now - self._last_sync_time) < ttl and self._approved_prs:
+                if self._last_sync_time > 0 and (now - self._last_sync_time) < effective_ttl:
                     return
 
         try:

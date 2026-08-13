@@ -830,6 +830,7 @@ class TerminalDashboard:
     def _refresh_loop(self):
         while self._running:
             self._need_refresh = False
+            self._refresh_event.clear()
             try:
                 frame = self.render()
                 self.out_stream.write("\033[H\033[2J" + frame + "\n")
@@ -837,4 +838,3 @@ class TerminalDashboard:
             except Exception:
                 pass
             self._refresh_event.wait(timeout=self.refresh_interval)
-            self._refresh_event.clear()

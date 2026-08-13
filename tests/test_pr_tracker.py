@@ -940,6 +940,36 @@ class TestPRTracker(unittest.TestCase):
         self.assertEqual(results[1]["number"], 302)
         self.assertEqual(results[1]["author"], "")
 
+    @patch("subprocess.run")
+    def test_sync_github_prs_empty_approved_prs_cache_ttl(self, mock_run):
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps([]))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker(cache_ttl=60.0)
+        # First sync returns 0 approved PRs
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+        self.assertEqual(len(tracker.get_approved_prs()), 0)
+        self.assertEqual(mock_run.call_count, 2)
+
+        # Second sync within TTL should hit cache and NOT invoke subprocess.run again
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("subprocess.run")
+    def test_sync_github_prs_ttl_default_from_instance(self, mock_run):
+        mock_git_res = MagicMock(returncode=0, stdout="")
+        mock_gh_res = MagicMock(returncode=0, stdout=json.dumps([]))
+        mock_run.side_effect = [mock_git_res, mock_gh_res]
+
+        tracker = PRTracker(cache_ttl=300.0)
+        tracker.sync_github_prs(repo_root=Path("/tmp"), ttl=None)
+        self.assertEqual(mock_run.call_count, 2)
+
+        # Second sync using default instance TTL should be cached
+        tracker.sync_github_prs(repo_root=Path("/tmp"))
+        self.assertEqual(mock_run.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

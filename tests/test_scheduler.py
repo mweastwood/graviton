@@ -209,7 +209,7 @@ class TestTaskScheduler(unittest.TestCase):
         self.state_path = Path(self.temp_dir.name) / ".graviton_scheduler_state.json"
 
     def tearDown(self):
-        time.sleep(0.05)
+        TaskScheduler.wait_all_saves()
         self.temp_dir.cleanup()
 
     def test_load_default_jobs_if_file_missing(self):
@@ -270,13 +270,40 @@ class TestTaskScheduler(unittest.TestCase):
         job = scheduler.get_job("periodic_bug_sweep")
         job.enabled = False
         scheduler.save_state(async_save=True)
-        # Allow background save thread to finish writing
-        time.sleep(0.1)
+        # Wait for background save thread to finish writing
+        scheduler.wait_for_saves()
         self.assertTrue(self.state_path.exists())
 
         with open(self.state_path, "r", encoding="utf-8") as f:
             state_data = json.load(f)
         self.assertFalse(state_data["periodic_bug_sweep"]["enabled"])
+
+    def test_save_state_out_of_order_versioning(self):
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        job.enabled = False
+
+        # First snapshot (version 1)
+        scheduler.save_state(async_save=False)
+
+        # Update state and create second snapshot (version 2)
+        job.enabled = True
+        scheduler.save_state(async_save=False)
+
+        # Simulate older thread (version 1) running after newer thread (version 2)
+        with scheduler._lock:
+            old_version = 1
+            data_old = {"periodic_bug_sweep": {"enabled": False}}
+
+        with scheduler._save_lock:
+            if old_version >= scheduler._latest_written_state_version:
+                lib.scheduler._atomic_write_json(scheduler.state_path, data_old, indent=2)
+                scheduler._latest_written_state_version = old_version
+
+        # Verify disk file still contains version 2 state (enabled: True)
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            disk_state = json.load(f)
+        self.assertTrue(disk_state["periodic_bug_sweep"]["enabled"])
 
     def test_save_config_prevents_runtime_timestamps(self):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
@@ -1072,6 +1099,22 @@ class TestIssueUtilities(unittest.TestCase):
         issues2 = fetch_open_issues(ttl=60.0, force=False)
         self.assertEqual(issues2, issues1)
         self.assertEqual(mock_run.call_count, 1)
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_non_zero_exit_preserves_cache(self, mock_run):
+        mock_success = MagicMock(returncode=0, stdout=json.dumps([{"number": 1, "title": "Valid Issue"}]))
+        mock_failure = MagicMock(returncode=1, stderr="CLI error", stdout="")
+        mock_run.side_effect = [mock_success, mock_failure]
+
+        # 1. Successful fetch populates cache
+        issues1 = fetch_open_issues(force=True)
+        self.assertEqual(len(issues1), 1)
+        self.assertEqual(issues1[0]["title"], "Valid Issue")
+
+        # 2. Transient failure should return cached issues instead of overwriting with empty list
+        issues2 = fetch_open_issues(force=True)
+        self.assertEqual(len(issues2), 1)
+        self.assertEqual(issues2[0]["title"], "Valid Issue")
 
 
 if __name__ == "__main__":
