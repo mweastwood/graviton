@@ -259,6 +259,25 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(res["non_flex"], 10)
         self.assertEqual(res["flex1"], 1)
 
+    def test_declarative_columns_zero_max_width(self):
+        """Verify that a ColumnSpec with max_w=0 restricts allocated width to 0 in wide and intermediate modes."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("zero_max", ratio=0.5, min_w=0, max_w=0, is_flex=False),
+                ColumnSpec("flex_col", ratio=0.5, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=10,
+        )
+        # Wide mode (inner_w = 60 >= wide_threshold 50)
+        res_wide = allocate_declarative_columns(spec, 60)
+        self.assertEqual(res_wide["zero_max"], 0)
+
+        # Intermediate mode (inner_w = 30)
+        res_inter = allocate_declarative_columns(spec, 30)
+        self.assertEqual(res_inter["zero_max"], 0)
+
     def test_declarative_narrow_mode_last_column_min_avail_threshold(self):
         """Verify last column in narrow mode respects min_avail_threshold."""
         spec = TableLayoutSpec(
