@@ -31,7 +31,7 @@ from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload, set_hot_reload_state
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
-from lib.tui import TerminalDashboard
+from lib.tui import TerminalDashboard, run_graceful_shutdown
 from lib.pr_tracker import PRTracker
 from lib.quota import QuotaTracker, QuotaState
 from lib.reactions import post_emoji_reaction_async
@@ -54,7 +54,7 @@ def graceful_shutdown(
     Execute 4-step graceful shutdown sequence in a background thread:
     1. Drain Active Tasks (task_manager.drain_active_tasks)
     2. Webhook Grace Buffer (sleep grace_period seconds)
-    3. Persist Task Queue (task_manager.dump_queue_state)
+    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue (task_manager.dump_queue_state)
     4. Clean Abort & Termination (stop scheduler, dashboard, task_manager, server_close)
     """
     if dashboard:
@@ -68,50 +68,15 @@ def graceful_shutdown(
         _is_shutting_down = True
 
         def _shutdown_worker():
-            try:
-                # Step 1: Drain Active Tasks
-                set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
-                logger.info("Graceful shutdown Step 1/4: Draining active tasks...")
-                if task_manager:
-                    task_manager.drain_active_tasks(timeout=timeout)
-
-                # Step 2: Webhook Grace Buffer
-                if grace_period > 0:
-                    set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
-                    logger.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
-                    import time
-                    time.sleep(grace_period)
-
-                # Step 3: Persist Task Queue
-                set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
-                logger.info("Graceful shutdown Step 3/4: Persisting task queue state...")
-                if task_manager:
-                    task_manager.dump_queue_state()
-
-                # Step 4: Clean Abort & Termination
-                logger.info("Graceful shutdown Step 4/4: Clean abort & termination...")
-                if scheduler:
-                    try:
-                        scheduler.stop()
-                    except Exception as e:
-                        logger.warning(f"Error stopping scheduler during shutdown: {e}")
-
-                if httpd:
-                    try:
-                        httpd.shutdown()
-                        httpd.server_close()
-                    except Exception as e:
-                        logger.warning(f"Error closing HTTP server during shutdown: {e}")
-
-                if task_manager:
-                    try:
-                        task_manager.stop()
-                    except Exception as e:
-                        logger.warning(f"Error stopping task_manager during shutdown: {e}")
-
-                set_hot_reload_state("IDLE")
-            except Exception as e:
-                logger.exception(f"Error during graceful shutdown: {e}")
+            run_graceful_shutdown(
+                task_manager=task_manager,
+                scheduler=scheduler,
+                dashboard=dashboard,
+                httpd=httpd,
+                grace_period=grace_period,
+                timeout=timeout,
+                logger=logger,
+            )
 
         t = threading.Thread(target=_shutdown_worker, daemon=True, name="GracefulShutdownThread")
         _shutdown_thread = t
