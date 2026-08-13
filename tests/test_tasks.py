@@ -219,11 +219,10 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.is_draining)
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
-        # Confirm can_accept_task returns False while draining and new task submission raises RuntimeError
-        self.assertFalse(manager.can_accept_task())
-        with self.assertRaises(RuntimeError) as ctx:
-            manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
-        self.assertIn("Server is draining tasks for update", str(ctx.exception))
+        # Confirm can_accept_task returns True while draining and new tasks are accepted/queued
+        self.assertTrue(manager.can_accept_task())
+        task2 = manager.submit_task("code_fixer", "Fix bug #2", target_id="#2")
+        self.assertEqual(task2.status, TaskStatus.QUEUED)
 
         manager.stop()
 
@@ -538,13 +537,13 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(t_behind.status, TaskStatus.COMPLETED)
         manager.stop()
 
-        # Test draining rejection
-        manager._draining = True
-        self.assertFalse(manager.can_accept_task())
-        with self.assertRaises(RuntimeError) as ctx_drain:
-            manager.submit_task("code_fixer", "New task while draining")
-        self.assertIn("draining tasks for update", str(ctx_drain.exception))
-        manager._draining = False
+        # Test draining allows task queuing
+        manager_drain = TaskManager()
+        manager_drain._draining = True
+        self.assertTrue(manager_drain.can_accept_task())
+        t_drain = manager_drain.submit_task("code_fixer", "New task while draining")
+        self.assertEqual(t_drain.status, TaskStatus.QUEUED)
+        manager_drain._draining = False
 
         # Test stopped rejection
         manager.stop()
@@ -1177,16 +1176,15 @@ class TestTaskManager(unittest.TestCase):
 
         manager.drain_active_tasks(timeout=0.01)
         self.assertTrue(manager.is_draining)
-        self.assertFalse(manager.can_accept_task())
+        self.assertTrue(manager.can_accept_task())
 
         # Duplicate task submission while draining should deduplicate and return existing active task
         task_dup = manager.submit_task("code_reviewer", "Review PR #1 updated prompt", target_id="owner/repo#1")
         self.assertIs(task_dup, task1)
 
-        # New non-duplicate task submission while draining raises RuntimeError
-        with self.assertRaises(RuntimeError) as ctx:
-            manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
-        self.assertIn("Server is draining tasks for update", str(ctx.exception))
+        # New non-duplicate task submission while draining succeeds and queues task
+        task2 = manager.submit_task("code_reviewer", "Review PR #2", target_id="owner/repo#2")
+        self.assertEqual(task2.status, TaskStatus.QUEUED)
 
     def test_worker_loop_pauses_execution_when_task_manager_paused(self):
         manager = TaskManager(max_workers=1)
@@ -1745,6 +1743,32 @@ class TestTaskManager(unittest.TestCase):
             restored_ids = [t.id for t in restored_tasks]
             self.assertIn(t1.id, restored_ids)
             self.assertIn(t2.id, restored_ids)
+            new_manager.stop()
+            manager.stop()
+
+    def test_webhook_task_submission_during_drain_persisted_to_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            manager = TaskManager(cwd=tmp_path)
+            manager.drain_active_tasks(timeout=0.01)
+            self.assertTrue(manager.is_draining)
+
+            task = manager.submit_task("code_reviewer", "Review PR #42", target_id="owner/repo#42")
+            self.assertEqual(task.status, TaskStatus.QUEUED)
+
+            persisted_count = manager.dump_queue_state()
+            self.assertEqual(persisted_count, 1)
+
+            state_file = tmp_path / ".graviton_queue_state.json"
+            self.assertTrue(state_file.exists())
+
+            new_manager = TaskManager(cwd=tmp_path)
+            restored_count = new_manager.restore_queue_state()
+            self.assertEqual(restored_count, 1)
+            restored = new_manager.get_task(task.id)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.prompt, "Review PR #42")
             new_manager.stop()
             manager.stop()
 

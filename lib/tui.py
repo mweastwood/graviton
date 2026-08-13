@@ -604,8 +604,8 @@ class TerminalDashboard:
                     self.task_manager.drain_active_tasks(timeout=timeout)
 
                 # Step 2: Webhook Grace Buffer
-                set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
                 if gp > 0:
+                    set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
                     time.sleep(gp)
 
                 # Step 3: Persist Task Queue

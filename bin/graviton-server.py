@@ -37,6 +37,11 @@ from lib.quota import QuotaTracker, QuotaState
 from lib.reactions import post_emoji_reaction_async
 
 
+_is_shutting_down = False
+_shutdown_thread: Optional[threading.Thread] = None
+_shutdown_lock = threading.Lock()
+
+
 def graceful_shutdown(
     task_manager: Optional[TaskManager] = None,
     scheduler: Optional[TaskScheduler] = None,
@@ -56,55 +61,62 @@ def graceful_shutdown(
         dashboard.httpd = httpd or getattr(dashboard, "httpd", None)
         return dashboard.graceful_shutdown(timeout=timeout, grace_period=grace_period)
 
-    def _shutdown_worker():
-        try:
-            # Step 1: Drain Active Tasks
-            set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
-            logger.info("Graceful shutdown Step 1/4: Draining active tasks...")
-            if task_manager:
-                task_manager.drain_active_tasks(timeout=timeout)
+    global _is_shutting_down, _shutdown_thread
+    with _shutdown_lock:
+        if _is_shutting_down and _shutdown_thread is not None:
+            return _shutdown_thread
+        _is_shutting_down = True
 
-            # Step 2: Webhook Grace Buffer
-            set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
-            logger.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
-            if grace_period > 0:
-                import time
-                time.sleep(grace_period)
+        def _shutdown_worker():
+            try:
+                # Step 1: Drain Active Tasks
+                set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
+                logger.info("Graceful shutdown Step 1/4: Draining active tasks...")
+                if task_manager:
+                    task_manager.drain_active_tasks(timeout=timeout)
 
-            # Step 3: Persist Task Queue
-            set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
-            logger.info("Graceful shutdown Step 3/4: Persisting task queue state...")
-            if task_manager:
-                task_manager.dump_queue_state()
+                # Step 2: Webhook Grace Buffer
+                if grace_period > 0:
+                    set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
+                    logger.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
+                    import time
+                    time.sleep(grace_period)
 
-            # Step 4: Clean Abort & Termination
-            logger.info("Graceful shutdown Step 4/4: Clean abort & termination...")
-            if scheduler:
-                try:
-                    scheduler.stop()
-                except Exception as e:
-                    logger.warning(f"Error stopping scheduler during shutdown: {e}")
+                # Step 3: Persist Task Queue
+                set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
+                logger.info("Graceful shutdown Step 3/4: Persisting task queue state...")
+                if task_manager:
+                    task_manager.dump_queue_state()
 
-            if httpd:
-                try:
-                    httpd.shutdown()
-                    httpd.server_close()
-                except Exception as e:
-                    logger.warning(f"Error closing HTTP server during shutdown: {e}")
+                # Step 4: Clean Abort & Termination
+                logger.info("Graceful shutdown Step 4/4: Clean abort & termination...")
+                if scheduler:
+                    try:
+                        scheduler.stop()
+                    except Exception as e:
+                        logger.warning(f"Error stopping scheduler during shutdown: {e}")
 
-            if task_manager:
-                try:
-                    task_manager.stop()
-                except Exception as e:
-                    logger.warning(f"Error stopping task_manager during shutdown: {e}")
+                if httpd:
+                    try:
+                        httpd.shutdown()
+                        httpd.server_close()
+                    except Exception as e:
+                        logger.warning(f"Error closing HTTP server during shutdown: {e}")
 
-            set_hot_reload_state("IDLE")
-        except Exception as e:
-            logger.exception(f"Error during graceful shutdown: {e}")
+                if task_manager:
+                    try:
+                        task_manager.stop()
+                    except Exception as e:
+                        logger.warning(f"Error stopping task_manager during shutdown: {e}")
 
-    t = threading.Thread(target=_shutdown_worker, daemon=True, name="GracefulShutdownThread")
-    t.start()
-    return t
+                set_hot_reload_state("IDLE")
+            except Exception as e:
+                logger.exception(f"Error during graceful shutdown: {e}")
+
+        t = threading.Thread(target=_shutdown_worker, daemon=True, name="GracefulShutdownThread")
+        _shutdown_thread = t
+        t.start()
+        return t
 
 
 # Setup logging
@@ -406,11 +418,12 @@ def main():
     server_address = (args.host, args.port)
     httpd = HTTPServer(server_address, GravitonHandler)
 
-    dashboard = None
+    shutdown_thread: Optional[threading.Thread] = None
 
     def shutdown_signal_handler(signum, frame):
+        nonlocal shutdown_thread
         logger.info(f"Received signal {signum}, starting graceful Graviton Webhook Server shutdown...")
-        graceful_shutdown(
+        shutdown_thread = graceful_shutdown(
             task_manager=task_manager,
             scheduler=scheduler,
             dashboard=dashboard,
@@ -446,6 +459,9 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         logger.info("Stopping Graviton Webhook Server...")
     finally:
+        st = shutdown_thread or (getattr(dashboard, "_shutdown_thread", None) if dashboard else None) or _shutdown_thread
+        if st and st.is_alive() and st != threading.current_thread():
+            st.join()
         if scheduler:
             try:
                 scheduler.stop()

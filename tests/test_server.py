@@ -25,6 +25,8 @@ GravitonHandler = server_mod.GravitonHandler
 class TestGravitonHandler(unittest.TestCase):
 
     def setUp(self):
+        server_mod._is_shutting_down = False
+        server_mod._shutdown_thread = None
         GravitonHandler.secret = ""
         GravitonHandler.default_reviewer = "code_reviewer"
         GravitonHandler.default_fixer = "code_fixer"
@@ -747,6 +749,61 @@ class TestGravitonHandler(unittest.TestCase):
                             mock_gs.assert_called_once()
                             # Verify thread.join was not called inside signal handler
                             mock_thread.join.assert_not_called()
+
+    def test_graceful_shutdown_headless_double_trigger_guard(self):
+        server_mod._is_shutting_down = False
+        server_mod._shutdown_thread = None
+        mock_tm = MagicMock()
+        mock_sched = MagicMock()
+        mock_httpd = MagicMock()
+
+        t1 = server_mod.graceful_shutdown(
+            task_manager=mock_tm,
+            scheduler=mock_sched,
+            dashboard=None,
+            httpd=mock_httpd,
+            grace_period=0.01,
+        )
+        t2 = server_mod.graceful_shutdown(
+            task_manager=mock_tm,
+            scheduler=mock_sched,
+            dashboard=None,
+            httpd=mock_httpd,
+            grace_period=0.01,
+        )
+
+        self.assertIs(t1, t2)
+        t1.join(timeout=2.0)
+
+    def test_signal_triggered_shutdown_persists_queue(self):
+        import tempfile
+        from lib.tasks import TaskManager
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            tm = TaskManager(cwd=tmp_path)
+            task = tm.submit_task("code_reviewer", "Persist signal task", target_id="owner/repo#100")
+            mock_sched = MagicMock()
+            mock_httpd = MagicMock()
+
+            t = server_mod.graceful_shutdown(
+                task_manager=tm,
+                scheduler=mock_sched,
+                dashboard=None,
+                httpd=mock_httpd,
+                grace_period=0.01,
+            )
+            t.join(timeout=3.0)
+
+            state_file = tmp_path / ".graviton_queue_state.json"
+            self.assertTrue(state_file.exists())
+
+            new_tm = TaskManager(cwd=tmp_path)
+            restored_count = new_tm.restore_queue_state()
+            self.assertEqual(restored_count, 1)
+            restored = new_tm.get_task(task.id)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.prompt, "Persist signal task")
+            new_tm.stop()
 
 
 if __name__ == "__main__":
