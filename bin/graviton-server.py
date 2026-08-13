@@ -28,13 +28,84 @@ if str(REPO_ROOT) not in sys.path:
 from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
-from lib.updater import sync_repo_and_reload
+from lib.updater import sync_repo_and_reload, set_hot_reload_state
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard
 from lib.pr_tracker import PRTracker
 from lib.quota import QuotaTracker, QuotaState
 from lib.reactions import post_emoji_reaction_async
+
+
+def graceful_shutdown(
+    task_manager: Optional[TaskManager] = None,
+    scheduler: Optional[TaskScheduler] = None,
+    dashboard: Optional[TerminalDashboard] = None,
+    httpd: Optional[HTTPServer] = None,
+    grace_period: float = 3.0,
+    timeout: Optional[float] = None,
+) -> threading.Thread:
+    """
+    Execute 4-step graceful shutdown sequence in a background thread:
+    1. Drain Active Tasks (task_manager.drain_active_tasks)
+    2. Webhook Grace Buffer (sleep grace_period seconds)
+    3. Persist Task Queue (task_manager.dump_queue_state)
+    4. Clean Abort & Termination (stop scheduler, dashboard, task_manager, server_close)
+    """
+    if dashboard:
+        dashboard.httpd = httpd or getattr(dashboard, "httpd", None)
+        return dashboard.graceful_shutdown(timeout=timeout, grace_period=grace_period)
+
+    def _shutdown_worker():
+        try:
+            # Step 1: Drain Active Tasks
+            set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
+            logger.info("Graceful shutdown Step 1/4: Draining active tasks...")
+            if task_manager:
+                task_manager.drain_active_tasks(timeout=timeout)
+
+            # Step 2: Webhook Grace Buffer
+            set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
+            logger.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
+            if grace_period > 0:
+                import time
+                time.sleep(grace_period)
+
+            # Step 3: Persist Task Queue
+            set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
+            logger.info("Graceful shutdown Step 3/4: Persisting task queue state...")
+            if task_manager:
+                task_manager.dump_queue_state()
+
+            # Step 4: Clean Abort & Termination
+            logger.info("Graceful shutdown Step 4/4: Clean abort & termination...")
+            if scheduler:
+                try:
+                    scheduler.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping scheduler during shutdown: {e}")
+
+            if httpd:
+                try:
+                    httpd.shutdown()
+                    httpd.server_close()
+                except Exception as e:
+                    logger.warning(f"Error closing HTTP server during shutdown: {e}")
+
+            if task_manager:
+                try:
+                    task_manager.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping task_manager during shutdown: {e}")
+
+            set_hot_reload_state("IDLE")
+        except Exception as e:
+            logger.exception(f"Error during graceful shutdown: {e}")
+
+    t = threading.Thread(target=_shutdown_worker, daemon=True, name="GracefulShutdownThread")
+    t.start()
+    return t
+
 
 # Setup logging
 logging.basicConfig(
@@ -272,6 +343,7 @@ def main():
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
+    parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     args = parser.parse_args()
 
     repos_dir = Path(args.repos_dir).expanduser().resolve()
@@ -331,8 +403,21 @@ def main():
     pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
     GravitonHandler.pr_tracker = pr_tracker
 
+    server_address = (args.host, args.port)
+    httpd = HTTPServer(server_address, GravitonHandler)
+
+    dashboard = None
+
     def shutdown_signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, stopping Graviton Webhook Server...")
+        logger.info(f"Received signal {signum}, starting graceful Graviton Webhook Server shutdown...")
+        t = graceful_shutdown(
+            task_manager=task_manager,
+            scheduler=scheduler,
+            dashboard=dashboard,
+            httpd=httpd,
+            grace_period=args.quit_grace_period,
+        )
+        t.join(timeout=30)
         sys.exit(0)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -349,11 +434,11 @@ def main():
         scheduler=scheduler,
         pr_tracker=pr_tracker,
         quota_tracker=quota_tracker,
+        quit_grace_period=args.quit_grace_period,
+        httpd=httpd,
     )
     dashboard.start()
 
-    server_address = (args.host, args.port)
-    httpd = HTTPServer(server_address, GravitonHandler)
     logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
     logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
     logger.info("Live Terminal UI Dashboard ENABLED.")

@@ -394,9 +394,15 @@ def render_header_panel(
         "PULLING_GIT": "\033[93m\033[1m",
         "REBUILDING_CONTAINER": "\033[93m\033[1m",
         "RELOADING": "\033[95m\033[1m",
+        "SHUTDOWN: DRAINING_TASKS": "\033[91m\033[1m",
+        "SHUTDOWN: WAITING_WEBHOOKS": "\033[93m\033[1m",
+        "SHUTDOWN: PERSISTING_QUEUE": "\033[95m\033[1m",
     }
     color_code = state_colors.get(reload_state, "\033[1m")
-    reload_badge = f"{color_code}[ HOT-RELOAD: {reload_state} ]\033[0m"
+    if reload_state and reload_state.startswith("SHUTDOWN"):
+        reload_badge = f"{color_code}[ {reload_state} ]\033[0m"
+    else:
+        reload_badge = f"{color_code}[ HOT-RELOAD: {reload_state} ]\033[0m"
 
     inner_w = width - 4
     title = "\033[96m\033[1m⚡ GRAVITON SERVER DASHBOARD ⚡\033[0m"
@@ -418,7 +424,7 @@ def render_header_panel(
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
         pause_hint = "[v] Resume Tasks" if is_paused else "[v] Pause Tasks"
-        nav_hint = f"Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [j] Jobs │ [e] Logs │ {pause_hint}"
+        nav_hint = f"Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [j] Jobs │ [e] Logs │ {pause_hint} │ [q] Quit"
 
     lines = [
         line1_raw,

@@ -48,7 +48,7 @@ from lib.tui_panels import (
     render_third_party_models_panel,
     truncate_to_display_width,
 )
-from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
+from lib.updater import get_git_info, get_hot_reload_state, set_hot_reload_state, get_uptime_str
 
 
 class TUILogHandler(logging.Handler):
@@ -111,6 +111,9 @@ class TerminalDashboard:
         scheduler: Optional[TaskScheduler] = None,
         pr_tracker: Optional[Any] = None,
         quota_tracker: Optional[QuotaTracker] = None,
+        quit_grace_period: float = 3.0,
+        httpd: Optional[Any] = None,
+        on_quit: Optional[Any] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -123,6 +126,11 @@ class TerminalDashboard:
         self.pr_tracker = pr_tracker
         self.scheduler = scheduler
         self.quota_tracker = quota_tracker
+        self.quit_grace_period = quit_grace_period
+        self.httpd = httpd
+        self.on_quit = on_quit
+        self._is_shutting_down = False
+        self._shutdown_thread: Optional[threading.Thread] = None
 
         if log_file is not None:
             log_path = Path(log_file)
@@ -566,8 +574,84 @@ class TerminalDashboard:
                 return False
         return self.scheduler.trigger_job(job_id)
 
+    def quit(
+        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
+    ) -> threading.Thread:
+        """Trigger graceful server shutdown in a background thread."""
+        return self.graceful_shutdown(timeout=timeout, grace_period=grace_period)
+
+    def graceful_shutdown(
+        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
+    ) -> threading.Thread:
+        """
+        Execute 4-step graceful shutdown in a background thread:
+        1. Drain active tasks (task_manager.drain_active_tasks)
+        2. Webhook grace buffer (sleep for quit_grace_period)
+        3. Persist task queue (task_manager.dump_queue_state)
+        4. Clean abort & termination (stop scheduler, on_quit, httpd, dashboard, task_manager)
+        """
+        if getattr(self, "_is_shutting_down", False) and getattr(self, "_shutdown_thread", None):
+            return self._shutdown_thread
+        self._is_shutting_down = True
+
+        gp = grace_period if grace_period is not None else getattr(self, "quit_grace_period", 3.0)
+
+        def _sequence():
+            try:
+                # Step 1: Drain Active Tasks
+                set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
+                if self.task_manager:
+                    self.task_manager.drain_active_tasks(timeout=timeout)
+
+                # Step 2: Webhook Grace Buffer
+                set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
+                if gp > 0:
+                    time.sleep(gp)
+
+                # Step 3: Persist Task Queue
+                set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
+                if self.task_manager:
+                    self.task_manager.dump_queue_state()
+
+                # Step 4: Clean Abort & Termination
+                if self.scheduler:
+                    try:
+                        self.scheduler.stop()
+                    except Exception:
+                        pass
+                if self.on_quit:
+                    try:
+                        self.on_quit()
+                    except Exception:
+                        pass
+                if self.httpd:
+                    try:
+                        self.httpd.shutdown()
+                        self.httpd.server_close()
+                    except Exception:
+                        pass
+                self.stop()
+                if self.task_manager:
+                    try:
+                        self.task_manager.stop()
+                    except Exception:
+                        pass
+                set_hot_reload_state("IDLE")
+            except Exception as e:
+                logging.getLogger("graviton.tui").exception(f"Error during graceful shutdown: {e}")
+
+        t = threading.Thread(target=_sequence, daemon=True, name="TUIGracefulShutdown")
+        self._shutdown_thread = t
+        t.start()
+        return t
+
     def handle_key(self, key: str):
         """Handle hotkey or navigation key press."""
+        if key in ("q", "Q"):
+            self.quit()
+            self._force_refresh()
+            return
+
         if self.active_screen == "jobs":
             if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
                 self.select_prev_job()

@@ -12,7 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from lib.quota import QuotaState, QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
@@ -1337,6 +1337,59 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertTrue(dashboard._need_refresh)
         self.assertTrue(dashboard._refresh_event.is_set())
         self.assertEqual(dashboard.active_screen, "jobs")
+
+    def test_render_header_navigation_hint_includes_quit(self):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+        rendered = dashboard.render(width=100)
+        self.assertIn("[q] Quit", rendered)
+
+    def test_render_header_shutdown_badges(self):
+        from lib.tui_panels import render_header_panel
+        header_draining = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: DRAINING_TASKS", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: DRAINING_TASKS ]" in line for line in header_draining))
+
+        header_waiting = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: WAITING_WEBHOOKS", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: WAITING_WEBHOOKS ]" in line for line in header_waiting))
+
+        header_persisting = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: PERSISTING_QUEUE", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: PERSISTING_QUEUE ]" in line for line in header_persisting))
+
+    def test_handle_key_q_triggers_quit(self):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, quit_grace_period=0.01)
+
+        with patch.object(dashboard, "quit") as mock_quit:
+            dashboard.handle_key("q")
+            mock_quit.assert_called_once()
+
+        with patch.object(dashboard, "quit") as mock_quit_upper:
+            dashboard.handle_key("Q")
+            mock_quit_upper.assert_called_once()
+
+    def test_tui_graceful_shutdown_workflow(self):
+        mock_task_manager = MagicMock()
+        mock_scheduler = MagicMock()
+        mock_httpd = MagicMock()
+        mock_on_quit = MagicMock()
+
+        dashboard = TerminalDashboard(
+            task_manager=mock_task_manager,
+            scheduler=mock_scheduler,
+            quit_grace_period=0.01,
+            httpd=mock_httpd,
+            on_quit=mock_on_quit,
+        )
+
+        shutdown_thread = dashboard.quit()
+        shutdown_thread.join(timeout=2.0)
+
+        mock_task_manager.drain_active_tasks.assert_called_once()
+        mock_task_manager.dump_queue_state.assert_called_once()
+        mock_scheduler.stop.assert_called_once()
+        mock_httpd.shutdown.assert_called_once()
+        mock_httpd.server_close.assert_called_once()
+        mock_on_quit.assert_called_once()
 
 
 if __name__ == "__main__":

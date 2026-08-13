@@ -672,6 +672,56 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertLess(sigint_index, dashboard_index)
         self.assertLess(sigterm_index, dashboard_index)
 
+    def test_cli_argument_quit_grace_period(self):
+        with patch("sys.argv", ["graviton-server.py", "--quit-grace-period", "5.5"]):
+            with patch("bin.graviton-server.HTTPServer" if "bin.graviton-server" in sys.modules else "graviton_server.HTTPServer") as mock_http:
+                mock_server = MagicMock()
+                mock_http.return_value = mock_server
+                mock_server.serve_forever.side_effect = KeyboardInterrupt
+                with patch("graviton_server.TerminalDashboard") as mock_dash:
+                    server_mod.main()
+                    mock_dash.assert_called_once()
+                    _, kwargs = mock_dash.call_args
+                    self.assertEqual(kwargs.get("quit_grace_period"), 5.5)
+
+    def test_graceful_shutdown_workflow_server_module(self):
+        mock_tm = MagicMock()
+        mock_sched = MagicMock()
+        mock_httpd = MagicMock()
+        mock_dash = MagicMock()
+
+        t = server_mod.graceful_shutdown(
+            task_manager=mock_tm,
+            scheduler=mock_sched,
+            dashboard=mock_dash,
+            httpd=mock_httpd,
+            grace_period=0.01,
+        )
+        t.join(timeout=2.0)
+
+        mock_dash.graceful_shutdown.assert_called_once_with(timeout=None, grace_period=0.01)
+
+    def test_graceful_shutdown_without_dashboard(self):
+        mock_tm = MagicMock()
+        mock_sched = MagicMock()
+        mock_httpd = MagicMock()
+
+        t = server_mod.graceful_shutdown(
+            task_manager=mock_tm,
+            scheduler=mock_sched,
+            dashboard=None,
+            httpd=mock_httpd,
+            grace_period=0.01,
+        )
+        t.join(timeout=2.0)
+
+        mock_tm.drain_active_tasks.assert_called_once()
+        mock_tm.dump_queue_state.assert_called_once()
+        mock_sched.stop.assert_called_once()
+        mock_httpd.shutdown.assert_called_once()
+        mock_httpd.server_close.assert_called_once()
+        mock_tm.stop.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

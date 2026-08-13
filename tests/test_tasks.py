@@ -1715,6 +1715,39 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(was_exhausted)
         manager.stop()
 
+    def test_drain_active_tasks(self):
+        manager = TaskManager(max_workers=1)
+        manager.start()
+        t1 = manager.submit_task("code_reviewer", "Task 1", target_id="#1")
+        # Wait for task 1 to finish
+        res = manager.drain_active_tasks(timeout=2.0)
+        self.assertTrue(res)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        manager.stop()
+
+    def test_dump_and_restore_queue_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_queue_state.json"
+            manager = TaskManager(max_workers=0, cwd=Path(tmpdir))
+            t1 = manager.submit_task("code_fixer", "Task dump 1", target_id="#101")
+            t2 = manager.submit_task("issue_triager", "Task dump 2", target_id="#102")
+
+            saved_count = manager.dump_queue_state(filepath=state_file)
+            self.assertEqual(saved_count, 2)
+            self.assertTrue(state_file.exists())
+
+            new_manager = TaskManager(max_workers=0, cwd=Path(tmpdir))
+            restored_count = new_manager.restore_queue_state(filepath=state_file)
+            self.assertEqual(restored_count, 2)
+            self.assertFalse(state_file.exists())
+
+            restored_tasks = new_manager.get_queued_tasks()
+            restored_ids = [t.id for t in restored_tasks]
+            self.assertIn(t1.id, restored_ids)
+            self.assertIn(t2.id, restored_ids)
+            new_manager.stop()
+            manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
