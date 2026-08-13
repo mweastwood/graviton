@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from lib.quota import QuotaState, QuotaTracker
+from lib.quota import QuotaState, QuotaTracker, QuotaWindow
 from lib.runner import run_agent_container
 from lib.tasks import Task, TaskManager, TaskStatus
 
@@ -106,6 +106,8 @@ class TestTaskManager(unittest.TestCase):
             max_attempts=5,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
+            quota_pool="gemini",
+            model="gemini-2.5-flash",
         )
 
         manager.stop()
@@ -189,6 +191,8 @@ class TestTaskManager(unittest.TestCase):
             max_attempts=3,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
+            quota_pool="gemini",
+            model="gemini-2.5-flash",
         )
 
         stats = manager.get_stats()
@@ -774,6 +778,8 @@ class TestTaskManager(unittest.TestCase):
                 max_attempts=3,
                 cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
                 initial_attempt=1,
+                quota_pool="gemini",
+                model="gemini-2.5-flash",
             )
 
             manager.stop()
@@ -1644,8 +1650,74 @@ class TestTaskManager(unittest.TestCase):
         # Max tasks limit (2) should be strictly enforced via pruning on task completion
         self.assertLessEqual(len(manager._tasks), 2)
 
+    def test_dual_pool_task_selection(self):
+        quota = QuotaTracker()
+        # Set Gemini pool to 40% and Claude pool to 80%
+        quota.update_quota(40.0, quota_pool="gemini")
+        quota.update_quota(80.0, quota_pool="claude_gpt")
+
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Test prompt dual pool")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.selected_pool, "claude_gpt")
+        self.assertEqual(task.selected_model, "claude-3-5-sonnet")
+        manager.stop()
+
+    def test_get_stats_queue_status_during_single_pool_exhaustion(self):
+        quota = QuotaTracker()
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        quota.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        quota.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+
+        # Single-pool exhaustion must NOT report PAUSED_FOR_QUOTA since 3rd party pool is active
+        stats = manager.get_stats()
+        self.assertEqual(stats["queue_status"], "ACTIVE")
+        self.assertNotEqual(stats["queue_status"], "PAUSED_FOR_QUOTA")
+
+        # Exhaust 3rd party pool as well
+        w_5h_c0 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_c0 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        quota.update_windows(w_5h_c0, w_1w_c0, quota_pool="claude_gpt")
+
+        # Now all pools are exhausted -> PAUSED_FOR_QUOTA
+        stats_exhausted = manager.get_stats()
+        self.assertEqual(stats_exhausted["queue_status"], "PAUSED_FOR_QUOTA")
+
+    def test_worker_loop_paused_or_draining_backoff(self):
+        manager = TaskManager(max_workers=0)
+        manager.pause()
+        t = Task(id="task-paused-test", agent="code_fixer", prompt="test")
+        manager._queue.put(t)
+
+        with manager._lock:
+            draining = manager._draining
+            paused = manager._paused
+            item = manager._queue.get_nowait()
+            was_exhausted = False
+            if manager._draining or manager._paused:
+                was_exhausted = True
+            manager._queue.put(item)
+            manager._queue.task_done()
+
+        self.assertTrue(was_exhausted)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

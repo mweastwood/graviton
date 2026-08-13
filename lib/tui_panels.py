@@ -412,8 +412,13 @@ def render_header_panel(
         nav_hint = "Nav: [↑/↓] Select │ [Space] Toggle │ [e/d] Enable/Disable │ [Esc] Main Screen"
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
+    elif active_screen == "gemini_models":
+        nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
+    elif active_screen == "third_party_models":
+        nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
-        nav_hint = "Nav: [↑/↓] Select Task │ [p] Prioritize │ [j] Periodic Jobs │ [e] Event Logs"
+        pause_hint = "[v] Resume Tasks" if is_paused else "[v] Pause Tasks"
+        nav_hint = f"Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [j] Jobs │ [e] Logs │ {pause_hint}"
 
     lines = [
         line1_raw,
@@ -430,46 +435,115 @@ def render_quota_panel(
     task_manager: Optional[TaskManager] = None,
     now_dt: Optional[datetime] = None,
 ) -> List[str]:
-    """Render model quota panel for 5-hour and 1-week windows."""
+    """Render model quota panel for 5-hour and 1-week windows for dual pools (Gemini and 3rd Party)."""
     quota_tr = quota_tracker or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
-    pool = getattr(quota_tr, "quota_pool", "gemini") if quota_tr else "gemini"
 
-    if quota_tr:
+    if quota_tr and hasattr(quota_tr, "get_pool_windows"):
+        w_5h_g, w_1w_g = quota_tr.get_pool_windows("gemini")
+        w_5h_c, w_1w_c = quota_tr.get_pool_windows("claude_gpt")
+    elif quota_tr:
         rem_pct = getattr(quota_tr, "remaining_percentage", 100.0)
-        w_5h = getattr(quota_tr, "window_5h", None) or QuotaWindow(
-            name="5H", duration_seconds=18000.0, remaining_percentage=rem_pct
-        )
-        w_1w = getattr(quota_tr, "window_1w", None) or QuotaWindow(
-            name="1W", duration_seconds=604800.0, remaining_percentage=100.0
-        )
+        w_5h_g = getattr(quota_tr, "gemini_window_5h", None) or getattr(quota_tr, "window_5h", None) or QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=rem_pct)
+        w_1w_g = getattr(quota_tr, "gemini_window_1w", None) or getattr(quota_tr, "window_1w", None) or QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        w_5h_c = getattr(quota_tr, "claude_window_5h", None) or QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        w_1w_c = getattr(quota_tr, "claude_window_1w", None) or QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
     else:
-        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
-        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
 
-    badge_5h_text = format_quota_badge(w_5h, now_dt=now_dt, quota_pool=pool)
-    badge_1w_text = format_quota_badge(w_1w, now_dt=now_dt, quota_pool=pool)
+    badge_5h_g = format_quota_badge(w_5h_g, now_dt=now_dt, quota_pool="GEMINI")
+    badge_1w_g = format_quota_badge(w_1w_g, now_dt=now_dt, quota_pool="GEMINI")
+    badge_5h_c = format_quota_badge(w_5h_c, now_dt=now_dt, quota_pool="3RD PARTY")
+    badge_1w_c = format_quota_badge(w_1w_c, now_dt=now_dt, quota_pool="3RD PARTY")
 
-    status_5h, _ = w_5h.get_pacing_status(now_dt)
-    status_1w, _ = w_1w.get_pacing_status(now_dt)
+    status_5h_g, _ = w_5h_g.get_pacing_status(now_dt)
+    status_1w_g, _ = w_1w_g.get_pacing_status(now_dt)
+    status_5h_c, _ = w_5h_c.get_pacing_status(now_dt)
+    status_1w_c, _ = w_1w_c.get_pacing_status(now_dt)
 
-    color_5h = (
+    color_5h_g = (
         "\033[92m\033[1m"
-        if status_5h == "OK" and w_5h.remaining_percentage > 0
-        else ("\033[91m\033[1m" if w_5h.remaining_percentage == 0 else "\033[93m\033[1m")
+        if status_5h_g == "OK" and w_5h_g.remaining_percentage > 0
+        else ("\033[91m\033[1m" if w_5h_g.remaining_percentage == 0 else "\033[93m\033[1m")
     )
-    color_1w = (
+    color_1w_g = (
         "\033[92m\033[1m"
-        if status_1w == "OK" and w_1w.remaining_percentage > 0
-        else ("\033[91m\033[1m" if w_1w.remaining_percentage == 0 else "\033[93m\033[1m")
+        if status_1w_g == "OK" and w_1w_g.remaining_percentage > 0
+        else ("\033[91m\033[1m" if w_1w_g.remaining_percentage == 0 else "\033[93m\033[1m")
+    )
+    color_5h_c = (
+        "\033[92m\033[1m"
+        if status_5h_c == "OK" and w_5h_c.remaining_percentage > 0
+        else ("\033[91m\033[1m" if w_5h_c.remaining_percentage == 0 else "\033[93m\033[1m")
+    )
+    color_1w_c = (
+        "\033[92m\033[1m"
+        if status_1w_c == "OK" and w_1w_c.remaining_percentage > 0
+        else ("\033[91m\033[1m" if w_1w_c.remaining_percentage == 0 else "\033[93m\033[1m")
     )
 
-    panel_title = f"ANTIGRAVITY MODEL QUOTA ({pool.upper()})"
-    header_bar = render_panel_header(width, panel_title, "\033[96m\033[1m")
+    header_bar = render_panel_header(width, "ANTIGRAVITY MODEL QUOTA (DUAL-POOL)", "\033[96m\033[1m")
 
     lines = [
-        f"{color_5h}{badge_5h_text}\033[0m",
-        f"{color_1w}{badge_1w_text}\033[0m",
+        f"{color_5h_g}{badge_5h_g}\033[0m",
+        f"{color_1w_g}{badge_1w_g}\033[0m",
+        f"{color_5h_c}{badge_5h_c}\033[0m",
+        f"{color_1w_c}{badge_1w_c}\033[0m",
     ]
+    return render_panel_frame(header_bar, lines, width)
+
+
+def render_gemini_models_panel(
+    width: int,
+    models: List[str],
+    selected_index: int = 0,
+    active_model: str = "gemini-2.5-flash",
+) -> List[str]:
+    """Render Gemini (1st party) model selection panel."""
+    header_bar = render_panel_header(width, "GEMINI MODEL SELECTION (1ST PARTY)", "\033[96m\033[1m")
+    lines = []
+    for idx, model_name in enumerate(models):
+        is_selected = (idx == selected_index)
+        is_active = (model_name == active_model)
+        prefix = "> " if is_selected else "  "
+        active_tag = " \033[92m\033[1m[ACTIVE]\033[0m" if is_active else ""
+        if is_selected:
+            line_str = f"\033[93m\033[1m{prefix}{model_name}\033[0m{active_tag}"
+        else:
+            line_str = f"{prefix}{model_name}{active_tag}"
+        lines.append(line_str)
+
+    if not lines:
+        lines.append("\033[2m(No Gemini models available)\033[0m")
+
+    return render_panel_frame(header_bar, lines, width)
+
+
+def render_third_party_models_panel(
+    width: int,
+    models: List[str],
+    selected_index: int = 0,
+    active_model: str = "claude-3-5-sonnet",
+) -> List[str]:
+    """Render 3rd party (Claude/GPT) model selection panel."""
+    header_bar = render_panel_header(width, "3RD PARTY MODEL SELECTION (CLAUDE / GPT)", "\033[96m\033[1m")
+    lines = []
+    for idx, model_name in enumerate(models):
+        is_selected = (idx == selected_index)
+        is_active = (model_name == active_model)
+        prefix = "> " if is_selected else "  "
+        active_tag = " \033[92m\033[1m[ACTIVE]\033[0m" if is_active else ""
+        if is_selected:
+            line_str = f"\033[93m\033[1m{prefix}{model_name}\033[0m{active_tag}"
+        else:
+            line_str = f"{prefix}{model_name}{active_tag}"
+        lines.append(line_str)
+
+    if not lines:
+        lines.append("\033[2m(No 3rd party models available)\033[0m")
+
     return render_panel_frame(header_bar, lines, width)
 
 

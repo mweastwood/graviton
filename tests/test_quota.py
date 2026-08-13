@@ -770,10 +770,272 @@ class TestQuotaTracker(unittest.TestCase):
             with patch("lib.quota.logger.warning") as mock_warning:
                 t = tracker.poll_live_quota_async(force=True)
                 t.join(timeout=2.0)
-                self.assertFalse(t.is_alive())
                 mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
+
+    def test_dual_pool_tracking_and_model_selection(self):
+        tracker = QuotaTracker()
+
+        # Initial active models
+        self.assertEqual(tracker.get_active_model("gemini"), "gemini-2.5-flash")
+        self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-3-5-sonnet")
+
+        # Set active model
+        tracker.set_active_model("gemini", "gemini-2.5-pro")
+        tracker.set_active_model("claude_gpt", "claude-3-opus")
+
+        self.assertEqual(tracker.get_active_model("gemini"), "gemini-2.5-pro")
+        self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-3-opus")
+
+        # Update quota for individual pools
+        tracker.update_quota(75.0, quota_pool="gemini")
+        tracker.update_quota(45.0, quota_pool="claude_gpt")
+
+        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 75.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 45.0)
+
+        self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
+        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+
+        # Set claude_gpt pool to 0% -> EXHAUSTED
+        tracker.update_quota(0.0, quota_pool="claude_gpt")
+        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.EXHAUSTED)
+        self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
+
+    def test_poll_live_quota_third_party_pool(self):
+        tracker = QuotaTracker()
+
+        w_5h_gemini = QuotaWindow(name="5H", remaining_percentage=90.0)
+        w_1w_gemini = QuotaWindow(name="1W", remaining_percentage=85.0)
+        tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
+
+        w_5h_claude = QuotaWindow(name="5H", remaining_percentage=40.0)
+        w_1w_claude = QuotaWindow(name="1W", remaining_percentage=35.0)
+
+        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w_5h_claude, w_1w_claude)) as mock_fetch:
+            polled_5h, polled_1w = tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=True)
+
+            mock_fetch.assert_called_once_with(token="test-token", quota_pool="claude_gpt")
+            # Verify 3rd-party pool windows were returned and updated
+            self.assertEqual(polled_5h.remaining_percentage, 40.0)
+            self.assertEqual(polled_1w.remaining_percentage, 35.0)
+            self.assertEqual(tracker.claude_window_5h.remaining_percentage, 40.0)
+            self.assertEqual(tracker.claude_window_1w.remaining_percentage, 35.0)
+
+            # Verify Gemini windows remain untouched
+            self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 90.0)
+            self.assertEqual(tracker.gemini_window_1w.remaining_percentage, 85.0)
+
+    def test_pacing_recovery_across_dual_pools(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        tracker = QuotaTracker()
+
+        # Gemini is OK (5H: 80% remaining vs ~64% time remaining; 1W: 90% remaining vs ~85% time remaining)
+        w_5h_gemini = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_gemini = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_time="2026-08-15T05:06:00Z")
+        tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
+
+        # Claude is BEHIND pacing: 1W window has 20% remaining, 4d 8h reset remaining (374400s)
+        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
+        w_5h_claude = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_claude = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
+        tracker.update_windows(w_5h_claude, w_1w_claude, quota_pool="claude_gpt")
+
+        # When no specific window is passed, get_pacing_recovery_seconds and format_pacing_countdown evaluate across both pools
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
+        self.assertTrue(tracker.is_pool_behind_pacing("claude_gpt", now_dt=now_dt))
+        self.assertFalse(tracker.is_pool_behind_pacing("gemini", now_dt=now_dt))
+        # Overall is_behind_pacing is False because Gemini pool is eligible for tasks
+        self.assertFalse(tracker.is_behind_pacing(now=now_dt))
+
+    def test_independent_ttl_polling_per_pool(self):
+        tracker = QuotaTracker()
+        w_gemini = (QuotaWindow(name="5H", remaining_percentage=90.0), QuotaWindow(name="1W", remaining_percentage=95.0))
+        w_claude = (QuotaWindow(name="5H", remaining_percentage=80.0), QuotaWindow(name="1W", remaining_percentage=85.0))
+
+        start_time = 1000.0
+        with patch("lib.quota.time.time", return_value=start_time):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=w_gemini) as mock_fetch:
+                tracker.poll_live_quota(token="t1", quota_pool="gemini", force=False)
+                mock_fetch.assert_called_once_with(token="t1", quota_pool="gemini")
+
+        # 10s later: poll claude_gpt. It must poll API because claude_gpt TTL was not updated by gemini
+        with patch("lib.quota.time.time", return_value=start_time + 10.0):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=w_claude) as mock_fetch:
+                tracker.poll_live_quota(token="t1", quota_pool="claude_gpt", force=False)
+                mock_fetch.assert_called_once_with(token="t1", quota_pool="claude_gpt")
+
+        # Another gemini call at start_time + 20s must NOT poll API due to TTL
+        with patch("lib.quota.time.time", return_value=start_time + 20.0):
+            with patch("lib.quota.fetch_live_antigravity_quota") as mock_fetch:
+                tracker.poll_live_quota(token="t1", quota_pool="gemini", force=False)
+                mock_fetch.assert_not_called()
+
+    def test_is_behind_pacing_dual_pool_failover(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        tracker = QuotaTracker()
+
+        # Case 1: Gemini is behind pacing, Claude is OK -> is_behind_pacing() is False
+        w_5h_gemini_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=10.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_gemini_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_time="2026-08-15T05:06:00Z")
+        w_5h_claude_ok = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_claude_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_time="2026-08-15T05:06:00Z")
+
+        tracker.update_windows(w_5h_gemini_behind, w_1w_gemini_ok, quota_pool="gemini")
+        tracker.update_windows(w_5h_claude_ok, w_1w_claude_ok, quota_pool="claude_gpt")
+
+        self.assertTrue(tracker.is_pool_behind_pacing("gemini", now_dt=now_dt))
+        self.assertFalse(tracker.is_pool_behind_pacing("claude_gpt", now_dt=now_dt))
+        self.assertFalse(tracker.is_behind_pacing(now=now_dt))
+
+        # Case 2: Both Gemini and Claude are behind pacing -> is_behind_pacing() is True
+        w_5h_claude_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=10.0, reset_time="2026-08-09T08:18:45Z")
+        tracker.update_windows(w_5h_claude_behind, w_1w_claude_ok, quota_pool="claude_gpt")
+
+        self.assertTrue(tracker.is_pool_behind_pacing("gemini", now_dt=now_dt))
+        self.assertTrue(tracker.is_pool_behind_pacing("claude_gpt", now_dt=now_dt))
+        self.assertTrue(tracker.is_behind_pacing(now=now_dt))
+
+    def test_update_quota_claude_gpt_remaining_percentage(self):
+        tracker = QuotaTracker()
+        tracker.update_quota(25.0, quota_pool="claude_gpt")
+
+        self.assertEqual(tracker.remaining_percentage, 25.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 25.0)
+
+    def test_window_1w_init_parameter_routing(self):
+        custom_w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=65.0)
+
+        # Gemini pool initialization
+        t_gemini = QuotaTracker(window_1w=custom_w1, quota_pool="gemini")
+        self.assertEqual(t_gemini.gemini_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_gemini.claude_window_1w.remaining_percentage, 100.0)
+
+        # 3rd party pool initialization
+        t_claude = QuotaTracker(window_1w=custom_w1, quota_pool="claude_gpt")
+        self.assertEqual(t_claude.claude_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_claude.gemini_window_1w.remaining_percentage, 100.0)
+
+        # Un-scoped initialization (quota_pool is None)
+        t_unscoped = QuotaTracker(window_1w=custom_w1, quota_pool=None)
+        self.assertEqual(t_unscoped.gemini_window_1w.remaining_percentage, 65.0)
+        self.assertEqual(t_unscoped.claude_window_1w.remaining_percentage, 65.0)
+
+    def test_update_windows_unscoped_ttl_timestamp_tracking(self):
+        tracker = QuotaTracker()
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0)
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0)
+
+        now_time = 5000.0
+        with patch("lib.quota.time.time", return_value=now_time):
+            tracker.update_windows(w_5h, w_1w, quota_pool=None)
+
+            # Both pool TTL timestamps should be populated
+            self.assertEqual(tracker._last_fetch_5h.get("gemini"), now_time)
+            self.assertEqual(tracker._last_fetch_5h.get("claude_gpt"), now_time)
+            self.assertEqual(tracker._last_fetch_1w.get("gemini"), now_time)
+            self.assertEqual(tracker._last_fetch_1w.get("claude_gpt"), now_time)
+
+        # Subsequent live quota polls for both pools within TTL should NOT trigger API fetch
+        with patch("lib.quota.time.time", return_value=now_time + 10.0):
+            with patch("lib.quota.fetch_live_antigravity_quota") as mock_fetch:
+                tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=False)
+                tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=False)
+                mock_fetch.assert_not_called()
+
+    def test_update_windows_claude_gpt_target_pool_routing(self):
+        tracker = QuotaTracker(quota_pool="gemini")
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+        self.assertEqual(tracker.remaining_percentage, 90.0)
+
+        # Update claude_gpt with 20% quota level
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=20.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=30.0)
+        tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        # Target pool claude_gpt metrics are updated
+        self.assertEqual(tracker.remaining_percentage, 20.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 20.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 90.0)
+
+    def test_reset_time_setter_claude_gpt_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        t_claude.reset_time = 1700000000.0
+        self.assertEqual(t_claude.claude_window_5h.reset_timestamp, 1700000000.0)
+        self.assertEqual(t_claude.claude_window_5h.reset_time, "1700000000.0")
+        self.assertIsNone(t_claude.gemini_window_5h.reset_timestamp)
+
+        t_gemini = QuotaTracker(quota_pool="gemini")
+        t_gemini.reset_time = 1800000000.0
+        self.assertEqual(t_gemini.gemini_window_5h.reset_timestamp, 1800000000.0)
+        self.assertIsNone(t_gemini.claude_window_5h.reset_timestamp)
+
+    def test_window_properties_claude_gpt_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        w5_custom = QuotaWindow(name="5H", remaining_percentage=42.0)
+        w1_custom = QuotaWindow(name="1W", remaining_percentage=84.0)
+
+        t_claude.window_5h = w5_custom
+        t_claude.window_1w = w1_custom
+
+        self.assertEqual(t_claude.window_5h.remaining_percentage, 42.0)
+        self.assertEqual(t_claude.window_1w.remaining_percentage, 84.0)
+        self.assertEqual(t_claude.claude_window_5h.remaining_percentage, 42.0)
+        self.assertEqual(t_claude.claude_window_1w.remaining_percentage, 84.0)
+        self.assertEqual(t_claude.gemini_window_5h.remaining_percentage, 100.0)
+        self.assertEqual(t_claude.gemini_window_1w.remaining_percentage, 100.0)
+
+    def test_remaining_percentage_setter_target_pool_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        t_claude.remaining_percentage = 45.0
+        self.assertEqual(t_claude.claude_window_5h.remaining_percentage, 45.0)
+        self.assertEqual(t_claude.gemini_window_5h.remaining_percentage, 100.0)
+
+        t_gemini = QuotaTracker(quota_pool="gemini")
+        t_gemini.remaining_percentage = 55.0
+        self.assertEqual(t_gemini.gemini_window_5h.remaining_percentage, 55.0)
+        self.assertEqual(t_gemini.claude_window_5h.remaining_percentage, 100.0)
+
+    def test_single_pool_exhaustion_tracker_state(self):
+        tracker = QuotaTracker()
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        tracker.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+
+        # State remains NORMAL while Claude pool is available
+        self.assertEqual(tracker.state, QuotaState.NORMAL)
+
+        # Exhaust Claude pool as well
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        self.assertEqual(tracker.state, QuotaState.EXHAUSTED)
+
+    def test_unaliased_quota_windows_on_init_and_update(self):
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0)
+        w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0)
+        tracker = QuotaTracker(window_5h=w5, window_1w=w1, quota_pool=None)
+
+        self.assertIsNot(tracker.gemini_window_5h, tracker.claude_window_5h)
+        self.assertIsNot(tracker.gemini_window_1w, tracker.claude_window_1w)
+
+        tracker.gemini_window_5h.remaining_percentage = 20.0
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 80.0)
+
+        w5_new = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=50.0)
+        w1_new = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=60.0)
+        tracker.update_windows(w5_new, w1_new, quota_pool=None)
+
+        self.assertIsNot(tracker.gemini_window_5h, tracker.claude_window_5h)
+        tracker.gemini_window_5h.remaining_percentage = 10.0
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 50.0)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

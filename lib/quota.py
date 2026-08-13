@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.quota")
 
@@ -69,6 +69,15 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     return None
 
 
+def _normalize_pool_key(pool: Optional[str]) -> str:
+    """Normalize quota pool string to canonical pool key ('gemini' or 'claude_gpt')."""
+    p = str(pool or "gemini").lower()
+    if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+        return "claude_gpt"
+    return "gemini"
+
+
+
 
 class QuotaWindow:
     def __init__(
@@ -94,6 +103,18 @@ class QuotaWindow:
         res = reset_time if reset_time is not None else reset_timestamp
         self.reset_time = str(res) if res is not None else None
         self.reset_timestamp = parse_reset_time_to_timestamp(res)
+
+    def copy(self) -> "QuotaWindow":
+        return QuotaWindow(
+            name=self.name,
+            duration_seconds=self.duration_seconds,
+            remaining_percentage=self.remaining_percentage,
+            reset_time=self.reset_time,
+            reset_timestamp=self.reset_timestamp,
+        )
+
+    def clone(self) -> "QuotaWindow":
+        return self.copy()
 
     def get_remaining_seconds(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
@@ -668,6 +689,10 @@ class QuotaTracker:
         window_5h: Optional[QuotaWindow] = None,
         window_1w: Optional[QuotaWindow] = None,
         quota_pool: Optional[str] = None,
+        active_gemini_model: str = "gemini-2.5-flash",
+        active_third_party_model: str = "claude-3-5-sonnet",
+        available_gemini_models: Optional[List[str]] = None,
+        available_third_party_models: Optional[List[str]] = None,
     ):
         self._lock = threading.RLock()
         self.quota_pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
@@ -676,15 +701,49 @@ class QuotaTracker:
         self._requests_remaining: Optional[int] = None
         self._tokens_remaining: Optional[int] = None
 
-        self.window_5h = window_5h or QuotaWindow(
-            name="5H",
-            duration_seconds=18000.0,
-            remaining_percentage=self._remaining_percentage,
-            reset_time=str(reset_time) if reset_time is not None else None,
-        )
-        self.window_1w = window_1w or QuotaWindow(
-            name="1W", duration_seconds=604800.0, remaining_percentage=100.0
-        )
+        self.active_gemini_model = active_gemini_model
+        self.active_third_party_model = active_third_party_model
+        self.available_gemini_models = available_gemini_models or [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-1.5-pro",
+        ]
+        self.available_third_party_models = available_third_party_models or [
+            "claude-3-5-sonnet",
+            "claude-3-opus",
+            "claude-3-5-haiku",
+        ]
+
+        def default_5h():
+            return QuotaWindow(
+                name="5H",
+                duration_seconds=18000.0,
+                remaining_percentage=self._remaining_percentage,
+                reset_time=str(reset_time) if reset_time is not None else None,
+            )
+
+        def default_1w():
+            return QuotaWindow(
+                name="1W", duration_seconds=604800.0, remaining_percentage=100.0
+            )
+
+        if quota_pool is None:
+            self.gemini_window_5h = window_5h.copy() if window_5h is not None else default_5h()
+            self.gemini_window_1w = window_1w.copy() if window_1w is not None else default_1w()
+            self.claude_window_5h = window_5h.copy() if window_5h is not None else default_5h()
+            self.claude_window_1w = window_1w.copy() if window_1w is not None else default_1w()
+        else:
+            p = str(quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_5h = window_5h.copy() if window_5h is not None else default_5h()
+                self.claude_window_1w = window_1w.copy() if window_1w is not None else default_1w()
+                self.gemini_window_5h = default_5h()
+                self.gemini_window_1w = default_1w()
+            else:
+                self.gemini_window_5h = window_5h.copy() if window_5h is not None else default_5h()
+                self.gemini_window_1w = window_1w.copy() if window_1w is not None else default_1w()
+                self.claude_window_5h = default_5h()
+                self.claude_window_1w = default_1w()
 
         self.base_backoff_delay = base_backoff_delay
         self.max_backoff_delay = max_backoff_delay
@@ -695,11 +754,41 @@ class QuotaTracker:
 
         self.interval_5h = 60.0
         self.interval_1w = 60.0
-        self._last_fetch_5h: float = 0.0
-        self._last_fetch_1w: float = 0.0
+        self._last_fetch_5h: Dict[str, float] = {}
+        self._last_fetch_1w: Dict[str, float] = {}
         self._in_flight: bool = False
         self._stop_polling_event = threading.Event()
         self._polling_thread: Optional[threading.Thread] = None
+
+    @property
+    def window_5h(self) -> QuotaWindow:
+        with self._lock:
+            w5, _ = self.get_pool_windows(self.quota_pool)
+            return w5
+
+    @window_5h.setter
+    def window_5h(self, val: QuotaWindow):
+        with self._lock:
+            p = str(self.quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_5h = val
+            else:
+                self.gemini_window_5h = val
+
+    @property
+    def window_1w(self) -> QuotaWindow:
+        with self._lock:
+            _, w1 = self.get_pool_windows(self.quota_pool)
+            return w1
+
+    @window_1w.setter
+    def window_1w(self, val: QuotaWindow):
+        with self._lock:
+            p = str(self.quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_1w = val
+            else:
+                self.gemini_window_1w = val
 
     @property
     def remaining_percentage(self) -> float:
@@ -711,18 +800,75 @@ class QuotaTracker:
         with self._lock:
             val_float = max(0.0, min(100.0, float(val)))
             self._remaining_percentage = val_float
-            self.window_5h.remaining_percentage = val_float
+            w5, _ = self.get_pool_windows(self.quota_pool)
+            w5.remaining_percentage = val_float
             if self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD:
                 self._backoff_count = 0
                 self._active_backoff_delay = self.get_pacing_backoff_delay()
 
+    def get_pool_windows(self, pool: str) -> Tuple[QuotaWindow, QuotaWindow]:
+        with self._lock:
+            p = str(pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                return self.claude_window_5h, self.claude_window_1w
+            else:
+                return self.gemini_window_5h, self.gemini_window_1w
+
+    def get_pool_remaining_percentage(self, pool: str) -> float:
+        with self._lock:
+            w5, w1 = self.get_pool_windows(pool)
+            return min(w5.remaining_percentage, w1.remaining_percentage)
+
+    def is_pool_behind_pacing(
+        self, pool: str, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> bool:
+        with self._lock:
+            w5, w1 = self.get_pool_windows(pool)
+            effective_now = now_dt if now_dt is not None else now
+            norm_dt = _normalize_now_datetime(effective_now)
+            if norm_dt is None:
+                norm_dt = datetime.now(timezone.utc)
+            s5, _ = w5.get_pacing_status(norm_dt)
+            s1, _ = w1.get_pacing_status(norm_dt)
+            return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
+
+    def get_pool_state(self, pool: str) -> str:
+        with self._lock:
+            pct = self.get_pool_remaining_percentage(pool)
+            if pct <= self.EXHAUSTED_THRESHOLD:
+                return QuotaState.EXHAUSTED
+            elif pct < self.LOW_QUOTA_THRESHOLD:
+                return QuotaState.LOW_QUOTA
+            else:
+                return QuotaState.NORMAL
+
+    def get_active_model(self, pool: str) -> str:
+        with self._lock:
+            p = str(pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                return self.active_third_party_model
+            else:
+                return self.active_gemini_model
+
+    def set_active_model(self, pool: str, model: str):
+        with self._lock:
+            p = str(pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.active_third_party_model = model
+            else:
+                self.active_gemini_model = model
+
     def _state_unlocked(self) -> str:
-        if self._remaining_percentage <= self.EXHAUSTED_THRESHOLD:
+        gemini_state = self.get_pool_state("gemini")
+        claude_state = self.get_pool_state("claude_gpt")
+        if gemini_state == QuotaState.EXHAUSTED and claude_state == QuotaState.EXHAUSTED:
             return QuotaState.EXHAUSTED
-        elif self._remaining_percentage < self.LOW_QUOTA_THRESHOLD:
+        elif gemini_state == QuotaState.NORMAL or claude_state == QuotaState.NORMAL:
+            return QuotaState.NORMAL
+        elif gemini_state == QuotaState.LOW_QUOTA or claude_state == QuotaState.LOW_QUOTA:
             return QuotaState.LOW_QUOTA
         else:
-            return QuotaState.NORMAL
+            return QuotaState.EXHAUSTED
 
     @property
     def state(self) -> str:
@@ -739,8 +885,9 @@ class QuotaTracker:
         with self._lock:
             self._reset_time = val
             if val is not None:
-                self.window_5h.reset_time = str(val)
-                self.window_5h.reset_timestamp = parse_reset_time_to_timestamp(val)
+                w5, _ = self.get_pool_windows(self.quota_pool)
+                w5.reset_time = str(val)
+                w5.reset_timestamp = parse_reset_time_to_timestamp(val)
 
     @property
     def active_backoff_delay(self) -> float:
@@ -750,15 +897,15 @@ class QuotaTracker:
     def is_behind_pacing(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> bool:
-        """Check if either window_5h or window_1w has pacing status 'BEHIND_PACING'."""
+        """Check if all quota pools are behind target pacing (returns True only when all pools are behind pacing, blocking task execution across both pools)."""
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
             norm_dt = _normalize_now_datetime(effective_now)
             if norm_dt is None:
                 norm_dt = datetime.now(timezone.utc)
-            s5, _ = self.window_5h.get_pacing_status(norm_dt)
-            s1, _ = self.window_1w.get_pacing_status(norm_dt)
-            return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
+            g_behind = self.is_pool_behind_pacing("gemini", norm_dt)
+            c_behind = self.is_pool_behind_pacing("claude_gpt", norm_dt)
+            return g_behind and c_behind
 
     @property
     def pacing_status(self) -> Union[str, _PacingStatusResult]:
@@ -784,9 +931,13 @@ class QuotaTracker:
                     return 0.0
                 return min(self.max_backoff_delay, backoff)
 
-            _, d5 = self.window_5h.get_pacing_status(norm_dt)
-            _, d1 = self.window_1w.get_pacing_status(norm_dt)
-            return max(d5, d1)
+            all_windows = [
+                self.gemini_window_5h,
+                self.gemini_window_1w,
+                self.claude_window_5h,
+                self.claude_window_1w,
+            ]
+            return max(w.get_pacing_status(norm_dt)[1] for w in all_windows)
 
     def get_pacing_recovery_seconds(
         self,
@@ -794,15 +945,19 @@ class QuotaTracker:
         now_dt: Optional[Union[float, datetime]] = None,
         now: Optional[Union[float, datetime]] = None,
     ) -> float:
-        """Calculate pacing recovery time in seconds for a specific window or max across all dual windows."""
+        """Calculate pacing recovery time in seconds for a specific window or max across all dual pool windows."""
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
             norm_dt = _normalize_now_datetime(effective_now)
             if window is not None:
                 return window.get_pacing_recovery_seconds(norm_dt)
-            rec_5h = self.window_5h.get_pacing_recovery_seconds(norm_dt)
-            rec_1w = self.window_1w.get_pacing_recovery_seconds(norm_dt)
-            return max(rec_5h, rec_1w)
+            all_windows = [
+                self.gemini_window_5h,
+                self.gemini_window_1w,
+                self.claude_window_5h,
+                self.claude_window_1w,
+            ]
+            return max(w.get_pacing_recovery_seconds(norm_dt) for w in all_windows)
 
     def pacing_recovery_seconds(
         self,
@@ -818,15 +973,19 @@ class QuotaTracker:
         now_dt: Optional[Union[float, datetime]] = None,
         now: Optional[Union[float, datetime]] = None,
     ) -> str:
-        """Format pacing recovery countdown string for a specific window or max across all dual windows."""
+        """Format pacing recovery countdown string for a specific window or max across all dual pool windows."""
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
             norm_dt = _normalize_now_datetime(effective_now)
             if window is not None:
                 return window.format_pacing_countdown(norm_dt)
-            rec_5h = self.window_5h.get_pacing_recovery_seconds(norm_dt)
-            rec_1w = self.window_1w.get_pacing_recovery_seconds(norm_dt)
-            target_window = self.window_1w if rec_1w > rec_5h else self.window_5h
+            all_windows = [
+                self.gemini_window_5h,
+                self.gemini_window_1w,
+                self.claude_window_5h,
+                self.claude_window_1w,
+            ]
+            target_window = max(all_windows, key=lambda w: w.get_pacing_recovery_seconds(norm_dt))
             return target_window.format_pacing_countdown(norm_dt)
 
     def update_quota(
@@ -839,42 +998,54 @@ class QuotaTracker:
         reset_time_5h: Optional[Union[float, str]] = None,
         remaining_percentage_1w: Optional[float] = None,
         reset_time_1w: Optional[Union[float, str]] = None,
+        quota_pool: Optional[str] = None,
     ):
         """Update quota levels and reset time for dual windows."""
         with self._lock:
-            if remaining_percentage_5h is not None:
-                self.window_5h.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage_5h)))
+            pools_to_update = []
+            if quota_pool is None:
+                pools_to_update = ["gemini", "claude_gpt"]
             else:
-                self.window_5h.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
+                pools_to_update = [quota_pool]
 
-            if reset_time_5h is not None:
-                self.window_5h.reset_time = str(reset_time_5h)
-                self.window_5h.reset_timestamp = parse_reset_time_to_timestamp(reset_time_5h)
-            elif reset_time is not None:
-                self.window_5h.reset_time = str(reset_time)
-                self.window_5h.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
+            for pool in pools_to_update:
+                w5, w1 = self.get_pool_windows(pool)
 
-            if remaining_percentage_1w is not None:
-                self.window_1w.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage_1w)))
-            else:
-                self.window_1w.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
+                if remaining_percentage_5h is not None:
+                    w5.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage_5h)))
+                else:
+                    w5.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
 
-            if reset_time_1w is not None:
-                self.window_1w.reset_time = str(reset_time_1w)
-                self.window_1w.reset_timestamp = parse_reset_time_to_timestamp(reset_time_1w)
-            elif reset_time is not None:
-                self.window_1w.reset_time = str(reset_time)
-                self.window_1w.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
+                if reset_time_5h is not None:
+                    w5.reset_time = str(reset_time_5h)
+                    w5.reset_timestamp = parse_reset_time_to_timestamp(reset_time_5h)
+                elif reset_time is not None:
+                    w5.reset_time = str(reset_time)
+                    w5.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
 
+                if remaining_percentage_1w is not None:
+                    w1.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage_1w)))
+                else:
+                    w1.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
+
+                if reset_time_1w is not None:
+                    w1.reset_time = str(reset_time_1w)
+                    w1.reset_timestamp = parse_reset_time_to_timestamp(reset_time_1w)
+                elif reset_time is not None:
+                    w1.reset_time = str(reset_time)
+                    w1.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
+
+            target_pool = quota_pool if quota_pool is not None else self.quota_pool
+            target_w5, target_w1 = self.get_pool_windows(target_pool)
             self._remaining_percentage = min(
-                self.window_5h.remaining_percentage,
-                self.window_1w.remaining_percentage,
+                target_w5.remaining_percentage,
+                target_w1.remaining_percentage,
             )
 
             if reset_time is not None:
                 self._reset_time = reset_time
             else:
-                self._reset_time = self.window_5h.reset_timestamp or self.window_1w.reset_timestamp
+                self._reset_time = target_w5.reset_timestamp or target_w1.reset_timestamp
 
             if requests_remaining is not None:
                 self._requests_remaining = requests_remaining
@@ -888,30 +1059,48 @@ class QuotaTracker:
             current_state = self._state_unlocked()
 
         logger.info(
-            f"Quota updated: 5h={self.window_5h.remaining_percentage:.1f}%, 1w={self.window_1w.remaining_percentage:.1f}% state={current_state} reset={reset_time}"
+            f"Quota updated ({quota_pool or 'all'}): state={current_state} reset={reset_time}"
         )
 
-    def update_windows(self, window_5h: QuotaWindow, window_1w: QuotaWindow):
+    def update_windows(self, window_5h: QuotaWindow, window_1w: QuotaWindow, quota_pool: Optional[str] = None):
         """Update 5h and 1w dual quota windows."""
         with self._lock:
             now = time.time()
-            self._last_fetch_5h = now
-            self._last_fetch_1w = now
-            self.window_5h = window_5h
-            self.window_1w = window_1w
+            if quota_pool is None:
+                self._last_fetch_5h["gemini"] = now
+                self._last_fetch_5h["claude_gpt"] = now
+                self._last_fetch_1w["gemini"] = now
+                self._last_fetch_1w["claude_gpt"] = now
+                self.gemini_window_5h = window_5h.copy()
+                self.gemini_window_1w = window_1w.copy()
+                self.claude_window_5h = window_5h.copy()
+                self.claude_window_1w = window_1w.copy()
+            else:
+                pk = _normalize_pool_key(quota_pool)
+                self._last_fetch_5h[pk] = now
+                self._last_fetch_1w[pk] = now
+                p = str(quota_pool).lower()
+                if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                    self.claude_window_5h = window_5h
+                    self.claude_window_1w = window_1w
+                else:
+                    self.gemini_window_5h = window_5h
+                    self.gemini_window_1w = window_1w
 
-            effective_pct = min(window_5h.remaining_percentage, window_1w.remaining_percentage)
+            target_pool = quota_pool if quota_pool is not None else self.quota_pool
+            target_w5, target_w1 = self.get_pool_windows(target_pool)
+            effective_pct = min(target_w5.remaining_percentage, target_w1.remaining_percentage)
             self._remaining_percentage = max(0.0, min(100.0, float(effective_pct)))
-            if window_5h.reset_time is not None or window_5h.reset_timestamp is not None:
-                res = window_5h.reset_timestamp if window_5h.reset_timestamp is not None else window_5h.reset_time
+            if target_w5.reset_time is not None or target_w5.reset_timestamp is not None:
+                res = target_w5.reset_timestamp if target_w5.reset_timestamp is not None else target_w5.reset_time
                 try:
                     self._reset_time = float(res)
                 except (ValueError, TypeError):
                     self._reset_time = res
 
-            status_5h, backoff_5h = window_5h.get_pacing_status()
-            status_1w, backoff_1w = window_1w.get_pacing_status()
-            pacing_backoff = max(backoff_5h, backoff_1w)
+            target_status_5h, target_backoff_5h = target_w5.get_pacing_status()
+            target_status_1w, target_backoff_1w = target_w1.get_pacing_status()
+            pacing_backoff = max(target_backoff_5h, target_backoff_1w)
 
             if self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD and pacing_backoff == 0.0:
                 self._backoff_count = 0
@@ -922,8 +1111,8 @@ class QuotaTracker:
             current_state = self._state_unlocked()
 
         logger.info(
-            f"Dual quota updated: 5H={window_5h.remaining_percentage:.1f}% ({status_5h}), "
-            f"1W={window_1w.remaining_percentage:.1f}% ({status_1w}), state={current_state}"
+            f"Dual quota updated ({target_pool}): 5H={target_w5.remaining_percentage:.1f}% ({target_status_5h}), "
+            f"1W={target_w1.remaining_percentage:.1f}% ({target_status_1w}), state={current_state}"
         )
 
     def poll_live_quota(
@@ -936,17 +1125,21 @@ class QuotaTracker:
         Fetch live Antigravity quota and update dual windows based on uniform 60s TTL intervals (both 5H and 1W windows) or when force is True.
         """
         now = time.time()
+        pool = quota_pool if quota_pool is not None else self.quota_pool
+        pk = _normalize_pool_key(pool)
         with self._lock:
             if self._in_flight:
-                return self.window_5h, self.window_1w
+                return self.get_pool_windows(pool)
 
-            due_5h = force or (self._last_fetch_5h == 0.0) or ((now - self._last_fetch_5h) >= self.interval_5h)
-            due_1w = force or (self._last_fetch_1w == 0.0) or ((now - self._last_fetch_1w) >= self.interval_1w)
+            last_5h = self._last_fetch_5h.get(pk, 0.0)
+            last_1w = self._last_fetch_1w.get(pk, 0.0)
+
+            due_5h = force or (last_5h == 0.0) or ((now - last_5h) >= self.interval_5h)
+            due_1w = force or (last_1w == 0.0) or ((now - last_1w) >= self.interval_1w)
             if not (due_5h or due_1w):
-                return self.window_5h, self.window_1w
+                return self.get_pool_windows(pool)
 
             self._in_flight = True
-            pool = quota_pool if quota_pool is not None else self.quota_pool
 
         try:
             res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
@@ -958,51 +1151,15 @@ class QuotaTracker:
             now = time.time()
             if res is not None:
                 w_5h, w_1w = res
-                self.window_5h = w_5h
-                self.window_1w = w_1w
-                self._last_fetch_5h = now
-                self._last_fetch_1w = now
-                updated_5h = due_5h
-                updated_1w = due_1w
-
-                effective_pct = min(self.window_5h.remaining_percentage, self.window_1w.remaining_percentage)
-                self._remaining_percentage = max(0.0, min(100.0, float(effective_pct)))
-
-                if self.window_5h.reset_time is not None or self.window_5h.reset_timestamp is not None:
-                    res_t = self.window_5h.reset_timestamp if self.window_5h.reset_timestamp is not None else self.window_5h.reset_time
-                    try:
-                        self._reset_time = float(res_t)
-                    except (ValueError, TypeError):
-                        self._reset_time = res_t
-                elif self.window_1w.reset_time is not None or self.window_1w.reset_timestamp is not None:
-                    res_t = self.window_1w.reset_timestamp if self.window_1w.reset_timestamp is not None else self.window_1w.reset_time
-                    try:
-                        self._reset_time = float(res_t)
-                    except (ValueError, TypeError):
-                        self._reset_time = res_t
-
-                status_5h, backoff_5h = self.window_5h.get_pacing_status()
-                status_1w, backoff_1w = self.window_1w.get_pacing_status()
-                pacing_backoff = max(backoff_5h, backoff_1w)
-
-                if self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD and pacing_backoff == 0.0:
-                    self._backoff_count = 0
-                    self._active_backoff_delay = 0.0
-                elif pacing_backoff > 0.0 and self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD:
-                    self._active_backoff_delay = pacing_backoff
-
-                logger.info(
-                    f"Live quota updated: 5H={self.window_5h.remaining_percentage:.1f}% (updated: {updated_5h}), "
-                    f"1W={self.window_1w.remaining_percentage:.1f}% (updated: {updated_1w})"
-                )
+                self.update_windows(w_5h, w_1w, quota_pool=pool)
             else:
                 if due_5h:
-                    self._last_fetch_5h = now
+                    self._last_fetch_5h[pk] = now
                 if due_1w:
-                    self._last_fetch_1w = now
+                    self._last_fetch_1w[pk] = now
                 logger.warning("Live Antigravity quota fetch returned None; preserving existing QuotaTracker metrics.")
 
-            return self.window_5h, self.window_1w
+            return self.get_pool_windows(pool)
 
     def poll_live_quota_async(
         self,
