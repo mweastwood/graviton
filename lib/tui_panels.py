@@ -298,7 +298,8 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     if inner_w >= spec.wide_threshold:
         fixed_used = 0
         for col in non_flex_cols:
-            w = col.fixed_w if col.fixed_w is not None else max(col.min_w, min(col.max_w if col.max_w is not None else 999, int(avail * col.ratio)))
+            max_w = col.max_w if col.max_w is not None else float('inf')
+            w = col.fixed_w if col.fixed_w is not None else max(col.min_w, min(max_w, int(avail * col.ratio)))
             res[col.name] = w
             fixed_used += w
         rem = inner_w - fixed_used - spec.spacing
@@ -316,7 +317,8 @@ def allocate_declarative_columns(spec: TableLayoutSpec, inner_w: int) -> Dict[st
     else:
         non_flex_used = 0
         for col in non_flex_cols:
-            val = max(col.min_w, min(col.max_w if col.max_w is not None else 999, int(avail * col.ratio)))
+            max_w = col.max_w if col.max_w is not None else float('inf')
+            val = max(col.min_w, min(max_w, int(avail * col.ratio)))
             res[col.name] = val
             non_flex_used += val
 
@@ -355,7 +357,12 @@ def allocate_approved_pr_columns(inner_w: int, has_repo: bool = False) -> Dict[s
 
 
 def allocate_scheduled_job_columns(inner_w: int) -> Tuple[int, int, int]:
-    """Calculate dynamic flexible column widths (id_w, name_w, agent_w) for scheduled jobs table mode."""
+    """Calculate dynamic flexible column widths (id_w, name_w, agent_w) for scheduled jobs table mode.
+
+    Note: Scheduled job columns use a custom allocation iteration that calculates dynamic scaled minimum
+    bounds (min_scale) and reserves subsequent column minimums during left-to-right allocation, rather
+    than standard fixed/flex split delegation used by allocate_declarative_columns.
+    """
     fixed_w = 38  # 2 + 6 + 10 + 10 + 10 (SEL, INTV, LAST RUN, NEXT RUN, REMAIN)
     spacers = 7   # 8 columns -> 7 space separators
     flex_avail = max(0, inner_w - fixed_w - spacers)

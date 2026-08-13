@@ -796,6 +796,20 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(cols_no_flex["col2"], 10)
         self.assertLessEqual(sum(cols_no_flex.values()) + spec_no_flex.spacing, 30)
 
+        # Test ultra-wide viewport (>999 width) with unbounded max_w (max_w=None)
+        spec_ultrawide = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_w=10, max_w=None, is_flex=False),
+                ColumnSpec("col2", ratio=0.5, min_w=10, max_w=None, is_flex=False),
+            ],
+            spacing=0,
+            wide_threshold=100,
+            narrow_threshold=10,
+        )
+        cols_ultrawide = allocate_declarative_columns(spec_ultrawide, 3000)
+        self.assertEqual(cols_ultrawide["col1"], 1500)
+        self.assertEqual(cols_ultrawide["col2"], 1500)
+
         for inner_w in range(0, 101):
             cols_has_repo = allocate_approved_pr_columns(inner_w, has_repo=True)
             self.assertIsInstance(cols_has_repo, dict)
