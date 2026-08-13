@@ -661,7 +661,7 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = "$HOST_WS/.githooks" ]; then
+    if [ "$HOOK_PATH" = ".githooks" ]; then
         mkdir -p "$HOST_WS/subfolder"
         echo "change in subfolder" >> "$HOST_WS/subfolder/file.txt"
         git -C "$HOST_WS/subfolder" add file.txt
@@ -715,7 +715,7 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = "$HOST_WS/.githooks" ]; then
+    if [ "$HOOK_PATH" = ".githooks" ]; then
         echo "change" >> "$HOST_WS/README.md"
         git -C "$HOST_WS" add README.md
         if ! git -C "$HOST_WS" -c user.name="Test" -c user.email="test@example.com" commit -m "Failing commit" &>/dev/null; then
