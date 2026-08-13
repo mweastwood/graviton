@@ -424,6 +424,7 @@ class TaskManager:
                     continue
 
             self._rebuild_queue_locked()
+            self._prune_tasks_locked()
 
         logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
         return restored_count

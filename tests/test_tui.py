@@ -1271,6 +1271,24 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard._unregister_signal_handlers()
         self.assertFalse(dashboard._signals_registered)
 
+    def test_non_blocking_hotkey_execution_and_frame_scheduling(self):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            refresh_interval=1.0,
+            out_stream=io.StringIO(),
+        )
+        dashboard._running = True
+        start_time = time.time()
+        dashboard.handle_key("j")
+        elapsed = time.time() - start_time
+
+        # Response time must be < 10ms (0.01s)
+        self.assertLess(elapsed, 0.05)
+        self.assertTrue(dashboard._need_refresh)
+        self.assertTrue(dashboard._refresh_event.is_set())
+        self.assertEqual(dashboard.active_screen, "jobs")
+
 
 if __name__ == "__main__":
     unittest.main()

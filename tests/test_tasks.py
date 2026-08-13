@@ -1545,6 +1545,34 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_task_manager_prunes_completed_tasks_on_worker_completion(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_run.return_value = mock_process
+
+        manager = TaskManager(
+            max_workers=1,
+            max_tasks=2,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        manager.start()
+
+        task1 = manager.submit_task("code_fixer", "Prompt 1", target_id="#1")
+        task2 = manager.submit_task("code_fixer", "Prompt 2", target_id="#2")
+        task3 = manager.submit_task("code_fixer", "Prompt 3", target_id="#3")
+
+        # Wait for workers to finish processing
+        for _ in range(50):
+            if len(manager.get_active_tasks()) == 0 and len(manager.get_queued_tasks()) == 0:
+                break
+            time.sleep(0.05)
+
+        manager.stop()
+        # Max tasks limit (2) should be strictly enforced via pruning on task completion
+        self.assertLessEqual(len(manager._tasks), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

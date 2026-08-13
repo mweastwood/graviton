@@ -4,6 +4,7 @@ Unit tests for Periodic Background Task Scheduler Engine (lib/scheduler.py).
 
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -208,6 +209,7 @@ class TestTaskScheduler(unittest.TestCase):
         self.state_path = Path(self.temp_dir.name) / ".graviton_scheduler_state.json"
 
     def tearDown(self):
+        time.sleep(0.05)
         self.temp_dir.cleanup()
 
     def test_load_default_jobs_if_file_missing(self):
@@ -262,6 +264,19 @@ class TestTaskScheduler(unittest.TestCase):
         # Verify job remains removed across re-initialization
         reloaded_scheduler_2 = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
         self.assertIsNone(reloaded_scheduler_2.get_job("custom_sweep"))
+
+    def test_async_save_state(self):
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
+        job = scheduler.get_job("periodic_bug_sweep")
+        job.enabled = False
+        scheduler.save_state(async_save=True)
+        # Allow background save thread to finish writing
+        time.sleep(0.1)
+        self.assertTrue(self.state_path.exists())
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            state_data = json.load(f)
+        self.assertFalse(state_data["periodic_bug_sweep"]["enabled"])
 
     def test_save_config_prevents_runtime_timestamps(self):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
@@ -1038,9 +1053,25 @@ class TestIssueUtilities(unittest.TestCase):
         mock_res.stdout = json.dumps([{"number": 10, "title": "Periodic tasks"}])
         mock_run.return_value = mock_res
 
-        issues = fetch_open_issues()
+        issues = fetch_open_issues(force=True)
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0]["number"], 10)
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_caching_and_timeout(self, mock_run):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = json.dumps([{"number": 1, "title": "Cached issue"}])
+        mock_run.return_value = mock_res
+
+        issues1 = fetch_open_issues(ttl=60.0, force=True)
+        self.assertEqual(len(issues1), 1)
+        self.assertEqual(mock_run.call_count, 1)
+
+        # Subsequent call within TTL should return cached result without calling subprocess.run
+        issues2 = fetch_open_issues(ttl=60.0, force=False)
+        self.assertEqual(issues2, issues1)
+        self.assertEqual(mock_run.call_count, 1)
 
 
 if __name__ == "__main__":
