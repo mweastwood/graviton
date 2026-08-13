@@ -236,7 +236,7 @@ class TestTUIPanels(unittest.TestCase):
     def test_render_quota_panel(self):
         tracker = QuotaTracker()
         lines = render_quota_panel(width=80, quota_tracker=tracker)
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 6)
         self.assertIn("ANTIGRAVITY MODEL QUOTA", lines[0])
 
         class DummyTrackerNoRemaining:
@@ -244,7 +244,7 @@ class TestTUIPanels(unittest.TestCase):
 
         dummy_tracker = DummyTrackerNoRemaining()
         lines_dummy = render_quota_panel(width=80, quota_tracker=dummy_tracker)  # type: ignore
-        self.assertEqual(len(lines_dummy), 4)
+        self.assertEqual(len(lines_dummy), 6)
 
         # Test tracker with window_5h and window_1w attributes set to None
         class DummyTrackerNoneWindows:
@@ -254,7 +254,7 @@ class TestTUIPanels(unittest.TestCase):
             window_1w = None
 
         lines_none = render_quota_panel(width=80, quota_tracker=DummyTrackerNoneWindows())  # type: ignore
-        self.assertEqual(len(lines_none), 4)
+        self.assertEqual(len(lines_none), 6)
 
         # Test tracker with BEHIND_PACING window and pacing recovery countdown display in panel
         from datetime import timedelta
@@ -266,7 +266,7 @@ class TestTUIPanels(unittest.TestCase):
         tracker_behind = QuotaTracker()
         tracker_behind.update_windows(w_behind, w_ok)
         lines_behind = render_quota_panel(width=110, quota_tracker=tracker_behind, now_dt=now_dt)
-        self.assertEqual(len(lines_behind), 4)
+        self.assertEqual(len(lines_behind), 6)
         self.assertTrue(any("RESUME IN 00:30:00" in line for line in lines_behind))
 
         # Verify now_dt propagation to get_pacing_status
@@ -275,8 +275,10 @@ class TestTUIPanels(unittest.TestCase):
         mock_w1w = QuotaWindow(name="1W", remaining_percentage=100.0)
         mock_w1w.get_pacing_status = MagicMock(return_value=("OK", 0.0))
         tracker_mock = QuotaTracker()
-        tracker_mock.window_5h = mock_w5h
-        tracker_mock.window_1w = mock_w1w
+        tracker_mock.gemini_window_5h = mock_w5h
+        tracker_mock.gemini_window_1w = mock_w1w
+        tracker_mock.claude_window_5h = mock_w5h
+        tracker_mock.claude_window_1w = mock_w1w
         custom_now = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
         render_quota_panel(width=80, quota_tracker=tracker_mock, now_dt=custom_now)
         mock_w5h.get_pacing_status.assert_called_with(custom_now)
@@ -591,6 +593,21 @@ class TestTUIPanels(unittest.TestCase):
         lines = render_event_logs_panel(width=80, log_handler=handler)
         self.assertEqual(len(lines), 5)
         self.assertTrue(any("12345" in l for l in lines))
+
+    def test_render_gemini_and_third_party_models_panels(self):
+        from lib.tui_panels import render_gemini_models_panel, render_third_party_models_panel
+
+        gemini_models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+        lines_g = render_gemini_models_panel(width=80, models=gemini_models, selected_index=0, active_model="gemini-2.5-flash")
+        self.assertIn("GEMINI MODEL SELECTION", lines_g[0])
+        self.assertTrue(any("gemini-2.5-flash" in l for l in lines_g))
+        self.assertTrue(any("[ACTIVE]" in l for l in lines_g))
+
+        tp_models = ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+        lines_c = render_third_party_models_panel(width=80, models=tp_models, selected_index=1, active_model="claude-3-opus")
+        self.assertIn("3RD PARTY MODEL SELECTION", lines_c[0])
+        self.assertTrue(any("claude-3-opus" in l for l in lines_c))
+        self.assertTrue(any("[ACTIVE]" in l for l in lines_c))
 
 
 if __name__ == "__main__":

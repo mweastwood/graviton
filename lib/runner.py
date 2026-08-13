@@ -54,6 +54,8 @@ def run_agent_container(
     max_attempts: Optional[int] = None,
     cached_workspace_dir: Optional[Path] = None,
     initial_attempt: Optional[int] = None,
+    quota_pool: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
     """
     Execute the agent container script synchronously.
@@ -66,6 +68,8 @@ def run_agent_container(
     :param max_attempts: Optional maximum agent retry attempt limit (sets MAX_AGENT_RETRIES env var).
     :param cached_workspace_dir: Optional path to workspace cache directory (sets GRAVITON_WORKSPACE_CACHE_DIR env var).
     :param initial_attempt: Optional initial attempt number to resume execution pass (sets GRAVITON_INITIAL_ATTEMPT env var).
+    :param quota_pool: Optional quota pool selected for task execution (sets ANTIGRAVITY_QUOTA_POOL env var).
+    :param model: Optional model selected for task execution (sets ANTIGRAVITY_MODEL & MODEL_NAME env vars).
     :return: subprocess.CompletedProcess instance.
     """
     cmd = [str(script_path), agent_name, prompt]
@@ -78,6 +82,11 @@ def run_agent_container(
         env["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cached_workspace_dir)
     if initial_attempt is not None:
         env["GRAVITON_INITIAL_ATTEMPT"] = str(initial_attempt)
+    if quota_pool is not None:
+        env["ANTIGRAVITY_QUOTA_POOL"] = str(quota_pool)
+    if model is not None:
+        env["ANTIGRAVITY_MODEL"] = str(model)
+        env["MODEL_NAME"] = str(model)
 
     process = subprocess.Popen(
         cmd,

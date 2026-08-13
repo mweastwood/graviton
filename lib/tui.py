@@ -39,11 +39,13 @@ from lib.tui_panels import (
     render_active_tasks_panel,
     render_approved_prs_panel,
     render_event_logs_panel,
+    render_gemini_models_panel,
     render_header_panel,
     render_history_tasks_panel,
     render_queued_tasks_panel,
     render_quota_panel,
     render_scheduled_jobs_panel,
+    render_third_party_models_panel,
     truncate_to_display_width,
 )
 from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
@@ -134,6 +136,8 @@ class TerminalDashboard:
 
         self.active_screen: str = "main"
         self.selected_job_index: int = 0
+        self.selected_gemini_index: int = 0
+        self.selected_third_party_index: int = 0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stdin_thread: Optional[threading.Thread] = None
@@ -540,8 +544,84 @@ class TerminalDashboard:
         elif self.active_screen == "logs":
             if key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
+        elif self.active_screen == "gemini_models":
+            quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+            models = (
+                quota_tr.available_gemini_models
+                if quota_tr and hasattr(quota_tr, "available_gemini_models")
+                else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+            )
+            if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
+                self.selected_gemini_index = max(0, self.selected_gemini_index - 1)
+            elif key in ("j", "J", "down", "\x1b[B", "\x1bOB"):
+                self.selected_gemini_index = min(len(models) - 1, self.selected_gemini_index + 1)
+            elif key in (" ", "\r", "\n", "enter", "ENTER"):
+                if 0 <= self.selected_gemini_index < len(models):
+                    chosen = models[self.selected_gemini_index]
+                    if quota_tr and hasattr(quota_tr, "set_active_model"):
+                        quota_tr.set_active_model("gemini", chosen)
+                    elif quota_tr:
+                        quota_tr.active_gemini_model = chosen
+            elif key in ("\x1b", "esc", "ESC"):
+                self.active_screen = "main"
+        elif self.active_screen == "third_party_models":
+            quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+            models = (
+                quota_tr.available_third_party_models
+                if quota_tr and hasattr(quota_tr, "available_third_party_models")
+                else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+            )
+            if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
+                self.selected_third_party_index = max(0, self.selected_third_party_index - 1)
+            elif key in ("j", "J", "down", "\x1b[B", "\x1bOB"):
+                self.selected_third_party_index = min(len(models) - 1, self.selected_third_party_index + 1)
+            elif key in (" ", "\r", "\n", "enter", "ENTER"):
+                if 0 <= self.selected_third_party_index < len(models):
+                    chosen = models[self.selected_third_party_index]
+                    if quota_tr and hasattr(quota_tr, "set_active_model"):
+                        quota_tr.set_active_model("claude_gpt", chosen)
+                    elif quota_tr:
+                        quota_tr.active_third_party_model = chosen
+            elif key in ("\x1b", "esc", "ESC"):
+                self.active_screen = "main"
         elif self.active_screen == "main":
-            if key in ("j", "J"):
+            if key in ("g", "G"):
+                self.active_screen = "gemini_models"
+                quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+                models = (
+                    quota_tr.available_gemini_models
+                    if quota_tr and hasattr(quota_tr, "available_gemini_models")
+                    else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+                )
+                active = (
+                    quota_tr.get_active_model("gemini")
+                    if quota_tr and hasattr(quota_tr, "get_active_model")
+                    else "gemini-2.5-flash"
+                )
+                if active in models:
+                    self.selected_gemini_index = models.index(active)
+                else:
+                    self.selected_gemini_index = 0
+
+            elif key in ("c", "C"):
+                self.active_screen = "third_party_models"
+                quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+                models = (
+                    quota_tr.available_third_party_models
+                    if quota_tr and hasattr(quota_tr, "available_third_party_models")
+                    else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+                )
+                active = (
+                    quota_tr.get_active_model("claude_gpt")
+                    if quota_tr and hasattr(quota_tr, "get_active_model")
+                    else "claude-3-5-sonnet"
+                )
+                if active in models:
+                    self.selected_third_party_index = models.index(active)
+                else:
+                    self.selected_third_party_index = 0
+
+            elif key in ("j", "J"):
                 self.active_screen = "jobs"
             elif key in ("e", "E"):
                 self.active_screen = "logs"
@@ -739,6 +819,46 @@ class TerminalDashboard:
             lines.append(banner_line)
             lines.append("")
             lines.extend(self._render_event_logs(width, limit=15))
+            return "\n".join(lines)
+
+        if self.active_screen == "gemini_models":
+            # Dedicated Gemini Model Selection Screen View
+            banner_text = "Press [Esc] to return to Main Screen │ Controls: [↑/↓ or j/k] Select │ [Space/Enter] Set Active Gemini Model"
+            banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
+            lines.append(banner_line)
+            lines.append("")
+            quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+            models = (
+                quota_tr.available_gemini_models
+                if quota_tr and hasattr(quota_tr, "available_gemini_models")
+                else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+            )
+            active_m = (
+                quota_tr.get_active_model("gemini")
+                if quota_tr and hasattr(quota_tr, "get_active_model")
+                else "gemini-2.5-flash"
+            )
+            lines.extend(render_gemini_models_panel(width, models, self.selected_gemini_index, active_m))
+            return "\n".join(lines)
+
+        if self.active_screen == "third_party_models":
+            # Dedicated 3rd Party Model Selection Screen View
+            banner_text = "Press [Esc] to return to Main Screen │ Controls: [↑/↓ or j/k] Select │ [Space/Enter] Set Active 3rd Party Model"
+            banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
+            lines.append(banner_line)
+            lines.append("")
+            quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
+            models = (
+                quota_tr.available_third_party_models
+                if quota_tr and hasattr(quota_tr, "available_third_party_models")
+                else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+            )
+            active_m = (
+                quota_tr.get_active_model("claude_gpt")
+                if quota_tr and hasattr(quota_tr, "get_active_model")
+                else "claude-3-5-sonnet"
+            )
+            lines.extend(render_third_party_models_panel(width, models, self.selected_third_party_index, active_m))
             return "\n".join(lines)
 
         # Main Screen Layout

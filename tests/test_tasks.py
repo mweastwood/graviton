@@ -106,6 +106,8 @@ class TestTaskManager(unittest.TestCase):
             max_attempts=5,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
+            quota_pool="gemini",
+            model="gemini-2.5-flash",
         )
 
         manager.stop()
@@ -189,6 +191,8 @@ class TestTaskManager(unittest.TestCase):
             max_attempts=3,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
+            quota_pool="gemini",
+            model="gemini-2.5-flash",
         )
 
         stats = manager.get_stats()
@@ -774,6 +778,8 @@ class TestTaskManager(unittest.TestCase):
                 max_attempts=3,
                 cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
                 initial_attempt=1,
+                quota_pool="gemini",
+                model="gemini-2.5-flash",
             )
 
             manager.stop()
@@ -1543,6 +1549,26 @@ class TestTaskManager(unittest.TestCase):
             is_valid = dup_popped.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
             self.assertFalse(is_valid)
 
+        manager.stop()
+
+    def test_dual_pool_task_selection(self):
+        quota = QuotaTracker()
+        # Set Gemini pool to 40% and Claude pool to 80%
+        quota.update_quota(40.0, quota_pool="gemini")
+        quota.update_quota(80.0, quota_pool="claude_gpt")
+
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Test prompt dual pool")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.selected_pool, "claude_gpt")
+        self.assertEqual(task.selected_model, "claude-3-5-sonnet")
         manager.stop()
 
 

@@ -731,7 +731,7 @@ class TestTerminalDashboard(unittest.TestCase):
         rendered_main = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_main)
         self.assertNotIn("EVENT LOGS", rendered_main)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_main)
+        self.assertIn("[j] Jobs │ [e] Logs", rendered_main)
 
         # 3. Toggle to "jobs" screen via 'j' hotkey
         dashboard.handle_key("j")
@@ -743,10 +743,47 @@ class TestTerminalDashboard(unittest.TestCase):
         # 4. Toggle back to "main" screen via 'Esc' key
         dashboard.handle_key("\x1b")
         self.assertEqual(dashboard.active_screen, "main")
+
+    def test_gemini_and_third_party_model_selection_screens(self):
+        quota = QuotaTracker()
+        manager = TaskManager(max_workers=2, quota_tracker=quota)
+        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
+
+        # Test Gemini Model Selection Screen via 'g'
+        dashboard.handle_key("g")
+        self.assertEqual(dashboard.active_screen, "gemini_models")
+        rendered_gemini = dashboard.render(width=80)
+        self.assertIn("GEMINI MODEL SELECTION", rendered_gemini)
+        self.assertIn("gemini-2.5-flash", rendered_gemini)
+
+        # Navigate down 'j' and select 'gemini-2.5-pro' via Space
+        dashboard.handle_key("j")
+        dashboard.handle_key(" ")
+        self.assertEqual(quota.get_active_model("gemini"), "gemini-2.5-pro")
+
+        # Esc back to main
+        dashboard.handle_key("esc")
+        self.assertEqual(dashboard.active_screen, "main")
+
+        # Test 3rd Party Model Selection Screen via 'c'
+        dashboard.handle_key("c")
+        self.assertEqual(dashboard.active_screen, "third_party_models")
+        rendered_3p = dashboard.render(width=80)
+        self.assertIn("3RD PARTY MODEL SELECTION", rendered_3p)
+        self.assertIn("claude-3-5-sonnet", rendered_3p)
+
+        # Navigate down 'down' and select 'claude-3-opus' via Enter
+        dashboard.handle_key("down")
+        dashboard.handle_key("\n")
+        self.assertEqual(quota.get_active_model("claude_gpt"), "claude-3-opus")
+
+        # Esc back to main
+        dashboard.handle_key("esc")
+        self.assertEqual(dashboard.active_screen, "main")
         rendered_back = dashboard.render(width=80)
         self.assertNotIn("SCHEDULED JOBS", rendered_back)
         self.assertNotIn("EVENT LOGS", rendered_back)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back)
+        self.assertIn("[j] Jobs │ [e] Logs", rendered_back)
 
         # 5. Toggle to "logs" screen via 'e' hotkey
         dashboard.handle_key("e")
@@ -760,7 +797,7 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "main")
         rendered_back_again = dashboard.render(width=80)
         self.assertNotIn("EVENT LOGS", rendered_back_again)
-        self.assertIn("[j] Periodic Jobs │ [e] Event Logs", rendered_back_again)
+        self.assertIn("[j] Jobs │ [e] Logs", rendered_back_again)
 
     def test_jobs_screen_line_widths(self):
         manager = TaskManager(max_workers=2)
@@ -857,7 +894,7 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
 
         rendered = dashboard.render(width=100)
-        self.assertIn("ANTIGRAVITY MODEL QUOTA (GEMINI)", rendered)
+        self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
         self.assertIn("GEMINI 5H QUOTA: 65%", rendered)
         self.assertIn("GEMINI 1W QUOTA: 20%", rendered)
         self.assertIn("PACING: BEHIND", rendered)
@@ -880,7 +917,7 @@ class TestTerminalDashboard(unittest.TestCase):
 
             # Rendering frame should complete almost instantaneously (< 0.1s), not blocked by network latency
             self.assertLess(render_duration, 0.1)
-            self.assertIn("ANTIGRAVITY MODEL QUOTA (GEMINI)", rendered)
+            self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
 
             dashboard.stop()
 
