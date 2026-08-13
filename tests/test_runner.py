@@ -641,11 +641,13 @@ fi
     def test_githooks_pre_commit_configuration(self):
         githooks_dir = self.repo_dir / ".githooks"
         githooks_dir.mkdir()
-        aux_script = githooks_dir / "check-fmt.sh"
+        aux_dir = githooks_dir / "scripts"
+        aux_dir.mkdir()
+        aux_script = aux_dir / "check-fmt.sh"
         aux_script.write_text("#!/bin/sh\necho 'auxiliary script executed' >> hook_output.txt\nexit 0\n")
         aux_script.chmod(0o644)
         pre_commit_hook = githooks_dir / "pre-commit"
-        pre_commit_hook.write_text("#!/bin/sh\n\"$(dirname \"$0\")/check-fmt.sh\"\necho 'pre-commit hook executed' >> hook_output.txt\nexit 0\n")
+        pre_commit_hook.write_text("#!/bin/sh\n\"$(dirname \"$0\")/scripts/check-fmt.sh\"\necho 'pre-commit hook executed' >> hook_output.txt\nexit 0\n")
         pre_commit_hook.chmod(0o644)
         gitkeep = githooks_dir / ".gitkeep"
         gitkeep.write_text("")
@@ -669,8 +671,8 @@ done
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
     PRE_COMMIT_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/pre-commit', os.X_OK))" 2>/dev/null || echo "False")"
-    GITKEEP_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/.gitkeep', os.X_OK))" 2>/dev/null || echo "False")"
-    if [ "$HOOK_PATH" = ".githooks" ] && [ "$PRE_COMMIT_X" = "True" ] && [ "$GITKEEP_X" = "False" ]; then
+    AUX_SCRIPT_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/scripts/check-fmt.sh', os.X_OK))" 2>/dev/null || echo "False")"
+    if [ "$HOOK_PATH" = ".githooks" ] && [ "$PRE_COMMIT_X" = "True" ] && [ "$AUX_SCRIPT_X" = "True" ]; then
         mkdir -p "$HOST_WS/subfolder"
         echo "change in subfolder" >> "$HOST_WS/subfolder/file.txt"
         git -C "$HOST_WS/subfolder" add file.txt
