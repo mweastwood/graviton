@@ -801,6 +801,50 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.EXHAUSTED)
         self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
 
+    def test_poll_live_quota_third_party_pool(self):
+        tracker = QuotaTracker()
+
+        w_5h_gemini = QuotaWindow(name="5H", remaining_percentage=90.0)
+        w_1w_gemini = QuotaWindow(name="1W", remaining_percentage=85.0)
+        tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
+
+        w_5h_claude = QuotaWindow(name="5H", remaining_percentage=40.0)
+        w_1w_claude = QuotaWindow(name="1W", remaining_percentage=35.0)
+
+        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w_5h_claude, w_1w_claude)) as mock_fetch:
+            polled_5h, polled_1w = tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=True)
+
+            mock_fetch.assert_called_once_with(token="test-token", quota_pool="claude_gpt")
+            # Verify 3rd-party pool windows were returned and updated
+            self.assertEqual(polled_5h.remaining_percentage, 40.0)
+            self.assertEqual(polled_1w.remaining_percentage, 35.0)
+            self.assertEqual(tracker.claude_window_5h.remaining_percentage, 40.0)
+            self.assertEqual(tracker.claude_window_1w.remaining_percentage, 35.0)
+
+            # Verify Gemini windows remain untouched
+            self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 90.0)
+            self.assertEqual(tracker.gemini_window_1w.remaining_percentage, 85.0)
+
+    def test_pacing_recovery_across_dual_pools(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        tracker = QuotaTracker()
+
+        # Gemini is OK
+        w_5h_gemini = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_gemini = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_time="2026-08-16T08:18:45Z")
+        tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
+
+        # Claude is BEHIND pacing: 1W window has 20% remaining, 4d 8h reset remaining (374400s)
+        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
+        w_5h_claude = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
+        w_1w_claude = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
+        tracker.update_windows(w_5h_claude, w_1w_claude, quota_pool="claude_gpt")
+
+        # When no specific window is passed, get_pacing_recovery_seconds and format_pacing_countdown evaluate across both pools
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
+        self.assertTrue(tracker.is_behind_pacing(now=now_dt))
+
 
 if __name__ == "__main__":
     unittest.main()
