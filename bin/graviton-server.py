@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
-from lib.updater import sync_repo_and_reload, set_hot_reload_state
+from lib.updater import sync_repo_and_reload, stop_smee_listener, set_hot_reload_state
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard, run_graceful_shutdown
@@ -123,6 +123,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
     quota_tracker: Optional[QuotaTracker] = None
+    listener_proc: Optional[subprocess.Popen] = None
 
     def do_GET(self):
         """Health check endpoint."""
@@ -217,7 +218,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 })
                 threading.Thread(
                     target=sync_repo_and_reload,
-                    args=(REPO_ROOT, ref, self.server, self.task_manager),
+                    args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None)),
                     daemon=True,
                 ).start()
                 return
@@ -359,6 +360,7 @@ def main():
         sys.exit(1)
 
     listener_proc = start_smee_listener(args.smee_url, args.port) if args.smee_url else None
+    GravitonHandler.listener_proc = listener_proc
 
     quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
     GravitonHandler.quota_tracker = quota_tracker
@@ -444,6 +446,7 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         logger.info("Stopping Graviton Webhook Server...")
     finally:
+        stop_smee_listener(listener_proc)
         st = shutdown_thread or (getattr(dashboard, "_shutdown_thread", None) if dashboard else None) or _shutdown_thread
         if st and st.is_alive() and st != threading.current_thread():
             st.join()

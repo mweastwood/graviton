@@ -12,6 +12,7 @@ from lib.updater import (
     rebuild_agent_container,
     hot_reload_server,
     sync_repo_and_reload,
+    stop_smee_listener,
     get_hot_reload_state,
     set_hot_reload_state,
 )
@@ -123,6 +124,34 @@ class TestUpdater(unittest.TestCase):
         mock_git_pull.assert_called_once()
         mock_tm.drain_active_tasks.assert_not_called()
         self.assertEqual(get_hot_reload_state(), "IDLE")
+
+    def test_stop_smee_listener_graceful_exit(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        stop_smee_listener(mock_proc)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2)
+        mock_proc.kill.assert_not_called()
+
+    def test_stop_smee_listener_timeout_triggers_kill(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="smee", timeout=2), None]
+        stop_smee_listener(mock_proc)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        self.assertEqual(mock_proc.wait.call_count, 2)
+
+    @patch("os.execv")
+    def test_hot_reload_server_stops_listener_proc(self, mock_execv):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        hot_reload_server(listener_proc=mock_proc)
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2)
+        mock_execv.assert_called_once()
 
 
 if __name__ == "__main__":
