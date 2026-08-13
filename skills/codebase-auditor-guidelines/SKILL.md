@@ -16,6 +16,7 @@ This skill provides comprehensive instructions for the `codebase_auditor` agent 
    - Build an in-memory cache of existing open issue titles, bodies, and labels.
 
 2. **Codebase Inspection**:
+   - Check for `.githooks/pre-commit` in the repository and verify pre-commit checks pass prior to committing code or filing findings.
    - For **Bug Sweeps**: Search `/workspace` for unhandled exceptions, resource leaks, missing validation, edge cases, broken error paths, or race conditions.
    - For **Quality Sweeps**: Analyze file sizes, long functions, high complexity, missing docstrings/comments, redundant computations, or tightly coupled modules.
 
