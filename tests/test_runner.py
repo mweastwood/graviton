@@ -661,11 +661,12 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = ".githooks" ]; then
-        echo "change" >> "$HOST_WS/README.md"
-        git -C "$HOST_WS" add README.md
-        if git -C "$HOST_WS" commit -m "Test commit with hook" &>/dev/null; then
-            if [ -f "$HOST_WS/hook_output.txt" ]; then
+    if [ "$HOOK_PATH" = "$HOST_WS/.githooks" ]; then
+        mkdir -p "$HOST_WS/subfolder"
+        echo "change in subfolder" >> "$HOST_WS/subfolder/file.txt"
+        git -C "$HOST_WS/subfolder" add file.txt
+        if git -C "$HOST_WS/subfolder" -c user.name="Test" -c user.email="test@example.com" commit -m "Test commit with hook" &>/dev/null; then
+            if [ -f "$HOST_WS/subfolder/hook_output.txt" ] || [ -f "$HOST_WS/hook_output.txt" ]; then
                 echo "configured_and_executed" > "{hooks_verified_file}"
             fi
         fi
@@ -714,10 +715,10 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = ".githooks" ]; then
+    if [ "$HOOK_PATH" = "$HOST_WS/.githooks" ]; then
         echo "change" >> "$HOST_WS/README.md"
         git -C "$HOST_WS" add README.md
-        if ! git -C "$HOST_WS" commit -m "Failing commit" &>/dev/null; then
+        if ! git -C "$HOST_WS" -c user.name="Test" -c user.email="test@example.com" commit -m "Failing commit" &>/dev/null; then
             echo "hook_failed_as_expected" > "{hook_failed_verified}"
         fi
     fi
