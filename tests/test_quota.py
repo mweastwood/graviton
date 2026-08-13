@@ -907,15 +907,57 @@ class TestQuotaTracker(unittest.TestCase):
         custom_w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=65.0)
 
         # 3rd party pool initialization
-        t_claude = QuotaTracker(window_1w=custom_w1, quota_pool="claude_gpt")
-        self.assertEqual(t_claude.claude_window_1w.remaining_percentage, 65.0)
-
         # Gemini pool initialization
         t_gemini = QuotaTracker(window_1w=custom_w1, quota_pool="gemini")
         self.assertEqual(t_gemini.gemini_window_1w.remaining_percentage, 65.0)
 
+    def test_update_windows_claude_gpt_does_not_overwrite_primary_gemini_metrics(self):
+        tracker = QuotaTracker(quota_pool="gemini")
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+        self.assertEqual(tracker.remaining_percentage, 90.0)
+
+        # Update claude_gpt with 20% quota level
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=20.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=30.0)
+        tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        # Primary remaining_percentage must remain Gemini's level (90.0%)
+        self.assertEqual(tracker.remaining_percentage, 90.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 20.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 90.0)
+
+    def test_remaining_percentage_setter_target_pool_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        t_claude.remaining_percentage = 45.0
+        self.assertEqual(t_claude.claude_window_5h.remaining_percentage, 45.0)
+        self.assertEqual(t_claude.gemini_window_5h.remaining_percentage, 100.0)
+
+        t_gemini = QuotaTracker(quota_pool="gemini")
+        t_gemini.remaining_percentage = 55.0
+        self.assertEqual(t_gemini.gemini_window_5h.remaining_percentage, 55.0)
+        self.assertEqual(t_gemini.claude_window_5h.remaining_percentage, 100.0)
+
+    def test_single_pool_exhaustion_tracker_state(self):
+        tracker = QuotaTracker()
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        tracker.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+
+        # State remains NORMAL while Claude pool is available
+        self.assertEqual(tracker.state, QuotaState.NORMAL)
+
+        # Exhaust Claude pool as well
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        self.assertEqual(tracker.state, QuotaState.EXHAUSTED)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

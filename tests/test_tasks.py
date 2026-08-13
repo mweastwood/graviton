@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from lib.quota import QuotaState, QuotaTracker
+from lib.quota import QuotaState, QuotaTracker, QuotaWindow
 from lib.runner import run_agent_container
 from lib.tasks import Task, TaskManager, TaskStatus
 
@@ -1670,8 +1670,35 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(task.selected_model, "claude-3-5-sonnet")
         manager.stop()
 
+    def test_get_stats_queue_status_during_single_pool_exhaustion(self):
+        quota = QuotaTracker()
+        w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        quota.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+
+        w_5h_c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        quota.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+
+        # Single-pool exhaustion must NOT report PAUSED_FOR_QUOTA since 3rd party pool is active
+        stats = manager.get_stats()
+        self.assertEqual(stats["queue_status"], "ACTIVE")
+        self.assertNotEqual(stats["queue_status"], "PAUSED_FOR_QUOTA")
+
+        # Exhaust 3rd party pool as well
+        w_5h_c0 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=0.0)
+        w_1w_c0 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=0.0)
+        quota.update_windows(w_5h_c0, w_1w_c0, quota_pool="claude_gpt")
+
+        # Now all pools are exhausted -> PAUSED_FOR_QUOTA
+        stats_exhausted = manager.get_stats()
+        self.assertEqual(stats_exhausted["queue_status"], "PAUSED_FOR_QUOTA")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

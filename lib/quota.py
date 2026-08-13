@@ -787,7 +787,8 @@ class QuotaTracker:
         with self._lock:
             val_float = max(0.0, min(100.0, float(val)))
             self._remaining_percentage = val_float
-            self.gemini_window_5h.remaining_percentage = val_float
+            w5, _ = self.get_pool_windows(self.quota_pool)
+            w5.remaining_percentage = val_float
             if self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD:
                 self._backoff_count = 0
                 self._active_backoff_delay = self.get_pacing_backoff_delay()
@@ -845,12 +846,16 @@ class QuotaTracker:
                 self.active_gemini_model = model
 
     def _state_unlocked(self) -> str:
-        if self._remaining_percentage <= self.EXHAUSTED_THRESHOLD:
+        gemini_state = self.get_pool_state("gemini")
+        claude_state = self.get_pool_state("claude_gpt")
+        if gemini_state == QuotaState.EXHAUSTED and claude_state == QuotaState.EXHAUSTED:
             return QuotaState.EXHAUSTED
-        elif self._remaining_percentage < self.LOW_QUOTA_THRESHOLD:
+        elif gemini_state == QuotaState.NORMAL or claude_state == QuotaState.NORMAL:
+            return QuotaState.NORMAL
+        elif gemini_state == QuotaState.LOW_QUOTA or claude_state == QuotaState.LOW_QUOTA:
             return QuotaState.LOW_QUOTA
         else:
-            return QuotaState.NORMAL
+            return QuotaState.EXHAUSTED
 
     @property
     def state(self) -> str:
@@ -878,7 +883,7 @@ class QuotaTracker:
     def is_behind_pacing(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> bool:
-        """Check if all quota pools are behind target pacing."""
+        """Check if all quota pools are behind target pacing (returns True only when all pools are behind pacing, blocking task execution across both pools)."""
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
             norm_dt = _normalize_now_datetime(effective_now)
@@ -1064,10 +1069,11 @@ class QuotaTracker:
                     self.gemini_window_5h = window_5h
                     self.gemini_window_1w = window_1w
 
-            effective_pct = min(window_5h.remaining_percentage, window_1w.remaining_percentage)
+            target_w5, target_w1 = self.get_pool_windows(self.quota_pool)
+            effective_pct = min(target_w5.remaining_percentage, target_w1.remaining_percentage)
             self._remaining_percentage = max(0.0, min(100.0, float(effective_pct)))
-            if window_5h.reset_time is not None or window_5h.reset_timestamp is not None:
-                res = window_5h.reset_timestamp if window_5h.reset_timestamp is not None else window_5h.reset_time
+            if target_w5.reset_time is not None or target_w5.reset_timestamp is not None:
+                res = target_w5.reset_timestamp if target_w5.reset_timestamp is not None else target_w5.reset_time
                 try:
                     self._reset_time = float(res)
                 except (ValueError, TypeError):
@@ -1075,7 +1081,9 @@ class QuotaTracker:
 
             status_5h, backoff_5h = window_5h.get_pacing_status()
             status_1w, backoff_1w = window_1w.get_pacing_status()
-            pacing_backoff = max(backoff_5h, backoff_1w)
+            target_status_5h, target_backoff_5h = target_w5.get_pacing_status()
+            target_status_1w, target_backoff_1w = target_w1.get_pacing_status()
+            pacing_backoff = max(target_backoff_5h, target_backoff_1w)
 
             if self._remaining_percentage >= self.LOW_QUOTA_THRESHOLD and pacing_backoff == 0.0:
                 self._backoff_count = 0
