@@ -851,13 +851,18 @@ class TerminalDashboard:
                 def _make_handler(sig_num, orig_h):
                     def _signal_handler(signum, frame):
                         self._restore_termios()
-                        self.stop()
-                        if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
-                            orig_h(signum, frame)
-                        elif signum == signal.SIGINT:
-                            raise KeyboardInterrupt()
-                        else:
-                            sys.exit(128 + signum)
+                        try:
+                            if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
+                                orig_h(signum, frame)
+                            elif signum == signal.SIGINT:
+                                self.stop()
+                                raise KeyboardInterrupt()
+                            else:
+                                self.stop()
+                                sys.exit(128 + signum)
+                        except BaseException:
+                            self.stop()
+                            raise
 
                     return _signal_handler
 

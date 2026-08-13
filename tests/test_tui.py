@@ -1256,6 +1256,32 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.stop()
         self.assertFalse(dashboard._signals_registered)
 
+    @patch("lib.tui.signal.signal")
+    def test_signal_handler_defers_stopping_dashboard_when_custom_orig_h_invoked(self, mock_signal):
+        mock_orig_h = MagicMock()
+        with patch("lib.tui.signal.getsignal", return_value=mock_orig_h):
+            stream = io.StringIO()
+            manager = TaskManager(max_workers=1)
+            dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+            dashboard.start()
+            self.assertTrue(dashboard._running)
+
+            sigint_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGINT]
+            self.assertTrue(len(sigint_call) > 0)
+            handler = sigint_call[0].args[1]
+
+            # Invoke signal handler
+            handler(signal.SIGINT, None)
+
+            # Custom orig_h should be called
+            mock_orig_h.assert_called_once_with(signal.SIGINT, None)
+
+            # Dashboard refresh loop MUST remain running (_running == True) so TUI displays status badges during steps 1-3
+            self.assertTrue(dashboard._running)
+
+            dashboard.stop()
+
     def test_restore_termios_emits_ansi_sequences_once(self):
         stream = io.StringIO()
         manager = TaskManager(max_workers=1)
