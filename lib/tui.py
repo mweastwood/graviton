@@ -462,7 +462,7 @@ class TerminalDashboard:
             self.selected_queue_index -= 1
 
     def prioritize_selected_task(self) -> bool:
-        """Bump priority of the currently selected queued task."""
+        """Bump priority of the currently selected queued task and retain cursor tracking on prioritized task."""
         if not self.task_manager:
             return False
         queued_tasks = self.task_manager.get_queued_tasks()
@@ -472,6 +472,12 @@ class TerminalDashboard:
         self.selected_queue_index = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
         task = queued_tasks[self.selected_queue_index]
         res = self.task_manager.prioritize_task(task.id, priority_bump=1)
+        if res:
+            new_queued_tasks = self.task_manager.get_queued_tasks()
+            for idx, t in enumerate(new_queued_tasks):
+                if t.id == task.id:
+                    self.selected_queue_index = idx
+                    break
         return res
 
     def enable_selected_job(self) -> Optional[ScheduledJob]:

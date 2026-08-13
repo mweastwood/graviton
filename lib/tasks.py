@@ -558,10 +558,14 @@ class TaskManager:
         """
         Rebuild self._queue with pending queued tasks sorted by highest priority first,
         then by enqueue_time. Must be called while holding self._lock.
+        Preserves any queued None stop sentinels.
         """
+        sentinel_count = 0
         while not self._queue.empty():
             try:
-                self._queue.get_nowait()
+                item = self._queue.get_nowait()
+                if item is None:
+                    sentinel_count += 1
                 self._queue.task_done()
             except queue.Empty:
                 break
@@ -574,6 +578,9 @@ class TaskManager:
 
         for t in queued_tasks:
             self._queue.put(t)
+
+        for _ in range(sentinel_count):
+            self._queue.put(None)
 
     def prioritize_task(self, task_id: str, priority_bump: int = 1) -> bool:
         """
@@ -673,57 +680,51 @@ class TaskManager:
         while self._running:
             task = None
             with self._lock:
-                if not (self._draining or self._paused) and self._running:
+                draining = self._draining
+                paused = self._paused
+
+                if (draining or paused) and self._running:
+                    task = None
+                elif not self._queue.empty():
                     try:
-                        task = self._queue.get_nowait()
-                    except (queue.Empty, ValueError):
+                        item = self._queue.get_nowait()
+                        if item is None:
+                            self._queue.task_done()
+                            break
+
+                        if item.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                            self._queue.task_done()
+                            task = None
+                        else:
+                            is_behind = (
+                                hasattr(self.quota_tracker, "is_behind_pacing")
+                                and self.quota_tracker.is_behind_pacing() is True
+                                if self.quota_tracker
+                                else False
+                            )
+                            is_exhausted = (
+                                self.quota_tracker is not None
+                                and self.quota_tracker.state == QuotaState.EXHAUSTED
+                            )
+                            if self._draining or self._paused or is_behind or is_exhausted:
+                                if is_behind or is_exhausted:
+                                    item.status = TaskStatus.PAUSED_FOR_QUOTA
+                                self._queue.put(item)
+                                self._queue.task_done()
+                                task = None
+                            else:
+                                item.status = TaskStatus.RUNNING
+                                item.start_time = time.time()
+                                item.worker_thread_id = worker_id
+                                task = item
+                    except queue.Empty:
                         task = None
 
             if task is None:
-                with self._lock:
-                    draining = self._draining
-                    paused = self._paused
-
-                if (draining or paused) and self._running:
-                    time.sleep(0.1)
-                    continue
-
-                try:
-                    task = self._queue.get(timeout=0.5)
-                except (queue.Empty, ValueError):
-                    continue
-
-            if task is None or not self._running:
-                if task is None and not self._running:
+                if not self._running:
                     break
-                self._queue.task_done()
-                break
-
-            with self._lock:
-                if task.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
-                    self._queue.task_done()
-                    continue
-
-                if self._draining or self._paused:
-                    self._queue.put(task)
-                    self._queue.task_done()
-                    time.sleep(0.1)
-                    continue
-
-                if self.quota_tracker:
-                    state = self.quota_tracker.state
-                    is_behind = hasattr(self.quota_tracker, "is_behind_pacing") and self.quota_tracker.is_behind_pacing() is True
-                    if state == QuotaState.EXHAUSTED or is_behind:
-                        task.status = TaskStatus.PAUSED_FOR_QUOTA
-                        self._queue.put(task)
-                        self._queue.task_done()
-                        time.sleep(0.1)
-                        continue
-
-                task.status = TaskStatus.RUNNING
-                task.start_time = time.time()
-                task.worker_thread_id = worker_id
-
+                time.sleep(0.05)
+                continue
             if self.quota_tracker and self.quota_tracker.state == QuotaState.LOW_QUOTA:
                 delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)
                 if delay > 0:

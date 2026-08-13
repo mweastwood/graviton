@@ -532,6 +532,8 @@ def render_queued_tasks_panel(
     else:
         selected_queue_index = 0
 
+    # Fixed column widths: cursor(2) + ID(8) + PRIO(6) + AGENT(14) + ATTEMPT(16) + WAIT(9) = 55.
+    # Plus 6 single-space column separators = 61 total fixed characters.
     target_w = max(8, inner_w - 61)
     cols = [
         (" ", 2),

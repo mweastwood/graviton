@@ -1146,6 +1146,8 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(t2.priority, 1)
         queued = manager.get_queued_tasks()
         self.assertEqual(queued[0].id, t2.id)
+        # Cursor tracking retains focus on prioritized task (t2), moving selected_queue_index from 1 to 0
+        self.assertEqual(dashboard.selected_queue_index, 0)
 
         # Move up
         dashboard.handle_key("up")
