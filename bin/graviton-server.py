@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -93,6 +94,22 @@ logging.basicConfig(
 logger = logging.getLogger("graviton")
 
 RUN_CONTAINER_SCRIPT = REPO_ROOT / "bin" / "run_agent_container.sh"
+RUN_LISTENER_SCRIPT = REPO_ROOT / "bin" / "run_listener.sh"
+
+
+def start_smee_listener(smee_url: str, port: int) -> Optional[subprocess.Popen]:
+    """Launch bin/run_listener.sh as a background subprocess if smee_url is provided."""
+    if not smee_url:
+        return None
+    if not RUN_LISTENER_SCRIPT.exists() or not os.access(RUN_LISTENER_SCRIPT, os.X_OK):
+        logger.error(f"Smee listener script not found or not executable: {RUN_LISTENER_SCRIPT}")
+        return None
+    logger.info(f"Starting background smee listener for {smee_url} -> http://localhost:{port}/...")
+    try:
+        return subprocess.Popen([str(RUN_LISTENER_SCRIPT), smee_url, str(port)])
+    except Exception as e:
+        logger.error(f"Failed to start smee listener process: {e}")
+        return None
 
 
 class GravitonHandler(BaseHTTPRequestHandler):
@@ -317,6 +334,7 @@ def main():
     parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
+    parser.add_argument("--smee-url", default=os.getenv("SMEE_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL)")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
@@ -339,6 +357,8 @@ def main():
     if not RUN_CONTAINER_SCRIPT.exists():
         logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
         sys.exit(1)
+
+    listener_proc = start_smee_listener(args.smee_url, args.port) if args.smee_url else None
 
     quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
     GravitonHandler.quota_tracker = quota_tracker

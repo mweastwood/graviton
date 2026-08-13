@@ -83,12 +83,18 @@ python3 bin/graviton-server.py --port 8000
 *Options:*
 - `--port` / `-p`: Port to bind (default: `8000`).
 - `--secret` / `-s`: Optional GitHub Webhook secret for HMAC SHA-256 signature verification.
+- `--smee-url`: Smee.io channel URL to automatically launch background webhook proxy listener (env: `SMEE_URL`).
 - `--reviewer`: Custom reviewer agent name (default: `code_reviewer`).
 - `--fixer`: Custom fixer agent name (default: `code_fixer`).
 - `--triager`: Custom triager agent name (default: `issue_triager`).
 - `--schedules-config`: Path to custom schedule JSON configuration file (default: `config/schedules.json`).
 
 ### 3. Connect Webhook via Smee.io (Local Development)
+Optionally pass `--smee-url` (or set `SMEE_URL` environment variable) when starting `graviton-server.py` to automatically spawn the Smee webhook proxy listener in a single command:
+```bash
+python3 bin/graviton-server.py --port 8000 --smee-url https://smee.io/your-channel-id
+```
+Alternatively, run the listener separately:
 ```bash
 ./bin/run_listener.sh https://smee.io/your-channel-id 8000
 ```
