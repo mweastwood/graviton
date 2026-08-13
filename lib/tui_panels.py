@@ -312,6 +312,22 @@ def allocate_scheduled_job_columns(inner_w: int) -> Tuple[int, int, int]:
     return id_w, name_w, agent_w
 
 
+def format_wait_time(seconds: float) -> str:
+    """Format task queue wait time into dynamic human-readable units (seconds, minutes, and hours)."""
+    if seconds is None or seconds < 0:
+        seconds = 0.0
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600.0:
+        minutes = int(seconds // 60)
+        sec = int(seconds % 60)
+        return f"{minutes}m {sec:02d}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes:02d}m"
+
+
 def format_interval(sec: int) -> str:
     """Format interval in seconds into human-readable shorthand (e.g. 1d, 2h, 5m, 30s)."""
     if sec >= 86400 and sec % 86400 == 0:
@@ -635,7 +651,7 @@ def render_queued_tasks_panel(
             (t.agent, 14),
             (target_str, target_w),
             (att_str, 16),
-            (f"{t.wait_time:.1f}s", 9),
+            (format_wait_time(t.wait_time), 9),
         ]
         content.append(format_table_row(row_cells))
 

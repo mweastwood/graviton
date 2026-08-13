@@ -34,6 +34,7 @@ from lib.tui_panels import (
     format_interval,
     format_remaining,
     format_timestamp,
+    format_wait_time,
     get_display_width,
     pad_to_display_width,
     render_active_tasks_panel,

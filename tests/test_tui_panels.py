@@ -20,6 +20,7 @@ from lib.tui_panels import (
     format_table_row,
     format_target_for_display,
     format_timestamp,
+    format_wait_time,
     get_display_width,
     pad_to_display_width,
     render_active_tasks_panel,
@@ -387,6 +388,63 @@ class TestTUIPanels(unittest.TestCase):
         )
         cached_lines = render_queued_tasks_panel(width=80, tasks=[task_cached])
         self.assertIn("3/6 (cached)", cached_lines[2])
+
+    def test_format_wait_time(self):
+        # Sub-minute (< 60.0s)
+        self.assertEqual(format_wait_time(0.0), "0.0s")
+        self.assertEqual(format_wait_time(14.2), "14.2s")
+        self.assertEqual(format_wait_time(59.9), "59.9s")
+        self.assertEqual(format_wait_time(-5.0), "0.0s")
+        self.assertEqual(format_wait_time(None), "0.0s")
+
+        # Sub-hour (60.0s <= seconds < 3600.0s)
+        self.assertEqual(format_wait_time(60.0), "1m 00s")
+        self.assertEqual(format_wait_time(75.0), "1m 15s")
+        self.assertEqual(format_wait_time(1425.0), "23m 45s")
+        self.assertEqual(format_wait_time(3599.0), "59m 59s")
+
+        # Multi-hour (>= 3600.0s)
+        self.assertEqual(format_wait_time(3600.0), "1h 00m")
+        self.assertEqual(format_wait_time(3900.0), "1h 05m")
+        self.assertEqual(format_wait_time(16200.0), "4h 30m")
+        self.assertEqual(format_wait_time(86400.0), "24h 00m")
+
+    def test_render_queued_tasks_panel_large_wait_times(self):
+        t1 = Task(
+            id="task-sub",
+            agent="code_fixer",
+            target_id="mweastwood/graviton#177",
+            prompt="Fix bug",
+            status=TaskStatus.QUEUED,
+        )
+        t1.enqueue_time = 1000.0
+        t1.start_time = 1045.0  # wait_time = 45.0s
+
+        t2 = Task(
+            id="task-min",
+            agent="code_fixer",
+            target_id="mweastwood/graviton#177",
+            prompt="Fix bug",
+            status=TaskStatus.QUEUED,
+        )
+        t2.enqueue_time = 1000.0
+        t2.start_time = 2425.0  # wait_time = 1425.0s -> 23m 45s
+
+        t3 = Task(
+            id="task-hr",
+            agent="code_fixer",
+            target_id="mweastwood/graviton#177",
+            prompt="Fix bug",
+            status=TaskStatus.QUEUED,
+        )
+        t3.enqueue_time = 1000.0
+        t3.start_time = 17200.0  # wait_time = 16200.0s -> 4h 30m
+
+        lines = render_queued_tasks_panel(width=90, tasks=[t1, t2, t3])
+        self.assertEqual(len(lines), 6)  # top border + table header + 3 task rows + bottom border
+        self.assertIn("45.0s", lines[2])
+        self.assertIn("23m 45s", lines[3])
+        self.assertIn("4h 30m", lines[4])
 
     def test_render_scheduled_jobs_panel(self):
         empty_lines = render_scheduled_jobs_panel(width=80, scheduler=None)
