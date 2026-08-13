@@ -21,6 +21,7 @@ This skill provides comprehensive instructions for the `pr_drafter` agent to cre
    - Preserve existing API contracts and coding standards.
 
 4. **Local Test Execution (Test Gate)**:
+   - Check for `.githooks/pre-commit` in the repository and verify pre-commit checks pass prior to committing and pushing.
    - Execute local unit tests (e.g. `python3 -m unittest discover tests`) before committing code.
    - If tests fail, diagnose and fix the failure. Do NOT push broken code to remote branches.
 

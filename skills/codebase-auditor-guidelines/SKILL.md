@@ -28,5 +28,9 @@ This skill provides comprehensive instructions for the `codebase_auditor` agent 
      - Bug Sweep: `gh issue create --title "[Bug Sweep] <summary>" --body "<details & repro>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "bug"`
      - Quality Sweep: `gh issue create --title "[Quality Sweep] <scope>: <recommendation>" --body "<rationale & code snippet>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
 
-5. **Safety Guardrails & Bot Marker**:
+5. **Local Test Execution (Test Gate)**:
+   - Check for `.githooks/pre-commit` in the repository and verify pre-commit checks pass prior to committing and pushing.
+   - Execute local unit tests (e.g. `python3 -m unittest discover tests`) before committing code.
+
+6. **Safety Guardrails & Bot Marker**:
    - Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:codebase_auditor -->` to all filed issue bodies to maintain loop protection.

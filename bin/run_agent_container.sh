@@ -55,6 +55,12 @@ else
   fi
 fi
 
+# Configure git pre-commit hooks if present in workspace
+if [ -f "${TEMP_WORKSPACE}/.githooks/pre-commit" ]; then
+  chmod +x "${TEMP_WORKSPACE}/.githooks/pre-commit" 2>/dev/null || true
+  git -C "${TEMP_WORKSPACE}" config core.hooksPath .githooks 2>/dev/null || true
+fi
+
 # Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
 CONTAINER_NAME="graviton-agent-run-${RUN_ID}"
 cleanup() {
