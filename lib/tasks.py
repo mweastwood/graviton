@@ -435,8 +435,6 @@ class TaskManager:
                     logger.warning(f"Failed to restore queued task item {td}: {e}")
                     continue
             self._rebuild_queue_locked()
-
-            self._rebuild_queue_locked()
             self._prune_tasks_locked()
 
         logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
@@ -689,6 +687,7 @@ class TaskManager:
     def _worker_loop(self, worker_id: str):
         while self._running:
             task = None
+            was_exhausted = False
             with self._lock:
                 draining = self._draining
                 paused = self._paused
@@ -780,7 +779,11 @@ class TaskManager:
                             all_exhausted = not gemini_eligible and not claude_eligible
                             if self._draining or self._paused or all_exhausted:
                                 if all_exhausted:
-                                    item.status = TaskStatus.PAUSED_FOR_QUOTA
+                                    if item.status != TaskStatus.PAUSED_FOR_QUOTA:
+                                        item.status = TaskStatus.PAUSED_FOR_QUOTA
+                                        was_exhausted = False
+                                    else:
+                                        was_exhausted = True
                                 self._queue.put(item)
                                 self._queue.task_done()
                                 task = None
@@ -797,7 +800,7 @@ class TaskManager:
             if task is None:
                 if not self._running:
                     break
-                time.sleep(0.05)
+                time.sleep(0.25 if was_exhausted else 0.05)
                 continue
             if self.quota_tracker and self.quota_tracker.state == QuotaState.LOW_QUOTA:
                 delay = self.quota_tracker.get_backoff_delay(attempt=task.attempt)

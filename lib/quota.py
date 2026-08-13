@@ -751,22 +751,32 @@ class QuotaTracker:
     @property
     def window_5h(self) -> QuotaWindow:
         with self._lock:
-            return self.gemini_window_5h
+            w5, _ = self.get_pool_windows(self.quota_pool)
+            return w5
 
     @window_5h.setter
     def window_5h(self, val: QuotaWindow):
         with self._lock:
-            self.gemini_window_5h = val
+            p = str(self.quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_5h = val
+            else:
+                self.gemini_window_5h = val
 
     @property
     def window_1w(self) -> QuotaWindow:
         with self._lock:
-            return self.gemini_window_1w
+            _, w1 = self.get_pool_windows(self.quota_pool)
+            return w1
 
     @window_1w.setter
     def window_1w(self, val: QuotaWindow):
         with self._lock:
-            self.gemini_window_1w = val
+            p = str(self.quota_pool).lower()
+            if "claude" in p or "gpt" in p or "3p" in p or "third" in p:
+                self.claude_window_1w = val
+            else:
+                self.gemini_window_1w = val
 
     @property
     def remaining_percentage(self) -> float:
@@ -863,8 +873,9 @@ class QuotaTracker:
         with self._lock:
             self._reset_time = val
             if val is not None:
-                self.window_5h.reset_time = str(val)
-                self.window_5h.reset_timestamp = parse_reset_time_to_timestamp(val)
+                w5, _ = self.get_pool_windows(self.quota_pool)
+                w5.reset_time = str(val)
+                w5.reset_timestamp = parse_reset_time_to_timestamp(val)
 
     @property
     def active_backoff_delay(self) -> float:
@@ -1064,7 +1075,8 @@ class QuotaTracker:
                     self.gemini_window_5h = window_5h
                     self.gemini_window_1w = window_1w
 
-            target_w5, target_w1 = self.get_pool_windows(self.quota_pool)
+            target_pool = quota_pool if quota_pool is not None else self.quota_pool
+            target_w5, target_w1 = self.get_pool_windows(target_pool)
             effective_pct = min(target_w5.remaining_percentage, target_w1.remaining_percentage)
             self._remaining_percentage = max(0.0, min(100.0, float(effective_pct)))
             if target_w5.reset_time is not None or target_w5.reset_timestamp is not None:

@@ -943,7 +943,7 @@ class TestQuotaTracker(unittest.TestCase):
                 tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=False)
                 mock_fetch.assert_not_called()
 
-    def test_update_windows_claude_gpt_does_not_overwrite_primary_gemini_metrics(self):
+    def test_update_windows_claude_gpt_target_pool_routing(self):
         tracker = QuotaTracker(quota_pool="gemini")
         w_5h_g = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0)
         w_1w_g = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
@@ -955,10 +955,37 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w_c = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=30.0)
         tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
 
-        # Primary remaining_percentage must remain Gemini's level (90.0%)
-        self.assertEqual(tracker.remaining_percentage, 90.0)
+        # Target pool claude_gpt metrics are updated
+        self.assertEqual(tracker.remaining_percentage, 20.0)
         self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 20.0)
         self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 90.0)
+
+    def test_reset_time_setter_claude_gpt_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        t_claude.reset_time = 1700000000.0
+        self.assertEqual(t_claude.claude_window_5h.reset_timestamp, 1700000000.0)
+        self.assertEqual(t_claude.claude_window_5h.reset_time, "1700000000.0")
+        self.assertIsNone(t_claude.gemini_window_5h.reset_timestamp)
+
+        t_gemini = QuotaTracker(quota_pool="gemini")
+        t_gemini.reset_time = 1800000000.0
+        self.assertEqual(t_gemini.gemini_window_5h.reset_timestamp, 1800000000.0)
+        self.assertIsNone(t_gemini.claude_window_5h.reset_timestamp)
+
+    def test_window_properties_claude_gpt_routing(self):
+        t_claude = QuotaTracker(quota_pool="claude_gpt")
+        w5_custom = QuotaWindow(name="5H", remaining_percentage=42.0)
+        w1_custom = QuotaWindow(name="1W", remaining_percentage=84.0)
+
+        t_claude.window_5h = w5_custom
+        t_claude.window_1w = w1_custom
+
+        self.assertEqual(t_claude.window_5h.remaining_percentage, 42.0)
+        self.assertEqual(t_claude.window_1w.remaining_percentage, 84.0)
+        self.assertEqual(t_claude.claude_window_5h.remaining_percentage, 42.0)
+        self.assertEqual(t_claude.claude_window_1w.remaining_percentage, 84.0)
+        self.assertEqual(t_claude.gemini_window_5h.remaining_percentage, 100.0)
+        self.assertEqual(t_claude.gemini_window_1w.remaining_percentage, 100.0)
 
     def test_remaining_percentage_setter_target_pool_routing(self):
         t_claude = QuotaTracker(quota_pool="claude_gpt")
