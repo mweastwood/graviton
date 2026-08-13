@@ -694,6 +694,7 @@ class TaskManager:
 
                 if (draining or paused) and self._running:
                     task = None
+                    was_exhausted = True
                 elif not self._queue.empty():
                     try:
                         item = self._queue.get_nowait()
@@ -784,6 +785,8 @@ class TaskManager:
                                         was_exhausted = False
                                     else:
                                         was_exhausted = True
+                                else:
+                                    was_exhausted = True
                                 self._queue.put(item)
                                 self._queue.task_done()
                                 task = None

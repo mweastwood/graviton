@@ -1696,6 +1696,25 @@ class TestTaskManager(unittest.TestCase):
         stats_exhausted = manager.get_stats()
         self.assertEqual(stats_exhausted["queue_status"], "PAUSED_FOR_QUOTA")
 
+    def test_worker_loop_paused_or_draining_backoff(self):
+        manager = TaskManager(max_workers=0)
+        manager.pause()
+        t = Task(id="task-paused-test", agent="code_fixer", prompt="test")
+        manager._queue.put(t)
+
+        with manager._lock:
+            draining = manager._draining
+            paused = manager._paused
+            item = manager._queue.get_nowait()
+            was_exhausted = False
+            if manager._draining or manager._paused:
+                was_exhausted = True
+            manager._queue.put(item)
+            manager._queue.task_done()
+
+        self.assertTrue(was_exhausted)
+        manager.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

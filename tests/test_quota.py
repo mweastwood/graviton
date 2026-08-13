@@ -1014,6 +1014,25 @@ class TestQuotaTracker(unittest.TestCase):
 
         self.assertEqual(tracker.state, QuotaState.EXHAUSTED)
 
+    def test_unaliased_quota_windows_on_init_and_update(self):
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0)
+        w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0)
+        tracker = QuotaTracker(window_5h=w5, window_1w=w1, quota_pool=None)
+
+        self.assertIsNot(tracker.gemini_window_5h, tracker.claude_window_5h)
+        self.assertIsNot(tracker.gemini_window_1w, tracker.claude_window_1w)
+
+        tracker.gemini_window_5h.remaining_percentage = 20.0
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 80.0)
+
+        w5_new = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=50.0)
+        w1_new = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=60.0)
+        tracker.update_windows(w5_new, w1_new, quota_pool=None)
+
+        self.assertIsNot(tracker.gemini_window_5h, tracker.claude_window_5h)
+        tracker.gemini_window_5h.remaining_percentage = 10.0
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()
