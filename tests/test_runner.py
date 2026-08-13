@@ -646,6 +646,10 @@ fi
         aux_script.chmod(0o644)
         pre_commit_hook = githooks_dir / "pre-commit"
         pre_commit_hook.write_text("#!/bin/sh\n\"$(dirname \"$0\")/check-fmt.sh\"\necho 'pre-commit hook executed' >> hook_output.txt\nexit 0\n")
+        pre_commit_hook.chmod(0o644)
+        gitkeep = githooks_dir / ".gitkeep"
+        gitkeep.write_text("")
+        gitkeep.chmod(0o644)
         subprocess.run(["git", "add", ".githooks"], cwd=str(self.repo_dir), check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add pre-commit hook"], cwd=str(self.repo_dir), check=True, capture_output=True)
 
@@ -664,7 +668,9 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = ".githooks" ]; then
+    PRE_COMMIT_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/pre-commit', os.X_OK))" 2>/dev/null || echo "False")"
+    GITKEEP_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/.gitkeep', os.X_OK))" 2>/dev/null || echo "False")"
+    if [ "$HOOK_PATH" = ".githooks" ] && [ "$PRE_COMMIT_X" = "True" ] && [ "$GITKEEP_X" = "False" ]; then
         mkdir -p "$HOST_WS/subfolder"
         echo "change in subfolder" >> "$HOST_WS/subfolder/file.txt"
         git -C "$HOST_WS/subfolder" add file.txt
@@ -700,6 +706,7 @@ exit 0
         githooks_dir.mkdir()
         pre_commit_hook = githooks_dir / "pre-commit"
         pre_commit_hook.write_text("#!/bin/sh\necho 'pre-commit failed' >&2\nexit 1\n")
+        pre_commit_hook.chmod(0o644)
         subprocess.run(["git", "add", ".githooks"], cwd=str(self.repo_dir), check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add failing pre-commit hook"], cwd=str(self.repo_dir), check=True, capture_output=True)
 
@@ -718,7 +725,8 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = ".githooks" ]; then
+    PRE_COMMIT_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/pre-commit', os.X_OK))" 2>/dev/null || echo "False")"
+    if [ "$HOOK_PATH" = ".githooks" ] && [ "$PRE_COMMIT_X" = "True" ]; then
         echo "change" >> "$HOST_WS/README.md"
         git -C "$HOST_WS" add README.md
         if ! git -C "$HOST_WS" -c user.name="Test" -c user.email="test@example.com" commit -m "Failing commit" &>/dev/null; then
@@ -751,6 +759,7 @@ exit 0
         githooks_dir.mkdir()
         gitkeep = githooks_dir / ".gitkeep"
         gitkeep.write_text("")
+        gitkeep.chmod(0o644)
         subprocess.run(["git", "add", ".githooks"], cwd=str(self.repo_dir), check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Add empty .githooks directory"], cwd=str(self.repo_dir), check=True, capture_output=True)
 
@@ -769,8 +778,9 @@ done
 
 if [ -n "$HOST_WS" ]; then
     HOOK_PATH="$(git -C "$HOST_WS" config core.hooksPath 2>/dev/null || echo "")"
-    if [ "$HOOK_PATH" = ".githooks" ]; then
-        echo "hooks_path_configured" > "{hooks_config_verified}"
+    GITKEEP_X="$(python3 -c "import os; print(os.access('$HOST_WS/.githooks/.gitkeep', os.X_OK))" 2>/dev/null || echo "False")"
+    if [ -z "$HOOK_PATH" ] && [ "$GITKEEP_X" = "False" ]; then
+        echo "hooks_not_configured" > "{hooks_config_verified}"
     fi
 fi
 exit 0
@@ -791,7 +801,7 @@ exit 0
 
         self.assertEqual(proc.returncode, 0)
         self.assertTrue(hooks_config_verified.exists())
-        self.assertEqual(hooks_config_verified.read_text().strip(), "hooks_path_configured")
+        self.assertEqual(hooks_config_verified.read_text().strip(), "hooks_not_configured")
 
 
 

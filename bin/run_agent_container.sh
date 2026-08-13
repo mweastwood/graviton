@@ -56,8 +56,8 @@ else
 fi
 
 # Configure git pre-commit hooks if present in workspace
-if [ -d "${TEMP_WORKSPACE}/.githooks" ]; then
-  chmod -R +x "${TEMP_WORKSPACE}/.githooks" 2>/dev/null || true
+if [ -f "${TEMP_WORKSPACE}/.githooks/pre-commit" ]; then
+  chmod +x "${TEMP_WORKSPACE}/.githooks"/* 2>/dev/null || true
   git -C "${TEMP_WORKSPACE}" config core.hooksPath .githooks 2>/dev/null || true
 fi
 
