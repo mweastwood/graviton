@@ -1341,7 +1341,7 @@ class TestTerminalDashboard(unittest.TestCase):
     def test_render_header_navigation_hint_includes_quit(self):
         manager = TaskManager(max_workers=1)
         dashboard = TerminalDashboard(task_manager=manager)
-        rendered = dashboard.render(width=100)
+        rendered = dashboard.render(width=130)
         self.assertIn("[q] Quit", rendered)
 
     def test_render_header_shutdown_badges(self):

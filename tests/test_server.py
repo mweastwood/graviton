@@ -722,6 +722,32 @@ class TestGravitonHandler(unittest.TestCase):
         mock_httpd.server_close.assert_called_once()
         mock_tm.stop.assert_called_once()
 
+    def test_shutdown_signal_handler_non_blocking(self):
+        registered_handlers = {}
+
+        def mock_signal_func(sig, handler):
+            registered_handlers[sig] = handler
+
+        with patch("signal.signal", side_effect=mock_signal_func):
+            with patch("sys.argv", ["graviton-server.py"]):
+                with patch("bin.graviton-server.HTTPServer" if "bin.graviton-server" in sys.modules else "graviton_server.HTTPServer") as mock_http:
+                    mock_server = MagicMock()
+                    mock_http.return_value = mock_server
+                    mock_server.serve_forever.side_effect = KeyboardInterrupt
+                    with patch("graviton_server.TerminalDashboard") as mock_dash:
+                        with patch("graviton_server.graceful_shutdown") as mock_gs:
+                            mock_thread = MagicMock()
+                            mock_gs.return_value = mock_thread
+                            server_mod.main()
+
+                            self.assertIn(signal.SIGINT, registered_handlers)
+                            handler = registered_handlers[signal.SIGINT]
+                            # Call signal handler
+                            handler(signal.SIGINT, None)
+                            mock_gs.assert_called_once()
+                            # Verify thread.join was not called inside signal handler
+                            mock_thread.join.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -410,15 +410,13 @@ def main():
 
     def shutdown_signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, starting graceful Graviton Webhook Server shutdown...")
-        t = graceful_shutdown(
+        graceful_shutdown(
             task_manager=task_manager,
             scheduler=scheduler,
             dashboard=dashboard,
             httpd=httpd,
             grace_period=args.quit_grace_period,
         )
-        t.join(timeout=30)
-        sys.exit(0)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
