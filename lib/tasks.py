@@ -50,6 +50,8 @@ class Task:
     max_total_attempts: int = 6
     attempts_per_batch: int = 3
     requeue_count: int = 0
+    selected_pool: Optional[str] = None
+    selected_model: Optional[str] = None
 
     @property
     def elapsed_time(self) -> float:
@@ -107,6 +109,8 @@ class Task:
             "max_total_attempts": self.max_total_attempts,
             "attempts_per_batch": self.attempts_per_batch,
             "requeue_count": self.requeue_count,
+            "selected_pool": self.selected_pool,
+            "selected_model": self.selected_model,
         }
 
 
@@ -204,7 +208,12 @@ class TaskManager:
         if self._paused or self._stopped or self._draining:
             return False
         if self.quota_tracker is not None:
-            if hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
+            if hasattr(self.quota_tracker, "get_pool_state"):
+                g_state = self.quota_tracker.get_pool_state("gemini")
+                c_state = self.quota_tracker.get_pool_state("claude_gpt")
+                if g_state == QuotaState.EXHAUSTED and c_state == QuotaState.EXHAUSTED:
+                    return False
+            elif hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
                 return False
         return True
 
@@ -697,23 +706,87 @@ class TaskManager:
                             self._queue.task_done()
                             task = None
                         else:
-                            is_behind = (
-                                hasattr(self.quota_tracker, "is_behind_pacing")
-                                and self.quota_tracker.is_behind_pacing() is True
-                                if self.quota_tracker
-                                else False
-                            )
-                            is_exhausted = (
-                                self.quota_tracker is not None
-                                and self.quota_tracker.state == QuotaState.EXHAUSTED
-                            )
-                            if self._draining or self._paused or is_behind or is_exhausted:
-                                if is_behind or is_exhausted:
+                            selected_pool = "gemini"
+                            selected_model = "gemini-2.5-flash"
+                            gemini_eligible = True
+                            claude_eligible = True
+
+                            if self.quota_tracker:
+                                gemini_behind = (
+                                    self.quota_tracker.is_pool_behind_pacing("gemini") is True
+                                    if hasattr(self.quota_tracker, "is_pool_behind_pacing")
+                                    else (self.quota_tracker.is_behind_pacing() is True)
+                                )
+                                gemini_state = (
+                                    self.quota_tracker.get_pool_state("gemini")
+                                    if hasattr(self.quota_tracker, "get_pool_state")
+                                    else self.quota_tracker.state
+                                )
+                                if not isinstance(gemini_state, str):
+                                    gemini_state = QuotaState.NORMAL
+
+                                gemini_pct = (
+                                    self.quota_tracker.get_pool_remaining_percentage("gemini")
+                                    if hasattr(self.quota_tracker, "get_pool_remaining_percentage")
+                                    else self.quota_tracker.remaining_percentage
+                                )
+                                if not isinstance(gemini_pct, (int, float)):
+                                    gemini_pct = 100.0
+
+                                claude_behind = (
+                                    self.quota_tracker.is_pool_behind_pacing("claude_gpt") is True
+                                    if hasattr(self.quota_tracker, "is_pool_behind_pacing")
+                                    else False
+                                )
+                                claude_state = (
+                                    self.quota_tracker.get_pool_state("claude_gpt")
+                                    if hasattr(self.quota_tracker, "get_pool_state")
+                                    else QuotaState.EXHAUSTED
+                                )
+                                if not isinstance(claude_state, str):
+                                    claude_state = QuotaState.NORMAL
+
+                                claude_pct = (
+                                    self.quota_tracker.get_pool_remaining_percentage("claude_gpt")
+                                    if hasattr(self.quota_tracker, "get_pool_remaining_percentage")
+                                    else 0.0
+                                )
+                                if not isinstance(claude_pct, (int, float)):
+                                    claude_pct = 100.0
+
+                                gemini_eligible = (gemini_state != QuotaState.EXHAUSTED) and (not gemini_behind)
+                                claude_eligible = (claude_state != QuotaState.EXHAUSTED) and (not claude_behind)
+
+                                if gemini_eligible and claude_eligible:
+                                    if claude_pct > gemini_pct:
+                                        selected_pool = "claude_gpt"
+                                    else:
+                                        selected_pool = "gemini"
+                                elif claude_eligible:
+                                    selected_pool = "claude_gpt"
+                                else:
+                                    selected_pool = "gemini"
+
+                                if hasattr(self.quota_tracker, "get_active_model"):
+                                    m_val = self.quota_tracker.get_active_model(selected_pool)
+                                    selected_model = m_val if isinstance(m_val, str) else ("gemini-2.5-flash" if selected_pool == "gemini" else "claude-3-5-sonnet")
+                                else:
+                                    selected_model = (
+                                        getattr(self.quota_tracker, "active_gemini_model", "gemini-2.5-flash")
+                                        if selected_pool == "gemini"
+                                        else getattr(self.quota_tracker, "active_third_party_model", "claude-3-5-sonnet")
+                                    )
+
+                            all_exhausted = not gemini_eligible and not claude_eligible
+                            if self._draining or self._paused or all_exhausted:
+                                if all_exhausted:
                                     item.status = TaskStatus.PAUSED_FOR_QUOTA
                                 self._queue.put(item)
                                 self._queue.task_done()
                                 task = None
                             else:
+                                item.selected_pool = selected_pool
+                                item.selected_model = selected_model
                                 item.status = TaskStatus.RUNNING
                                 item.start_time = time.time()
                                 item.worker_thread_id = worker_id
@@ -735,7 +808,9 @@ class TaskManager:
                     )
                     time.sleep(delay)
 
-            logger.info(f"[{worker_id}] Executing task '{task.id}' ({task.agent}): '{task.prompt}'")
+            logger.info(
+                f"[{worker_id}] Executing task '{task.id}' ({task.agent}) via pool '{task.selected_pool}' with model '{task.selected_model}': '{task.prompt}'"
+            )
 
             try:
                 # Resolve target repository checkout directory
@@ -792,6 +867,8 @@ class TaskManager:
                         max_attempts=task.max_attempts,
                         cached_workspace_dir=task.cached_workspace_dir,
                         initial_attempt=initial_att,
+                        quota_pool=task.selected_pool,
+                        model=task.selected_model,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()
