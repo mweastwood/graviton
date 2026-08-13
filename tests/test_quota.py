@@ -770,6 +770,7 @@ class TestQuotaTracker(unittest.TestCase):
             with patch("lib.quota.logger.warning") as mock_warning:
                 t = tracker.poll_live_quota_async(force=True)
                 t.join(timeout=2.0)
+                self.assertFalse(t.is_alive())
                 mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
 
     def test_dual_pool_tracking_and_model_selection(self):
@@ -800,6 +801,79 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.update_quota(0.0, quota_pool="claude_gpt")
         self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.EXHAUSTED)
         self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
+
+    def test_independent_ttl_polling_per_pool(self):
+        tracker = QuotaTracker()
+        w5h_g = QuotaWindow(name="5H", remaining_percentage=90.0)
+        w1w_g = QuotaWindow(name="1W", remaining_percentage=80.0)
+        w5h_c = QuotaWindow(name="5H", remaining_percentage=70.0)
+        w1w_c = QuotaWindow(name="1W", remaining_percentage=60.0)
+
+        start_time = 1000.0
+
+        # Poll Gemini pool at T=1000
+        with patch("lib.quota.time.time", return_value=start_time):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_g, w1w_g)) as mock_fetch:
+                w_5h, w_1w = tracker.poll_live_quota(quota_pool="gemini")
+                self.assertEqual(mock_fetch.call_count, 1)
+                self.assertEqual(w_5h.remaining_percentage, 90.0)
+
+        # Poll Claude/GPT pool 10s later (T=1010) - should fetch independently despite Gemini being fetched 10s ago
+        with patch("lib.quota.time.time", return_value=start_time + 10.0):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_c, w1w_c)) as mock_fetch:
+                w_5h_c, w_1w_c = tracker.poll_live_quota(quota_pool="claude_gpt")
+                self.assertEqual(mock_fetch.call_count, 1)
+                self.assertEqual(w_5h_c.remaining_percentage, 70.0)
+
+        # Poll Gemini again at T=1020 (<60s since Gemini fetch at T=1000) -> should NOT fetch
+        with patch("lib.quota.time.time", return_value=start_time + 20.0):
+            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_g, w1w_g)) as mock_fetch:
+                tracker.poll_live_quota(quota_pool="gemini")
+                self.assertEqual(mock_fetch.call_count, 0)
+
+    def test_is_behind_pacing_dual_pool_failover(self):
+        now = time.time()
+        tracker = QuotaTracker()
+
+        # Gemini pool is BEHIND_PACING
+        w5h_g = QuotaWindow(name="5H", remaining_percentage=100.0)
+        w1w_g = QuotaWindow(name="1W", remaining_percentage=20.0, reset_time=str(now + 362880.0))
+
+        # Claude/GPT pool is OK
+        w5h_c = QuotaWindow(name="5H", remaining_percentage=100.0)
+        w1w_c = QuotaWindow(name="1W", remaining_percentage=100.0)
+
+        tracker.update_windows(w5h_g, w1w_g, quota_pool="gemini")
+        tracker.update_windows(w5h_c, w1w_c, quota_pool="claude_gpt")
+
+        self.assertTrue(tracker.is_pool_behind_pacing("gemini", now=now))
+        self.assertFalse(tracker.is_pool_behind_pacing("claude_gpt", now=now))
+        # Overall is_behind_pacing is False because Claude/GPT pool is eligible
+        self.assertFalse(tracker.is_behind_pacing(now=now))
+
+        # When Claude/GPT is also behind pacing, overall is_behind_pacing becomes True
+        w1w_c_behind = QuotaWindow(name="1W", remaining_percentage=10.0, reset_time=str(now + 362880.0))
+        tracker.update_windows(w5h_c, w1w_c_behind, quota_pool="claude_gpt")
+        self.assertTrue(tracker.is_behind_pacing(now=now))
+
+    def test_update_quota_claude_gpt_metric_updates(self):
+        tracker = QuotaTracker()
+        self.assertEqual(tracker.remaining_percentage, 100.0)
+
+        tracker.update_quota(45.0, quota_pool="claude_gpt")
+
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 45.0)
+        self.assertEqual(tracker.claude_window_1w.remaining_percentage, 45.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 45.0)
+        self.assertEqual(tracker.remaining_percentage, 45.0)
+
+    def test_window_1w_init_parameter_for_third_party_pool(self):
+        custom_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=42.0)
+        tracker = QuotaTracker(window_1w=custom_1w)
+
+        self.assertEqual(tracker.gemini_window_1w.remaining_percentage, 42.0)
+        self.assertEqual(tracker.claude_window_1w.remaining_percentage, 42.0)
+        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 42.0)
 
 
 if __name__ == "__main__":
