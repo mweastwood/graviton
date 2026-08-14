@@ -908,7 +908,7 @@ class TerminalDashboard:
         if self._log_redirected:
             return
 
-        loggers_to_check = [logging.getLogger()] + [
+        loggers_to_check = [logging.getLogger(), logging.root] + [
             logging.getLogger(name)
             for name in logging.Logger.manager.loggerDict
             if isinstance(logging.Logger.manager.loggerDict[name], logging.Logger)
@@ -927,6 +927,16 @@ class TerminalDashboard:
                     self._detached_handlers.append((logger_obj, handler))
 
         root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            if (
+                isinstance(handler, logging.StreamHandler)
+                and not isinstance(handler, logging.FileHandler)
+                and handler is not self.log_handler
+                and handler is not self._file_handler
+            ):
+                root_logger.removeHandler(handler)
+                self._detached_handlers.append((root_logger, handler))
+
         if self.log_handler not in root_logger.handlers:
             root_logger.addHandler(self.log_handler)
 
