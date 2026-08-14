@@ -643,6 +643,145 @@ def render_third_party_models_panel(
     return render_panel_frame(header_bar, lines, width)
 
 
+def allocate_active_task_columns(inner_w: int) -> Tuple[int, int, int, int, int, int]:
+    """Calculate column widths (id_w, agent_w, model_w, target_w, attempt_w, elapsed_w) for active tasks panel.
+
+    Guarantees that sum of column widths + 5 space separators does not exceed inner_w.
+    """
+    if inner_w >= 90:
+        id_w, agent_w, model_w, attempt_w, elapsed_w = 8, 14, 16, 16, 8
+        fixed_sum = 8 + 14 + 16 + 16 + 8 + 5
+        target_w = max(8, inner_w - fixed_sum)
+        return id_w, agent_w, model_w, target_w, attempt_w, elapsed_w
+    elif inner_w >= 67:
+        id_w, agent_w, model_w, attempt_w, elapsed_w = 8, 14, 12, 12, 8
+        fixed_sum = 8 + 14 + 12 + 12 + 8 + 5
+        target_w = max(8, inner_w - fixed_sum)
+        return id_w, agent_w, model_w, target_w, attempt_w, elapsed_w
+    else:
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = 8, 14, 12, 8, 12, 8
+        needed = 67 - inner_w
+        for col_ref in [
+            "model", "attempt", "agent", "elapsed", "id", "target",
+            "model2", "attempt2", "agent2",
+            "agent3", "elapsed3", "id3", "model3", "target3", "attempt3",
+            "agent4", "elapsed4", "id4", "model4", "target4", "attempt4",
+            "agent5", "elapsed5", "id5", "model5", "target5", "attempt5",
+        ]:
+            if needed <= 0:
+                break
+            if col_ref == "model" and model_w > 8:
+                dec = min(model_w - 8, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "attempt" and attempt_w > 8:
+                dec = min(attempt_w - 8, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent" and agent_w > 10:
+                dec = min(agent_w - 10, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed" and elapsed_w > 6:
+                dec = min(elapsed_w - 6, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id" and id_w > 6:
+                dec = min(id_w - 6, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "target" and target_w > 4:
+                dec = min(target_w - 4, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "model2" and model_w > 4:
+                dec = min(model_w - 4, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "attempt2" and attempt_w > 4:
+                dec = min(attempt_w - 4, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent2" and agent_w > 6:
+                dec = min(agent_w - 6, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "agent3" and agent_w > 2:
+                dec = min(agent_w - 2, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed3" and elapsed_w > 2:
+                dec = min(elapsed_w - 2, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id3" and id_w > 2:
+                dec = min(id_w - 2, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model3" and model_w > 2:
+                dec = min(model_w - 2, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target3" and target_w > 2:
+                dec = min(target_w - 2, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt3" and attempt_w > 2:
+                dec = min(attempt_w - 2, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent4" and agent_w > 1:
+                dec = min(agent_w - 1, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed4" and elapsed_w > 1:
+                dec = min(elapsed_w - 1, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id4" and id_w > 1:
+                dec = min(id_w - 1, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model4" and model_w > 1:
+                dec = min(model_w - 1, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target4" and target_w > 1:
+                dec = min(target_w - 1, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt4" and attempt_w > 1:
+                dec = min(attempt_w - 1, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent5" and agent_w > 0:
+                dec = min(agent_w, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed5" and elapsed_w > 0:
+                dec = min(elapsed_w, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id5" and id_w > 0:
+                dec = min(id_w, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model5" and model_w > 0:
+                dec = min(model_w, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target5" and target_w > 0:
+                dec = min(target_w, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt5" and attempt_w > 0:
+                dec = min(attempt_w, needed)
+                attempt_w -= dec
+                needed -= dec
+
+        return id_w, agent_w, model_w, target_w, attempt_w, elapsed_w
+
+
 def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) -> List[str]:
     """Render active running tasks panel."""
     inner_w = max(0, width - 4)
@@ -654,13 +793,14 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    target_w = max(8, inner_w - 51)
+    id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(inner_w)
     cols = [
-        ("ID", 8),
-        ("AGENT", 14),
+        ("ID", id_w),
+        ("AGENT", agent_w),
+        ("MODEL", model_w),
         ("TARGET", target_w),
-        ("ATTEMPT", 16),
-        ("ELAPSED", 9),
+        ("ATTEMPT", attempt_w),
+        ("ELAPSED", elapsed_w),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
@@ -668,12 +808,14 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         target_str = format_target_for_display(t.target_id, target_w)
         is_cached = getattr(t, "requeue_count", 0) > 0
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
+        model_str = getattr(t, "selected_model", None) or "-"
         row_cells = [
-            (t.id, 8),
-            (t.agent, 14),
+            (t.id, id_w),
+            (t.agent, agent_w),
+            (model_str, model_w),
             (target_str, target_w),
-            (att_str, 16),
-            (f"{t.elapsed_time:.1f}s", 9),
+            (att_str, attempt_w),
+            (f"{t.elapsed_time:.1f}s", elapsed_w),
         ]
         content.append(format_table_row(row_cells))
 

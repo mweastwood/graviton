@@ -758,8 +758,14 @@ class TaskManager:
                                 if gemini_eligible and claude_eligible:
                                     if claude_pct > gemini_pct:
                                         selected_pool = "claude_gpt"
-                                    else:
+                                    elif gemini_pct > claude_pct:
                                         selected_pool = "gemini"
+                                    else:
+                                        pref = getattr(self.quota_tracker, "quota_pool", "gemini")
+                                        if isinstance(pref, str) and any(k in pref.lower() for k in ("claude", "gpt", "3p", "third")):
+                                            selected_pool = "claude_gpt"
+                                        else:
+                                            selected_pool = "gemini"
                                 elif claude_eligible:
                                     selected_pool = "claude_gpt"
                                 else:
@@ -942,6 +948,7 @@ class TaskManager:
                 if self.quota_tracker:
                     try:
                         self.quota_tracker.poll_live_quota_async(
+                            quota_pool=task.selected_pool if task else None,
                             force=True,
                             thread_name=f"AsyncQuotaPoll-{worker_id}",
                         )

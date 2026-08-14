@@ -448,10 +448,11 @@ class TestTUIPanels(unittest.TestCase):
             status=TaskStatus.RUNNING,
             worker_thread_id="Worker-1",
         )
-        pop_lines = render_active_tasks_panel(width=80, tasks=[task], max_workers=2)
+        pop_lines = render_active_tasks_panel(width=90, tasks=[task], max_workers=2)
         header_line = pop_lines[1]
         self.assertIn("ID", header_line)
         self.assertIn("AGENT", header_line)
+        self.assertIn("MODEL", header_line)
         self.assertIn("TARGET", header_line)
         self.assertIn("ATTEMPT", header_line)
         self.assertIn("ELAPSED", header_line)
@@ -463,10 +464,59 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
 
-        # Narrow width test (width=45 -> inner_w=41 -> target_w=8 -> gr..#148)
-        narrow_lines = render_active_tasks_panel(width=45, tasks=[task], max_workers=2)
+        # Narrow width test (width=55 -> inner_w=51 -> target_w=8 -> gr..#148)
+        narrow_lines = render_active_tasks_panel(width=55, tasks=[task], max_workers=2)
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#148", narrow_row)
+
+    def test_render_active_tasks_panel_selected_model_rendering(self):
+        task_gemini = Task(
+            id="task-10",
+            agent="code_reviewer",
+            target_id="#100",
+            prompt="Review PR",
+            status=TaskStatus.RUNNING,
+            selected_model="gemini-2.5-flash",
+        )
+        lines_gemini = render_active_tasks_panel(width=100, tasks=[task_gemini], max_workers=2)
+        row_gemini = lines_gemini[2]
+        self.assertIn("gemini-2.5-flash", row_gemini)
+
+        task_claude = Task(
+            id="task-11",
+            agent="code_fixer",
+            target_id="#101",
+            prompt="Fix bug",
+            status=TaskStatus.RUNNING,
+            selected_model="claude-3-5-sonnet",
+        )
+        lines_claude = render_active_tasks_panel(width=100, tasks=[task_claude], max_workers=2)
+        row_claude = lines_claude[2]
+        self.assertIn("claude-3-5-sonne", row_claude)
+
+    def test_allocate_active_task_columns_narrow_and_wide(self):
+        from lib.tui_panels import allocate_active_task_columns
+
+        # Wide width (inner_w = 96)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(96)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 96)
+        self.assertEqual(model_w, 16)
+        self.assertEqual(attempt_w, 16)
+
+        # Standard width (inner_w = 76)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(76)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 76)
+
+        # Narrow width (inner_w = 51)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(51)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 51)
+
+        # Very narrow width (inner_w < 35, e.g. 30 and 25)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(30)
+        self.assertLessEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 30)
+
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(25)
+        self.assertLessEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 25)
 
 
     def test_render_queued_tasks_panel_empty_and_populated(self):
