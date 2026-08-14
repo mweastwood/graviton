@@ -903,6 +903,70 @@ exit 0
         self.assertIn("-e ANTIGRAVITY_QUOTA_POOL=claude_gpt", log_content)
         self.assertIn("--model claude-sonnet-4-6", log_content)
 
+    def test_container_script_model_fallback_propagation_model_name_only(self):
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls_model_name_only.log"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.pop("ANTIGRAVITY_MODEL", None)
+        env["MODEL_NAME"] = "gemini-2.5-pro"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        log_content = docker_log.read_text()
+        self.assertIn("-e ANTIGRAVITY_MODEL=gemini-2.5-pro", log_content)
+        self.assertIn("-e MODEL_NAME=gemini-2.5-pro", log_content)
+        self.assertIn("--model gemini-2.5-pro", log_content)
+
+    def test_container_script_model_fallback_propagation_antigravity_model_only(self):
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls_antigravity_model_only.log"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["ANTIGRAVITY_MODEL"] = "gpt-5"
+        env.pop("MODEL_NAME", None)
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        log_content = docker_log.read_text()
+        self.assertIn("-e ANTIGRAVITY_MODEL=gpt-5", log_content)
+        self.assertIn("-e MODEL_NAME=gpt-5", log_content)
+        self.assertIn("--model gpt-5", log_content)
+
 
 class TestTranscriptInspector(unittest.TestCase):
 
