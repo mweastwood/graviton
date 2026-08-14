@@ -25,5 +25,4 @@ else
   exit 1
 fi
 
-echo "Starting smee webhook listener relaying to http://localhost:${PORT}/..."
 exec ${SMEE_CMD} --url "${SMEE_URL}" --path / --port "${PORT}"

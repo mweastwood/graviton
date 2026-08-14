@@ -5,6 +5,7 @@ Integration/HTTP unit tests for bin/graviton-server.py
 import importlib.util
 import json
 import signal
+import subprocess
 import sys
 import unittest
 from io import BytesIO
@@ -811,11 +812,15 @@ class TestGravitonHandler(unittest.TestCase):
         mock_popen.return_value = mock_proc
         res = server_mod.start_smee_listener("https://smee.io/test-channel", 8000)
         self.assertEqual(res, mock_proc)
-        mock_popen.assert_called_once_with([
-            str(server_mod.RUN_LISTENER_SCRIPT),
-            "https://smee.io/test-channel",
-            "8000",
-        ])
+        mock_popen.assert_called_once_with(
+            [
+                str(server_mod.RUN_LISTENER_SCRIPT),
+                "https://smee.io/test-channel",
+                "8000",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def test_start_smee_listener_empty_url(self):
         res = server_mod.start_smee_listener("", 8000)

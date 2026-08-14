@@ -106,7 +106,11 @@ def start_smee_listener(smee_url: str, port: int) -> Optional[subprocess.Popen]:
         return None
     logger.info(f"Starting background smee listener for {smee_url} -> http://localhost:{port}/...")
     try:
-        return subprocess.Popen([str(RUN_LISTENER_SCRIPT), smee_url, str(port)])
+        return subprocess.Popen(
+            [str(RUN_LISTENER_SCRIPT), smee_url, str(port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception as e:
         logger.error(f"Failed to start smee listener process: {e}")
         return None
@@ -342,6 +346,12 @@ def main():
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     args = parser.parse_args()
 
+    # Strip any console StreamHandler from root logger to prevent early startup logs from leaking to terminal during hot reload
+    _root = logging.getLogger()
+    for _h in list(_root.handlers):
+        if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
+            _root.removeHandler(_h)
+
     repos_dir = Path(args.repos_dir).expanduser().resolve()
     GravitonHandler.secret = args.secret
     GravitonHandler.default_reviewer = args.reviewer
@@ -428,6 +438,12 @@ def main():
                 signal.signal(sig, shutdown_signal_handler)
             except (ValueError, TypeError, AttributeError):
                 pass
+
+        # Right before dashboard.start(), strip root StreamHandler
+        _root = logging.getLogger()
+        for _h in list(_root.handlers):
+            if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
+                _root.removeHandler(_h)
 
         dashboard = TerminalDashboard(
             task_manager=task_manager,
