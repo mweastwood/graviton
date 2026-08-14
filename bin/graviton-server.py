@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -28,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
-from lib.updater import sync_repo_and_reload, set_hot_reload_state
+from lib.updater import sync_repo_and_reload, stop_smee_listener, set_hot_reload_state
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard, run_graceful_shutdown
@@ -93,6 +94,22 @@ logging.basicConfig(
 logger = logging.getLogger("graviton")
 
 RUN_CONTAINER_SCRIPT = REPO_ROOT / "bin" / "run_agent_container.sh"
+RUN_LISTENER_SCRIPT = REPO_ROOT / "bin" / "run_listener.sh"
+
+
+def start_smee_listener(smee_url: str, port: int) -> Optional[subprocess.Popen]:
+    """Launch bin/run_listener.sh as a background subprocess if smee_url is provided."""
+    if not smee_url:
+        return None
+    if not RUN_LISTENER_SCRIPT.exists() or not os.access(RUN_LISTENER_SCRIPT, os.X_OK):
+        logger.error(f"Smee listener script not found or not executable: {RUN_LISTENER_SCRIPT}")
+        return None
+    logger.info(f"Starting background smee listener for {smee_url} -> http://localhost:{port}/...")
+    try:
+        return subprocess.Popen([str(RUN_LISTENER_SCRIPT), smee_url, str(port)])
+    except Exception as e:
+        logger.error(f"Failed to start smee listener process: {e}")
+        return None
 
 
 class GravitonHandler(BaseHTTPRequestHandler):
@@ -106,6 +123,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
     quota_tracker: Optional[QuotaTracker] = None
+    listener_proc: Optional[subprocess.Popen] = None
 
     def do_GET(self):
         """Health check endpoint."""
@@ -200,7 +218,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 })
                 threading.Thread(
                     target=sync_repo_and_reload,
-                    args=(REPO_ROOT, ref, self.server, self.task_manager),
+                    args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None)),
                     daemon=True,
                 ).start()
                 return
@@ -317,6 +335,7 @@ def main():
     parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
+    parser.add_argument("--smee-url", default=os.getenv("SMEE_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL)")
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
@@ -340,90 +359,99 @@ def main():
         logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
         sys.exit(1)
 
-    quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
-    GravitonHandler.quota_tracker = quota_tracker
-    try:
-        quota_tracker.poll_live_quota()
-    except Exception as e:
-        logger.warning(f"Initial live quota poll failed: {e}")
+    listener_proc = start_smee_listener(args.smee_url, args.port) if args.smee_url else None
+    GravitonHandler.listener_proc = listener_proc
 
-    task_manager = TaskManager(
-        max_workers=args.max_workers,
-        max_tasks=args.max_tasks,
-        script_path=RUN_CONTAINER_SCRIPT,
-        cwd=REPO_ROOT,
-        quota_tracker=quota_tracker,
-        repos_dir=repos_dir,
-    )
-    restored_count = task_manager.restore_queue_state()
-    if restored_count > 0:
-        logger.info(f"Restored {restored_count} queued task(s) from persisted state.")
-    task_manager.start()
-    GravitonHandler.task_manager = task_manager
-
-    config_path = Path(args.schedules_config)
-    state_path = Path(args.schedules_state)
-    logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}, state: {state_path}")
-    scheduler = TaskScheduler(
-        config_path=config_path,
-        state_path=state_path,
-        runner=run_agent_async,
-        script_path=RUN_CONTAINER_SCRIPT,
-        cwd=REPO_ROOT,
-        task_manager=task_manager,
-        quota_tracker=quota_tracker,
-    )
-    scheduler.start()
-    GravitonHandler.scheduler = scheduler
-
-    pr_tracker = PRTracker()
-    pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
-    GravitonHandler.pr_tracker = pr_tracker
-
-    server_address = (args.host, args.port)
-    httpd = HTTPServer(server_address, GravitonHandler)
-
+    scheduler = None
+    dashboard = None
+    task_manager = None
+    httpd = None
     shutdown_thread: Optional[threading.Thread] = None
 
-    def shutdown_signal_handler(signum, frame):
-        nonlocal shutdown_thread
-        logger.info(f"Received signal {signum}, starting graceful Graviton Webhook Server shutdown...")
-        shutdown_thread = graceful_shutdown(
-            task_manager=task_manager,
-            scheduler=scheduler,
-            dashboard=dashboard,
-            httpd=httpd,
-            grace_period=args.quit_grace_period,
-        )
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(sig, shutdown_signal_handler)
-        except (ValueError, TypeError, AttributeError):
-            pass
-
-    dashboard = TerminalDashboard(
-        task_manager=task_manager,
-        host=args.host,
-        port=args.port,
-        repo_root=REPO_ROOT,
-        scheduler=scheduler,
-        pr_tracker=pr_tracker,
-        quota_tracker=quota_tracker,
-        quit_grace_period=args.quit_grace_period,
-        httpd=httpd,
-    )
-    dashboard.start()
-
-    logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
-    logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
-    logger.info("Live Terminal UI Dashboard ENABLED.")
-
     try:
-        httpd.serve_forever()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Stopping Graviton Webhook Server...")
+        quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
+        GravitonHandler.quota_tracker = quota_tracker
+        try:
+            quota_tracker.poll_live_quota()
+        except Exception as e:
+            logger.warning(f"Initial live quota poll failed: {e}")
+
+        task_manager = TaskManager(
+            max_workers=args.max_workers,
+            max_tasks=args.max_tasks,
+            script_path=RUN_CONTAINER_SCRIPT,
+            cwd=REPO_ROOT,
+            quota_tracker=quota_tracker,
+            repos_dir=repos_dir,
+        )
+        restored_count = task_manager.restore_queue_state()
+        if restored_count > 0:
+            logger.info(f"Restored {restored_count} queued task(s) from persisted state.")
+        task_manager.start()
+        GravitonHandler.task_manager = task_manager
+
+        config_path = Path(args.schedules_config)
+        state_path = Path(args.schedules_state)
+        logger.info(f"Initializing Periodic TaskScheduler using config: {config_path}, state: {state_path}")
+        scheduler = TaskScheduler(
+            config_path=config_path,
+            state_path=state_path,
+            runner=run_agent_async,
+            script_path=RUN_CONTAINER_SCRIPT,
+            cwd=REPO_ROOT,
+            task_manager=task_manager,
+            quota_tracker=quota_tracker,
+        )
+        scheduler.start()
+        GravitonHandler.scheduler = scheduler
+
+        pr_tracker = PRTracker()
+        pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
+        GravitonHandler.pr_tracker = pr_tracker
+
+        server_address = (args.host, args.port)
+        httpd = HTTPServer(server_address, GravitonHandler)
+
+        def shutdown_signal_handler(signum, frame):
+            nonlocal shutdown_thread
+            logger.info(f"Received signal {signum}, starting graceful Graviton Webhook Server shutdown...")
+            shutdown_thread = graceful_shutdown(
+                task_manager=task_manager,
+                scheduler=scheduler,
+                dashboard=dashboard,
+                httpd=httpd,
+                grace_period=args.quit_grace_period,
+            )
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, shutdown_signal_handler)
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+        dashboard = TerminalDashboard(
+            task_manager=task_manager,
+            host=args.host,
+            port=args.port,
+            repo_root=REPO_ROOT,
+            scheduler=scheduler,
+            pr_tracker=pr_tracker,
+            quota_tracker=quota_tracker,
+            quit_grace_period=args.quit_grace_period,
+            httpd=httpd,
+        )
+        dashboard.start()
+
+        logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
+        logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
+        logger.info("Live Terminal UI Dashboard ENABLED.")
+
+        try:
+            httpd.serve_forever()
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Stopping Graviton Webhook Server...")
     finally:
+        stop_smee_listener(listener_proc)
         st = shutdown_thread or (getattr(dashboard, "_shutdown_thread", None) if dashboard else None) or _shutdown_thread
         if st and st.is_alive() and st != threading.current_thread():
             st.join()
@@ -442,10 +470,11 @@ def main():
                 task_manager.stop()
             except Exception:
                 pass
-        try:
-            httpd.server_close()
-        except Exception:
-            pass
+        if httpd:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

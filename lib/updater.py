@@ -149,12 +149,32 @@ def rebuild_agent_container(repo_root: Path) -> bool:
         return False
 
 
-def hot_reload_server(httpd=None, task_manager=None):
+def stop_smee_listener(listener_proc=None) -> None:
+    """
+    Terminate background smee listener process gracefully.
+    If process does not exit within 2 seconds, forcibly kill it.
+    """
+    if listener_proc and listener_proc.poll() is None:
+        try:
+            logger.info("Stopping background smee listener...")
+            listener_proc.terminate()
+            try:
+                listener_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                logger.warning("Smee listener process did not terminate within timeout; killing...")
+                listener_proc.kill()
+                listener_proc.wait()
+        except Exception as e:
+            logger.error(f"Error stopping smee listener process: {e}")
+
+
+def hot_reload_server(httpd=None, task_manager=None, listener_proc=None):
     """
     Hot reload the running Python server process by re-executing sys.executable.
 
     :param httpd: Optional HTTPServer instance to close sockets gracefully before execv.
     :param task_manager: Optional TaskManager instance to drain active tasks before execv.
+    :param listener_proc: Optional subprocess.Popen instance of background smee listener to terminate before execv.
     """
     if task_manager is not None:
         set_hot_reload_state("DRAINING_TASKS")
@@ -165,6 +185,9 @@ def hot_reload_server(httpd=None, task_manager=None):
 
     set_hot_reload_state("RELOADING")
     logger.info("Hot reloading Graviton server process (os.execv)...")
+
+    if listener_proc is not None:
+        stop_smee_listener(listener_proc)
 
     if httpd is not None:
         try:
@@ -186,6 +209,7 @@ def sync_repo_and_reload(
     ref: str = "refs/heads/main",
     httpd=None,
     task_manager=None,
+    listener_proc=None,
 ):
     """
     Pull latest git commits for target branch, rebuild Docker image if necessary, and hot-reload server.
@@ -194,6 +218,7 @@ def sync_repo_and_reload(
     :param ref: Git ref from push webhook payload (e.g. 'refs/heads/main').
     :param httpd: Optional HTTPServer instance.
     :param task_manager: Optional TaskManager instance to drain active tasks before reload.
+    :param listener_proc: Optional subprocess.Popen instance of background smee listener.
     """
     branch = ref.split("/")[-1] if "/" in ref else "main"
     logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
@@ -211,5 +236,5 @@ def sync_repo_and_reload(
         set_hot_reload_state("REBUILDING_CONTAINER")
         rebuild_agent_container(repo_root)
 
-    hot_reload_server(httpd=httpd, task_manager=task_manager)
+    hot_reload_server(httpd=httpd, task_manager=task_manager, listener_proc=listener_proc)
 

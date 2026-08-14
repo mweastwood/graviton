@@ -805,9 +805,147 @@ class TestGravitonHandler(unittest.TestCase):
             self.assertEqual(restored.prompt, "Persist signal task")
             new_tm.stop()
 
+    @patch("subprocess.Popen")
+    def test_start_smee_listener_valid_url(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_popen.return_value = mock_proc
+        res = server_mod.start_smee_listener("https://smee.io/test-channel", 8000)
+        self.assertEqual(res, mock_proc)
+        mock_popen.assert_called_once_with([
+            str(server_mod.RUN_LISTENER_SCRIPT),
+            "https://smee.io/test-channel",
+            "8000",
+        ])
+
+    def test_start_smee_listener_empty_url(self):
+        res = server_mod.start_smee_listener("", 8000)
+        self.assertIsNone(res)
+
+    @patch("os.access", return_value=False)
+    def test_start_smee_listener_non_executable_script(self, mock_access):
+        res = server_mod.start_smee_listener("https://smee.io/test-channel", 8000)
+        self.assertIsNone(res)
+
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_launches_and_cleans_up_smee_listener(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_start_listener.return_value = mock_proc
+
+        with patch("sys.argv", ["graviton-server.py", "--smee-url", "https://smee.io/test-channel"]):
+            server_mod.main()
+
+        mock_start_listener.assert_called_once_with("https://smee.io/test-channel", 8000)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2)
+
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_smee_url_from_env_var(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_start_listener.return_value = mock_proc
+
+        with patch.dict("os.environ", {"SMEE_URL": "https://smee.io/env-channel"}):
+            with patch("sys.argv", ["graviton-server.py"]):
+                server_mod.main()
+
+        mock_start_listener.assert_called_once_with("https://smee.io/env-channel", 8000)
+
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_smee_listener_timeout_triggers_kill(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        import subprocess
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="smee", timeout=2), None]
+        mock_start_listener.return_value = mock_proc
+
+        with patch("sys.argv", ["graviton-server.py", "--smee-url", "https://smee.io/test-channel"]):
+            server_mod.main()
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        self.assertEqual(mock_proc.wait.call_count, 2)
+
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_cleans_up_smee_listener_on_init_exception(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_http.side_effect = OSError("[Errno 98] Address already in use")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_start_listener.return_value = mock_proc
+
+        with patch("sys.argv", ["graviton-server.py", "--smee-url", "https://smee.io/test-channel"]):
+            with self.assertRaises(OSError):
+                server_mod.main()
+
+        mock_start_listener.assert_called_once_with("https://smee.io/test-channel", 8000)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
