@@ -238,7 +238,9 @@ class TerminalDashboard:
 
         self.log_handler = log_handler or TUILogHandler()
 
-        self.active_screen: str = "main"
+        self._active_screen: str = "main"
+        self._last_frame_lines: List[str] = []
+        self._full_redraw_needed: bool = True
         self.selected_job_index: int = 0
         self.selected_queue_index: int = 0
         self.selected_active_index: int = 0
@@ -262,6 +264,17 @@ class TerminalDashboard:
         self._need_refresh: bool = False
         self._refresh_event: threading.Event = threading.Event()
 
+    @property
+    def active_screen(self) -> str:
+        return self._active_screen
+
+    @active_screen.setter
+    def active_screen(self, screen: str):
+        if getattr(self, "_active_screen", None) != screen:
+            self._active_screen = screen
+            self._full_redraw_needed = True
+            self._last_frame_lines = []
+
     def start(self):
         """Start the background dashboard rendering loop thread and hotkey listener."""
         if self._running:
@@ -276,6 +289,12 @@ class TerminalDashboard:
         quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
         if quota_tr and hasattr(quota_tr, "start_background_polling"):
             quota_tr.start_background_polling()
+        if self.out_stream:
+            try:
+                self.out_stream.write("\033[?25l")
+                self.out_stream.flush()
+            except Exception:
+                pass
         self._running = True
         self._thread = threading.Thread(
             target=self._refresh_loop, daemon=True, name="DashboardTUI"
@@ -879,7 +898,7 @@ class TerminalDashboard:
             self._termios_restored = True
 
     def _register_signal_handlers(self):
-        """Register SIGINT and SIGTERM handlers to restore terminal state on exit signals."""
+        """Register SIGINT, SIGTERM, and SIGWINCH handlers to restore terminal state and handle resize."""
         if self._signals_registered:
             return
         self._signals_registered = True
@@ -914,6 +933,25 @@ class TerminalDashboard:
             except (ValueError, TypeError, AttributeError):
                 pass
 
+        if hasattr(signal, "SIGWINCH"):
+            try:
+                prev_winch = signal.getsignal(signal.SIGWINCH)
+                if prev_winch not in (signal.SIG_IGN, None):
+                    def _winch_handler(signum, frame):
+                        self._full_redraw_needed = True
+                        self._last_frame_lines = []
+                        self._force_refresh()
+                        if callable(prev_winch) and prev_winch not in (signal.SIG_DFL, signal.SIG_IGN):
+                            try:
+                                prev_winch(signum, frame)
+                            except Exception:
+                                pass
+
+                    signal.signal(signal.SIGWINCH, _winch_handler)
+                    self._old_signal_handlers[signal.SIGWINCH] = prev_winch
+            except (ValueError, TypeError, AttributeError):
+                pass
+
     def _unregister_signal_handlers(self):
         """Restore previous signal handlers if registered."""
         if not self._signals_registered:
@@ -935,8 +973,7 @@ class TerminalDashboard:
         if not self._running and self.out_stream:
             try:
                 frame = self.render()
-                self.out_stream.write("\033[H\033[2J" + frame + "\n")
-                self.out_stream.flush()
+                self._draw_frame(frame)
             except Exception:
                 pass
 
@@ -944,6 +981,8 @@ class TerminalDashboard:
         """Invalidate cached git metadata to force a fresh fetch on next render."""
         self._git_info_cache = None
         self._git_info_last_fetch = 0.0
+        self._full_redraw_needed = True
+        self._last_frame_lines = []
 
     def _attach_log_redirection(self):
         if self._log_redirected:
@@ -1211,8 +1250,46 @@ class TerminalDashboard:
             self._refresh_event.clear()
             try:
                 frame = self.render()
-                self.out_stream.write("\033[H\033[2J" + frame + "\n")
-                self.out_stream.flush()
+                self._draw_frame(frame)
             except Exception:
                 pass
             self._refresh_event.wait(timeout=self.refresh_interval)
+
+    def _draw_frame(self, frame: str) -> None:
+        """Render a frame differentially or completely depending on state."""
+        if not self.out_stream:
+            return
+
+        new_lines = frame.split("\n")
+        try:
+            if self._full_redraw_needed or not self._last_frame_lines:
+                buf = "\033[H\033[2J" + "".join(f"{line}\033[K\n" for line in new_lines)
+                self.out_stream.write(buf)
+                self.out_stream.flush()
+                self._last_frame_lines = list(new_lines)
+                self._full_redraw_needed = False
+                return
+
+            if new_lines == self._last_frame_lines:
+                return
+
+            buf_parts = []
+            min_len = min(len(new_lines), len(self._last_frame_lines))
+            for i in range(min_len):
+                if new_lines[i] != self._last_frame_lines[i]:
+                    buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
+
+            if len(new_lines) > len(self._last_frame_lines):
+                for i in range(len(self._last_frame_lines), len(new_lines)):
+                    buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
+            elif len(new_lines) < len(self._last_frame_lines):
+                for i in range(len(new_lines), len(self._last_frame_lines)):
+                    buf_parts.append(f"\033[{i + 1};1H\033[K")
+
+            if buf_parts:
+                self.out_stream.write("".join(buf_parts))
+                self.out_stream.flush()
+
+            self._last_frame_lines = list(new_lines)
+        except Exception:
+            pass
