@@ -336,7 +336,7 @@ class TestTUIPanels(unittest.TestCase):
 
     def test_render_header_panel(self):
         lines = render_header_panel(
-            width=80,
+            width=130,
             host="127.0.0.1",
             port=8000,
             commit="a1b2c3d",

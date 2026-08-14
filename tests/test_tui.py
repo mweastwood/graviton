@@ -12,7 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from lib.quota import QuotaState, QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
@@ -1256,6 +1256,32 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.stop()
         self.assertFalse(dashboard._signals_registered)
 
+    @patch("lib.tui.signal.signal")
+    def test_signal_handler_defers_stopping_dashboard_when_custom_orig_h_invoked(self, mock_signal):
+        mock_orig_h = MagicMock()
+        with patch("lib.tui.signal.getsignal", return_value=mock_orig_h):
+            stream = io.StringIO()
+            manager = TaskManager(max_workers=1)
+            dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+            dashboard.start()
+            self.assertTrue(dashboard._running)
+
+            sigint_call = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGINT]
+            self.assertTrue(len(sigint_call) > 0)
+            handler = sigint_call[0].args[1]
+
+            # Invoke signal handler
+            handler(signal.SIGINT, None)
+
+            # Custom orig_h should be called
+            mock_orig_h.assert_called_once_with(signal.SIGINT, None)
+
+            # Dashboard refresh loop MUST remain running (_running == True) so TUI displays status badges during steps 1-3
+            self.assertTrue(dashboard._running)
+
+            dashboard.stop()
+
     def test_restore_termios_emits_ansi_sequences_once(self):
         stream = io.StringIO()
         manager = TaskManager(max_workers=1)
@@ -1338,9 +1364,135 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertTrue(dashboard._refresh_event.is_set())
         self.assertEqual(dashboard.active_screen, "jobs")
 
+    def test_render_header_navigation_hint_includes_quit(self):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager)
+        rendered = dashboard.render(width=130)
+        self.assertIn("[q] Quit", rendered)
+
+    def test_render_header_shutdown_badges(self):
+        from lib.tui_panels import render_header_panel
+        header_draining = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: DRAINING_TASKS", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: DRAINING_TASKS ]" in line for line in header_draining))
+
+        header_waiting = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: WAITING_WEBHOOKS", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: WAITING_WEBHOOKS ]" in line for line in header_waiting))
+
+        header_persisting = render_header_panel(80, "0.0.0.0", 8000, "sha", "main", "SHUTDOWN: PERSISTING_QUEUE", "00:01:00")
+        self.assertTrue(any("[ SHUTDOWN: PERSISTING_QUEUE ]" in line for line in header_persisting))
+
+    def test_handle_key_q_triggers_quit(self):
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, quit_grace_period=0.01)
+
+        with patch.object(dashboard, "quit") as mock_quit:
+            dashboard.handle_key("q")
+            mock_quit.assert_called_once()
+
+        with patch.object(dashboard, "quit") as mock_quit_upper:
+            dashboard.handle_key("Q")
+            mock_quit_upper.assert_called_once()
+
+    def test_tui_graceful_shutdown_workflow(self):
+        mock_task_manager = MagicMock()
+        mock_scheduler = MagicMock()
+        mock_httpd = MagicMock()
+        mock_on_quit = MagicMock()
+
+        dashboard = TerminalDashboard(
+            task_manager=mock_task_manager,
+            scheduler=mock_scheduler,
+            quit_grace_period=0.01,
+            httpd=mock_httpd,
+            on_quit=mock_on_quit,
+        )
+
+        shutdown_thread = dashboard.quit()
+        shutdown_thread.join(timeout=2.0)
+
+        mock_task_manager.drain_active_tasks.assert_called_once()
+        mock_task_manager.dump_queue_state.assert_called_once()
+        mock_scheduler.stop.assert_called_once()
+        mock_httpd.shutdown.assert_called_once()
+        mock_httpd.server_close.assert_called_once()
+        mock_on_quit.assert_called_once()
+
+    def test_tui_graceful_shutdown_concurrent_lock_guard(self):
+        mock_task_manager = MagicMock()
+        dashboard = TerminalDashboard(task_manager=mock_task_manager, quit_grace_period=0.01)
+
+        threads = []
+        results = [None] * 10
+
+        def worker(idx):
+            results[idx] = dashboard.graceful_shutdown(grace_period=0.01)
+
+        for i in range(10):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        first_thread = results[0]
+        self.assertIsNotNone(first_thread)
+        for res in results:
+            self.assertIs(res, first_thread)
+
+        first_thread.join(timeout=2.0)
+
+    def test_run_graceful_shutdown_httpd_shutdown_before_dump_queue_state(self):
+        from lib.tui import run_graceful_shutdown
+        mock_task_manager = MagicMock()
+        mock_httpd = MagicMock()
+        call_order = []
+
+        def record_httpd_shutdown():
+            call_order.append("httpd.shutdown")
+
+        def record_dump_queue():
+            call_order.append("dump_queue_state")
+
+        mock_httpd.shutdown.side_effect = record_httpd_shutdown
+        mock_task_manager.dump_queue_state.side_effect = record_dump_queue
+
+        run_graceful_shutdown(
+            task_manager=mock_task_manager,
+            httpd=mock_httpd,
+            grace_period=0.01,
+        )
+
+        self.assertEqual(call_order, ["httpd.shutdown", "dump_queue_state"])
+
+    def test_run_graceful_shutdown_exception_resilience(self):
+        from lib.tui import run_graceful_shutdown
+        mock_task_manager = MagicMock()
+        mock_scheduler = MagicMock()
+        mock_httpd = MagicMock()
+        mock_on_quit = MagicMock()
+
+        mock_task_manager.drain_active_tasks.side_effect = RuntimeError("Drain error")
+
+        run_graceful_shutdown(
+            task_manager=mock_task_manager,
+            scheduler=mock_scheduler,
+            httpd=mock_httpd,
+            grace_period=0.01,
+            on_quit=mock_on_quit,
+        )
+
+        mock_httpd.shutdown.assert_called_once()
+        mock_task_manager.dump_queue_state.assert_called_once()
+        mock_scheduler.stop.assert_called_once()
+        mock_on_quit.assert_called_once()
+        mock_httpd.server_close.assert_called_once()
+        mock_task_manager.stop.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

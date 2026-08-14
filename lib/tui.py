@@ -48,7 +48,7 @@ from lib.tui_panels import (
     render_third_party_models_panel,
     truncate_to_display_width,
 )
-from lib.updater import get_git_info, get_hot_reload_state, get_uptime_str
+from lib.updater import get_git_info, get_hot_reload_state, set_hot_reload_state, get_uptime_str
 
 
 class TUILogHandler(logging.Handler):
@@ -83,6 +83,91 @@ class TUILogHandler(logging.Handler):
             self.records.clear()
 
 
+def run_graceful_shutdown(
+    task_manager: Optional[TaskManager] = None,
+    scheduler: Optional[TaskScheduler] = None,
+    dashboard: Optional[Any] = None,
+    httpd: Optional[Any] = None,
+    grace_period: float = 3.0,
+    timeout: Optional[float] = None,
+    on_quit: Optional[Any] = None,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Execute 4-step graceful shutdown sequence:
+    1. Drain Active Tasks (task_manager.drain_active_tasks)
+    2. Webhook Grace Buffer (sleep grace_period seconds)
+    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue (task_manager.dump_queue_state)
+    4. Clean Abort & Termination Teardown (scheduler, on_quit, httpd.server_close, dashboard, task_manager)
+    """
+    log = logger or logging.getLogger("graviton")
+    try:
+        # Step 1: Drain Active Tasks
+        set_hot_reload_state("SHUTDOWN: DRAINING_TASKS")
+        log.info("Graceful shutdown Step 1/4: Draining active tasks...")
+        if task_manager:
+            try:
+                task_manager.drain_active_tasks(timeout=timeout)
+            except Exception as e:
+                log.warning(f"Error draining active tasks during shutdown: {e}")
+
+        # Step 2: Webhook Grace Buffer
+        if grace_period > 0:
+            set_hot_reload_state("SHUTDOWN: WAITING_WEBHOOKS")
+            log.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
+            time.sleep(grace_period)
+
+        # Step 3: Shutdown HTTP Listener & Persist Task Queue
+        set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
+        log.info("Graceful shutdown Step 3/4: Closing HTTP listener and persisting task queue state...")
+        if httpd:
+            try:
+                httpd.shutdown()
+            except Exception as e:
+                log.warning(f"Error shutting down HTTP server: {e}")
+
+        if task_manager:
+            try:
+                task_manager.dump_queue_state()
+            except Exception as e:
+                log.warning(f"Error dumping task queue state: {e}")
+
+    finally:
+        # Step 4: Clean Abort & Termination Teardown
+        log.info("Graceful shutdown Step 4/4: Clean abort & termination...")
+        if scheduler:
+            try:
+                scheduler.stop()
+            except Exception as e:
+                log.warning(f"Error stopping scheduler during shutdown: {e}")
+
+        if on_quit:
+            try:
+                on_quit()
+            except Exception as e:
+                log.warning(f"Error in on_quit callback during shutdown: {e}")
+
+        if httpd:
+            try:
+                httpd.server_close()
+            except Exception as e:
+                log.warning(f"Error closing HTTP server socket during shutdown: {e}")
+
+        if dashboard:
+            try:
+                dashboard.stop()
+            except Exception as e:
+                log.warning(f"Error stopping dashboard during shutdown: {e}")
+
+        if task_manager:
+            try:
+                task_manager.stop()
+            except Exception as e:
+                log.warning(f"Error stopping task_manager during shutdown: {e}")
+
+        set_hot_reload_state("IDLE")
+
+
 class TerminalDashboard:
     """
     Live terminal UI dashboard for Graviton server, displaying:
@@ -111,6 +196,9 @@ class TerminalDashboard:
         scheduler: Optional[TaskScheduler] = None,
         pr_tracker: Optional[Any] = None,
         quota_tracker: Optional[QuotaTracker] = None,
+        quit_grace_period: float = 3.0,
+        httpd: Optional[Any] = None,
+        on_quit: Optional[Any] = None,
     ):
         self.task_manager = task_manager
         self.host = host
@@ -123,6 +211,12 @@ class TerminalDashboard:
         self.pr_tracker = pr_tracker
         self.scheduler = scheduler
         self.quota_tracker = quota_tracker
+        self.quit_grace_period = quit_grace_period
+        self.httpd = httpd
+        self.on_quit = on_quit
+        self._is_shutting_down = False
+        self._shutdown_thread: Optional[threading.Thread] = None
+        self._shutdown_lock = threading.Lock()
 
         if log_file is not None:
             log_path = Path(log_file)
@@ -566,8 +660,53 @@ class TerminalDashboard:
                 return False
         return self.scheduler.trigger_job(job_id)
 
+    def quit(
+        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
+    ) -> threading.Thread:
+        """Trigger graceful server shutdown in a background thread."""
+        return self.graceful_shutdown(timeout=timeout, grace_period=grace_period)
+
+    def graceful_shutdown(
+        self, timeout: Optional[float] = None, grace_period: Optional[float] = None
+    ) -> threading.Thread:
+        """
+        Execute 4-step graceful shutdown in a background thread:
+        1. Drain active tasks (task_manager.drain_active_tasks)
+        2. Webhook grace buffer (sleep for quit_grace_period)
+        3. Shutdown HTTP Listener (httpd.shutdown) & Persist task queue (task_manager.dump_queue_state)
+        4. Clean abort & termination (stop scheduler, on_quit, httpd, dashboard, task_manager)
+        """
+        with self._shutdown_lock:
+            if self._is_shutting_down and self._shutdown_thread is not None:
+                return self._shutdown_thread
+            self._is_shutting_down = True
+
+            gp = grace_period if grace_period is not None else getattr(self, "quit_grace_period", 3.0)
+
+            def _sequence():
+                run_graceful_shutdown(
+                    task_manager=self.task_manager,
+                    scheduler=self.scheduler,
+                    dashboard=self,
+                    httpd=self.httpd,
+                    grace_period=gp,
+                    timeout=timeout,
+                    on_quit=self.on_quit,
+                    logger=logging.getLogger("graviton.tui"),
+                )
+
+            t = threading.Thread(target=_sequence, daemon=True, name="TUIGracefulShutdown")
+            self._shutdown_thread = t
+            t.start()
+            return t
+
     def handle_key(self, key: str):
         """Handle hotkey or navigation key press."""
+        if key in ("q", "Q"):
+            self.quit()
+            self._force_refresh()
+            return
+
         if self.active_screen == "jobs":
             if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
                 self.select_prev_job()
@@ -712,13 +851,18 @@ class TerminalDashboard:
                 def _make_handler(sig_num, orig_h):
                     def _signal_handler(signum, frame):
                         self._restore_termios()
-                        self.stop()
-                        if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
-                            orig_h(signum, frame)
-                        elif signum == signal.SIGINT:
-                            raise KeyboardInterrupt()
-                        else:
-                            sys.exit(128 + signum)
+                        try:
+                            if callable(orig_h) and orig_h not in (signal.SIG_DFL, signal.SIG_IGN):
+                                orig_h(signum, frame)
+                            elif signum == signal.SIGINT:
+                                self.stop()
+                                raise KeyboardInterrupt()
+                            else:
+                                self.stop()
+                                sys.exit(128 + signum)
+                        except BaseException:
+                            self.stop()
+                            raise
 
                     return _signal_handler
 

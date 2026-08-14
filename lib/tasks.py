@@ -205,7 +205,7 @@ class TaskManager:
             return self._draining
 
     def _can_accept_task_locked(self, agent: Optional[str] = None, prompt: Optional[str] = None) -> bool:
-        if self._paused or self._stopped or self._draining:
+        if self._paused or self._stopped:
             return False
         if self.quota_tracker is not None:
             if hasattr(self.quota_tracker, "get_pool_state"):
@@ -219,9 +219,9 @@ class TaskManager:
 
     def can_accept_task(self, agent: Optional[str] = None, prompt: Optional[str] = None) -> bool:
         """
-        Return False if TaskManager is paused, draining, or stopped,
+        Return False if TaskManager is paused or stopped,
         or if quota_tracker is present and quota_tracker.state == QuotaState.EXHAUSTED.
-        Tasks can still be accepted and queued when behind quota pacing.
+        Tasks can still be accepted and queued when behind quota pacing or draining.
         Otherwise return True.
         """
         with self._lock:
@@ -524,8 +524,6 @@ class TaskManager:
             if not self._can_accept_task_locked(agent=agent, prompt=prompt):
                 if self._paused:
                     raise RuntimeError("Cannot accept new task: task acceptance is paused")
-                if self._draining:
-                    raise RuntimeError("Server is draining tasks for update")
                 if self._stopped:
                     raise RuntimeError("Cannot accept new task: task manager is stopped")
                 if self.quota_tracker is not None and hasattr(self.quota_tracker, "state") and self.quota_tracker.state == QuotaState.EXHAUSTED:
