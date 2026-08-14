@@ -12,7 +12,10 @@ from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
+    ColumnSpec,
+    TableLayoutSpec,
     allocate_approved_pr_columns,
+    allocate_declarative_columns,
     allocate_scheduled_job_columns,
     fit_to_display_width,
     format_interval,
@@ -162,6 +165,134 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(truncate_with_ellipsis(12345, 10), "12345")
         self.assertEqual(get_display_width(None), 0)
         self.assertEqual(get_display_width(12345), 5)
+
+    def test_declarative_column_allocation_custom_specs(self):
+        # Custom TableLayoutSpec with flex columns using non-standard column names
+        custom_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("job_id", ratio=0.2, fixed_w=10, min_w=4, max_w=10, min_avail_threshold=3),
+                ColumnSpec("description", ratio=0.5, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=2, is_flex=True),
+                ColumnSpec("endpoint_url", ratio=0.3, fixed_w=None, min_w=0, max_w=None, min_avail_threshold=0, is_flex=True),
+            ],
+            spacing=3,
+            wide_threshold=40,
+            narrow_threshold=15,
+        )
+
+        # Wide mode (inner_w >= wide_threshold)
+        cols_wide = allocate_declarative_columns(custom_flex_spec, 50)
+        self.assertEqual(cols_wide["job_id"], 10)
+        self.assertGreater(cols_wide["description"], 0)
+        self.assertGreater(cols_wide["endpoint_url"], 0)
+        self.assertLessEqual(sum(cols_wide.values()) + 3, 50)
+
+        # Fallback / intermediate mode (narrow_threshold <= avail < wide_threshold)
+        cols_mid = allocate_declarative_columns(custom_flex_spec, 30)
+        self.assertGreater(cols_mid["job_id"], 0)
+        self.assertGreater(cols_mid["description"], 0)
+        self.assertGreater(cols_mid["endpoint_url"], 0)
+        self.assertLessEqual(sum(cols_mid.values()) + 3, 30)
+
+        # Narrow mode (avail < narrow_threshold)
+        cols_narrow = allocate_declarative_columns(custom_flex_spec, 10)
+        self.assertIn("job_id", cols_narrow)
+        self.assertIn("description", cols_narrow)
+        self.assertIn("endpoint_url", cols_narrow)
+        self.assertLessEqual(sum(cols_narrow.values()) + 3, 10)
+
+        # Single flex column layout spec
+        single_flex_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("code", ratio=0.3, fixed_w=8, min_w=4),
+                ColumnSpec("details", ratio=0.7, is_flex=True),
+            ],
+            spacing=2,
+            wide_threshold=30,
+            narrow_threshold=10,
+        )
+        cols_single_flex = allocate_declarative_columns(single_flex_spec, 40)
+        self.assertEqual(cols_single_flex["code"], 8)
+        self.assertEqual(cols_single_flex["details"], 40 - 8 - 2)
+
+        # Deficit reduction test on custom layout spec
+        over_spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.4, fixed_w=20, min_w=10),
+                ColumnSpec("col2", ratio=0.6, fixed_w=20, min_w=10, is_flex=True),
+            ],
+            spacing=5,
+            wide_threshold=30,
+            narrow_threshold=10,
+        )
+        cols_over = allocate_declarative_columns(over_spec, 25)
+        self.assertLessEqual(sum(cols_over.values()) + 5, 25)
+
+    def test_declarative_flex_columns_distinct_ratios(self):
+        """Verify two flex columns with distinct ratios allocate proportionally according to ColumnSpec.ratio."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("colA", ratio=0.8, is_flex=True),
+                ColumnSpec("colB", ratio=0.2, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=10,
+            narrow_threshold=5,
+        )
+        res = allocate_declarative_columns(spec, 100)
+        self.assertEqual(res["colA"], 80)
+        self.assertEqual(res["colB"], 20)
+
+    def test_declarative_intermediate_fallback_non_flex_bounds(self):
+        """Verify non-flex column min_w/max_w constraints are preserved in intermediate mode when rem < 2."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("non_flex", ratio=0.5, min_w=10, max_w=15, is_flex=False),
+                ColumnSpec("flex1", ratio=0.5, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=5,
+        )
+        # avail = 11, non_flex gets max(10, min(15, int(11*0.5))) = 10.
+        # rem = 11 - 10 = 1 (< 2).
+        res = allocate_declarative_columns(spec, 11)
+        self.assertEqual(res["non_flex"], 10)
+        self.assertEqual(res["flex1"], 1)
+
+    def test_declarative_columns_zero_max_width(self):
+        """Verify that a ColumnSpec with max_w=0 restricts allocated width to 0 in wide and intermediate modes."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("zero_max", ratio=0.5, min_w=0, max_w=0, is_flex=False),
+                ColumnSpec("flex_col", ratio=0.5, is_flex=True),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=10,
+        )
+        # Wide mode (inner_w = 60 >= wide_threshold 50)
+        res_wide = allocate_declarative_columns(spec, 60)
+        self.assertEqual(res_wide["zero_max"], 0)
+
+        # Intermediate mode (inner_w = 30)
+        res_inter = allocate_declarative_columns(spec, 30)
+        self.assertEqual(res_inter["zero_max"], 0)
+
+    def test_declarative_narrow_mode_last_column_min_avail_threshold(self):
+        """Verify last column in narrow mode respects min_avail_threshold."""
+        spec = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_avail_threshold=1),
+                ColumnSpec("col2", ratio=0.5, min_avail_threshold=10),
+            ],
+            spacing=0,
+            wide_threshold=50,
+            narrow_threshold=20,
+        )
+        # avail = 5 < narrow_threshold (20).
+        # col2 has min_avail_threshold=10 > avail(5), so col2 should be 0.
+        res = allocate_declarative_columns(spec, 5)
+        self.assertEqual(res["col2"], 0)
 
     def test_formatting_helpers(self):
         self.assertEqual(format_interval(86400), "1d")
@@ -597,6 +728,111 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("3RD PARTY MODEL SELECTION", lines_c[0])
         self.assertTrue(any("claude-3-opus" in l for l in lines_c))
         self.assertTrue(any("[ACTIVE]" in l for l in lines_c))
+
+    def test_declarative_column_allocation(self):
+        col_spec = ColumnSpec(name="pr", ratio=0.15, fixed_w=8, min_w=4, max_w=8, min_avail_threshold=5)
+        self.assertEqual(col_spec.name, "pr")
+        self.assertEqual(col_spec.ratio, 0.15)
+        self.assertEqual(col_spec.fixed_w, 8)
+        self.assertEqual(col_spec.min_w, 4)
+
+        custom_layout = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, fixed_w=10, min_w=2, max_w=10, min_avail_threshold=2),
+                ColumnSpec("col2", ratio=0.5, fixed_w=10, min_w=2, max_w=10, min_avail_threshold=2),
+            ],
+            spacing=2,
+            wide_threshold=22,
+            narrow_threshold=6,
+        )
+
+        res_wide = allocate_declarative_columns(custom_layout, 30)
+        self.assertEqual(res_wide["col1"], 10)
+        self.assertEqual(res_wide["col2"], 10)
+
+        res_narrow = allocate_declarative_columns(custom_layout, 4)
+        self.assertLessEqual(sum(res_narrow.values()) + 2, 4)
+
+        # Assert intermediate container width allocations (e.g., inner_w=30)
+        cols_mid = allocate_approved_pr_columns(30, has_repo=True)
+        self.assertEqual(cols_mid["pr"], 4)      # Respects min_w=4 floor
+        self.assertEqual(cols_mid["repo"], 8)    # Respects min_w=8 floor
+        self.assertEqual(cols_mid["author"], 6)  # Respects min_w=6 floor
+        # Flex columns receive allocations via split_flex_columns(rem=8)
+        exp_title, exp_url = split_flex_columns(8)
+        self.assertEqual(cols_mid["title"], exp_title)
+        self.assertEqual(cols_mid["url"], exp_url)
+        self.assertEqual(sum(cols_mid.values()) + 4, 30)
+
+        # Test leading flex columns deficit reduction
+        spec_leading_flex = TableLayoutSpec(
+            columns=[
+                ColumnSpec("c1", ratio=0.1, is_flex=True),
+                ColumnSpec("c2", ratio=0.1, is_flex=True),
+                ColumnSpec("c3", ratio=0.8, fixed_w=20, is_flex=False),
+            ],
+            spacing=4,
+            wide_threshold=10,
+            narrow_threshold=5,
+        )
+        cols_leading_flex = allocate_declarative_columns(spec_leading_flex, 15)
+        self.assertLessEqual(sum(cols_leading_flex.values()) + spec_leading_flex.spacing, 15)
+        self.assertEqual(cols_leading_flex["c3"], 11)
+        self.assertEqual(cols_leading_flex["c1"], 0)
+        self.assertEqual(cols_leading_flex["c2"], 0)
+
+        # Test no-flex column specs in intermediate width mode
+        spec_no_flex = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+                ColumnSpec("col2", ratio=0.5, min_w=2, max_w=10, is_flex=False),
+            ],
+            spacing=2,
+            wide_threshold=40,
+            narrow_threshold=5,
+        )
+        cols_no_flex = allocate_declarative_columns(spec_no_flex, 30)
+        self.assertEqual(cols_no_flex["col1"], 10)
+        self.assertEqual(cols_no_flex["col2"], 10)
+        self.assertLessEqual(sum(cols_no_flex.values()) + spec_no_flex.spacing, 30)
+
+        # Test ultra-wide viewport (>999 width) with unbounded max_w (max_w=None)
+        spec_ultrawide = TableLayoutSpec(
+            columns=[
+                ColumnSpec("col1", ratio=0.5, min_w=10, max_w=None, is_flex=False),
+                ColumnSpec("col2", ratio=0.5, min_w=10, max_w=None, is_flex=False),
+            ],
+            spacing=0,
+            wide_threshold=100,
+            narrow_threshold=10,
+        )
+        cols_ultrawide = allocate_declarative_columns(spec_ultrawide, 3000)
+        self.assertEqual(cols_ultrawide["col1"], 1500)
+        self.assertEqual(cols_ultrawide["col2"], 1500)
+
+        for inner_w in range(0, 101):
+            cols_has_repo = allocate_approved_pr_columns(inner_w, has_repo=True)
+            self.assertIsInstance(cols_has_repo, dict)
+            self.assertIn("pr", cols_has_repo)
+            self.assertIn("repo", cols_has_repo)
+            if inner_w >= 4:
+                self.assertLessEqual(sum(cols_has_repo.values()) + 4, inner_w)
+
+            cols_no_repo = allocate_approved_pr_columns(inner_w, has_repo=False)
+            self.assertIsInstance(cols_no_repo, dict)
+            self.assertIn("pr", cols_no_repo)
+            self.assertNotIn("repo", cols_no_repo)
+            if inner_w >= 3:
+                self.assertLessEqual(sum(cols_no_repo.values()) + 3, inner_w)
+
+            id_w, name_w, agent_w = allocate_scheduled_job_columns(inner_w)
+            self.assertGreaterEqual(id_w, 0)
+            self.assertGreaterEqual(name_w, 0)
+            self.assertGreaterEqual(agent_w, 0)
+            if inner_w >= 45:
+                self.assertLessEqual(id_w + name_w + agent_w + 45, inner_w)
+            else:
+                self.assertEqual((id_w, name_w, agent_w), (0, 0, 0))
 
 
 if __name__ == "__main__":
