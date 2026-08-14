@@ -36,6 +36,7 @@ from lib.tui_panels import (
     render_queued_tasks_panel,
     render_quota_panel,
     render_scheduled_jobs_panel,
+    render_task_logs_panel,
     split_flex_columns,
     truncate_to_display_width,
     truncate_with_ellipsis,
@@ -464,8 +465,8 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
 
-        # Narrow width test (width=55 -> inner_w=51 -> target_w=8 -> gr..#148)
-        narrow_lines = render_active_tasks_panel(width=55, tasks=[task], max_workers=2)
+        # Narrow width test (width=58 -> inner_w=54 -> inner_w-3=51 -> target_w=8 -> gr..#148)
+        narrow_lines = render_active_tasks_panel(width=58, tasks=[task], max_workers=2)
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#148", narrow_row)
 
@@ -941,6 +942,75 @@ class TestTUIPanels(unittest.TestCase):
                 self.assertLessEqual(id_w + name_w + agent_w + 45, inner_w)
             else:
                 self.assertEqual((id_w, name_w, agent_w), (0, 0, 0))
+
+    def test_render_active_tasks_panel_cursor_selection(self):
+        task1 = Task(id="task-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        task2 = Task(id="task-2", agent="code_fixer", prompt="Fix PR #2", status=TaskStatus.RUNNING)
+
+        lines_sel0 = render_active_tasks_panel(width=90, tasks=[task1, task2], max_workers=2, selected_active_index=0)
+        self.assertIn(">", lines_sel0[2])
+        self.assertIn("task-1", lines_sel0[2])
+        self.assertNotIn(">", lines_sel0[3])
+        self.assertIn("task-2", lines_sel0[3])
+
+        lines_sel1 = render_active_tasks_panel(width=90, tasks=[task1, task2], max_workers=2, selected_active_index=1)
+        self.assertNotIn(">", lines_sel1[2])
+        self.assertIn("task-1", lines_sel1[2])
+        self.assertIn(">", lines_sel1[3])
+        self.assertIn("task-2", lines_sel1[3])
+
+    def test_render_task_logs_panel_empty_and_populated(self):
+        # Empty / None task
+        none_lines = render_task_logs_panel(width=80, task=None, logs=[])
+        self.assertTrue(any("No task selected" in l for l in none_lines))
+
+        # Task with empty logs
+        task = Task(
+            id="task-42",
+            agent="code_fixer",
+            prompt="Fix issue #42",
+            target_id="mweastwood/graviton#42",
+            status=TaskStatus.RUNNING,
+            selected_model="gemini-3.6-flash-high",
+        )
+        empty_logs_lines = render_task_logs_panel(width=100, task=task, logs=[])
+        self.assertTrue(any("TASK LOGS [task-42]" in l for l in empty_logs_lines))
+        self.assertTrue(any("RUNNING" in l for l in empty_logs_lines))
+        self.assertTrue(any("code_fixer" in l for l in empty_logs_lines))
+        self.assertTrue(any("gemini-3.6-flash-high" in l for l in empty_logs_lines))
+        self.assertTrue(any("graviton#42" in l for l in empty_logs_lines))
+        self.assertTrue(any("No output logs received" in l for l in empty_logs_lines))
+
+        # Task with populated logs and ANSI colors
+        logs = [
+            "Log line 1: Starting runner",
+            "\033[32mLog line 2: Container active\033[0m",
+            "Log line 3: Executing agent step",
+        ]
+        pop_lines = render_task_logs_panel(width=100, task=task, logs=logs, height=2)
+        self.assertTrue(any("Container active" in l for l in pop_lines))
+        self.assertTrue(any("Executing agent step" in l for l in pop_lines))
+        self.assertFalse(any("Log line 1" in l for l in pop_lines))
+
+        # Completed and Failed status badges
+        task.status = TaskStatus.COMPLETED
+        comp_lines = render_task_logs_panel(width=100, task=task, logs=["All done"])
+        self.assertTrue(any("COMPLETED" in l for l in comp_lines))
+
+        task.status = TaskStatus.FAILED
+        fail_lines = render_task_logs_panel(width=100, task=task, logs=["Process failed"])
+        self.assertTrue(any("FAILED" in l for l in fail_lines))
+
+    def test_render_header_panel_task_logs_screen(self):
+        lines_main = render_header_panel(
+            width=130, host="0.0.0.0", port=8000, commit="sha", branch="main", reload_state="IDLE", uptime="00:01:00", active_screen="main"
+        )
+        self.assertTrue(any("[Enter] View Task Logs" in l for l in lines_main))
+
+        lines_task_logs = render_header_panel(
+            width=130, host="0.0.0.0", port=8000, commit="sha", branch="main", reload_state="IDLE", uptime="00:01:00", active_screen="task_logs"
+        )
+        self.assertTrue(any("Nav: [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
 
 
 if __name__ == "__main__":

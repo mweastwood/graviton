@@ -1489,6 +1489,57 @@ class TestTerminalDashboard(unittest.TestCase):
         mock_httpd.server_close.assert_called_once()
         mock_task_manager.stop.assert_called_once()
 
+    def test_active_task_navigation_and_task_logs_viewer(self):
+        manager = TaskManager(max_workers=2)
+        task1 = Task(id="task-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        task2 = Task(id="task-2", agent="code_fixer", prompt="Fix PR #2", status=TaskStatus.RUNNING)
+        task1.append_log("Log 1 for task 1")
+        task1.append_log("Log 2 for task 1")
+        task2.append_log("Log 1 for task 2")
+
+        manager._tasks["task-1"] = task1
+        manager._tasks["task-2"] = task2
+
+        dashboard = TerminalDashboard(task_manager=manager)
+        self.assertEqual(dashboard.active_screen, "main")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # Navigate down
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.selected_active_index, 1)
+
+        # Navigate up
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # Press Enter to view logs for task-1
+        dashboard.handle_key("\n")
+        self.assertEqual(dashboard.active_screen, "task_logs")
+        self.assertEqual(dashboard.selected_task_id_for_logs, "task-1")
+
+        # Render task_logs screen
+        frame = dashboard.render(width=100)
+        self.assertIn("TASK LOGS [task-1]", frame)
+        self.assertIn("Log 1 for task 1", frame)
+        self.assertIn("Log 2 for task 1", frame)
+        self.assertIn("Press [Esc] to return to Main Screen", frame)
+
+        # Task finishes while viewing
+        task1.status = TaskStatus.COMPLETED
+        task1.append_log("Task 1 completed successfully")
+        frame_comp = dashboard.render(width=100)
+        self.assertIn("[COMPLETED]", frame_comp)
+        self.assertIn("Task 1 completed successfully", frame_comp)
+
+        # Press Esc to return to main screen
+        dashboard.handle_key("\x1b")
+        self.assertEqual(dashboard.active_screen, "main")
+
+        # Press Enter when no active tasks exist is safe
+        manager._tasks.clear()
+        dashboard.handle_key("enter")
+        self.assertEqual(dashboard.active_screen, "main")
+
 
 if __name__ == "__main__":
     unittest.main()
