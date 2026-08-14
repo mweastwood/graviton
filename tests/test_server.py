@@ -969,6 +969,98 @@ class TestGravitonHandler(unittest.TestCase):
         with patch("sys.argv", ["graviton-server.py"]):
             server_mod.main()
 
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=REPO_ROOT / ".graviton_model_selection.json",
+        )
+        mock_qt_inst.restore_model_selection.assert_called_once()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_model_state_cli_arg(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_path = "/tmp/custom_model_selection.json"
+        with patch("sys.argv", ["graviton-server.py", "--model-state", custom_path]):
+            server_mod.main()
+
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=Path(custom_path),
+        )
+        mock_qt_inst.restore_model_selection.assert_called_once()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_model_selection_state_alias_cli_arg(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_path = "/tmp/custom_alias_selection.json"
+        with patch("sys.argv", ["graviton-server.py", "--model-selection-state", custom_path]):
+            server_mod.main()
+
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=Path(custom_path),
+        )
+        mock_qt_inst.restore_model_selection.assert_called_once()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_model_selection_state_env_var(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_path = "/tmp/custom_env_selection.json"
+        with patch.dict("os.environ", {"MODEL_SELECTION_STATE": custom_path}):
+            with patch("sys.argv", ["graviton-server.py"]):
+                server_mod.main()
+
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=Path(custom_path),
+        )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
     def test_graceful_shutdown_persists_model_selection_state(self):
@@ -1017,6 +1109,52 @@ class TestGravitonHandler(unittest.TestCase):
         args = kwargs.get("args") or mock_thread.call_args[1].get("args")
         self.assertEqual(target_fn, server_mod.sync_repo_and_reload)
         self.assertIn(mock_qt, args)
+
+    def test_end_to_end_server_quit_and_restart_persists_model_selection(self):
+        import tempfile
+        from lib.quota import QuotaTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_state_file = Path(tmpdir) / "persisted_model_state.json"
+
+            # 1. Server starts with custom state path and default models
+            tracker1 = QuotaTracker(
+                quota_pool="gemini",
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.1-pro-high"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+                state_path=custom_state_file,
+            )
+            tracker1.restore_model_selection()
+
+            # 2. User changes active models
+            tracker1.set_active_model("gemini", "gemini-3.1-pro-high")
+            tracker1.set_active_model("claude_gpt", "claude-opus-4-6-thinking")
+            tracker1.quota_pool = "claude_gpt"
+
+            # 3. Server graceful shutdown dumps state
+            t = server_mod.graceful_shutdown(
+                task_manager=None,
+                scheduler=None,
+                dashboard=None,
+                httpd=None,
+                quota_tracker=tracker1,
+                grace_period=0.01,
+            )
+            t.join(timeout=2.0)
+            self.assertTrue(custom_state_file.exists())
+
+            # 4. Server restarts with same state path
+            tracker2 = QuotaTracker(
+                quota_pool="gemini",
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.1-pro-high"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+                state_path=custom_state_file,
+            )
+            restored = tracker2.restore_model_selection()
+            self.assertTrue(restored)
+            self.assertEqual(tracker2.get_active_model("gemini"), "gemini-3.1-pro-high")
+            self.assertEqual(tracker2.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
+            self.assertEqual(tracker2.quota_pool, "claude_gpt")
 
 
 if __name__ == "__main__":
