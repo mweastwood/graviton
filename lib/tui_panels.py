@@ -661,7 +661,13 @@ def allocate_active_task_columns(inner_w: int) -> Tuple[int, int, int, int, int,
     else:
         id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = 8, 14, 12, 8, 12, 8
         needed = 67 - inner_w
-        for col_ref in ["model", "attempt", "agent", "elapsed", "id", "target", "model2", "attempt2", "agent2"]:
+        for col_ref in [
+            "model", "attempt", "agent", "elapsed", "id", "target",
+            "model2", "attempt2", "agent2",
+            "agent3", "elapsed3", "id3", "model3", "target3", "attempt3",
+            "agent4", "elapsed4", "id4", "model4", "target4", "attempt4",
+            "agent5", "elapsed5", "id5", "model5", "target5", "attempt5",
+        ]:
             if needed <= 0:
                 break
             if col_ref == "model" and model_w > 8:
@@ -699,6 +705,78 @@ def allocate_active_task_columns(inner_w: int) -> Tuple[int, int, int, int, int,
             elif col_ref == "agent2" and agent_w > 6:
                 dec = min(agent_w - 6, needed)
                 agent_w -= dec
+                needed -= dec
+            elif col_ref == "agent3" and agent_w > 2:
+                dec = min(agent_w - 2, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed3" and elapsed_w > 2:
+                dec = min(elapsed_w - 2, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id3" and id_w > 2:
+                dec = min(id_w - 2, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model3" and model_w > 2:
+                dec = min(model_w - 2, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target3" and target_w > 2:
+                dec = min(target_w - 2, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt3" and attempt_w > 2:
+                dec = min(attempt_w - 2, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent4" and agent_w > 1:
+                dec = min(agent_w - 1, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed4" and elapsed_w > 1:
+                dec = min(elapsed_w - 1, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id4" and id_w > 1:
+                dec = min(id_w - 1, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model4" and model_w > 1:
+                dec = min(model_w - 1, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target4" and target_w > 1:
+                dec = min(target_w - 1, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt4" and attempt_w > 1:
+                dec = min(attempt_w - 1, needed)
+                attempt_w -= dec
+                needed -= dec
+            elif col_ref == "agent5" and agent_w > 0:
+                dec = min(agent_w, needed)
+                agent_w -= dec
+                needed -= dec
+            elif col_ref == "elapsed5" and elapsed_w > 0:
+                dec = min(elapsed_w, needed)
+                elapsed_w -= dec
+                needed -= dec
+            elif col_ref == "id5" and id_w > 0:
+                dec = min(id_w, needed)
+                id_w -= dec
+                needed -= dec
+            elif col_ref == "model5" and model_w > 0:
+                dec = min(model_w, needed)
+                model_w -= dec
+                needed -= dec
+            elif col_ref == "target5" and target_w > 0:
+                dec = min(target_w, needed)
+                target_w -= dec
+                needed -= dec
+            elif col_ref == "attempt5" and attempt_w > 0:
+                dec = min(attempt_w, needed)
+                attempt_w -= dec
                 needed -= dec
 
         return id_w, agent_w, model_w, target_w, attempt_w, elapsed_w

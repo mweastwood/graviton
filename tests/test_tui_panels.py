@@ -511,6 +511,13 @@ class TestTUIPanels(unittest.TestCase):
         id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(51)
         self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 51)
 
+        # Very narrow width (inner_w < 35, e.g. 30 and 25)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(30)
+        self.assertLessEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 30)
+
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(25)
+        self.assertLessEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 25)
+
 
     def test_render_queued_tasks_panel_empty_and_populated(self):
         empty_lines = render_queued_tasks_panel(width=80, tasks=[])
