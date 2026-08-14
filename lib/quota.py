@@ -754,8 +754,10 @@ class QuotaTracker:
         active_third_party_model: str = "claude-sonnet-4-6",
         available_gemini_models: Optional[List[str]] = None,
         available_third_party_models: Optional[List[str]] = None,
+        state_path: Optional[Union[str, Path]] = None,
     ):
         self._lock = threading.RLock()
+        self.state_path = Path(state_path) if state_path is not None else Path(".graviton_model_selection.json")
         self.quota_pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
         self._remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
         self._reset_time = reset_time
@@ -938,6 +940,84 @@ class QuotaTracker:
                 self.active_third_party_model = model
             else:
                 self.active_gemini_model = model
+        self.dump_model_selection()
+
+    def dump_model_selection(self, filepath: Optional[Path] = None) -> bool:
+        """
+        Thread-safe serialization of active model selection and quota pool to disk JSON file.
+        Returns True if successfully written, False on error.
+        """
+        path = Path(filepath) if filepath is not None else (getattr(self, "state_path", None) or Path(".graviton_model_selection.json"))
+        with self._lock:
+            data = {
+                "active_gemini_model": self.active_gemini_model,
+                "active_third_party_model": self.active_third_party_model,
+                "quota_pool": self.quota_pool,
+            }
+        try:
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            logger.info(f"Dumped model selection state to {path}.")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to dump model selection to '{path}': {e}")
+            return False
+
+    def restore_model_selection(self, filepath: Optional[Path] = None) -> bool:
+        """
+        Restore active model selection and quota pool from disk JSON file.
+        Defensively validates that restored model IDs are present in available/default models.
+        Returns True if selection was successfully restored, False otherwise.
+        """
+        path = Path(filepath) if filepath is not None else (getattr(self, "state_path", None) or Path(".graviton_model_selection.json"))
+        if not path.exists():
+            return False
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            data = json.loads(content)
+        except Exception as e:
+            logger.warning(f"Failed to read model selection state from '{path}': {e}")
+            return False
+
+        if not isinstance(data, dict):
+            logger.warning(f"Invalid model selection state in '{path}': expected JSON object.")
+            return False
+
+        with self._lock:
+            restored_any = False
+            gemini_model = data.get("active_gemini_model")
+            if isinstance(gemini_model, str) and gemini_model.strip():
+                valid_gemini = self.available_gemini_models if self.available_gemini_models else DEFAULT_GEMINI_MODELS
+                if gemini_model in valid_gemini:
+                    self.active_gemini_model = gemini_model
+                    restored_any = True
+                else:
+                    logger.warning(
+                        f"Restored gemini model '{gemini_model}' is not in available models; keeping default '{self.active_gemini_model}'."
+                    )
+
+            third_party_model = data.get("active_third_party_model")
+            if isinstance(third_party_model, str) and third_party_model.strip():
+                valid_3p = self.available_third_party_models if self.available_third_party_models else DEFAULT_THIRD_PARTY_MODELS
+                if third_party_model in valid_3p:
+                    self.active_third_party_model = third_party_model
+                    restored_any = True
+                else:
+                    logger.warning(
+                        f"Restored third-party model '{third_party_model}' is not in available models; keeping default '{self.active_third_party_model}'."
+                    )
+
+            quota_pool_val = data.get("quota_pool")
+            if isinstance(quota_pool_val, str) and quota_pool_val.strip():
+                self.quota_pool = quota_pool_val
+                restored_any = True
+
+            if restored_any:
+                logger.info(
+                    f"Restored model selection state from {path}: gemini='{self.active_gemini_model}', "
+                    f"3p='{self.active_third_party_model}', quota_pool='{self.quota_pool}'"
+                )
+            return restored_any
 
     def _state_unlocked(self) -> str:
         gemini_state = self.get_pool_state("gemini")

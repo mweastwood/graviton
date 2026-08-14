@@ -48,6 +48,7 @@ def graceful_shutdown(
     scheduler: Optional[TaskScheduler] = None,
     dashboard: Optional[TerminalDashboard] = None,
     httpd: Optional[HTTPServer] = None,
+    quota_tracker: Optional[QuotaTracker] = None,
     grace_period: float = 3.0,
     timeout: Optional[float] = None,
 ) -> threading.Thread:
@@ -55,7 +56,7 @@ def graceful_shutdown(
     Execute 4-step graceful shutdown sequence in a background thread:
     1. Drain Active Tasks (task_manager.drain_active_tasks)
     2. Webhook Grace Buffer (sleep grace_period seconds)
-    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue (task_manager.dump_queue_state)
+    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue and Model Selection (task_manager.dump_queue_state, quota_tracker.dump_model_selection)
     4. Clean Abort & Termination (stop scheduler, dashboard, task_manager, server_close)
     """
     if dashboard:
@@ -74,6 +75,7 @@ def graceful_shutdown(
                 scheduler=scheduler,
                 dashboard=dashboard,
                 httpd=httpd,
+                quota_tracker=quota_tracker,
                 grace_period=grace_period,
                 timeout=timeout,
                 logger=logger,
@@ -222,7 +224,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 })
                 threading.Thread(
                     target=sync_repo_and_reload,
-                    args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None)),
+                    args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None), getattr(self, "quota_tracker", None)),
                     daemon=True,
                 ).start()
                 return
@@ -381,6 +383,7 @@ def main():
     try:
         quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
         GravitonHandler.quota_tracker = quota_tracker
+        quota_tracker.restore_model_selection()
         try:
             quota_tracker.poll_live_quota()
         except Exception as e:
@@ -430,6 +433,7 @@ def main():
                 scheduler=scheduler,
                 dashboard=dashboard,
                 httpd=httpd,
+                quota_tracker=quota_tracker,
                 grace_period=args.quit_grace_period,
             )
 

@@ -1090,6 +1090,105 @@ class TestFetchCliModels(unittest.TestCase):
         self.assertEqual(tracker.active_gemini_model, "gemini-custom-model")
         self.assertEqual(tracker.active_third_party_model, "claude-custom-model")
 
+    def test_dump_and_restore_model_selection_success(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            tracker = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.1-pro-high"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+                quota_pool="gemini",
+            )
+            tracker.set_active_model("gemini", "gemini-3.1-pro-high")
+            tracker.set_active_model("claude_gpt", "claude-opus-4-6-thinking")
+            tracker.quota_pool = "claude_gpt"
+
+            dump_res = tracker.dump_model_selection(filepath=state_file)
+            self.assertTrue(dump_res)
+            self.assertTrue(state_file.exists())
+
+            saved_data = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved_data["active_gemini_model"], "gemini-3.1-pro-high")
+            self.assertEqual(saved_data["active_third_party_model"], "claude-opus-4-6-thinking")
+            self.assertEqual(saved_data["quota_pool"], "claude_gpt")
+
+            # Restore into a fresh tracker
+            new_tracker = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.1-pro-high"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+            )
+            restore_res = new_tracker.restore_model_selection(filepath=state_file)
+            self.assertTrue(restore_res)
+            self.assertEqual(new_tracker.active_gemini_model, "gemini-3.1-pro-high")
+            self.assertEqual(new_tracker.active_third_party_model, "claude-opus-4-6-thinking")
+            self.assertEqual(new_tracker.quota_pool, "claude_gpt")
+
+    def test_set_active_model_persists_state(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            tracker = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium"],
+                available_third_party_models=["claude-sonnet-4-6"],
+                state_path=state_file,
+            )
+            tracker.set_active_model("gemini", "gemini-3.6-flash-medium")
+            self.assertTrue(state_file.exists())
+            saved = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["active_gemini_model"], "gemini-3.6-flash-medium")
+
+    def test_restore_model_selection_nonexistent_file(self):
+        from pathlib import Path
+        tracker = QuotaTracker()
+        res = tracker.restore_model_selection(filepath=Path("/tmp/nonexistent_graviton_model_state.json"))
+        self.assertFalse(res)
+
+    def test_restore_model_selection_corrupted_json(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            state_file.write_text("{ corrupt json ", encoding="utf-8")
+            tracker = QuotaTracker()
+            res = tracker.restore_model_selection(filepath=state_file)
+            self.assertFalse(res)
+            self.assertEqual(tracker.active_gemini_model, DEFAULT_GEMINI_MODELS[0])
+
+    def test_restore_model_selection_invalid_data_type(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            state_file.write_text("[\"not\", \"a\", \"dict\"]", encoding="utf-8")
+            tracker = QuotaTracker()
+            res = tracker.restore_model_selection(filepath=state_file)
+            self.assertFalse(res)
+
+    def test_restore_model_selection_unavailable_model_fallback(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            state_file.write_text(
+                json.dumps({
+                    "active_gemini_model": "gemini-unrecognized-future-model",
+                    "active_third_party_model": "claude-unrecognized-model",
+                    "quota_pool": "gemini",
+                }),
+                encoding="utf-8",
+            )
+            tracker = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high"],
+                available_third_party_models=["claude-sonnet-4-6"],
+            )
+            res = tracker.restore_model_selection(filepath=state_file)
+            # Pool is restored, but invalid models fall back to available defaults
+            self.assertTrue(res)
+            self.assertEqual(tracker.active_gemini_model, "gemini-3.6-flash-high")
+            self.assertEqual(tracker.active_third_party_model, "claude-sonnet-4-6")
+
 
 if __name__ == "__main__":
     unittest.main()
