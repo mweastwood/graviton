@@ -914,6 +914,34 @@ class TestGravitonHandler(unittest.TestCase):
         mock_proc.kill.assert_called_once()
         self.assertEqual(mock_proc.wait.call_count, 2)
 
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_cleans_up_smee_listener_on_init_exception(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_http.side_effect = OSError("[Errno 98] Address already in use")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_start_listener.return_value = mock_proc
+
+        with patch("sys.argv", ["graviton-server.py", "--smee-url", "https://smee.io/test-channel"]):
+            with self.assertRaises(OSError):
+                server_mod.main()
+
+        mock_start_listener.assert_called_once_with("https://smee.io/test-channel", 8000)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()
