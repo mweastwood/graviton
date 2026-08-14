@@ -1731,6 +1731,52 @@ class TestTerminalDashboard(unittest.TestCase):
 
         dashboard._unregister_signal_handlers()
 
+    def test_active_screen_setter_does_not_emit_io(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        # Pre-seed frame state
+        dashboard._last_frame_lines = ["Line 1", "Line 2"]
+        dashboard._full_redraw_needed = False
+
+        dashboard.active_screen = "jobs"
+
+        # Assert no I/O emitted to out_stream
+        self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(dashboard.active_screen, "jobs")
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+
+    def test_draw_frame_cache_integrity_on_write_failure(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        # Seed initial frame
+        initial_frame = "Line 1\nLine 2"
+        dashboard._draw_frame(initial_frame)
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2"])
+        self.assertFalse(dashboard._full_redraw_needed)
+
+        # Mock out_stream.write to fail on subsequent differential write
+        with patch.object(stream, "write", side_effect=IOError("Simulated write failure")):
+            dashboard._draw_frame("Line 1\nLine 2 (modified)")
+
+        # Assert cache did not advance to the new frame lines on failure
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2"])
+
+    def test_draw_frame_full_redraw_cache_integrity_on_write_failure(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        with patch.object(stream, "write", side_effect=IOError("Simulated full redraw failure")):
+            dashboard._draw_frame("Line 1\nLine 2")
+
+        self.assertEqual(dashboard._last_frame_lines, [])
+        self.assertTrue(dashboard._full_redraw_needed)
+
 
 if __name__ == "__main__":
     unittest.main()

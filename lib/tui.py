@@ -52,6 +52,8 @@ from lib.tui_panels import (
 )
 from lib.updater import get_git_info, get_hot_reload_state, set_hot_reload_state, get_uptime_str
 
+logger = logging.getLogger("graviton.tui")
+
 
 class TUILogHandler(logging.Handler):
     """Log handler that buffers log records in a ring buffer for TUI display."""
@@ -238,6 +240,7 @@ class TerminalDashboard:
 
         self.log_handler = log_handler or TUILogHandler()
 
+        self._frame_lock = threading.Lock()
         self._active_screen: str = "main"
         self._last_frame_lines: List[str] = []
         self._full_redraw_needed: bool = True
@@ -270,10 +273,11 @@ class TerminalDashboard:
 
     @active_screen.setter
     def active_screen(self, screen: str):
-        if getattr(self, "_active_screen", None) != screen:
-            self._active_screen = screen
-            self._full_redraw_needed = True
-            self._last_frame_lines = []
+        with self._frame_lock:
+            if getattr(self, "_active_screen", None) != screen:
+                self._active_screen = screen
+                self._full_redraw_needed = True
+                self._last_frame_lines = []
 
     def start(self):
         """Start the background dashboard rendering loop thread and hotkey listener."""
@@ -938,8 +942,9 @@ class TerminalDashboard:
                 prev_winch = signal.getsignal(signal.SIGWINCH)
                 if prev_winch not in (signal.SIG_IGN, None):
                     def _winch_handler(signum, frame):
-                        self._full_redraw_needed = True
-                        self._last_frame_lines = []
+                        with self._frame_lock:
+                            self._full_redraw_needed = True
+                            self._last_frame_lines = []
                         self._force_refresh()
                         if callable(prev_winch) and prev_winch not in (signal.SIG_DFL, signal.SIG_IGN):
                             try:
@@ -974,15 +979,16 @@ class TerminalDashboard:
             try:
                 frame = self.render()
                 self._draw_frame(frame)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error during force refresh: {e}")
 
     def invalidate_git_cache(self):
         """Invalidate cached git metadata to force a fresh fetch on next render."""
-        self._git_info_cache = None
-        self._git_info_last_fetch = 0.0
-        self._full_redraw_needed = True
-        self._last_frame_lines = []
+        with self._frame_lock:
+            self._git_info_cache = None
+            self._git_info_last_fetch = 0.0
+            self._full_redraw_needed = True
+            self._last_frame_lines = []
 
     def _attach_log_redirection(self):
         if self._log_redirected:
@@ -1251,8 +1257,8 @@ class TerminalDashboard:
             try:
                 frame = self.render()
                 self._draw_frame(frame)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error during TUI refresh loop: {e}")
             self._refresh_event.wait(timeout=self.refresh_interval)
 
     def _draw_frame(self, frame: str) -> None:
@@ -1260,36 +1266,37 @@ class TerminalDashboard:
         if not self.out_stream:
             return
 
-        new_lines = frame.split("\n")
-        try:
-            if self._full_redraw_needed or not self._last_frame_lines:
-                buf = "\033[H\033[2J" + "".join(f"{line}\033[K\n" for line in new_lines)
-                self.out_stream.write(buf)
-                self.out_stream.flush()
+        with self._frame_lock:
+            new_lines = frame.split("\n")
+            try:
+                if self._full_redraw_needed or not self._last_frame_lines:
+                    buf = "\033[H\033[2J" + "".join(f"{line}\033[K\n" for line in new_lines)
+                    self.out_stream.write(buf)
+                    self.out_stream.flush()
+                    self._last_frame_lines = list(new_lines)
+                    self._full_redraw_needed = False
+                    return
+
+                if new_lines == self._last_frame_lines:
+                    return
+
+                buf_parts = []
+                min_len = min(len(new_lines), len(self._last_frame_lines))
+                for i in range(min_len):
+                    if new_lines[i] != self._last_frame_lines[i]:
+                        buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
+
+                if len(new_lines) > len(self._last_frame_lines):
+                    for i in range(len(self._last_frame_lines), len(new_lines)):
+                        buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
+                elif len(new_lines) < len(self._last_frame_lines):
+                    for i in range(len(new_lines), len(self._last_frame_lines)):
+                        buf_parts.append(f"\033[{i + 1};1H\033[K")
+
+                if buf_parts:
+                    self.out_stream.write("".join(buf_parts))
+                    self.out_stream.flush()
+
                 self._last_frame_lines = list(new_lines)
-                self._full_redraw_needed = False
-                return
-
-            if new_lines == self._last_frame_lines:
-                return
-
-            buf_parts = []
-            min_len = min(len(new_lines), len(self._last_frame_lines))
-            for i in range(min_len):
-                if new_lines[i] != self._last_frame_lines[i]:
-                    buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
-
-            if len(new_lines) > len(self._last_frame_lines):
-                for i in range(len(self._last_frame_lines), len(new_lines)):
-                    buf_parts.append(f"\033[{i + 1};1H{new_lines[i]}\033[K")
-            elif len(new_lines) < len(self._last_frame_lines):
-                for i in range(len(new_lines), len(self._last_frame_lines)):
-                    buf_parts.append(f"\033[{i + 1};1H\033[K")
-
-            if buf_parts:
-                self.out_stream.write("".join(buf_parts))
-                self.out_stream.flush()
-
-            self._last_frame_lines = list(new_lines)
-        except Exception:
-            pass
+            except Exception as e:
+                logger.debug(f"Failed to draw TUI frame: {e}")
