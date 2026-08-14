@@ -494,6 +494,23 @@ class TestTUIPanels(unittest.TestCase):
         row_claude = lines_claude[2]
         self.assertIn("claude-3-5-sonne", row_claude)
 
+    def test_allocate_active_task_columns_narrow_and_wide(self):
+        from lib.tui_panels import allocate_active_task_columns
+
+        # Wide width (inner_w = 96)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(96)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 96)
+        self.assertEqual(model_w, 16)
+        self.assertEqual(attempt_w, 16)
+
+        # Standard width (inner_w = 76)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(76)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 76)
+
+        # Narrow width (inner_w = 51)
+        id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(51)
+        self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 51)
+
 
     def test_render_queued_tasks_panel_empty_and_populated(self):
         empty_lines = render_queued_tasks_panel(width=80, tasks=[])

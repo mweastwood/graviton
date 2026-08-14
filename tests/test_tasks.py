@@ -633,7 +633,7 @@ class TestTaskManager(unittest.TestCase):
         manager.stop()
 
     @patch("lib.tasks.run_agent_container")
-    def test_task_completion_and_failure_3rd_party_quota_fetch(self, mock_run):
+    def test_post_execution_quota_poll_passes_selected_pool(self, mock_run):
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = "Success"
@@ -647,6 +647,7 @@ class TestTaskManager(unittest.TestCase):
         mock_quota.is_pool_behind_pacing.return_value = False
         mock_quota.is_behind_pacing.return_value = False
         mock_quota.get_active_model.return_value = "claude-3-5-sonnet"
+        mock_quota.quota_pool = "claude_gpt"
 
         manager = TaskManager(
             max_workers=1,
@@ -690,6 +691,41 @@ class TestTaskManager(unittest.TestCase):
         mock_quota.poll_live_quota_async.assert_called_with(
             quota_pool="claude_gpt", force=True, thread_name="AsyncQuotaPoll-Worker-1"
         )
+
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_equal_percentage_pool_preference(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = "Success"
+        mock_process.stderr = ""
+        mock_run.return_value = mock_process
+
+        mock_quota = MagicMock()
+        mock_quota.get_pool_remaining_percentage.return_value = 80.0
+        mock_quota.get_pool_state.return_value = QuotaState.NORMAL
+        mock_quota.is_pool_behind_pacing.return_value = False
+        mock_quota.get_active_model.return_value = "claude-3-5-sonnet"
+        mock_quota.quota_pool = "claude_gpt"
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=mock_quota,
+        )
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Review PR under equal percentage preference", target_id="#eq-1")
+
+        for _ in range(50):
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertEqual(task.selected_pool, "claude_gpt")
 
         manager.stop()
 
