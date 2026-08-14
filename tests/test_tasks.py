@@ -107,7 +107,7 @@ class TestTaskManager(unittest.TestCase):
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
             quota_pool="gemini",
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash-high",
         )
 
         manager.stop()
@@ -192,7 +192,7 @@ class TestTaskManager(unittest.TestCase):
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
             quota_pool="gemini",
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash-high",
         )
 
         stats = manager.get_stats()
@@ -362,8 +362,11 @@ class TestTaskManager(unittest.TestCase):
         manager.start()
 
         manager.submit_task("code_fixer", "Fix issue", target_id="#9")
-        # Give worker a split second to transition task to RUNNING
-        time.sleep(0.05)
+        # Give worker time to transition task to RUNNING
+        for _ in range(50):
+            if manager.get_active_tasks():
+                break
+            time.sleep(0.01)
 
         # Drain with short timeout (0.1s) while task is still running
         drained = manager.drain_active_tasks(timeout=0.1)
@@ -778,7 +781,7 @@ class TestTaskManager(unittest.TestCase):
                 cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
                 initial_attempt=1,
                 quota_pool="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash-high",
             )
 
             manager.stop()
@@ -1665,7 +1668,7 @@ class TestTaskManager(unittest.TestCase):
             time.sleep(0.05)
 
         self.assertEqual(task.selected_pool, "claude_gpt")
-        self.assertEqual(task.selected_model, "claude-3-5-sonnet")
+        self.assertEqual(task.selected_model, "claude-sonnet-4-6")
         manager.stop()
 
     def test_get_stats_queue_status_during_single_pool_exhaustion(self):

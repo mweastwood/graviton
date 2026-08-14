@@ -25,7 +25,7 @@ try:
 except ImportError:
     HAS_TERMIOS = False
 
-from lib.quota import QuotaTracker
+from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui_panels import (
@@ -731,7 +731,7 @@ class TerminalDashboard:
             models = (
                 quota_tr.available_gemini_models
                 if quota_tr and hasattr(quota_tr, "available_gemini_models")
-                else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+                else DEFAULT_GEMINI_MODELS.copy()
             )
             if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
                 self.selected_gemini_index = max(0, self.selected_gemini_index - 1)
@@ -751,7 +751,7 @@ class TerminalDashboard:
             models = (
                 quota_tr.available_third_party_models
                 if quota_tr and hasattr(quota_tr, "available_third_party_models")
-                else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+                else DEFAULT_THIRD_PARTY_MODELS.copy()
             )
             if key in ("k", "K", "up", "\x1b[A", "\x1bOA"):
                 self.selected_third_party_index = max(0, self.selected_third_party_index - 1)
@@ -779,12 +779,12 @@ class TerminalDashboard:
                 models = (
                     quota_tr.available_gemini_models
                     if quota_tr and hasattr(quota_tr, "available_gemini_models")
-                    else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+                    else DEFAULT_GEMINI_MODELS.copy()
                 )
                 active = (
                     quota_tr.get_active_model("gemini")
                     if quota_tr and hasattr(quota_tr, "get_active_model")
-                    else "gemini-2.5-flash"
+                    else DEFAULT_GEMINI_MODELS[0]
                 )
                 if active in models:
                     self.selected_gemini_index = models.index(active)
@@ -797,12 +797,12 @@ class TerminalDashboard:
                 models = (
                     quota_tr.available_third_party_models
                     if quota_tr and hasattr(quota_tr, "available_third_party_models")
-                    else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+                    else DEFAULT_THIRD_PARTY_MODELS.copy()
                 )
                 active = (
                     quota_tr.get_active_model("claude_gpt")
                     if quota_tr and hasattr(quota_tr, "get_active_model")
-                    else "claude-3-5-sonnet"
+                    else DEFAULT_THIRD_PARTY_MODELS[0]
                 )
                 if active in models:
                     self.selected_third_party_index = models.index(active)
@@ -1026,12 +1026,12 @@ class TerminalDashboard:
             models = (
                 quota_tr.available_gemini_models
                 if quota_tr and hasattr(quota_tr, "available_gemini_models")
-                else ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"]
+                else DEFAULT_GEMINI_MODELS.copy()
             )
             active_m = (
                 quota_tr.get_active_model("gemini")
                 if quota_tr and hasattr(quota_tr, "get_active_model")
-                else "gemini-2.5-flash"
+                else DEFAULT_GEMINI_MODELS[0]
             )
             lines.extend(render_gemini_models_panel(width, models, self.selected_gemini_index, active_m))
             return "\n".join(lines)
@@ -1046,12 +1046,12 @@ class TerminalDashboard:
             models = (
                 quota_tr.available_third_party_models
                 if quota_tr and hasattr(quota_tr, "available_third_party_models")
-                else ["claude-3-5-sonnet", "claude-3-opus", "claude-3-5-haiku"]
+                else DEFAULT_THIRD_PARTY_MODELS.copy()
             )
             active_m = (
                 quota_tr.get_active_model("claude_gpt")
                 if quota_tr and hasattr(quota_tr, "get_active_model")
-                else "claude-3-5-sonnet"
+                else DEFAULT_THIRD_PARTY_MODELS[0]
             )
             lines.extend(render_third_party_models_panel(width, models, self.selected_third_party_index, active_m))
             return "\n".join(lines)

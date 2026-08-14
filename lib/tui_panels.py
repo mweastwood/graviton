@@ -595,7 +595,7 @@ def render_gemini_models_panel(
     width: int,
     models: List[str],
     selected_index: int = 0,
-    active_model: str = "gemini-2.5-flash",
+    active_model: str = "gemini-3.6-flash-high",
 ) -> List[str]:
     """Render Gemini (1st party) model selection panel."""
     header_bar = render_panel_header(width, "GEMINI MODEL SELECTION (1ST PARTY)", "\033[96m\033[1m")
@@ -621,7 +621,7 @@ def render_third_party_models_panel(
     width: int,
     models: List[str],
     selected_index: int = 0,
-    active_model: str = "claude-3-5-sonnet",
+    active_model: str = "claude-sonnet-4-6",
 ) -> List[str]:
     """Render 3rd party (Claude/GPT) model selection panel."""
     header_bar = render_panel_header(width, "3RD PARTY MODEL SELECTION (CLAUDE / GPT)", "\033[96m\033[1m")

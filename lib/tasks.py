@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from lib.runner import run_agent_container
-from lib.quota import QuotaState, QuotaTracker
+from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.security import is_valid_repo_name
 
 logger = logging.getLogger("graviton.tasks")
@@ -705,7 +705,7 @@ class TaskManager:
                             task = None
                         else:
                             selected_pool = "gemini"
-                            selected_model = "gemini-2.5-flash"
+                            selected_model = DEFAULT_GEMINI_MODELS[0]
                             gemini_eligible = True
                             claude_eligible = True
 
@@ -767,12 +767,12 @@ class TaskManager:
 
                                 if hasattr(self.quota_tracker, "get_active_model"):
                                     m_val = self.quota_tracker.get_active_model(selected_pool)
-                                    selected_model = m_val if isinstance(m_val, str) else ("gemini-2.5-flash" if selected_pool == "gemini" else "claude-3-5-sonnet")
+                                    selected_model = m_val if isinstance(m_val, str) else (DEFAULT_GEMINI_MODELS[0] if selected_pool == "gemini" else DEFAULT_THIRD_PARTY_MODELS[0])
                                 else:
                                     selected_model = (
-                                        getattr(self.quota_tracker, "active_gemini_model", "gemini-2.5-flash")
+                                        getattr(self.quota_tracker, "active_gemini_model", DEFAULT_GEMINI_MODELS[0])
                                         if selected_pool == "gemini"
-                                        else getattr(self.quota_tracker, "active_third_party_model", "claude-3-5-sonnet")
+                                        else getattr(self.quota_tracker, "active_third_party_model", DEFAULT_THIRD_PARTY_MODELS[0])
                                     )
 
                             all_exhausted = not gemini_eligible and not claude_eligible
