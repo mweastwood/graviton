@@ -654,10 +654,10 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    target_w = max(8, inner_w - 61)
+    target_w = max(8, inner_w - 63)
     cols = [
         ("ID", 8),
-        ("AGENT", 12),
+        ("AGENT", 14),
         ("TARGET", target_w),
         ("MODEL", 17),
         ("ATTEMPT", 12),
@@ -672,7 +672,7 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         model_str = getattr(t, "selected_model", None) or "-"
         row_cells = [
             (t.id, 8),
-            (t.agent, 12),
+            (t.agent, 14),
             (target_str, target_w),
             (model_str, 17),
             (att_str, 12),
