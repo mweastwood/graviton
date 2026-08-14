@@ -632,6 +632,67 @@ class TestTaskManager(unittest.TestCase):
 
         manager.stop()
 
+    @patch("lib.tasks.run_agent_container")
+    def test_task_completion_and_failure_3rd_party_quota_fetch(self, mock_run):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = "Success"
+        mock_process.stderr = ""
+        mock_run.return_value = mock_process
+
+        mock_quota = MagicMock()
+        mock_quota.dual_pool_enabled = True
+        mock_quota.get_pool_remaining_percentage.side_effect = lambda p: 95.0 if p == "claude_gpt" else 20.0
+        mock_quota.get_pool_state.return_value = QuotaState.NORMAL
+        mock_quota.is_pool_behind_pacing.return_value = False
+        mock_quota.is_behind_pacing.return_value = False
+        mock_quota.get_active_model.return_value = "claude-3-5-sonnet"
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            quota_tracker=mock_quota,
+        )
+        manager.start()
+
+        # 1. Test TaskStatus.COMPLETED under 3rd-party pool ("claude_gpt")
+        task1 = manager.submit_task("code_reviewer", "Review PR under 3rd-party pool", target_id="#3rd-1")
+
+        for _ in range(50):
+            if task1.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task1.status, TaskStatus.COMPLETED)
+        self.assertEqual(task1.selected_pool, "claude_gpt")
+        mock_quota.poll_live_quota_async.assert_called_with(
+            quota_pool="claude_gpt", force=True, thread_name="AsyncQuotaPoll-Worker-1"
+        )
+        mock_quota.reset_mock()
+
+        # 2. Test TaskStatus.FAILED under 3rd-party pool ("claude_gpt")
+        mock_fail_process = MagicMock()
+        mock_fail_process.returncode = 1
+        mock_fail_process.stdout = ""
+        mock_fail_process.stderr = "Execution error"
+        mock_run.return_value = mock_fail_process
+
+        task2 = manager.submit_task("code_fixer", "Fix issue under 3rd-party pool", target_id="#3rd-2")
+
+        for _ in range(50):
+            if task2.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(task2.status, TaskStatus.FAILED)
+        self.assertEqual(task2.selected_pool, "claude_gpt")
+        mock_quota.poll_live_quota_async.assert_called_with(
+            quota_pool="claude_gpt", force=True, thread_name="AsyncQuotaPoll-Worker-1"
+        )
+
+        manager.stop()
+
     def test_task_manager_deduplicate_tasks(self):
         manager = TaskManager(max_workers=2)
 

@@ -448,7 +448,7 @@ class TestTUIPanels(unittest.TestCase):
             status=TaskStatus.RUNNING,
             worker_thread_id="Worker-1",
         )
-        pop_lines = render_active_tasks_panel(width=80, tasks=[task], max_workers=2)
+        pop_lines = render_active_tasks_panel(width=90, tasks=[task], max_workers=2)
         header_line = pop_lines[1]
         self.assertIn("ID", header_line)
         self.assertIn("AGENT", header_line)
@@ -468,6 +468,31 @@ class TestTUIPanels(unittest.TestCase):
         narrow_lines = render_active_tasks_panel(width=55, tasks=[task], max_workers=2)
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#148", narrow_row)
+
+    def test_render_active_tasks_panel_selected_model_rendering(self):
+        task_gemini = Task(
+            id="task-10",
+            agent="code_reviewer",
+            target_id="#100",
+            prompt="Review PR",
+            status=TaskStatus.RUNNING,
+            selected_model="gemini-2.5-flash",
+        )
+        lines_gemini = render_active_tasks_panel(width=100, tasks=[task_gemini], max_workers=2)
+        row_gemini = lines_gemini[2]
+        self.assertIn("gemini-2.5-flash", row_gemini)
+
+        task_claude = Task(
+            id="task-11",
+            agent="code_fixer",
+            target_id="#101",
+            prompt="Fix bug",
+            status=TaskStatus.RUNNING,
+            selected_model="claude-3-5-sonnet",
+        )
+        lines_claude = render_active_tasks_panel(width=100, tasks=[task_claude], max_workers=2)
+        row_claude = lines_claude[2]
+        self.assertIn("claude-3-5-sonne", row_claude)
 
 
     def test_render_queued_tasks_panel_empty_and_populated(self):
