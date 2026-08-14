@@ -452,6 +452,7 @@ class TestTUIPanels(unittest.TestCase):
         header_line = pop_lines[1]
         self.assertIn("ID", header_line)
         self.assertIn("AGENT", header_line)
+        self.assertIn("MODEL", header_line)
         self.assertIn("TARGET", header_line)
         self.assertIn("ATTEMPT", header_line)
         self.assertIn("ELAPSED", header_line)
@@ -463,8 +464,8 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
 
-        # Narrow width test (width=45 -> inner_w=41 -> target_w=8 -> gr..#148)
-        narrow_lines = render_active_tasks_panel(width=45, tasks=[task], max_workers=2)
+        # Narrow width test (width=55 -> inner_w=51 -> target_w=8 -> gr..#148)
+        narrow_lines = render_active_tasks_panel(width=55, tasks=[task], max_workers=2)
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#148", narrow_row)
 

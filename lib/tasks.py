@@ -942,6 +942,7 @@ class TaskManager:
                 if self.quota_tracker:
                     try:
                         self.quota_tracker.poll_live_quota_async(
+                            quota_pool=task.selected_pool if task else None,
                             force=True,
                             thread_name=f"AsyncQuotaPoll-{worker_id}",
                         )
