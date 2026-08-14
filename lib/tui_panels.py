@@ -654,13 +654,14 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    target_w = max(8, inner_w - 51)
+    target_w = max(8, inner_w - 61)
     cols = [
         ("ID", 8),
-        ("AGENT", 14),
+        ("AGENT", 12),
         ("TARGET", target_w),
-        ("ATTEMPT", 16),
-        ("ELAPSED", 9),
+        ("MODEL", 17),
+        ("ATTEMPT", 12),
+        ("ELAPSED", 7),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
@@ -668,12 +669,14 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         target_str = format_target_for_display(t.target_id, target_w)
         is_cached = getattr(t, "requeue_count", 0) > 0
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
+        model_str = getattr(t, "selected_model", None) or "-"
         row_cells = [
             (t.id, 8),
-            (t.agent, 14),
+            (t.agent, 12),
             (target_str, target_w),
-            (att_str, 16),
-            (f"{t.elapsed_time:.1f}s", 9),
+            (model_str, 17),
+            (att_str, 12),
+            (f"{t.elapsed_time:.1f}s", 7),
         ]
         content.append(format_table_row(row_cells))
 

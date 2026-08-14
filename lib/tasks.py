@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from lib.runner import run_agent_container
-from lib.quota import QuotaState, QuotaTracker
+from lib.quota import QuotaState, QuotaTracker, _normalize_pool_key
 from lib.security import is_valid_repo_name
 
 logger = logging.getLogger("graviton.tasks")
@@ -756,7 +756,13 @@ class TaskManager:
                                 claude_eligible = (claude_state != QuotaState.EXHAUSTED) and (not claude_behind)
 
                                 if gemini_eligible and claude_eligible:
+                                    pref_pool = getattr(self.quota_tracker, "quota_pool", "gemini")
+                                    pref_key = _normalize_pool_key(pref_pool)
                                     if claude_pct > gemini_pct:
+                                        selected_pool = "claude_gpt"
+                                    elif gemini_pct > claude_pct:
+                                        selected_pool = "gemini"
+                                    elif pref_key == "claude_gpt":
                                         selected_pool = "claude_gpt"
                                     else:
                                         selected_pool = "gemini"
@@ -944,6 +950,7 @@ class TaskManager:
                         self.quota_tracker.poll_live_quota_async(
                             force=True,
                             thread_name=f"AsyncQuotaPoll-{worker_id}",
+                            quota_pool=task.selected_pool,
                         )
                     except Exception as poll_err:
                         logger.warning(f"[{worker_id}] Quota fetch on task finish failed: {poll_err}")

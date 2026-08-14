@@ -447,12 +447,14 @@ class TestTUIPanels(unittest.TestCase):
             prompt="Review PR",
             status=TaskStatus.RUNNING,
             worker_thread_id="Worker-1",
+            selected_model="gemini-2.5-flash",
         )
         pop_lines = render_active_tasks_panel(width=80, tasks=[task], max_workers=2)
         header_line = pop_lines[1]
         self.assertIn("ID", header_line)
         self.assertIn("AGENT", header_line)
         self.assertIn("TARGET", header_line)
+        self.assertIn("MODEL", header_line)
         self.assertIn("ATTEMPT", header_line)
         self.assertIn("ELAPSED", header_line)
         self.assertNotIn("WORKER", header_line)
@@ -461,6 +463,7 @@ class TestTUIPanels(unittest.TestCase):
         row_line = pop_lines[2]
         self.assertIn("task-1", row_line)
         self.assertIn("graviton#148", row_line)
+        self.assertIn("gemini-2.5-flash", row_line)
         self.assertNotIn("mweastwood/", row_line)
 
         # Narrow width test (width=45 -> inner_w=41 -> target_w=8 -> gr..#148)
