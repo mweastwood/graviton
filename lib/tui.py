@@ -46,6 +46,7 @@ from lib.tui_panels import (
     render_queued_tasks_panel,
     render_quota_panel,
     render_scheduled_jobs_panel,
+    render_task_logs_panel,
     render_third_party_models_panel,
     truncate_to_display_width,
 )
@@ -232,6 +233,8 @@ class TerminalDashboard:
         self.active_screen: str = "main"
         self.selected_job_index: int = 0
         self.selected_queue_index: int = 0
+        self.selected_active_index: int = 0
+        self.selected_task_id_for_logs: Optional[str] = None
         self.selected_gemini_index: int = 0
         self.selected_third_party_index: int = 0
         self._running = False
@@ -546,6 +549,24 @@ class TerminalDashboard:
             if self.selected_job_index > 0:
                 self.selected_job_index -= 1
 
+    def select_next_active_task(self):
+        """Select next active running task in the TUI active tasks selector."""
+        if not self.task_manager:
+            return
+        active_tasks = self.task_manager.get_active_tasks()
+        num_tasks = len(active_tasks)
+        if num_tasks > 0:
+            self.selected_active_index = min(self.selected_active_index + 1, num_tasks - 1)
+        else:
+            self.selected_active_index = 0
+
+    def select_prev_active_task(self):
+        """Select previous active running task in the TUI active tasks selector."""
+        if not self.task_manager:
+            return
+        if self.selected_active_index > 0:
+            self.selected_active_index -= 1
+
     def select_next_queued_task(self):
         """Select next queued task in the TUI queue selector."""
         if not self.task_manager:
@@ -726,6 +747,9 @@ class TerminalDashboard:
         elif self.active_screen == "logs":
             if key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
+        elif self.active_screen == "task_logs":
+            if key in ("\x1b", "esc", "ESC"):
+                self.active_screen = "main"
         elif self.active_screen == "gemini_models":
             quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
             models = (
@@ -768,9 +792,17 @@ class TerminalDashboard:
                 self.active_screen = "main"
         elif self.active_screen == "main":
             if key in ("up", "\x1b[A", "\x1bOA"):
+                self.select_prev_active_task()
                 self.select_prev_queued_task()
             elif key in ("down", "\x1b[B", "\x1bOB"):
+                self.select_next_active_task()
                 self.select_next_queued_task()
+            elif key in ("\r", "\n", "enter", "ENTER"):
+                active_tasks = self.task_manager.get_active_tasks() if self.task_manager else []
+                if active_tasks:
+                    self.selected_active_index = max(0, min(self.selected_active_index, len(active_tasks) - 1))
+                    self.selected_task_id_for_logs = active_tasks[self.selected_active_index].id
+                    self.active_screen = "task_logs"
             elif key in ("p", "P"):
                 self.prioritize_selected_task()
             elif key in ("g", "G"):
@@ -1026,6 +1058,17 @@ class TerminalDashboard:
             lines.extend(self._render_event_logs(width, limit=15))
             return "\n".join(lines)
 
+        if self.active_screen == "task_logs":
+            # Dedicated Task Logs Screen View
+            banner_text = "Press [Esc] to return to Main Screen"
+            banner_line = fit_to_display_width(f"\033[93m\033[1m{banner_text}\033[0m", width)
+            lines.append(banner_line)
+            lines.append("")
+            task = self.task_manager.get_task(self.selected_task_id_for_logs) if (self.task_manager and self.selected_task_id_for_logs) else None
+            logs = task.get_logs() if task else []
+            lines.extend(render_task_logs_panel(width, task, logs))
+            return "\n".join(lines)
+
         if self.active_screen == "gemini_models":
             # Dedicated Gemini Model Selection Screen View
             banner_text = "Press [Esc] to return to Main Screen │ Controls: [↑/↓ or j/k] Select │ [Space/Enter] Set Active Gemini Model"
@@ -1104,7 +1147,13 @@ class TerminalDashboard:
         )
 
     def _render_active_tasks(self, width: int, tasks: list, max_workers: int) -> list:
-        return render_active_tasks_panel(width, tasks, max_workers)
+        if tasks:
+            self.selected_active_index = max(0, min(self.selected_active_index, len(tasks) - 1))
+        else:
+            self.selected_active_index = 0
+        return render_active_tasks_panel(
+            width, tasks, max_workers, selected_active_index=self.selected_active_index
+        )
 
     def _render_queued_tasks(self, width: int, tasks: list) -> list:
         is_paused = self.task_manager.is_paused if self.task_manager else False

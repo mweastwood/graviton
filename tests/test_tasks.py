@@ -102,7 +102,7 @@ class TestTaskManager(unittest.TestCase):
             "Fix issue",
             Path("/tmp/fake_script.sh"),
             Path("/tmp/fake_repo"),
-            on_output=task.update_attempt_from_line,
+            on_output=task.append_log,
             max_attempts=5,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
@@ -187,7 +187,7 @@ class TestTaskManager(unittest.TestCase):
             "Fix issue",
             Path("/tmp/fake_script.sh"),
             Path("/tmp/fake_repo"),
-            on_output=task.update_attempt_from_line,
+            on_output=task.append_log,
             max_attempts=3,
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
@@ -873,7 +873,7 @@ class TestTaskManager(unittest.TestCase):
                 "Review PR #1",
                 Path("/tmp/fake_script.sh"),
                 expected_repo_dir,
-                on_output=task.update_attempt_from_line,
+                on_output=task.append_log,
                 max_attempts=3,
                 cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
                 initial_attempt=1,
@@ -1406,7 +1406,7 @@ class TestTaskManager(unittest.TestCase):
                 task.prompt,
                 manager.script_path,
                 Path("/tmp/fake_repo"),
-                on_output=task.update_attempt_from_line,
+                on_output=task.append_log,
                 max_attempts=task.max_attempts,
                 cached_workspace_dir=task.cached_workspace_dir,
                 initial_attempt=1,
@@ -1476,7 +1476,7 @@ class TestTaskManager(unittest.TestCase):
                 task.prompt,
                 manager.script_path,
                 Path("/tmp/fake_repo"),
-                on_output=task.update_attempt_from_line,
+                on_output=task.append_log,
                 max_attempts=task.max_attempts,
                 cached_workspace_dir=task.cached_workspace_dir,
                 initial_attempt=4,
@@ -1541,7 +1541,7 @@ class TestTaskManager(unittest.TestCase):
                 task.prompt,
                 manager.script_path,
                 Path("/tmp/fake_repo"),
-                on_output=task.update_attempt_from_line,
+                on_output=task.append_log,
                 max_attempts=task.max_attempts,
                 cached_workspace_dir=task.cached_workspace_dir,
                 initial_attempt=4,
@@ -1871,6 +1871,33 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(restored.prompt, "Review PR #42")
             new_manager.stop()
             manager.stop()
+
+    def test_task_log_buffering_and_get_logs(self):
+        task = Task(id="task-logs", agent="code_reviewer", prompt="Review PR #10")
+        self.assertEqual(task.get_logs(), [])
+
+        task.append_log("Starting agent container...")
+        task.append_log("Analyzing files...")
+        task.append_log("Auto-continuing conversation (Attempt 2/3)")
+
+        self.assertEqual(len(task.logs), 3)
+        self.assertEqual(task.attempt, 2)
+        self.assertEqual(task.get_logs(), [
+            "Starting agent container...",
+            "Analyzing files...",
+            "Auto-continuing conversation (Attempt 2/3)",
+        ])
+        self.assertEqual(task.get_logs(limit=2), [
+            "Analyzing files...",
+            "Auto-continuing conversation (Attempt 2/3)",
+        ])
+
+        # Test log capacity bound (deque maxlen=1000)
+        for i in range(1200):
+            task.append_log(f"log line {i}")
+        self.assertEqual(len(task.logs), 1000)
+        self.assertEqual(task.get_logs()[0], "log line 200")
+        self.assertEqual(task.get_logs()[-1], "log line 1199")
 
 
 if __name__ == "__main__":

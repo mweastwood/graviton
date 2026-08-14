@@ -508,13 +508,14 @@ def render_header_panel(
         nav_hint = "Nav: [↑/↓] Select │ [Space] Toggle │ [e/d] Enable/Disable │ [Esc] Main Screen"
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
+    elif active_screen == "task_logs":
+        nav_hint = "Nav: [Esc] Main Screen │ [q] Quit"
     elif active_screen == "gemini_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     elif active_screen == "third_party_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
-        pause_hint = "[v] Resume Tasks" if is_paused else "[v] Pause Tasks"
-        nav_hint = f"Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [j] Jobs │ [e] Logs │ {pause_hint} │ [q] Quit"
+        nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [Enter] View Task Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
 
     lines = [
         line1_raw,
@@ -782,7 +783,12 @@ def allocate_active_task_columns(inner_w: int) -> Tuple[int, int, int, int, int,
         return id_w, agent_w, model_w, target_w, attempt_w, elapsed_w
 
 
-def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) -> List[str]:
+def render_active_tasks_panel(
+    width: int,
+    tasks: List[Any],
+    max_workers: int,
+    selected_active_index: int = 0,
+) -> List[str]:
     """Render active running tasks panel."""
     inner_w = max(0, width - 4)
     active_cnt = len(tasks)
@@ -793,8 +799,14 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(inner_w)
+    if tasks:
+        selected_active_index = max(0, min(selected_active_index, len(tasks) - 1))
+    else:
+        selected_active_index = 0
+
+    id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(max(0, inner_w - 3))
     cols = [
+        (" ", 2),
         ("ID", id_w),
         ("AGENT", agent_w),
         ("MODEL", model_w),
@@ -804,12 +816,16 @@ def render_active_tasks_panel(width: int, tasks: List[Any], max_workers: int) ->
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
-    for t in tasks:
+    for idx, t in enumerate(tasks):
+        is_selected = (idx == selected_active_index)
+        cursor_str = "> " if is_selected else "  "
+        cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
         target_str = format_target_for_display(t.target_id, target_w)
         is_cached = getattr(t, "requeue_count", 0) > 0
         att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
         model_str = getattr(t, "selected_model", None) or "-"
         row_cells = [
+            (cursor_styled, 2),
             (t.id, id_w),
             (t.agent, agent_w),
             (model_str, model_w),
@@ -1109,5 +1125,78 @@ def render_event_logs_panel(
             log_entry = str(log_entry)
         clean_entry = log_entry.replace("\r\n", " ").replace("\n", " ")
         content.append(f"\033[2m{clean_entry}\033[0m")
+
+    return render_panel_frame(header_bar, content, width)
+
+
+def render_task_logs_panel(
+    width: int,
+    task: Optional[Any],
+    logs: Sequence[str],
+    height: Optional[int] = None,
+) -> List[str]:
+    """Render dedicated task logs viewer panel displaying metadata and buffered container output."""
+    inner_w = max(0, width - 4)
+    task_id_str = getattr(task, "id", "UNKNOWN") if task else "UNKNOWN"
+    panel_title = f"TASK LOGS [{task_id_str}]"
+    header_bar = render_panel_header(width, panel_title, "\033[94m\033[1m")
+
+    if not task:
+        msg_styled = "\033[2m(No task selected for log viewing)\033[0m"
+        return render_panel_frame(header_bar, [msg_styled], width)
+
+    status = getattr(task, "status", TaskStatus.RUNNING)
+    if status == TaskStatus.RUNNING:
+        status_badge = "\033[93m\033[1m[RUNNING]\033[0m"
+    elif status == TaskStatus.COMPLETED:
+        status_badge = "\033[92m\033[1m[COMPLETED]\033[0m"
+    elif status == TaskStatus.FAILED:
+        status_badge = "\033[91m\033[1m[FAILED]\033[0m"
+    elif status == TaskStatus.PAUSED_FOR_QUOTA:
+        status_badge = "\033[95m\033[1m[PAUSED_FOR_QUOTA]\033[0m"
+    else:
+        status_badge = f"\033[1m[{status}]\033[0m"
+
+    agent_str = getattr(task, "agent", "-")
+    model_str = getattr(task, "selected_model", None) or getattr(task, "selected_pool", None) or "-"
+    target_str = getattr(task, "target_id", None) or "-"
+    is_cached = getattr(task, "requeue_count", 0) > 0
+    attempt = getattr(task, "attempt", 1)
+    max_attempts = getattr(task, "max_attempts", 3)
+    att_str = f"{attempt}/{max_attempts} (cached)" if is_cached else f"{attempt}/{max_attempts}"
+    elapsed_val = getattr(task, "elapsed_time", 0.0)
+    elapsed_str = f"{elapsed_val:.1f}s"
+
+    meta_line_1 = (
+        f"Task: \033[1m{task_id_str}\033[0m │ "
+        f"Status: {status_badge} │ "
+        f"Elapsed: {elapsed_str} │ "
+        f"Attempt: {att_str}"
+    )
+    meta_line_2 = (
+        f"Agent: \033[96m{agent_str}\033[0m │ "
+        f"Model: {model_str} │ "
+        f"Target: {target_str}"
+    )
+    prompt_str = getattr(task, "prompt", "")
+    prompt_line = f"\033[2mPrompt: {prompt_str}\033[0m"
+    sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
+
+    content = [meta_line_1, meta_line_2, prompt_line, sep_line]
+
+    log_lines_to_show = list(logs) if logs else []
+    if height is not None and height > 0:
+        log_lines_to_show = log_lines_to_show[-height:]
+
+    if not log_lines_to_show:
+        content.append("\033[2m(No output logs received yet for this task)\033[0m")
+    else:
+        for raw_line in log_lines_to_show:
+            if raw_line is None:
+                raw_line = ""
+            elif not isinstance(raw_line, str):
+                raw_line = str(raw_line)
+            clean_line = raw_line.rstrip("\r\n")
+            content.append(fit_to_display_width(clean_line, inner_w))
 
     return render_panel_frame(header_bar, content, width)

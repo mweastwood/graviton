@@ -2,6 +2,7 @@
 Thread-safe Task Queue & Execution Manager for Graviton.
 """
 
+import collections
 import logging
 import queue
 import re
@@ -52,6 +53,7 @@ class Task:
     requeue_count: int = 0
     selected_pool: Optional[str] = None
     selected_model: Optional[str] = None
+    logs: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
 
     @property
     def elapsed_time(self) -> float:
@@ -66,6 +68,22 @@ class Task:
         if self.start_time is not None:
             return self.start_time - self.enqueue_time
         return time.time() - self.enqueue_time
+
+    def append_log(self, line: str) -> None:
+        """Append log line to buffered logs and update attempt metadata."""
+        if line is None:
+            return
+        if not isinstance(line, str):
+            line = str(line)
+        self.logs.append(line)
+        self.update_attempt_from_line(line)
+
+    def get_logs(self, limit: Optional[int] = None) -> List[str]:
+        """Return buffered log lines safely as a list."""
+        logs_list = list(self.logs)
+        if limit is not None and limit > 0:
+            return logs_list[-limit:]
+        return logs_list
 
     def update_attempt_from_line(self, line: str) -> bool:
         """Parse retry log line and update attempt / max_attempts if present."""
@@ -873,7 +891,7 @@ class TaskManager:
                         task.prompt,
                         self.script_path,
                         exec_cwd,
-                        on_output=task.update_attempt_from_line,
+                        on_output=task.append_log,
                         max_attempts=task.max_attempts,
                         cached_workspace_dir=task.cached_workspace_dir,
                         initial_attempt=initial_att,
