@@ -5,6 +5,7 @@ Antigravity Model Quota Tracker & Rate Limit Manager for Graviton.
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 import urllib.error
@@ -16,11 +17,71 @@ from typing import Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.quota")
 
+DEFAULT_GEMINI_MODELS: List[str] = [
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+]
+
+DEFAULT_THIRD_PARTY_MODELS: List[str] = [
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+]
+
+
+def fetch_cli_models(timeout: float = 5.0) -> Tuple[List[str], List[str]]:
+    """
+    Query `agy models` at runtime to dynamically discover available models.
+    Returns (available_gemini_models, available_third_party_models).
+    Falls back to (DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()) on error.
+    """
+    try:
+        res = subprocess.run(
+            ["agy", "models"], capture_output=True, text=True, timeout=timeout
+        )
+        if res.returncode != 0 or not res.stdout:
+            logger.warning(
+                f"'agy models' command returned exit code {res.returncode if hasattr(res, 'returncode') else 'N/A'}"
+            )
+            return DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()
+
+        gemini_models: List[str] = []
+        third_party_models: List[str] = []
+
+        for line in res.stdout.splitlines():
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                continue
+            parts = line_str.split()
+            model_id = parts[0].strip()
+            if not model_id:
+                continue
+            if model_id.lower().startswith("gemini"):
+                if model_id not in gemini_models:
+                    gemini_models.append(model_id)
+            else:
+                if model_id not in third_party_models:
+                    third_party_models.append(model_id)
+
+        final_gemini = gemini_models if gemini_models else DEFAULT_GEMINI_MODELS.copy()
+        final_3p = third_party_models if third_party_models else DEFAULT_THIRD_PARTY_MODELS.copy()
+        return final_gemini, final_3p
+    except Exception as err:
+        logger.warning(f"Failed to fetch models from 'agy models': {err}")
+        return DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()
+
 
 class QuotaState:
     NORMAL = "NORMAL"
     LOW_QUOTA = "LOW_QUOTA"
     EXHAUSTED = "EXHAUSTED"
+
 
 
 def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -> Optional[datetime]:
@@ -689,8 +750,8 @@ class QuotaTracker:
         window_5h: Optional[QuotaWindow] = None,
         window_1w: Optional[QuotaWindow] = None,
         quota_pool: Optional[str] = None,
-        active_gemini_model: str = "gemini-2.5-flash",
-        active_third_party_model: str = "claude-3-5-sonnet",
+        active_gemini_model: str = "gemini-3.6-flash-high",
+        active_third_party_model: str = "claude-sonnet-4-6",
         available_gemini_models: Optional[List[str]] = None,
         available_third_party_models: Optional[List[str]] = None,
     ):
@@ -703,16 +764,24 @@ class QuotaTracker:
 
         self.active_gemini_model = active_gemini_model
         self.active_third_party_model = active_third_party_model
-        self.available_gemini_models = available_gemini_models or [
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-1.5-pro",
-        ]
-        self.available_third_party_models = available_third_party_models or [
-            "claude-3-5-sonnet",
-            "claude-3-opus",
-            "claude-3-5-haiku",
-        ]
+
+        if available_gemini_models is not None:
+            self.available_gemini_models = list(available_gemini_models)
+        else:
+            self.available_gemini_models = DEFAULT_GEMINI_MODELS.copy()
+
+        if available_third_party_models is not None:
+            self.available_third_party_models = list(available_third_party_models)
+        else:
+            self.available_third_party_models = DEFAULT_THIRD_PARTY_MODELS.copy()
+
+        if available_gemini_models is None and available_third_party_models is None:
+            self.refresh_available_models()
+        else:
+            if self.available_gemini_models and self.active_gemini_model not in self.available_gemini_models:
+                self.active_gemini_model = self.available_gemini_models[0]
+            if self.available_third_party_models and self.active_third_party_model not in self.available_third_party_models:
+                self.active_third_party_model = self.available_third_party_models[0]
 
         def default_5h():
             return QuotaWindow(
@@ -759,6 +828,18 @@ class QuotaTracker:
         self._in_flight: bool = False
         self._stop_polling_event = threading.Event()
         self._polling_thread: Optional[threading.Thread] = None
+
+    def refresh_available_models(self, timeout: float = 5.0) -> Tuple[List[str], List[str]]:
+        """Attempt to fetch live available models from CLI and update tracker state."""
+        gemini, third_party = fetch_cli_models(timeout=timeout)
+        with self._lock:
+            self.available_gemini_models = gemini
+            self.available_third_party_models = third_party
+            if self.available_gemini_models and self.active_gemini_model not in self.available_gemini_models:
+                self.active_gemini_model = self.available_gemini_models[0]
+            if self.available_third_party_models and self.active_third_party_model not in self.available_third_party_models:
+                self.active_third_party_model = self.available_third_party_models[0]
+            return self.available_gemini_models, self.available_third_party_models
 
     @property
     def window_5h(self) -> QuotaWindow:

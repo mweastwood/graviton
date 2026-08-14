@@ -754,12 +754,12 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "gemini_models")
         rendered_gemini = dashboard.render(width=80)
         self.assertIn("GEMINI MODEL SELECTION", rendered_gemini)
-        self.assertIn("gemini-2.5-flash", rendered_gemini)
+        self.assertIn("gemini-3.6-flash-high", rendered_gemini)
 
-        # Navigate down 'j' and select 'gemini-2.5-pro' via Space
+        # Navigate down 'j' and select 'gemini-3.6-flash-medium' via Space
         dashboard.handle_key("j")
         dashboard.handle_key(" ")
-        self.assertEqual(quota.get_active_model("gemini"), "gemini-2.5-pro")
+        self.assertEqual(quota.get_active_model("gemini"), "gemini-3.6-flash-medium")
 
         # Esc back to main
         dashboard.handle_key("esc")
@@ -770,12 +770,12 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "third_party_models")
         rendered_3p = dashboard.render(width=80)
         self.assertIn("3RD PARTY MODEL SELECTION", rendered_3p)
-        self.assertIn("claude-3-5-sonnet", rendered_3p)
+        self.assertIn("claude-sonnet-4-6", rendered_3p)
 
-        # Navigate down 'down' and select 'claude-3-opus' via Enter
+        # Navigate down 'down' and select 'claude-opus-4-6-thinking' via Enter
         dashboard.handle_key("down")
         dashboard.handle_key("\n")
-        self.assertEqual(quota.get_active_model("claude_gpt"), "claude-3-opus")
+        self.assertEqual(quota.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
 
         # Esc back to main
         dashboard.handle_key("esc")
