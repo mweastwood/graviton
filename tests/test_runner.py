@@ -102,6 +102,33 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(kwargs["env"].get("GRAVITON_WORKSPACE_CACHE_DIR"), str(cache_dir))
         self.assertEqual(kwargs["env"].get("GRAVITON_INITIAL_ATTEMPT"), "4")
 
+    @patch("subprocess.Popen")
+    def test_run_agent_container_with_quota_pool_and_model(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = []
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        script_path = Path("/tmp/run_agent_container.sh")
+        cwd = Path("/workspace")
+
+        res = run_agent_container(
+            "code_reviewer",
+            "Review PR",
+            script_path,
+            cwd,
+            quota_pool="claude_gpt",
+            model="claude-sonnet-4-6",
+        )
+
+        self.assertEqual(mock_popen.call_count, 1)
+        _, kwargs = mock_popen.call_args
+        self.assertEqual(kwargs["env"].get("ANTIGRAVITY_QUOTA_POOL"), "claude_gpt")
+        self.assertEqual(kwargs["env"].get("ANTIGRAVITY_MODEL"), "claude-sonnet-4-6")
+        self.assertEqual(kwargs["env"].get("MODEL_NAME"), "claude-sonnet-4-6")
+
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async(self, mock_run_container):
         mock_run_container.return_value = subprocess.CompletedProcess(
@@ -122,6 +149,8 @@ class TestRunner(unittest.TestCase):
             max_attempts=4,
             cached_workspace_dir=None,
             initial_attempt=None,
+            quota_pool=None,
+            model=None,
         )
 
     @patch("lib.runner.run_agent_container")
@@ -144,6 +173,40 @@ class TestRunner(unittest.TestCase):
             max_attempts=None,
             cached_workspace_dir=None,
             initial_attempt=None,
+            quota_pool=None,
+            model=None,
+        )
+
+    @patch("lib.runner.run_agent_container")
+    def test_run_agent_async_with_quota_pool_and_model(self, mock_run_container):
+        mock_run_container.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Done", stderr=""
+        )
+
+        script_path = Path("/tmp/run_agent_container.sh")
+        cwd = Path("/workspace")
+        thread = run_agent_async(
+            "code_fixer",
+            "Fix code",
+            script_path,
+            cwd,
+            max_attempts=4,
+            quota_pool="claude_gpt",
+            model="claude-sonnet-4-6",
+        )
+        thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        mock_run_container.assert_called_once_with(
+            "code_fixer",
+            "Fix code",
+            script_path,
+            cwd,
+            max_attempts=4,
+            cached_workspace_dir=None,
+            initial_attempt=None,
+            quota_pool="claude_gpt",
+            model="claude-sonnet-4-6",
         )
 
 
@@ -226,7 +289,8 @@ fi
 
         log_content = docker_log.read_text()
         self.assertIn("run -d --name graviton-agent-run-", log_content)
-        self.assertIn("exec -w /workspace graviton-agent-run-", log_content)
+        self.assertIn("exec -w /workspace", log_content)
+        self.assertIn("graviton-agent-run-", log_content)
         self.assertIn("Resume from your existing work in /workspace and complete your goal", log_content)
         self.assertIn("rm -f graviton-agent-run-", log_content)
 
@@ -805,6 +869,39 @@ exit 0
         self.assertTrue(hooks_config_verified.exists())
         self.assertEqual(hooks_config_verified.read_text().strip(), "hooks_not_configured")
 
+    def test_container_script_model_and_quota_pool_propagation(self):
+        bin_dir = self.test_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker_log = self.test_dir / "docker_calls_model.log"
+
+        mock_docker = bin_dir / "docker"
+        mock_docker_content = f"""#!/usr/bin/env bash
+echo "$@" >> "{docker_log}"
+exit 0
+"""
+        mock_docker.write_text(mock_docker_content)
+        mock_docker.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["ANTIGRAVITY_MODEL"] = "claude-sonnet-4-6"
+        env["MODEL_NAME"] = "claude-sonnet-4-6"
+        env["ANTIGRAVITY_QUOTA_POOL"] = "claude_gpt"
+
+        proc = subprocess.run(
+            [str(self.script_path), "code_fixer", "Fix issue"],
+            cwd=str(self.repo_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(proc.returncode, 0)
+        log_content = docker_log.read_text()
+        self.assertIn("-e ANTIGRAVITY_MODEL=claude-sonnet-4-6", log_content)
+        self.assertIn("-e MODEL_NAME=claude-sonnet-4-6", log_content)
+        self.assertIn("-e ANTIGRAVITY_QUOTA_POOL=claude_gpt", log_content)
+        self.assertIn("--model claude-sonnet-4-6", log_content)
 
 
 class TestTranscriptInspector(unittest.TestCase):

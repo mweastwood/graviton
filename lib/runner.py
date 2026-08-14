@@ -137,6 +137,8 @@ def run_agent_async(
     max_attempts: Optional[int] = None,
     cached_workspace_dir: Optional[Path] = None,
     initial_attempt: Optional[int] = None,
+    quota_pool: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> threading.Thread:
     """
     Execute the agent container asynchronously in a background daemon thread.
@@ -148,6 +150,8 @@ def run_agent_async(
     :param max_attempts: Optional maximum agent retry attempt limit.
     :param cached_workspace_dir: Optional path to workspace cache directory.
     :param initial_attempt: Optional initial attempt number to resume execution pass.
+    :param quota_pool: Optional quota pool selected for task execution.
+    :param model: Optional model selected for task execution.
     :return: Started daemon Thread instance.
     """
     def worker():
@@ -160,6 +164,8 @@ def run_agent_async(
                 max_attempts=max_attempts,
                 cached_workspace_dir=cached_workspace_dir,
                 initial_attempt=initial_attempt,
+                quota_pool=quota_pool,
+                model=model,
             )
             if result.returncode == 0:
                 logger.info(f"Agent '{agent_name}' finished successfully for prompt: '{prompt}'")
