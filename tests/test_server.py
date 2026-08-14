@@ -947,6 +947,77 @@ class TestGravitonHandler(unittest.TestCase):
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once_with(timeout=2)
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_restores_model_selection_on_startup(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_qt_inst.restore_model_selection.assert_called_once()
+
+    def test_graceful_shutdown_persists_model_selection_state(self):
+        mock_tm = MagicMock()
+        mock_sched = MagicMock()
+        mock_httpd = MagicMock()
+        mock_qt = MagicMock()
+
+        t = server_mod.graceful_shutdown(
+            task_manager=mock_tm,
+            scheduler=mock_sched,
+            dashboard=None,
+            httpd=mock_httpd,
+            quota_tracker=mock_qt,
+            grace_period=0.01,
+        )
+        t.join(timeout=2.0)
+
+        mock_tm.drain_active_tasks.assert_called_once()
+        mock_tm.dump_queue_state.assert_called_once()
+        mock_qt.dump_model_selection.assert_called_once()
+
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_passes_quota_tracker(self, mock_thread, mock_sync):
+        payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "push",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        mock_qt = MagicMock()
+        handler.quota_tracker = mock_qt
+        handler.task_manager = MagicMock()
+        handler.server = MagicMock()
+        handler.listener_proc = None
+
+        with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+            GravitonHandler.do_POST(handler)
+
+        mock_thread.assert_called_once()
+        _, kwargs = mock_thread.call_args
+        target_fn = kwargs.get("target") or mock_thread.call_args[1].get("target")
+        args = kwargs.get("args") or mock_thread.call_args[1].get("args")
+        self.assertEqual(target_fn, server_mod.sync_repo_and_reload)
+        self.assertIn(mock_qt, args)
+
 
 if __name__ == "__main__":
     unittest.main()

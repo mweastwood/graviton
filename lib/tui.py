@@ -90,6 +90,7 @@ def run_graceful_shutdown(
     scheduler: Optional[TaskScheduler] = None,
     dashboard: Optional[Any] = None,
     httpd: Optional[Any] = None,
+    quota_tracker: Optional[Any] = None,
     grace_period: float = 3.0,
     timeout: Optional[float] = None,
     on_quit: Optional[Any] = None,
@@ -99,7 +100,7 @@ def run_graceful_shutdown(
     Execute 4-step graceful shutdown sequence:
     1. Drain Active Tasks (task_manager.drain_active_tasks)
     2. Webhook Grace Buffer (sleep grace_period seconds)
-    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue (task_manager.dump_queue_state)
+    3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue and Model Selection (task_manager.dump_queue_state, quota_tracker.dump_model_selection)
     4. Clean Abort & Termination Teardown (scheduler, on_quit, httpd.server_close, dashboard, task_manager)
     """
     log = logger or logging.getLogger("graviton")
@@ -119,9 +120,9 @@ def run_graceful_shutdown(
             log.info(f"Graceful shutdown Step 2/4: Waiting {grace_period:.1f}s webhook grace buffer...")
             time.sleep(grace_period)
 
-        # Step 3: Shutdown HTTP Listener & Persist Task Queue
+        # Step 3: Shutdown HTTP Listener & Persist Task Queue and Model Selection
         set_hot_reload_state("SHUTDOWN: PERSISTING_QUEUE")
-        log.info("Graceful shutdown Step 3/4: Closing HTTP listener and persisting task queue state...")
+        log.info("Graceful shutdown Step 3/4: Closing HTTP listener and persisting state...")
         if httpd:
             try:
                 httpd.shutdown()
@@ -133,6 +134,13 @@ def run_graceful_shutdown(
                 task_manager.dump_queue_state()
             except Exception as e:
                 log.warning(f"Error dumping task queue state: {e}")
+
+        qt = quota_tracker or (getattr(dashboard, "quota_tracker", None) if dashboard else None) or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
+        if qt is not None and hasattr(qt, "dump_model_selection"):
+            try:
+                qt.dump_model_selection()
+            except Exception as e:
+                log.warning(f"Error dumping model selection state: {e}")
 
     finally:
         # Step 4: Clean Abort & Termination Teardown
@@ -711,6 +719,7 @@ class TerminalDashboard:
                     scheduler=self.scheduler,
                     dashboard=self,
                     httpd=self.httpd,
+                    quota_tracker=self.quota_tracker,
                     grace_period=gp,
                     timeout=timeout,
                     on_quit=self.on_quit,

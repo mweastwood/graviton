@@ -77,12 +77,27 @@ class TestUpdater(unittest.TestCase):
     def test_hot_reload_server_drains_tasks(self, mock_execv):
         mock_tm = MagicMock()
         mock_httpd = MagicMock()
+        mock_qt = MagicMock()
 
-        hot_reload_server(httpd=mock_httpd, task_manager=mock_tm)
+        hot_reload_server(httpd=mock_httpd, task_manager=mock_tm, quota_tracker=mock_qt)
 
         mock_tm.drain_active_tasks.assert_called_once()
         mock_tm.dump_queue_state.assert_called_once()
+        mock_qt.dump_model_selection.assert_called_once()
         mock_httpd.server_close.assert_called_once()
+        mock_execv.assert_called_once()
+
+    @patch("os.execv")
+    def test_hot_reload_server_extracts_quota_tracker_from_task_manager(self, mock_execv):
+        mock_tm = MagicMock()
+        mock_qt = MagicMock()
+        mock_tm.quota_tracker = mock_qt
+
+        hot_reload_server(task_manager=mock_tm)
+
+        mock_tm.drain_active_tasks.assert_called_once()
+        mock_tm.dump_queue_state.assert_called_once()
+        mock_qt.dump_model_selection.assert_called_once()
         mock_execv.assert_called_once()
 
     @patch("os.execv")
@@ -90,6 +105,7 @@ class TestUpdater(unittest.TestCase):
     def test_sync_repo_and_reload_drains_tasks_before_reload(self, mock_git_pull, mock_execv):
         mock_git_pull.return_value = (True, "Already up to date.")
         mock_tm = MagicMock()
+        mock_qt = MagicMock()
 
         states_during_drain = []
 
@@ -103,10 +119,12 @@ class TestUpdater(unittest.TestCase):
             repo_root=Path("/tmp/fake_repo"),
             ref="refs/heads/main",
             task_manager=mock_tm,
+            quota_tracker=mock_qt,
         )
 
         mock_git_pull.assert_called_once_with(Path("/tmp/fake_repo"), branch="main")
         mock_tm.drain_active_tasks.assert_called_once()
+        mock_qt.dump_model_selection.assert_called_once()
         self.assertEqual(states_during_drain, ["DRAINING_TASKS"])
         mock_execv.assert_called_once()
 

@@ -168,13 +168,14 @@ def stop_smee_listener(listener_proc=None) -> None:
             logger.error(f"Error stopping smee listener process: {e}")
 
 
-def hot_reload_server(httpd=None, task_manager=None, listener_proc=None):
+def hot_reload_server(httpd=None, task_manager=None, listener_proc=None, quota_tracker=None):
     """
     Hot reload the running Python server process by re-executing sys.executable.
 
     :param httpd: Optional HTTPServer instance to close sockets gracefully before execv.
     :param task_manager: Optional TaskManager instance to drain active tasks before execv.
     :param listener_proc: Optional subprocess.Popen instance of background smee listener to terminate before execv.
+    :param quota_tracker: Optional QuotaTracker instance to persist active model selection before execv.
     """
     if task_manager is not None:
         set_hot_reload_state("DRAINING_TASKS")
@@ -182,6 +183,11 @@ def hot_reload_server(httpd=None, task_manager=None, listener_proc=None):
         task_manager.drain_active_tasks()
         logger.info("Dumping queue state before process re-execution...")
         task_manager.dump_queue_state()
+
+    qt = quota_tracker or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
+    if qt is not None and hasattr(qt, "dump_model_selection"):
+        logger.info("Dumping model selection state before process re-execution...")
+        qt.dump_model_selection()
 
     set_hot_reload_state("RELOADING")
     logger.info("Hot reloading Graviton server process (os.execv)...")
@@ -210,6 +216,7 @@ def sync_repo_and_reload(
     httpd=None,
     task_manager=None,
     listener_proc=None,
+    quota_tracker=None,
 ):
     """
     Pull latest git commits for target branch, rebuild Docker image if necessary, and hot-reload server.
@@ -219,6 +226,7 @@ def sync_repo_and_reload(
     :param httpd: Optional HTTPServer instance.
     :param task_manager: Optional TaskManager instance to drain active tasks before reload.
     :param listener_proc: Optional subprocess.Popen instance of background smee listener.
+    :param quota_tracker: Optional QuotaTracker instance to persist model selection state before reload.
     """
     branch = ref.split("/")[-1] if "/" in ref else "main"
     logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
@@ -236,5 +244,10 @@ def sync_repo_and_reload(
         set_hot_reload_state("REBUILDING_CONTAINER")
         rebuild_agent_container(repo_root)
 
-    hot_reload_server(httpd=httpd, task_manager=task_manager, listener_proc=listener_proc)
+    hot_reload_server(
+        httpd=httpd,
+        task_manager=task_manager,
+        listener_proc=listener_proc,
+        quota_tracker=quota_tracker,
+    )
 
