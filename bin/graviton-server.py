@@ -345,6 +345,12 @@ def main():
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
+    parser.add_argument(
+        "--model-state",
+        "--model-selection-state",
+        default=os.getenv("MODEL_SELECTION_STATE", str(REPO_ROOT / ".graviton_model_selection.json")),
+        help="Path to persisted model selection state JSON file (default: REPO_ROOT/.graviton_model_selection.json)",
+    )
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     args = parser.parse_args()
 
@@ -381,7 +387,7 @@ def main():
     shutdown_thread: Optional[threading.Thread] = None
 
     try:
-        quota_tracker = QuotaTracker(quota_pool=args.quota_pool)
+        quota_tracker = QuotaTracker(quota_pool=args.quota_pool, state_path=Path(args.model_state))
         GravitonHandler.quota_tracker = quota_tracker
         quota_tracker.restore_model_selection()
         try:
