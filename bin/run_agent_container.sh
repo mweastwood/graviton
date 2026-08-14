@@ -114,6 +114,8 @@ fi
 GIT_USER_NAME="$(git config user.name 2>/dev/null || echo "${GIT_AUTHOR_NAME:-Graviton Bot}")"
 GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "${GIT_AUTHOR_EMAIL:-graviton-bot@users.noreply.github.com}")"
 
+TARGET_MODEL="${ANTIGRAVITY_MODEL:-${MODEL_NAME:-}}"
+
 echo "Starting sandboxed Antigravity Agent container (Agent: ${AGENT_NAME}, Run ID: ${RUN_ID})..."
 
 # Launch a persistent container instance to ensure uncommitted files, git branch state,
@@ -133,6 +135,9 @@ if docker run -d --name "${CONTAINER_NAME}" \
     -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
     -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
     -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+    -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
+    -e MODEL_NAME="${TARGET_MODEL:-}" \
+    -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
     --security-opt=no-new-privileges \
     "${IMAGE_NAME}" \
     sleep infinity &>/dev/null; then
@@ -149,6 +154,10 @@ PYTHON_BIN="$(command -v python3 || command -v python || echo "python3")"
 while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   AGY_ARGS=(agy --agent "${AGENT_NAME}" --dangerously-skip-permissions --log-file /dev/stderr --print-timeout 10m)
 
+  if [ -n "${TARGET_MODEL}" ]; then
+    AGY_ARGS+=(--model "${TARGET_MODEL}")
+  fi
+
   if [ $ATTEMPT -eq 1 ] && [ "$RESTORED_FROM_CACHE" = false ]; then
     AGY_ARGS+=(--prompt "${PROMPT}")
   else
@@ -158,7 +167,11 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
 
   set +e
   if [ "$USE_CONTAINER_EXEC" = true ]; then
-    docker exec -w /workspace "${CONTAINER_NAME}" "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
+    docker exec -w /workspace \
+      -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
+      -e MODEL_NAME="${TARGET_MODEL:-}" \
+      -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
+      "${CONTAINER_NAME}" "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
     EXIT_CODE=${PIPESTATUS[0]}
   else
     docker run --rm \
@@ -174,6 +187,9 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
       -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
       -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+      -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
+      -e MODEL_NAME="${TARGET_MODEL:-}" \
+      -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
       --security-opt=no-new-privileges \
       "${IMAGE_NAME}" \
       "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
