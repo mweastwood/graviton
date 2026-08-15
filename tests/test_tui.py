@@ -1290,12 +1290,12 @@ class TestTerminalDashboard(unittest.TestCase):
         dashboard.start()
         dashboard._restore_termios()
         output1 = stream.getvalue()
-        self.assertEqual(output1, "\033[?25h\033[0m")
+        self.assertEqual(output1, "\033[?25l\033[?25h\033[0m")
 
         # Second call to _restore_termios should be a no-op for ANSI sequences
         dashboard._restore_termios()
         output2 = stream.getvalue()
-        self.assertEqual(output2, "\033[?25h\033[0m")
+        self.assertEqual(output2, "\033[?25l\033[?25h\033[0m")
 
         dashboard.stop()
 
@@ -1539,6 +1539,243 @@ class TestTerminalDashboard(unittest.TestCase):
         manager._tasks.clear()
         dashboard.handle_key("enter")
         self.assertEqual(dashboard.active_screen, "main")
+
+    def test_draw_frame_full_redraw_initial(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame = "Line 1\nLine 2\nLine 3"
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+
+        dashboard._draw_frame(frame)
+
+        output = stream.getvalue()
+        self.assertTrue(output.startswith("\033[H\033[2J"))
+        self.assertIn("Line 1\033[K\n", output)
+        self.assertIn("Line 2\033[K\n", output)
+        self.assertIn("Line 3\033[K\n", output)
+        self.assertFalse(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2", "Line 3"])
+
+    def test_draw_frame_differential_identical_frame_no_op(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame = "Line 1\nLine 2\nLine 3"
+        dashboard._draw_frame(frame)
+        initial_len = len(stream.getvalue())
+
+        # Calling _draw_frame with identical frame must not emit any output
+        dashboard._draw_frame(frame)
+        self.assertEqual(len(stream.getvalue()), initial_len)
+
+    def test_draw_frame_differential_partial_modification(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame1 = "Header\nUptime: 10s\nTasks: 0\nFooter"
+        dashboard._draw_frame(frame1)
+
+        # Clear stream capture to isolate diff output
+        stream.seek(0)
+        stream.truncate(0)
+
+        # Frame 2: Only line 2 (Uptime) changed
+        frame2 = "Header\nUptime: 11s\nTasks: 0\nFooter"
+        dashboard._draw_frame(frame2)
+
+        diff_output = stream.getvalue()
+        # Should not wipe full screen
+        self.assertNotIn("\033[2J", diff_output)
+        # Should reposition cursor to row 2 and clear to end of line
+        self.assertEqual(diff_output, "\033[2;1HUptime: 11s\033[K")
+        self.assertEqual(dashboard._last_frame_lines, ["Header", "Uptime: 11s", "Tasks: 0", "Footer"])
+
+    def test_draw_frame_differential_line_count_decrease(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame1 = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
+        dashboard._draw_frame(frame1)
+
+        stream.seek(0)
+        stream.truncate(0)
+
+        # Frame 2 has only 3 lines (lines 4 and 5 removed)
+        frame2 = "Line 1\nLine 2\nLine 3"
+        dashboard._draw_frame(frame2)
+
+        diff_output = stream.getvalue()
+        self.assertNotIn("\033[2J", diff_output)
+        # Lines 4 and 5 must be cleared
+        self.assertIn("\033[4;1H\033[K", diff_output)
+        self.assertIn("\033[5;1H\033[K", diff_output)
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2", "Line 3"])
+
+    def test_draw_frame_differential_line_count_increase(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame1 = "Line 1\nLine 2"
+        dashboard._draw_frame(frame1)
+
+        stream.seek(0)
+        stream.truncate(0)
+
+        # Frame 2 has 4 lines
+        frame2 = "Line 1\nLine 2\nLine 3\nLine 4"
+        dashboard._draw_frame(frame2)
+
+        diff_output = stream.getvalue()
+        self.assertNotIn("\033[2J", diff_output)
+        self.assertIn("\033[3;1HLine 3\033[K", diff_output)
+        self.assertIn("\033[4;1HLine 4\033[K", diff_output)
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2", "Line 3", "Line 4"])
+
+    def test_screen_switch_forces_full_redraw(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame_main = "Main Screen Line 1\nMain Screen Line 2"
+        dashboard._draw_frame(frame_main)
+        self.assertFalse(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, ["Main Screen Line 1", "Main Screen Line 2"])
+
+        # Switch active screen to jobs
+        dashboard.active_screen = "jobs"
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+
+        stream.seek(0)
+        stream.truncate(0)
+
+        frame_jobs = "Jobs Screen Line 1\nJobs Screen Line 2"
+        dashboard._draw_frame(frame_jobs)
+
+        output = stream.getvalue()
+        self.assertTrue(output.startswith("\033[H\033[2J"))
+        self.assertIn("Jobs Screen Line 1\033[K\n", output)
+        self.assertFalse(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, ["Jobs Screen Line 1", "Jobs Screen Line 2"])
+
+    def test_invalidate_git_cache_forces_full_redraw(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame = "Line 1\nLine 2"
+        dashboard._draw_frame(frame)
+        self.assertFalse(dashboard._full_redraw_needed)
+
+        dashboard.invalidate_git_cache()
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+        self.assertIsNone(dashboard._git_info_cache)
+
+    def test_cursor_visibility_lifecycle(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        dashboard.start()
+        start_output = stream.getvalue()
+        self.assertIn("\033[?25l", start_output)
+
+        dashboard.stop()
+        stop_output = stream.getvalue()
+        self.assertIn("\033[?25h\033[0m", stop_output)
+
+    @patch("lib.tui.signal.signal")
+    @patch("lib.tui.signal.getsignal", return_value=signal.SIG_DFL)
+    def test_sigwinch_handler_registration_and_invalidation(self, mock_getsignal, mock_signal):
+        if not hasattr(signal, "SIGWINCH"):
+            self.skipTest("SIGWINCH not available on this platform")
+
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        frame = "Line 1\nLine 2"
+        dashboard._draw_frame(frame)
+        self.assertFalse(dashboard._full_redraw_needed)
+
+        dashboard._register_signal_handlers()
+        self.assertIn(signal.SIGWINCH, dashboard._old_signal_handlers)
+
+        # Retrieve the registered SIGWINCH handler
+        sigwinch_calls = [c for c in mock_signal.call_args_list if c.args[0] == signal.SIGWINCH]
+        self.assertTrue(len(sigwinch_calls) > 0)
+        winch_handler = sigwinch_calls[0].args[1]
+
+        # Case 1: Running mode - handler sets full redraw needed and signals refresh event
+        dashboard._running = True
+        winch_handler(signal.SIGWINCH, None)
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+        self.assertTrue(dashboard._need_refresh)
+        self.assertTrue(dashboard._refresh_event.is_set())
+
+        # Case 2: Idle mode - handler triggers immediate redraw
+        dashboard._running = False
+        stream.seek(0)
+        stream.truncate(0)
+        winch_handler(signal.SIGWINCH, None)
+        self.assertIn("\033[H\033[2J", stream.getvalue())
+
+        dashboard._unregister_signal_handlers()
+
+    def test_active_screen_setter_does_not_emit_io(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        # Pre-seed frame state
+        dashboard._last_frame_lines = ["Line 1", "Line 2"]
+        dashboard._full_redraw_needed = False
+
+        dashboard.active_screen = "jobs"
+
+        # Assert no I/O emitted to out_stream
+        self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(dashboard.active_screen, "jobs")
+        self.assertTrue(dashboard._full_redraw_needed)
+        self.assertEqual(dashboard._last_frame_lines, [])
+
+    def test_draw_frame_cache_integrity_on_write_failure(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        # Seed initial frame
+        initial_frame = "Line 1\nLine 2"
+        dashboard._draw_frame(initial_frame)
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2"])
+        self.assertFalse(dashboard._full_redraw_needed)
+
+        # Mock out_stream.write to fail on subsequent differential write
+        with patch.object(stream, "write", side_effect=IOError("Simulated write failure")):
+            dashboard._draw_frame("Line 1\nLine 2 (modified)")
+
+        # Assert cache did not advance to the new frame lines on failure
+        self.assertEqual(dashboard._last_frame_lines, ["Line 1", "Line 2"])
+
+    def test_draw_frame_full_redraw_cache_integrity_on_write_failure(self):
+        stream = io.StringIO()
+        manager = TaskManager(max_workers=1)
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        with patch.object(stream, "write", side_effect=IOError("Simulated full redraw failure")):
+            dashboard._draw_frame("Line 1\nLine 2")
+
+        self.assertEqual(dashboard._last_frame_lines, [])
+        self.assertTrue(dashboard._full_redraw_needed)
 
 
 if __name__ == "__main__":
