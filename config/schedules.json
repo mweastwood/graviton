@@ -9,7 +9,8 @@
     "last_run": null,
     "next_run": null,
     "is_running": false,
-    "current_task_id": null
+    "current_task_id": null,
+    "repo_cycling": true
   },
   {
     "job_id": "periodic_quality_sweep",
@@ -21,6 +22,7 @@
     "last_run": null,
     "next_run": null,
     "is_running": false,
-    "current_task_id": null
+    "current_task_id": null,
+    "repo_cycling": true
   }
 ]

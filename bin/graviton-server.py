@@ -420,6 +420,7 @@ def main():
             cwd=REPO_ROOT,
             task_manager=task_manager,
             quota_tracker=quota_tracker,
+            repos_dir=repos_dir,
         )
         scheduler.start()
         GravitonHandler.scheduler = scheduler
