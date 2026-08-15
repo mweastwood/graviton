@@ -1189,6 +1189,59 @@ class TestFetchCliModels(unittest.TestCase):
             self.assertEqual(tracker.active_gemini_model, "gemini-3.6-flash-high")
             self.assertEqual(tracker.active_third_party_model, "claude-sonnet-4-6")
 
+    def test_quota_readiness_initial_and_updates(self):
+        tracker = QuotaTracker()
+        self.assertFalse(tracker.is_quota_ready())
+        self.assertFalse(tracker.has_live_quota())
+
+        # Update only gemini pool
+        w_5h_g = QuotaWindow(name="5H", remaining_percentage=80.0)
+        w_1w_g = QuotaWindow(name="1W", remaining_percentage=90.0)
+        tracker.update_windows(w_5h_g, w_1w_g, quota_pool="gemini")
+        self.assertFalse(tracker.is_quota_ready())
+        self.assertFalse(tracker.has_live_quota())
+
+        # Update claude_gpt pool
+        w_5h_c = QuotaWindow(name="5H", remaining_percentage=75.0)
+        w_1w_c = QuotaWindow(name="1W", remaining_percentage=85.0)
+        tracker.update_windows(w_5h_c, w_1w_c, quota_pool="claude_gpt")
+        self.assertTrue(tracker.is_quota_ready())
+        self.assertTrue(tracker.has_live_quota())
+
+        # Fresh tracker with unscoped update_windows
+        tracker_unscoped = QuotaTracker()
+        self.assertFalse(tracker_unscoped.is_quota_ready())
+        tracker_unscoped.update_windows(w_5h_g, w_1w_g, quota_pool=None)
+        self.assertTrue(tracker_unscoped.is_quota_ready())
+
+        # Fresh tracker with unscoped update_quota
+        tracker_uq = QuotaTracker()
+        self.assertFalse(tracker_uq.is_quota_ready())
+        tracker_uq.update_quota(60.0)
+        self.assertTrue(tracker_uq.is_quota_ready())
+
+    @patch("lib.quota.fetch_live_antigravity_quota")
+    def test_poll_all_pools_updates_all_pools(self, mock_fetch):
+        w_gemini = (QuotaWindow(name="5H", remaining_percentage=88.0), QuotaWindow(name="1W", remaining_percentage=92.0))
+        w_claude = (QuotaWindow(name="5H", remaining_percentage=78.0), QuotaWindow(name="1W", remaining_percentage=82.0))
+
+        def side_effect_fetch(token=None, quota_pool="gemini"):
+            if quota_pool == "claude_gpt":
+                return w_claude
+            return w_gemini
+
+        mock_fetch.side_effect = side_effect_fetch
+
+        tracker = QuotaTracker()
+        self.assertFalse(tracker.is_quota_ready())
+
+        tracker.poll_all_pools(token="test-token", force=True)
+
+        self.assertEqual(mock_fetch.call_count, 2)
+        self.assertTrue(tracker.is_quota_ready())
+        self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 88.0)
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 78.0)
+
 
 if __name__ == "__main__":
     unittest.main()

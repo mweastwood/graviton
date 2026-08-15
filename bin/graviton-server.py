@@ -391,9 +391,9 @@ def main():
         GravitonHandler.quota_tracker = quota_tracker
         quota_tracker.restore_model_selection()
         try:
-            quota_tracker.poll_live_quota()
+            quota_tracker.poll_all_pools()
         except Exception as e:
-            logger.warning(f"Initial live quota poll failed: {e}")
+            logger.warning(f"Initial live quota poll for all pools failed: {e}")
 
         task_manager = TaskManager(
             max_workers=args.max_workers,

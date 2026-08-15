@@ -1156,6 +1156,31 @@ class TestGravitonHandler(unittest.TestCase):
             self.assertEqual(tracker2.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
             self.assertEqual(tracker2.quota_pool, "claude_gpt")
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_initializes_quota_via_poll_all_pools(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_qt_inst.poll_all_pools.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

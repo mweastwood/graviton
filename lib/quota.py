@@ -823,6 +823,11 @@ class QuotaTracker:
         self._backoff_count = 0
         self._active_backoff_delay = 0.0
 
+        self._real_quota_received: Dict[str, bool] = {
+            "gemini": False,
+            "claude_gpt": False,
+        }
+
         self.interval_5h = 60.0
         self.interval_1w = 60.0
         self._last_fetch_5h: Dict[str, float] = {}
@@ -830,6 +835,15 @@ class QuotaTracker:
         self._in_flight: bool = False
         self._stop_polling_event = threading.Event()
         self._polling_thread: Optional[threading.Thread] = None
+
+    def is_quota_ready(self) -> bool:
+        """Return True only when all tracked model pools have received at least one real live quota update."""
+        with self._lock:
+            return all(self._real_quota_received.values())
+
+    def has_live_quota(self) -> bool:
+        """Alias for is_quota_ready()."""
+        return self.is_quota_ready()
 
     def refresh_available_models(self, timeout: float = 5.0) -> Tuple[List[str], List[str]]:
         """Attempt to fetch live available models from CLI and update tracker state."""
@@ -1203,6 +1217,13 @@ class QuotaTracker:
                 target_w1.remaining_percentage,
             )
 
+            if quota_pool is None:
+                self._real_quota_received["gemini"] = True
+                self._real_quota_received["claude_gpt"] = True
+            else:
+                pk = _normalize_pool_key(quota_pool)
+                self._real_quota_received[pk] = True
+
             if reset_time is not None:
                 self._reset_time = reset_time
             else:
@@ -1236,6 +1257,8 @@ class QuotaTracker:
                 self.gemini_window_1w = window_1w.copy()
                 self.claude_window_5h = window_5h.copy()
                 self.claude_window_1w = window_1w.copy()
+                self._real_quota_received["gemini"] = True
+                self._real_quota_received["claude_gpt"] = True
             else:
                 pk = _normalize_pool_key(quota_pool)
                 self._last_fetch_5h[pk] = now
@@ -1247,6 +1270,7 @@ class QuotaTracker:
                 else:
                     self.gemini_window_5h = window_5h
                     self.gemini_window_1w = window_1w
+                self._real_quota_received[pk] = True
 
             target_pool = quota_pool if quota_pool is not None else self.quota_pool
             target_w5, target_w1 = self.get_pool_windows(target_pool)
@@ -1275,6 +1299,20 @@ class QuotaTracker:
             f"Dual quota updated ({target_pool}): 5H={target_w5.remaining_percentage:.1f}% ({target_status_5h}), "
             f"1W={target_w1.remaining_percentage:.1f}% ({target_status_1w}), state={current_state}"
         )
+
+    def poll_all_pools(
+        self,
+        token: Optional[str] = None,
+        force: bool = True,
+    ):
+        """
+        Fetch and update live quota for all tracked model pools (gemini and claude_gpt).
+        """
+        for pool in ("gemini", "claude_gpt"):
+            try:
+                self.poll_live_quota(token=token, quota_pool=pool, force=force)
+            except Exception as e:
+                logger.warning(f"Failed to poll quota for pool '{pool}': {e}")
 
     def poll_live_quota(
         self,

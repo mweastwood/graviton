@@ -427,7 +427,8 @@ class TestTaskManager(unittest.TestCase):
 
     @patch.object(QuotaTracker, "poll_live_quota")
     def test_task_manager_quota_backoff_and_pause(self, mock_poll_live):
-        quota = QuotaTracker(remaining_percentage=10.0, base_backoff_delay=0.01)
+        quota = QuotaTracker(base_backoff_delay=0.01)
+        quota.update_quota(10.0)
         manager = TaskManager(max_workers=1, quota_tracker=quota)
 
         # 1. Test LOW_QUOTA state stats
@@ -1898,6 +1899,35 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(len(task.logs), 1000)
         self.assertEqual(task.get_logs()[0], "log line 200")
         self.assertEqual(task.get_logs()[-1], "log line 1199")
+
+    def test_worker_execution_gated_until_quota_ready(self):
+        quota = QuotaTracker()
+        self.assertFalse(quota.is_quota_ready())
+
+        manager = TaskManager(max_workers=1, quota_tracker=quota)
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Test gated prompt", target_id="#205")
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+
+        # Worker loop should not execute task while quota is not ready
+        time.sleep(0.3)
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+
+        # Update quota so is_quota_ready() transitions to True
+        quota.update_quota(95.0)
+        self.assertTrue(quota.is_quota_ready())
+
+        # Worker immediately picks up and processes the task
+        for _ in range(50):
+            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+                break
+            time.sleep(0.05)
+
+        self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
+        manager.stop()
 
 
 if __name__ == "__main__":
