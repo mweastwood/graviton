@@ -787,7 +787,7 @@ def render_active_tasks_panel(
     width: int,
     tasks: List[Any],
     max_workers: int,
-    selected_active_index: int = 0,
+    selected_active_index: Optional[int] = 0,
 ) -> List[str]:
     """Render active running tasks panel."""
     inner_w = max(0, width - 4)
@@ -799,9 +799,9 @@ def render_active_tasks_panel(
         msg_styled = "\033[2m(No active tasks currently running)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    if tasks:
+    if selected_active_index is not None and tasks:
         selected_active_index = max(0, min(selected_active_index, len(tasks) - 1))
-    else:
+    elif selected_active_index is not None:
         selected_active_index = 0
 
     id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(max(0, inner_w - 3))
@@ -817,7 +817,7 @@ def render_active_tasks_panel(
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
     for idx, t in enumerate(tasks):
-        is_selected = (idx == selected_active_index)
+        is_selected = (selected_active_index is not None and idx == selected_active_index)
         cursor_str = "> " if is_selected else "  "
         cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
         target_str = format_target_for_display(t.target_id, target_w)
@@ -842,7 +842,7 @@ def render_queued_tasks_panel(
     width: int,
     tasks: List[Any],
     is_paused: bool = False,
-    selected_queue_index: int = 0,
+    selected_queue_index: Optional[int] = 0,
 ) -> List[str]:
     """Render pending queued tasks panel."""
     inner_w = max(0, width - 4)
@@ -855,9 +855,9 @@ def render_queued_tasks_panel(
         msg_styled = "\033[2m(Task queue is empty)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    if tasks:
+    if selected_queue_index is not None and tasks:
         selected_queue_index = max(0, min(selected_queue_index, len(tasks) - 1))
-    else:
+    elif selected_queue_index is not None:
         selected_queue_index = 0
 
     # Fixed column widths: cursor(2) + ID(8) + PRIO(6) + AGENT(14) + ATTEMPT(16) + WAIT(9) = 55.
@@ -875,7 +875,7 @@ def render_queued_tasks_panel(
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
     for idx, t in enumerate(tasks):
-        is_selected = (idx == selected_queue_index)
+        is_selected = (selected_queue_index is not None and idx == selected_queue_index)
         cursor_str = "> " if is_selected else "  "
         cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
         prio_str = str(getattr(t, "priority", 0))
