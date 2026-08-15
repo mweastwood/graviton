@@ -244,6 +244,7 @@ class TerminalDashboard:
         self._active_screen: str = "main"
         self._last_frame_lines: List[str] = []
         self._full_redraw_needed: bool = True
+        self.focused_panel: str = "active"
         self.selected_job_index: int = 0
         self.selected_queue_index: int = 0
         self.selected_active_index: int = 0
@@ -580,10 +581,84 @@ class TerminalDashboard:
             if self.selected_job_index > 0:
                 self.selected_job_index -= 1
 
+    def _rebalance_focus(self, active_tasks: list, queued_tasks: list):
+        """Ensure focused_panel points to an available non-empty panel if possible."""
+        if self.focused_panel == "active" and not active_tasks and queued_tasks:
+            self.focused_panel = "queued"
+        elif self.focused_panel == "queued" and not queued_tasks and active_tasks:
+            self.focused_panel = "active"
+        elif not active_tasks and not queued_tasks:
+            self.focused_panel = "active"
+
+    def select_next_task(self):
+        """Select the next task across active and queued panels seamlessly."""
+        if not self.task_manager:
+            return
+        active_tasks = self.task_manager.get_active_tasks()
+        queued_tasks = self.task_manager.get_queued_tasks()
+        self._rebalance_focus(active_tasks, queued_tasks)
+
+        if self.focused_panel == "active":
+            if not active_tasks:
+                if queued_tasks:
+                    self.focused_panel = "queued"
+                    self.selected_queue_index = 0
+                return
+            if self.selected_active_index < len(active_tasks) - 1:
+                self.selected_active_index += 1
+            elif len(queued_tasks) > 0:
+                self.focused_panel = "queued"
+                self.selected_queue_index = 0
+            else:
+                self.selected_active_index = len(active_tasks) - 1
+        elif self.focused_panel == "queued":
+            if not queued_tasks:
+                if active_tasks:
+                    self.focused_panel = "active"
+                    self.selected_active_index = 0
+                return
+            if self.selected_queue_index < len(queued_tasks) - 1:
+                self.selected_queue_index += 1
+            else:
+                self.selected_queue_index = len(queued_tasks) - 1
+
+    def select_prev_task(self):
+        """Select the previous task across active and queued panels seamlessly."""
+        if not self.task_manager:
+            return
+        active_tasks = self.task_manager.get_active_tasks()
+        queued_tasks = self.task_manager.get_queued_tasks()
+        self._rebalance_focus(active_tasks, queued_tasks)
+
+        if self.focused_panel == "queued":
+            if not queued_tasks:
+                if active_tasks:
+                    self.focused_panel = "active"
+                    self.selected_active_index = len(active_tasks) - 1
+                return
+            if self.selected_queue_index > 0:
+                self.selected_queue_index -= 1
+            elif len(active_tasks) > 0:
+                self.focused_panel = "active"
+                self.selected_active_index = len(active_tasks) - 1
+            else:
+                self.selected_queue_index = 0
+        elif self.focused_panel == "active":
+            if not active_tasks:
+                if queued_tasks:
+                    self.focused_panel = "queued"
+                    self.selected_queue_index = 0
+                return
+            if self.selected_active_index > 0:
+                self.selected_active_index -= 1
+            else:
+                self.selected_active_index = 0
+
     def select_next_active_task(self):
         """Select next active running task in the TUI active tasks selector."""
         if not self.task_manager:
             return
+        self.focused_panel = "active"
         active_tasks = self.task_manager.get_active_tasks()
         num_tasks = len(active_tasks)
         if num_tasks > 0:
@@ -595,6 +670,7 @@ class TerminalDashboard:
         """Select previous active running task in the TUI active tasks selector."""
         if not self.task_manager:
             return
+        self.focused_panel = "active"
         if self.selected_active_index > 0:
             self.selected_active_index -= 1
 
@@ -602,6 +678,7 @@ class TerminalDashboard:
         """Select next queued task in the TUI queue selector."""
         if not self.task_manager:
             return
+        self.focused_panel = "queued"
         queued_tasks = self.task_manager.get_queued_tasks()
         num_tasks = len(queued_tasks)
         if num_tasks > 0:
@@ -613,6 +690,7 @@ class TerminalDashboard:
         """Select previous queued task in the TUI queue selector."""
         if not self.task_manager:
             return
+        self.focused_panel = "queued"
         if self.selected_queue_index > 0:
             self.selected_queue_index -= 1
 
@@ -651,12 +729,13 @@ class TerminalDashboard:
 
         active_tasks = self.task_manager.get_active_tasks()
         queued_tasks = self.task_manager.get_queued_tasks()
+        self._rebalance_focus(active_tasks, queued_tasks)
 
         target_task = None
-        if hasattr(self, "focused_panel") and self.focused_panel == "active" and active_tasks:
+        if self.focused_panel == "active" and active_tasks:
             self.selected_active_index = max(0, min(self.selected_active_index, len(active_tasks) - 1))
             target_task = active_tasks[self.selected_active_index]
-        elif hasattr(self, "focused_panel") and self.focused_panel == "queued" and queued_tasks:
+        elif self.focused_panel == "queued" and queued_tasks:
             self.selected_queue_index = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
             target_task = queued_tasks[self.selected_queue_index]
         elif queued_tasks:
@@ -865,19 +944,23 @@ class TerminalDashboard:
                 self.active_screen = "main"
         elif self.active_screen == "main":
             if key in ("up", "\x1b[A", "\x1bOA"):
-                self.select_prev_active_task()
-                self.select_prev_queued_task()
+                self.select_prev_task()
             elif key in ("down", "\x1b[B", "\x1bOB"):
-                self.select_next_active_task()
-                self.select_next_queued_task()
+                self.select_next_task()
             elif key in ("\r", "\n", "enter", "ENTER"):
                 active_tasks = self.task_manager.get_active_tasks() if self.task_manager else []
-                if active_tasks:
+                queued_tasks = self.task_manager.get_queued_tasks() if self.task_manager else []
+                self._rebalance_focus(active_tasks, queued_tasks)
+                if self.focused_panel == "active" and active_tasks:
                     self.selected_active_index = max(0, min(self.selected_active_index, len(active_tasks) - 1))
                     self.selected_task_id_for_logs = active_tasks[self.selected_active_index].id
                     self.active_screen = "task_logs"
             elif key in ("p", "P"):
-                self.prioritize_selected_task()
+                active_tasks = self.task_manager.get_active_tasks() if self.task_manager else []
+                queued_tasks = self.task_manager.get_queued_tasks() if self.task_manager else []
+                self._rebalance_focus(active_tasks, queued_tasks)
+                if self.focused_panel == "queued" and queued_tasks:
+                    self.prioritize_selected_task()
             elif key in ("x", "X"):
                 self.abort_selected_task()
             elif key in ("g", "G"):
@@ -1212,12 +1295,13 @@ class TerminalDashboard:
         lines.append("")
 
         # 3. Active Tasks Panel
-        active_tasks = self.task_manager.get_active_tasks()
+        active_tasks = self.task_manager.get_active_tasks() if self.task_manager else []
+        queued_tasks = self.task_manager.get_queued_tasks() if self.task_manager else []
+        self._rebalance_focus(active_tasks, queued_tasks)
         lines.extend(self._render_active_tasks(width, active_tasks, stats["max_workers"]))
         lines.append("")
 
         # 4. Queued Tasks Panel
-        queued_tasks = self.task_manager.get_queued_tasks()
         lines.extend(self._render_queued_tasks(width, queued_tasks))
         lines.append("")
 
@@ -1227,7 +1311,7 @@ class TerminalDashboard:
         lines.append("")
 
         # 6. Task History Panel
-        history_tasks = self.task_manager.get_task_history(limit=5)
+        history_tasks = self.task_manager.get_task_history(limit=5) if self.task_manager else []
         lines.extend(self._render_history_tasks(width, history_tasks, stats))
 
         return "\n".join(lines)
@@ -1248,14 +1332,20 @@ class TerminalDashboard:
             self.selected_active_index = max(0, min(self.selected_active_index, len(tasks) - 1))
         else:
             self.selected_active_index = 0
+        sel_idx = self.selected_active_index if (self.focused_panel == "active" and tasks) else None
         return render_active_tasks_panel(
-            width, tasks, max_workers, selected_active_index=self.selected_active_index
+            width, tasks, max_workers, selected_active_index=sel_idx
         )
 
     def _render_queued_tasks(self, width: int, tasks: list) -> list:
+        if tasks:
+            self.selected_queue_index = max(0, min(self.selected_queue_index, len(tasks) - 1))
+        else:
+            self.selected_queue_index = 0
         is_paused = self.task_manager.is_paused if self.task_manager else False
+        sel_idx = self.selected_queue_index if (self.focused_panel == "queued" and tasks) else None
         return render_queued_tasks_panel(
-            width, tasks, is_paused=is_paused, selected_queue_index=self.selected_queue_index
+            width, tasks, is_paused=is_paused, selected_queue_index=sel_idx
         )
 
     @staticmethod

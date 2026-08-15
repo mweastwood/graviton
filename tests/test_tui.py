@@ -1824,6 +1824,180 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.ABORTED)
         self.assertTrue(any(f"Task '{task.id}' aborted by user via TUI" in msg for msg in log_cm.output))
 
+    def test_unified_task_navigation_seamless_transitions(self):
+        manager = TaskManager(max_workers=2)
+        act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        act2 = Task(id="act-2", agent="code_fixer", prompt="Fix PR #2", status=TaskStatus.RUNNING)
+        q1 = Task(id="q-1", agent="code_reviewer", prompt="Review PR #3", status=TaskStatus.QUEUED)
+        q2 = Task(id="q-2", agent="code_fixer", prompt="Fix PR #4", status=TaskStatus.QUEUED)
+        manager._tasks = {"act-1": act1, "act-2": act2, "q-1": q1, "q-2": q2}
+
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # Down -> act-2
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 1)
+
+        # Down past active tasks boundary -> q-1 (queued, index 0)
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        # Down -> q-2 (queued, index 1)
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 1)
+
+        # Down at end of queue clamps
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 1)
+
+        # Up -> q-1 (queued, index 0)
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        # Up past queue top boundary -> act-2 (active, index 1)
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 1)
+
+        # Up -> act-1 (active, index 0)
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # Up at top of active tasks clamps
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+    def test_single_selection_rendering_and_cursor_isolation(self):
+        manager = TaskManager(max_workers=2)
+        act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        q1 = Task(id="q-1", agent="code_reviewer", prompt="Review PR #2", status=TaskStatus.QUEUED)
+        manager._tasks = {"act-1": act1, "q-1": q1}
+
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard.focused_panel = "active"
+
+        frame_active = dashboard.render(width=100)
+        lines_active = frame_active.split("\n")
+        # Find lines for act-1 and q-1
+        act_line = next(l for l in lines_active if "act-1" in l)
+        q_line = next(l for l in lines_active if "q-1" in l)
+        self.assertIn(">", act_line)
+        self.assertNotIn(">", q_line)
+
+        # Switch focus to queued
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+
+        frame_queued = dashboard.render(width=100)
+        lines_queued = frame_queued.split("\n")
+        act_line_2 = next(l for l in lines_queued if "act-1" in l)
+        q_line_2 = next(l for l in lines_queued if "q-1" in l)
+        self.assertNotIn(">", act_line_2)
+        self.assertIn(">", q_line_2)
+
+    def test_empty_state_focus_rebalance(self):
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+
+        # Case 1: Both empty
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "active")
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "active")
+
+        # Case 2: Only queued tasks
+        q1 = Task(id="q-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.QUEUED)
+        manager._tasks = {"q-1": q1}
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        # Up clamps at queued 0 when active tasks empty
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        # Case 3: Only active tasks
+        manager._tasks.clear()
+        act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        manager._tasks = {"act-1": act1}
+        dashboard.focused_panel = "queued"
+        dashboard.handle_key("up")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # Down clamps at active 0 when queued tasks empty
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+    def test_unified_key_action_dispatching(self):
+        manager = TaskManager(max_workers=2)
+        act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        q1 = Task(id="q-1", agent="code_reviewer", prompt="Review PR #2", status=TaskStatus.QUEUED, priority=1)
+        manager._tasks = {"act-1": act1, "q-1": q1}
+
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard.focused_panel = "active"
+
+        # 'p' should not prioritize active task
+        dashboard.handle_key("p")
+        self.assertEqual(q1.priority, 1)
+
+        # Enter on active task opens logs
+        dashboard.handle_key("enter")
+        self.assertEqual(dashboard.active_screen, "task_logs")
+        self.assertEqual(dashboard.selected_task_id_for_logs, "act-1")
+        dashboard.handle_key("esc")
+        self.assertEqual(dashboard.active_screen, "main")
+
+        # Move to queued panel
+        dashboard.handle_key("down")
+        self.assertEqual(dashboard.focused_panel, "queued")
+
+        # Enter on queued task does not open logs
+        dashboard.handle_key("enter")
+        self.assertEqual(dashboard.active_screen, "main")
+
+        # 'p' prioritizes queued task
+        dashboard.handle_key("p")
+        self.assertEqual(q1.priority, 2)
+
+    def test_direct_panel_selection_helpers(self):
+        manager = TaskManager(max_workers=2)
+        act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
+        act2 = Task(id="act-2", agent="code_fixer", prompt="Fix PR #2", status=TaskStatus.RUNNING)
+        q1 = Task(id="q-1", agent="code_reviewer", prompt="Review PR #3", status=TaskStatus.QUEUED)
+        q2 = Task(id="q-2", agent="code_fixer", prompt="Fix PR #4", status=TaskStatus.QUEUED)
+        manager._tasks = {"act-1": act1, "act-2": act2, "q-1": q1, "q-2": q2}
+
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard.select_next_queued_task()
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 1)
+
+        dashboard.select_prev_queued_task()
+        self.assertEqual(dashboard.focused_panel, "queued")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+        dashboard.select_next_active_task()
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 1)
+
+        dashboard.select_prev_active_task()
+        self.assertEqual(dashboard.focused_panel, "active")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

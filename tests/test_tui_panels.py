@@ -953,11 +953,27 @@ class TestTUIPanels(unittest.TestCase):
         self.assertNotIn(">", lines_sel0[3])
         self.assertIn("task-2", lines_sel0[3])
 
-        lines_sel1 = render_active_tasks_panel(width=90, tasks=[task1, task2], max_workers=2, selected_active_index=1)
+        lines_sel_none = render_active_tasks_panel(width=90, tasks=[task1, task2], max_workers=2, selected_active_index=None)
+        self.assertNotIn(">", lines_sel_none[2])
+        self.assertIn("task-1", lines_sel_none[2])
+        self.assertNotIn(">", lines_sel_none[3])
+        self.assertIn("task-2", lines_sel_none[3])
+
+    def test_render_queued_tasks_panel_cursor_selection(self):
+        task1 = Task(id="task-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.QUEUED)
+        task2 = Task(id="task-2", agent="code_fixer", prompt="Fix PR #2", status=TaskStatus.QUEUED)
+
+        lines_sel0 = render_queued_tasks_panel(width=90, tasks=[task1, task2], selected_queue_index=0)
+        self.assertIn(">", lines_sel0[2])
+        self.assertNotIn(">", lines_sel0[3])
+
+        lines_sel1 = render_queued_tasks_panel(width=90, tasks=[task1, task2], selected_queue_index=1)
         self.assertNotIn(">", lines_sel1[2])
-        self.assertIn("task-1", lines_sel1[2])
         self.assertIn(">", lines_sel1[3])
-        self.assertIn("task-2", lines_sel1[3])
+
+        lines_sel_none = render_queued_tasks_panel(width=90, tasks=[task1, task2], selected_queue_index=None)
+        self.assertNotIn(">", lines_sel_none[2])
+        self.assertNotIn(">", lines_sel_none[3])
 
     def test_render_task_logs_panel_empty_and_populated(self):
         # Empty / None task
