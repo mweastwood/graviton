@@ -1777,6 +1777,53 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard._last_frame_lines, [])
         self.assertTrue(dashboard._full_redraw_needed)
 
+    def test_abort_selected_queued_task_via_hotkey(self):
+        manager = TaskManager(max_workers=1)
+        task = manager.submit_task("code_reviewer", "Review PR #208")
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            dashboard.handle_key("x")
+
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertTrue(any(f"Task '{task.id}' aborted by user via TUI" in msg for msg in log_cm.output))
+
+    def test_abort_selected_active_task_via_hotkey(self):
+        manager = TaskManager(max_workers=1)
+        task = manager.submit_task("code_reviewer", "Review PR #208")
+        task.status = TaskStatus.RUNNING
+        task.start_time = time.time()
+
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+        dashboard.focused_panel = "active"
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            dashboard.handle_key("X")
+
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertTrue(any(f"Task '{task.id}' aborted by user via TUI" in msg for msg in log_cm.output))
+
+    def test_abort_task_from_task_logs_screen(self):
+        manager = TaskManager(max_workers=1)
+        task = manager.submit_task("code_reviewer", "Inspect active task logs")
+        task.status = TaskStatus.RUNNING
+        task.start_time = time.time()
+
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+        dashboard.active_screen = "task_logs"
+        dashboard.selected_task_id_for_logs = task.id
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            dashboard.handle_key("x")
+
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertTrue(any(f"Task '{task.id}' aborted by user via TUI" in msg for msg in log_cm.output))
+
 
 if __name__ == "__main__":
     unittest.main()

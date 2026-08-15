@@ -56,6 +56,7 @@ def run_agent_container(
     initial_attempt: Optional[int] = None,
     quota_pool: Optional[str] = None,
     model: Optional[str] = None,
+    on_process_created: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> subprocess.CompletedProcess:
     """
     Execute the agent container script synchronously.
@@ -70,6 +71,7 @@ def run_agent_container(
     :param initial_attempt: Optional initial attempt number to resume execution pass (sets GRAVITON_INITIAL_ATTEMPT env var).
     :param quota_pool: Optional quota pool selected for task execution (sets ANTIGRAVITY_QUOTA_POOL env var).
     :param model: Optional model selected for task execution (sets ANTIGRAVITY_MODEL & MODEL_NAME env vars).
+    :param on_process_created: Optional callback function invoked immediately upon subprocess launch.
     :return: subprocess.CompletedProcess instance.
     """
     cmd = [str(script_path), agent_name, prompt]
@@ -97,6 +99,12 @@ def run_agent_container(
         text=True,
         bufsize=1,
     )
+
+    if on_process_created:
+        try:
+            on_process_created(process)
+        except Exception as e:
+            logger.debug(f"Error in on_process_created callback: {e}")
 
     stdout_lines = []
     stderr_lines = []
@@ -139,6 +147,7 @@ def run_agent_async(
     initial_attempt: Optional[int] = None,
     quota_pool: Optional[str] = None,
     model: Optional[str] = None,
+    on_process_created: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> threading.Thread:
     """
     Execute the agent container asynchronously in a background daemon thread.
@@ -152,20 +161,26 @@ def run_agent_async(
     :param initial_attempt: Optional initial attempt number to resume execution pass.
     :param quota_pool: Optional quota pool selected for task execution.
     :param model: Optional model selected for task execution.
+    :param on_process_created: Optional callback function invoked immediately upon subprocess launch.
     :return: Started daemon Thread instance.
     """
     def worker():
         try:
+            kwargs = {
+                "max_attempts": max_attempts,
+                "cached_workspace_dir": cached_workspace_dir,
+                "initial_attempt": initial_attempt,
+                "quota_pool": quota_pool,
+                "model": model,
+            }
+            if on_process_created is not None:
+                kwargs["on_process_created"] = on_process_created
             result = run_agent_container(
                 agent_name,
                 prompt,
                 script_path,
                 cwd,
-                max_attempts=max_attempts,
-                cached_workspace_dir=cached_workspace_dir,
-                initial_attempt=initial_attempt,
-                quota_pool=quota_pool,
-                model=model,
+                **kwargs,
             )
             if result.returncode == 0:
                 logger.info(f"Agent '{agent_name}' finished successfully for prompt: '{prompt}'")

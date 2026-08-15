@@ -635,6 +635,45 @@ class TerminalDashboard:
                     break
         return res
 
+    def abort_selected_task(self) -> bool:
+        """Abort the currently selected queued or active task, or the active task viewed on task_logs screen."""
+        if not self.task_manager:
+            return False
+
+        if self.active_screen == "task_logs":
+            if self.selected_task_id_for_logs:
+                task_id = self.selected_task_id_for_logs
+                res = self.task_manager.abort_task(task_id)
+                if res:
+                    logger.info(f"Task '{task_id}' aborted by user via TUI")
+                return res
+            return False
+
+        active_tasks = self.task_manager.get_active_tasks()
+        queued_tasks = self.task_manager.get_queued_tasks()
+
+        target_task = None
+        if hasattr(self, "focused_panel") and self.focused_panel == "active" and active_tasks:
+            self.selected_active_index = max(0, min(self.selected_active_index, len(active_tasks) - 1))
+            target_task = active_tasks[self.selected_active_index]
+        elif hasattr(self, "focused_panel") and self.focused_panel == "queued" and queued_tasks:
+            self.selected_queue_index = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
+            target_task = queued_tasks[self.selected_queue_index]
+        elif queued_tasks:
+            self.selected_queue_index = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
+            target_task = queued_tasks[self.selected_queue_index]
+        elif active_tasks:
+            self.selected_active_index = max(0, min(self.selected_active_index, len(active_tasks) - 1))
+            target_task = active_tasks[self.selected_active_index]
+
+        if target_task:
+            task_id = target_task.id
+            res = self.task_manager.abort_task(task_id)
+            if res:
+                logger.info(f"Task '{task_id}' aborted by user via TUI")
+            return res
+        return False
+
     def enable_selected_job(self) -> Optional[ScheduledJob]:
         """Enable the currently selected scheduled job and save state."""
         if not self.scheduler:
@@ -780,7 +819,9 @@ class TerminalDashboard:
             if key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
         elif self.active_screen == "task_logs":
-            if key in ("\x1b", "esc", "ESC"):
+            if key in ("x", "X"):
+                self.abort_selected_task()
+            elif key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
         elif self.active_screen == "gemini_models":
             quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
@@ -837,6 +878,8 @@ class TerminalDashboard:
                     self.active_screen = "task_logs"
             elif key in ("p", "P"):
                 self.prioritize_selected_task()
+            elif key in ("x", "X"):
+                self.abort_selected_task()
             elif key in ("g", "G"):
                 self.active_screen = "gemini_models"
                 quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)

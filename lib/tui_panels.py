@@ -509,13 +509,13 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     elif active_screen == "task_logs":
-        nav_hint = "Nav: [Esc] Main Screen │ [q] Quit"
+        nav_hint = "Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit"
     elif active_screen == "gemini_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     elif active_screen == "third_party_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
-        nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select Task │ [p] Prioritize │ [Enter] View Task Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
+        nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
 
     lines = [
         line1_raw,
@@ -1083,7 +1083,12 @@ def render_history_tasks_panel(width: int, tasks: List[Any], stats: Dict[str, An
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
 
     for t in tasks:
-        status_color = "\033[92m" if t.status == TaskStatus.COMPLETED else "\033[91m"
+        if t.status == TaskStatus.COMPLETED:
+            status_color = "\033[92m"
+        elif t.status == TaskStatus.ABORTED:
+            status_color = "\033[93m"
+        else:
+            status_color = "\033[91m"
         status_str = f"{status_color}{t.status}\033[0m"
         ret_val = str(t.return_code) if t.return_code is not None else "-"
         target_str = format_target_for_display(t.target_id, target_w)
@@ -1152,6 +1157,8 @@ def render_task_logs_panel(
         status_badge = "\033[92m\033[1m[COMPLETED]\033[0m"
     elif status == TaskStatus.FAILED:
         status_badge = "\033[91m\033[1m[FAILED]\033[0m"
+    elif status == TaskStatus.ABORTED:
+        status_badge = "\033[93m\033[1m[ABORTED]\033[0m"
     elif status == TaskStatus.PAUSED_FOR_QUOTA:
         status_badge = "\033[95m\033[1m[PAUSED_FOR_QUOTA]\033[0m"
     else:

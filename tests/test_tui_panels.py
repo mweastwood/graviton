@@ -1005,12 +1005,14 @@ class TestTUIPanels(unittest.TestCase):
         lines_main = render_header_panel(
             width=130, host="0.0.0.0", port=8000, commit="sha", branch="main", reload_state="IDLE", uptime="00:01:00", active_screen="main"
         )
-        self.assertTrue(any("[Enter] View Task Logs" in l for l in lines_main))
+        self.assertTrue(any("[Enter] Logs" in l for l in lines_main))
+        self.assertTrue(any("[x] Abort Task" in l for l in lines_main))
 
         lines_task_logs = render_header_panel(
             width=130, host="0.0.0.0", port=8000, commit="sha", branch="main", reload_state="IDLE", uptime="00:01:00", active_screen="task_logs"
         )
-        self.assertTrue(any("Nav: [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
+        self.assertTrue(any("[x] Abort Task" in l for l in lines_task_logs))
+        self.assertTrue(any("Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
 
 
 if __name__ == "__main__":
