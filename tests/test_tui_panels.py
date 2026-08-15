@@ -541,7 +541,7 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("PRIO", header_line)
         self.assertIn("AGENT", header_line)
         self.assertIn("TARGET", header_line)
-        self.assertIn("ATTEMPT", header_line)
+        self.assertNotIn("ATTEMPT", header_line)
         self.assertIn("WAIT", header_line)
         self.assertNotIn("PROMPT", header_line)
 
@@ -550,26 +550,12 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("task-2", row_line)
         self.assertIn("graviton#148", row_line)
         self.assertNotIn("mweastwood/", row_line)
-        self.assertIn("1/3", row_line)
+        self.assertNotIn("1/3", row_line)
 
         # Narrow width test
         narrow_lines = render_queued_tasks_panel(width=45, tasks=[task])
         narrow_row = narrow_lines[2]
         self.assertIn("gr..#14", narrow_row)
-
-        # Test cached task attempt formatting without truncation
-        task_cached = Task(
-            id="task-2c",
-            agent="code_fixer",
-            target_id="mweastwood/graviton#148",
-            prompt="Fix bug",
-            status=TaskStatus.QUEUED,
-            attempt=3,
-            max_attempts=6,
-            requeue_count=1,
-        )
-        cached_lines = render_queued_tasks_panel(width=80, tasks=[task_cached])
-        self.assertIn("3/6 (cached)", cached_lines[2])
 
     def test_format_wait_time(self):
         # Sub-minute (< 60.0s)

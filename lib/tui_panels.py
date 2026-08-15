@@ -860,16 +860,15 @@ def render_queued_tasks_panel(
     elif selected_queue_index is not None:
         selected_queue_index = 0
 
-    # Fixed column widths: cursor(2) + ID(8) + PRIO(6) + AGENT(14) + ATTEMPT(16) + WAIT(9) = 55.
-    # Plus 6 single-space column separators = 61 total fixed characters.
-    target_w = max(8, inner_w - 61)
+    # Fixed column widths: cursor(2) + ID(8) + PRIO(6) + AGENT(14) + WAIT(9) = 39.
+    # Plus 5 single-space column separators = 44 total fixed characters.
+    target_w = max(8, inner_w - 44)
     cols = [
         (" ", 2),
         ("ID", 8),
         ("PRIO", 6),
         ("AGENT", 14),
         ("TARGET", target_w),
-        ("ATTEMPT", 16),
         ("WAIT", 9),
     ]
     content = [f"\033[1m{format_table_row(cols)}\033[0m"]
@@ -880,15 +879,12 @@ def render_queued_tasks_panel(
         cursor_styled = f"\033[93m\033[1m{cursor_str}\033[0m" if is_selected else cursor_str
         prio_str = str(getattr(t, "priority", 0))
         target_str = format_target_for_display(t.target_id, target_w)
-        is_cached = getattr(t, "requeue_count", 0) > 0
-        att_str = f"{t.attempt}/{t.max_attempts} (cached)" if is_cached else f"{t.attempt}/{t.max_attempts}"
         row_cells = [
             (cursor_styled, 2),
             (t.id, 8),
             (prio_str, 6),
             (t.agent, 14),
             (target_str, target_w),
-            (att_str, 16),
             (format_wait_time(t.wait_time), 9),
         ]
         content.append(format_table_row(row_cells))
