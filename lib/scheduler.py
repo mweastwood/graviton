@@ -71,6 +71,7 @@ DEFAULT_JOBS = [
         "enabled": True,
         "last_run": None,
         "next_run": None,
+        "repo_cycling": True,
     },
     {
         "job_id": "periodic_quality_sweep",
@@ -86,6 +87,7 @@ DEFAULT_JOBS = [
         "enabled": True,
         "last_run": None,
         "next_run": None,
+        "repo_cycling": True,
     },
 ]
 
@@ -133,6 +135,8 @@ class ScheduledJob:
         next_run: Optional[str] = None,
         is_running: bool = False,
         current_task_id: Optional[str] = None,
+        repo_cycling: bool = False,
+        current_repo_index: int = 0,
     ):
         self.job_id = job_id
         self.name = name
@@ -144,6 +148,8 @@ class ScheduledJob:
         self.next_run = next_run
         self.is_running = is_running
         self.current_task_id = current_task_id
+        self.repo_cycling = repo_cycling
+        self.current_repo_index = current_repo_index
 
     def is_due(self, now_dt: Optional[datetime] = None) -> bool:
         """
@@ -187,6 +193,7 @@ class ScheduledJob:
             "agent": self.agent,
             "prompt": self.prompt,
             "enabled": self.enabled,
+            "repo_cycling": self.repo_cycling,
         }
 
     def to_dict(self) -> Dict[str, Any]:
@@ -201,8 +208,9 @@ class ScheduledJob:
             "next_run": self.next_run,
             "is_running": self.is_running,
             "current_task_id": self.current_task_id,
+            "repo_cycling": self.repo_cycling,
+            "current_repo_index": self.current_repo_index,
         }
-
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScheduledJob":
@@ -217,6 +225,8 @@ class ScheduledJob:
             next_run=data.get("next_run"),
             is_running=bool(data.get("is_running", False)),
             current_task_id=data.get("current_task_id"),
+            repo_cycling=bool(data.get("repo_cycling", False)),
+            current_repo_index=int(data.get("current_repo_index", 0)),
         )
 
 
@@ -413,6 +423,7 @@ class TaskScheduler:
         check_interval_seconds: float = 5.0,
         task_manager: Optional[Any] = None,
         quota_tracker: Optional[Any] = None,
+        repos_dir: Optional[Path] = None,
     ):
         self._lock = threading.RLock()
         self._save_lock = threading.Lock()
@@ -430,6 +441,12 @@ class TaskScheduler:
         self.check_interval_seconds = check_interval_seconds
         self.task_manager = task_manager
         self.quota_tracker = quota_tracker
+        if repos_dir is not None:
+            self.repos_dir = Path(repos_dir)
+        elif task_manager is not None and getattr(task_manager, "repos_dir", None) is not None:
+            self.repos_dir = Path(task_manager.repos_dir)
+        else:
+            self.repos_dir = None
 
         self.jobs: Dict[str, ScheduledJob] = {}
         self.job_handlers: Dict[str, Callable] = {}
@@ -546,6 +563,11 @@ class TaskScheduler:
                                     self.jobs[job_id].next_run = s_info["next_run"]
                                 if "enabled" in s_info:
                                     self.jobs[job_id].enabled = bool(s_info["enabled"])
+                                if "current_repo_index" in s_info:
+                                    try:
+                                        self.jobs[job_id].current_repo_index = int(s_info["current_repo_index"])
+                                    except (ValueError, TypeError):
+                                        pass
                         loaded_successfully = True
                     elif isinstance(state_data, list):
                         for item in state_data:
@@ -558,6 +580,11 @@ class TaskScheduler:
                                         self.jobs[job_id].next_run = item["next_run"]
                                     if "enabled" in item:
                                         self.jobs[job_id].enabled = bool(item["enabled"])
+                                    if "current_repo_index" in item:
+                                        try:
+                                            self.jobs[job_id].current_repo_index = int(item["current_repo_index"])
+                                        except (ValueError, TypeError):
+                                            pass
                         loaded_successfully = True
                     else:
                         need_save_fallback = True
@@ -584,7 +611,7 @@ class TaskScheduler:
 
     def save_state(self, async_save: bool = False):
         """
-        Persist job execution state (last_run, next_run, enabled, is_running, current_task_id) to state_path.
+        Persist job execution state (last_run, next_run, enabled, is_running, current_task_id, current_repo_index) to state_path.
         Uses atomic file replacement to prevent file corruption during unexpected crashes.
         State snapshot is captured under self._lock context. If async_save is True, file writing
         and fsync execute asynchronously on a background thread to prevent blocking critical scheduler threads.
@@ -599,6 +626,7 @@ class TaskScheduler:
                     "enabled": job.enabled,
                     "is_running": job.is_running,
                     "current_task_id": job.current_task_id,
+                    "current_repo_index": job.current_repo_index,
                 }
                 for job_id, job in self.jobs.items()
             }
@@ -713,6 +741,29 @@ class TaskScheduler:
         self._execute_job(job)
         return True
 
+    def _pick_next_repo(self, job: ScheduledJob) -> Optional[Path]:
+        """
+        If job.repo_cycling is True and self.repos_dir exists, return the next
+        repo directory in round-robin order and advance job.current_repo_index.
+        Returns None if cycling is disabled or no repos are available.
+        """
+        if not job.repo_cycling or not self.repos_dir or not self.repos_dir.is_dir():
+            return None
+        try:
+            repos = sorted(
+                p for p in self.repos_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            )
+        except Exception as e:
+            logger.warning(f"Failed to iterate repos_dir '{self.repos_dir}': {e}")
+            return None
+        if not repos:
+            return None
+        idx = job.current_repo_index % len(repos)
+        chosen = repos[idx]
+        job.current_repo_index = (idx + 1) % len(repos)
+        return chosen
+
     def _execute_job(self, job: ScheduledJob):
         """
         Hand off job prompt to runner or custom handler and update job state.
@@ -722,6 +773,15 @@ class TaskScheduler:
 
         with self._lock:
             handler = self.job_handlers.get(job.job_id) or self.job_handlers.get(job.agent)
+            chosen_repo = self._pick_next_repo(job)
+
+        active_prompt = job.prompt
+        repo_name = None
+        repo_dir = None
+        if chosen_repo:
+            repo_name = chosen_repo.name
+            repo_dir = chosen_repo
+            active_prompt = f"Target repository: {repo_name} (at {repo_dir}).\n{job.prompt}"
 
         if handler:
             with self._lock:
@@ -740,7 +800,7 @@ class TaskScheduler:
             return
 
         if self.task_manager:
-            if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, job.prompt):
+            if hasattr(self.task_manager, "can_accept_task") and not self.task_manager.can_accept_task(job.agent, active_prompt):
                 logger.warning(f"Task acceptance suspended (quota pacing or manager state). Deferring job execution '{job.job_id}'.")
                 with self._lock:
                     job.mark_executed(now_dt)
@@ -755,8 +815,10 @@ class TaskScheduler:
                 target_id = f"sched:{job.job_id}"
                 task = self.task_manager.submit_task(
                     agent=job.agent,
-                    prompt=job.prompt,
+                    prompt=active_prompt,
                     target_id=target_id,
+                    repo_name=repo_name,
+                    repo_dir=repo_dir,
                 )
                 with self._lock:
                     job.mark_executed(now_dt)
@@ -794,10 +856,11 @@ class TaskScheduler:
             try:
                 with self._lock:
                     job.mark_executed(now_dt)
-                if self.script_path and self.cwd:
-                    self.runner(job.agent, job.prompt, self.script_path, self.cwd)
+                exec_cwd = repo_dir if repo_dir else self.cwd
+                if self.script_path and exec_cwd:
+                    self.runner(job.agent, active_prompt, self.script_path, exec_cwd)
                 else:
-                    self.runner(job.agent, job.prompt)
+                    self.runner(job.agent, active_prompt)
             except Exception as e:
                 logger.exception(f"Error executing runner for job '{job.job_id}': {e}")
             finally:
