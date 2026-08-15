@@ -1089,6 +1089,27 @@ class TestTranscriptInspector(unittest.TestCase):
             tf.write_text(case, encoding="utf-8")
             self.assertFalse(is_transcript_incomplete(tf))
 
+    @patch("subprocess.Popen")
+    def test_run_agent_container_on_process_created_callback(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = []
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        registered = []
+        res = run_agent_container(
+            "code_reviewer",
+            "Review PR",
+            Path("/tmp/run_agent_container.sh"),
+            Path("/workspace"),
+            on_process_created=registered.append,
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(len(registered), 1)
+        self.assertEqual(registered[0], mock_proc)
+
 
 if __name__ == "__main__":
     unittest.main()

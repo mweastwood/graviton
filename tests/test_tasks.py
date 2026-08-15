@@ -108,6 +108,7 @@ class TestTaskManager(unittest.TestCase):
             initial_attempt=1,
             quota_pool="gemini",
             model="gemini-3.6-flash-high",
+            on_process_created=unittest.mock.ANY,
         )
 
         manager.stop()
@@ -193,6 +194,7 @@ class TestTaskManager(unittest.TestCase):
             initial_attempt=1,
             quota_pool="gemini",
             model="gemini-3.6-flash-high",
+            on_process_created=unittest.mock.ANY,
         )
 
         stats = manager.get_stats()
@@ -880,6 +882,7 @@ class TestTaskManager(unittest.TestCase):
                 initial_attempt=1,
                 quota_pool="gemini",
                 model="gemini-3.6-flash-high",
+                on_process_created=unittest.mock.ANY,
             )
 
             manager.stop()
@@ -1928,6 +1931,107 @@ class TestTaskManager(unittest.TestCase):
 
         self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
+
+    def test_abort_queued_task(self):
+        manager = TaskManager(max_workers=1)
+        # Workers are not started, so submitted task stays QUEUED
+        task = manager.submit_task("code_reviewer", "Review PR #208", target_id="#208")
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+        self.assertEqual(len(manager.get_queued_tasks()), 1)
+
+        aborted = manager.abort_task(task.id)
+        self.assertTrue(aborted)
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertEqual(task.error_message, "Aborted by user")
+        self.assertIsNotNone(task.finish_time)
+
+        # Removed from queued tasks
+        self.assertEqual(len(manager.get_queued_tasks()), 0)
+        # Visible in task history
+        history = manager.get_task_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].id, task.id)
+        self.assertEqual(history[0].status, TaskStatus.ABORTED)
+
+        # Start worker and verify worker never executes the aborted task
+        manager.start()
+        time.sleep(0.1)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_abort_active_running_task(self, mock_run):
+        started_event = threading.Event()
+        terminate_called = threading.Event()
+
+        mock_proc = MagicMock()
+        def fake_terminate():
+            terminate_called.set()
+        mock_proc.terminate.side_effect = fake_terminate
+
+        def fake_run(agent_name, prompt, script_path, cwd, **kwargs):
+            on_proc = kwargs.get("on_process_created")
+            if on_proc:
+                on_proc(mock_proc)
+            started_event.set()
+            # Wait for terminate to be called
+            terminate_called.wait(timeout=2.0)
+            res = MagicMock()
+            res.returncode = -15
+            res.stdout = ""
+            res.stderr = "Terminated"
+            return res
+
+        mock_run.side_effect = fake_run
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+        manager.start()
+
+        task = manager.submit_task("code_reviewer", "Review active task", target_id="#208")
+        self.assertTrue(started_event.wait(timeout=2.0))
+
+        # Task should be RUNNING
+        self.assertEqual(task.status, TaskStatus.RUNNING)
+
+        aborted = manager.abort_task(task.id)
+        self.assertTrue(aborted)
+        self.assertTrue(terminate_called.is_set())
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertEqual(task.error_message, "Aborted by user")
+
+        # Ensure task is not re-queued or auto-retried
+        time.sleep(0.2)
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertEqual(len(manager.get_queued_tasks()), 0)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        manager.stop()
+
+    def test_abort_completed_failed_invalid_tasks(self):
+        manager = TaskManager(max_workers=1)
+        # Invalid / unknown task ID
+        self.assertFalse(manager.abort_task("nonexistent-task"))
+
+        # Task already COMPLETED
+        t1 = manager.submit_task("code_reviewer", "Task 1")
+        t1.status = TaskStatus.COMPLETED
+        t1.finish_time = time.time()
+        self.assertFalse(manager.abort_task(t1.id))
+
+        # Task already FAILED
+        t2 = manager.submit_task("code_reviewer", "Task 2")
+        t2.status = TaskStatus.FAILED
+        t2.finish_time = time.time()
+        self.assertFalse(manager.abort_task(t2.id))
+
+        # Task already ABORTED
+        t3 = manager.submit_task("code_reviewer", "Task 3")
+        self.assertTrue(manager.abort_task(t3.id))
+        self.assertFalse(manager.abort_task(t3.id))
 
 
 if __name__ == "__main__":

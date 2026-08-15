@@ -6,6 +6,7 @@ import collections
 import logging
 import queue
 import re
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ class TaskStatus:
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     PAUSED_FOR_QUOTA = "PAUSED_FOR_QUOTA"
+    ABORTED = "ABORTED"
 
 
 @dataclass
@@ -158,6 +160,7 @@ class TaskManager:
         self._lock = threading.Lock()
         self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
+        self._active_processes: Dict[str, subprocess.Popen] = {}
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
         self._running = False
@@ -460,7 +463,7 @@ class TaskManager:
 
     def _prune_tasks_locked(self):
         """
-        Evict oldest finished tasks (COMPLETED or FAILED) if total tasks exceed max_tasks limit.
+        Evict oldest finished tasks (COMPLETED, FAILED, or ABORTED) if total tasks exceed max_tasks limit.
         Must be called while holding self._lock.
         """
         if self.max_tasks <= 0 or len(self._tasks) <= self.max_tasks:
@@ -468,7 +471,7 @@ class TaskManager:
 
         finished_tasks = [
             t for t in self._tasks.values()
-            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED)
         ]
         if not finished_tasks:
             return
@@ -487,14 +490,14 @@ class TaskManager:
 
     def clear_completed_tasks(self) -> int:
         """
-        Remove all COMPLETED and FAILED tasks from memory.
+        Remove all COMPLETED, FAILED, and ABORTED tasks from memory.
         Returns the number of tasks removed.
         """
         with self._lock:
             to_remove = [
                 task_id
                 for task_id, t in self._tasks.items()
-                if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+                if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED)
             ]
             for task_id in to_remove:
                 del self._tasks[task_id]
@@ -622,6 +625,64 @@ class TaskManager:
             logger.info(f"Prioritized task '{task_id}': new priority={task.priority}.")
             return True
 
+    def abort_task(self, task_id: str) -> bool:
+        """
+        Abort an active (RUNNING) or queued (QUEUED / PAUSED_FOR_QUOTA) task.
+        Returns True if task was found and aborted, False otherwise.
+        """
+        proc_to_kill = None
+        task_to_cleanup = None
+
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+
+            if task.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
+                task.status = TaskStatus.ABORTED
+                task.finish_time = time.time()
+                task.error_message = "Aborted by user"
+                if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                    import shutil
+                    shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                self._rebuild_queue_locked()
+                self._prune_tasks_locked()
+                logger.info(f"Queued task '{task_id}' aborted by user.")
+                return True
+
+            elif task.status == TaskStatus.RUNNING:
+                task.status = TaskStatus.ABORTED
+                task.finish_time = time.time()
+                task.error_message = "Aborted by user"
+                proc_to_kill = self._active_processes.get(task_id)
+                task_to_cleanup = task
+                logger.info(f"Active task '{task_id}' marked ABORTED. Terminating subprocess...")
+
+            else:
+                return False
+
+        if proc_to_kill is not None:
+            try:
+                proc_to_kill.terminate()
+                try:
+                    proc_to_kill.wait(timeout=1.0)
+                except Exception:
+                    proc_to_kill.kill()
+                    try:
+                        proc_to_kill.wait(timeout=0.5)
+                    except Exception:
+                        pass
+            except (ProcessLookupError, OSError):
+                pass
+            except Exception as e:
+                logger.warning(f"Error terminating process for task '{task_id}': {e}")
+
+        if task_to_cleanup and task_to_cleanup.cached_workspace_dir and task_to_cleanup.cached_workspace_dir.exists():
+            import shutil
+            shutil.rmtree(task_to_cleanup.cached_workspace_dir, ignore_errors=True)
+
+        return True
+
     def get_task(self, task_id: str) -> Optional[Task]:
         with self._lock:
             return self._tasks.get(task_id)
@@ -645,7 +706,7 @@ class TaskManager:
             finished = [
                 t
                 for t in self._tasks.values()
-                if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+                if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED)
             ]
             finished.sort(
                 key=lambda x: x.finish_time if x.finish_time is not None else 0,
@@ -665,6 +726,7 @@ class TaskManager:
             completed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.COMPLETED)
             failed = sum(1 for t in self._tasks.values() if t.status == TaskStatus.FAILED)
             paused = sum(1 for t in self._tasks.values() if t.status == TaskStatus.PAUSED_FOR_QUOTA)
+            aborted = sum(1 for t in self._tasks.values() if t.status == TaskStatus.ABORTED)
 
             quota_state = self.quota_tracker.state if self.quota_tracker else QuotaState.NORMAL
             is_behind = (self.quota_tracker.is_behind_pacing() is True) if self.quota_tracker else False
@@ -692,6 +754,7 @@ class TaskManager:
                 "completed": completed,
                 "failed": failed,
                 "paused": paused,
+                "aborted": aborted,
                 "max_workers": self.max_workers,
                 "max_tasks": self.max_tasks,
                 "quota_state": quota_state,
@@ -890,6 +953,10 @@ class TaskManager:
 
                 initial_att = task.attempt + 1 if task.requeue_count > 0 else 1
 
+                def _on_process_created(proc):
+                    with self._lock:
+                        self._active_processes[task.id] = proc
+
                 if self.script_path and exec_cwd:
                     res = run_agent_container(
                         task.agent,
@@ -902,6 +969,7 @@ class TaskManager:
                         initial_attempt=initial_att,
                         quota_pool=task.selected_pool,
                         model=task.selected_model,
+                        on_process_created=_on_process_created,
                     )
                     return_code = res.returncode
                     stderr_output = (res.stderr or "").strip()
@@ -914,7 +982,13 @@ class TaskManager:
                     stderr_output = ""
 
                 with self._lock:
-                    if return_code == 0:
+                    self._active_processes.pop(task.id, None)
+                    if task.status == TaskStatus.ABORTED:
+                        logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED by user.")
+                        if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                            import shutil
+                            shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                    elif return_code == 0:
                         task.finish_time = time.time()
                         task.return_code = return_code
                         task.status = TaskStatus.COMPLETED
@@ -962,10 +1036,15 @@ class TaskManager:
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")
                 with self._lock:
-                    task.finish_time = time.time()
-                    task.return_code = -1
-                    task.error_message = str(e)
-                    task.status = TaskStatus.FAILED
+                    self._active_processes.pop(task.id, None)
+                    if task.status != TaskStatus.ABORTED:
+                        task.finish_time = time.time()
+                        task.return_code = -1
+                        task.error_message = str(e)
+                        task.status = TaskStatus.FAILED
+                    if task.cached_workspace_dir and task.cached_workspace_dir.exists():
+                        import shutil
+                        shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
                     self._prune_tasks_locked()
             finally:
                 if self.quota_tracker:
