@@ -721,6 +721,11 @@ class TaskManager:
                         if item.status not in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
                             self._queue.task_done()
                             task = None
+                        elif self.quota_tracker and hasattr(self.quota_tracker, "is_quota_ready") and not self.quota_tracker.is_quota_ready():
+                            self._queue.put(item)
+                            self._queue.task_done()
+                            task = None
+                            was_exhausted = True
                         else:
                             selected_pool = "gemini"
                             selected_model = DEFAULT_GEMINI_MODELS[0]
