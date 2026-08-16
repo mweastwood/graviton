@@ -259,7 +259,7 @@ class TestSchedulerRepoCycling(unittest.TestCase):
         mock_tm.submit_task.assert_called_once()
         call_kwargs = mock_tm.submit_task.call_args[1]
         self.assertEqual(call_kwargs["agent"], "codebase_auditor")
-        self.assertEqual(call_kwargs["target_id"], "sched:periodic_bug_sweep")
+        self.assertEqual(call_kwargs["target_id"], "my_app#sched:periodic_bug_sweep")
         self.assertEqual(call_kwargs["repo_name"], "my_app")
         self.assertEqual(call_kwargs["repo_dir"], self.repos_dir / "my_app")
         self.assertIn("Target repository: my_app", call_kwargs["prompt"])
