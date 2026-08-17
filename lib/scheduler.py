@@ -12,45 +12,15 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from lib.quota import QuotaState
+from lib.quota import QuotaState, _atomic_write_json
 
 logger = logging.getLogger("graviton.scheduler")
-
-
-def _atomic_write_json(target_path: Path, data: Any, indent: int = 2):
-    """
-    Atomically write JSON data to target_path using a temporary file in the target directory.
-    """
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=str(target_path.parent),
-            prefix=f".{target_path.name}.",
-            suffix=".tmp",
-            delete=False,
-            encoding="utf-8",
-        ) as f:
-            tmp_path = Path(f.name)
-            json.dump(data, f, indent=indent)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, target_path)
-    except Exception:
-        if tmp_path and tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
-        raise
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "schedules.json"

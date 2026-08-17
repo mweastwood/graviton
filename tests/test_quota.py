@@ -17,6 +17,7 @@ from lib.quota import (
     QuotaState,
     QuotaTracker,
     QuotaWindow,
+    _atomic_write_json,
     _normalize_now_datetime,
     fetch_cli_models,
     fetch_live_antigravity_quota,
@@ -1188,6 +1189,41 @@ class TestFetchCliModels(unittest.TestCase):
             self.assertTrue(res)
             self.assertEqual(tracker.active_gemini_model, "gemini-3.6-flash-high")
             self.assertEqual(tracker.active_third_party_model, "claude-sonnet-4-6")
+
+    def test_dump_model_selection_atomic_write_failure_cleanup(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            tracker = QuotaTracker(state_path=state_file)
+            with patch("lib.quota._atomic_write_json", side_effect=OSError("Disk full")):
+                res = tracker.dump_model_selection(filepath=state_file)
+                self.assertFalse(res)
+                self.assertFalse(state_file.exists())
+
+    def test_atomic_write_json_success_and_dir_creation(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested_file = Path(tmpdir) / "sub" / "dir" / "state.json"
+            data = {"key": "value", "count": 42}
+            _atomic_write_json(nested_file, data)
+            self.assertTrue(nested_file.exists())
+            loaded = json.loads(nested_file.read_text(encoding="utf-8"))
+            self.assertEqual(loaded, data)
+
+    def test_atomic_write_json_cleanup_on_exception(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "state.json"
+            with patch("os.fsync", side_effect=IOError("Simulated fsync failure")):
+                with self.assertRaises(IOError):
+                    _atomic_write_json(target, {"hello": "world"})
+            self.assertFalse(target.exists())
+            # Ensure no orphaned .tmp files remain
+            tmp_files = list(Path(tmpdir).glob("*.tmp"))
+            self.assertEqual(len(tmp_files), 0)
 
     def test_quota_readiness_initial_and_updates(self):
         tracker = QuotaTracker()

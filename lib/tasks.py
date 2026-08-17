@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.runner import run_agent_container
-from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
+from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
 from lib.security import is_valid_repo_name
 
 logger = logging.getLogger("graviton.tasks")
@@ -443,8 +443,7 @@ class TaskManager:
             }
 
         try:
-            import json
-            path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            _atomic_write_json(path, state, indent=2)
             logger.info(f"Dumped {len(queued_tasks)} queued/quota-paused task(s) state to {path}.")
             return len(queued_tasks)
         except Exception as e:

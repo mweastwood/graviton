@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -13,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.quota")
 
@@ -75,6 +76,36 @@ def fetch_cli_models(timeout: float = 5.0) -> Tuple[List[str], List[str]]:
     except Exception as err:
         logger.warning(f"Failed to fetch models from 'agy models': {err}")
         return DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()
+
+
+def _atomic_write_json(target_path: Path, data: Any, indent: int = 2):
+    """
+    Atomically write JSON data to target_path using a temporary file in the target directory.
+    """
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=str(target_path.parent),
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
+        ) as f:
+            tmp_path = Path(f.name)
+            json.dump(data, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
 
 
 class QuotaState:
@@ -969,7 +1000,7 @@ class QuotaTracker:
                 "quota_pool": self.quota_pool,
             }
         try:
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            _atomic_write_json(path, data, indent=2)
             logger.info(f"Dumped model selection state to {path}.")
             return True
         except Exception as e:
