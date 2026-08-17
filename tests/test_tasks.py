@@ -9,9 +9,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from lib.quota import QuotaState, QuotaTracker, QuotaWindow
+from lib.quota import (
+    DEFAULT_GEMINI_MODELS,
+    DEFAULT_THIRD_PARTY_MODELS,
+    QuotaState,
+    QuotaTracker,
+    QuotaWindow,
+)
 from lib.runner import run_agent_container
-from lib.tasks import Task, TaskManager, TaskStatus
+from lib.tasks import Task, TaskManager, TaskStatus, resolve_task_pool_and_model
 
 
 class TestTaskManager(unittest.TestCase):
@@ -2032,6 +2038,140 @@ class TestTaskManager(unittest.TestCase):
         t3 = manager.submit_task("code_reviewer", "Task 3")
         self.assertTrue(manager.abort_task(t3.id))
         self.assertFalse(manager.abort_task(t3.id))
+
+
+class TestResolveTaskPoolAndModel(unittest.TestCase):
+    """
+    Unit tests for resolve_task_pool_and_model helper function in lib/tasks.py.
+    """
+
+    def test_no_tracker(self):
+        pool, model, exhausted = resolve_task_pool_and_model(None)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, DEFAULT_GEMINI_MODELS[0])
+        self.assertFalse(exhausted)
+
+    def test_gemini_exhausted_claude_healthy(self):
+        mock_tracker = MagicMock()
+        mock_tracker.is_pool_behind_pacing.return_value = False
+        mock_tracker.get_pool_state.side_effect = lambda p: (
+            QuotaState.EXHAUSTED if p == "gemini" else QuotaState.NORMAL
+        )
+        mock_tracker.get_pool_remaining_percentage.side_effect = lambda p: (
+            0.0 if p == "gemini" else 80.0
+        )
+        mock_tracker.get_active_model.side_effect = lambda p: (
+            "gemini-3.6-flash-high" if p == "gemini" else "claude-sonnet-4-6"
+        )
+
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "claude_gpt")
+        self.assertEqual(model, "claude-sonnet-4-6")
+        self.assertFalse(exhausted)
+
+    def test_claude_exhausted_gemini_healthy(self):
+        mock_tracker = MagicMock()
+        mock_tracker.is_pool_behind_pacing.return_value = False
+        mock_tracker.get_pool_state.side_effect = lambda p: (
+            QuotaState.NORMAL if p == "gemini" else QuotaState.EXHAUSTED
+        )
+        mock_tracker.get_pool_remaining_percentage.side_effect = lambda p: (
+            75.0 if p == "gemini" else 0.0
+        )
+        mock_tracker.get_active_model.side_effect = lambda p: (
+            "gemini-3.1-pro-high" if p == "gemini" else "claude-sonnet-4-6"
+        )
+
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, "gemini-3.1-pro-high")
+        self.assertFalse(exhausted)
+
+    def test_both_exhausted(self):
+        mock_tracker = MagicMock()
+        mock_tracker.is_pool_behind_pacing.return_value = False
+        mock_tracker.get_pool_state.return_value = QuotaState.EXHAUSTED
+        mock_tracker.get_pool_remaining_percentage.return_value = 0.0
+        mock_tracker.get_active_model.return_value = DEFAULT_GEMINI_MODELS[0]
+
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, DEFAULT_GEMINI_MODELS[0])
+        self.assertTrue(exhausted)
+
+    def test_both_behind_pacing(self):
+        mock_tracker = MagicMock()
+        mock_tracker.is_pool_behind_pacing.return_value = True
+        mock_tracker.get_pool_state.return_value = QuotaState.NORMAL
+        mock_tracker.get_pool_remaining_percentage.return_value = 50.0
+        mock_tracker.get_active_model.return_value = DEFAULT_GEMINI_MODELS[0]
+
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertTrue(exhausted)
+
+    def test_percentage_comparison_and_tie_breaking(self):
+        # Claude higher percentage
+        mock_tracker = MagicMock()
+        mock_tracker.is_pool_behind_pacing.return_value = False
+        mock_tracker.get_pool_state.return_value = QuotaState.NORMAL
+        mock_tracker.get_pool_remaining_percentage.side_effect = lambda p: (
+            40.0 if p == "gemini" else 85.0
+        )
+        mock_tracker.get_active_model.side_effect = lambda p: (
+            "gemini-3.6-flash-high" if p == "gemini" else "claude-sonnet-4-6"
+        )
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "claude_gpt")
+        self.assertEqual(model, "claude-sonnet-4-6")
+        self.assertFalse(exhausted)
+
+        # Gemini higher percentage
+        mock_tracker.get_pool_remaining_percentage.side_effect = lambda p: (
+            90.0 if p == "gemini" else 30.0
+        )
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, "gemini-3.6-flash-high")
+        self.assertFalse(exhausted)
+
+        # Tied percentage with Claude preference
+        mock_tracker.get_pool_remaining_percentage.side_effect = lambda p: 50.0
+        mock_tracker.quota_pool = "claude_gpt"
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "claude_gpt")
+        self.assertEqual(model, "claude-sonnet-4-6")
+        self.assertFalse(exhausted)
+
+        # Tied percentage with Gemini preference
+        mock_tracker.quota_pool = "gemini"
+        pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, "gemini-3.6-flash-high")
+        self.assertFalse(exhausted)
+
+    def test_fallback_attributes(self):
+        class SimpleTracker:
+            state = QuotaState.NORMAL
+            remaining_percentage = 95.0
+            quota_pool = "gemini"
+            active_gemini_model = "gemini-custom"
+            active_third_party_model = "claude-custom"
+
+            def is_behind_pacing(self):
+                return False
+
+        tracker = SimpleTracker()
+        pool, model, exhausted = resolve_task_pool_and_model(tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, "gemini-custom")
+        self.assertFalse(exhausted)
+
+        tracker.quota_pool = "third_party"
+        # Since claude has 0 remaining by default fallback when tracker has no get_pool_remaining_percentage,
+        # gemini_pct (95.0) > claude_pct (0.0), so gemini will be selected.
+        pool, model, exhausted = resolve_task_pool_and_model(tracker)
+        self.assertEqual(pool, "gemini")
+        self.assertEqual(model, "gemini-custom")
 
 
 if __name__ == "__main__":
