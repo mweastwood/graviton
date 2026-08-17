@@ -1882,6 +1882,17 @@ class TestTaskManager(unittest.TestCase):
             new_manager.stop()
             manager.stop()
 
+    def test_dump_queue_state_atomic_write_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_queue_state.json"
+            manager = TaskManager(max_workers=0, cwd=Path(tmpdir))
+            manager.submit_task("code_fixer", "Task error test", target_id="#999")
+            with patch("lib.tasks._atomic_write_json", side_effect=OSError("Permission denied")):
+                res = manager.dump_queue_state(filepath=state_file)
+                self.assertEqual(res, 0)
+                self.assertFalse(state_file.exists())
+            manager.stop()
+
     def test_task_log_buffering_and_get_logs(self):
         task = Task(id="task-logs", agent="code_reviewer", prompt="Review PR #10")
         self.assertEqual(task.get_logs(), [])
