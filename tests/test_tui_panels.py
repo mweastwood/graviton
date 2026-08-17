@@ -431,6 +431,32 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(format_target_for_display(148, 6), "148")
         self.assertEqual(format_target_for_display(1234567, 6), "1234..")
 
+        # Scheduler targets with and without repo prefix
+        self.assertEqual(
+            format_target_for_display("mweastwood/graviton#sched:periodic_bug_sweep", 35),
+            "graviton#sched:periodic_bug_sweep",
+        )
+        self.assertEqual(
+            format_target_for_display("graviton#sched:periodic_bug_sweep", 35),
+            "graviton#sched:periodic_bug_sweep",
+        )
+        self.assertEqual(
+            format_target_for_display("graviton#sched:periodic_bug_sweep", 20),
+            "graviton#sched:per..",
+        )
+        self.assertEqual(
+            format_target_for_display("graviton#sched:periodic_bug_sweep", 10),
+            "graviton..",
+        )
+        self.assertEqual(
+            format_target_for_display("sched:periodic_bug_sweep", 30),
+            "sched:periodic_bug_sweep",
+        )
+        self.assertEqual(
+            format_target_for_display("sched:periodic_bug_sweep", 10),
+            "sched:pe..",
+        )
+
         # Empty / None / fallback targets
         self.assertEqual(format_target_for_display(None, 8), "-")
         self.assertEqual(format_target_for_display("", 8), "-")

@@ -488,6 +488,42 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertFalse(job.is_running)
         self.assertIsNone(job.current_task_id)
 
+    def test_task_manager_routing_with_cwd_repo_name(self):
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=tm,
+            cwd=Path("/workspace/my_app"),
+        )
+
+        job = scheduler.get_job("periodic_bug_sweep")
+        self.assertIsNotNone(job)
+        self.assertFalse(job.is_running)
+
+        success = scheduler.trigger_job("periodic_bug_sweep")
+        self.assertTrue(success)
+
+        # Verify task was submitted with target_id my_app#sched:periodic_bug_sweep
+        queued_or_all = tm.get_all_tasks()
+        self.assertEqual(len(queued_or_all), 1)
+        submitted_task = queued_or_all[0]
+        self.assertEqual(submitted_task.target_id, "my_app#sched:periodic_bug_sweep")
+        self.assertEqual(submitted_task.agent, job.agent)
+        self.assertEqual(submitted_task.repo_name, "my_app")
+        self.assertEqual(submitted_task.repo_dir, Path("/workspace/my_app"))
+
+        # Verify job is_running and current_task_id tracking
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+        # Simulate task completion and update running states
+        submitted_task.status = "COMPLETED"
+        scheduler.update_running_states()
+        self.assertFalse(job.is_running)
+        self.assertIsNone(job.current_task_id)
+
     def test_update_running_states_resets_orphaned_is_running_when_current_task_id_none(self):
         from lib.tasks import TaskManager
         tm = TaskManager(max_workers=1)
@@ -624,6 +660,39 @@ class TestTaskScheduler(unittest.TestCase):
         job = scheduler.get_job("periodic_bug_sweep")
 
         # Verify load_state + update_running_states reconciled active task ID and is_running=True
+        self.assertTrue(job.is_running)
+        self.assertEqual(job.current_task_id, submitted_task.id)
+
+    def test_load_state_reconciles_is_running_with_repo_qualified_target_id(self):
+        """Verify load_state reconciles is_running when active task has repo-qualified target_id."""
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=1)
+        submitted_task = tm.submit_task(
+            agent="codebase_auditor",
+            prompt="test",
+            target_id="my_repo#sched:periodic_bug_sweep",
+            repo_name="my_repo",
+        )
+
+        stale_state = {
+            "periodic_bug_sweep": {
+                "last_run": None,
+                "next_run": None,
+                "enabled": True,
+                "is_running": True,
+                "current_task_id": "stale-task-old",
+            }
+        }
+        with open(self.state_path, "w", encoding="utf-8") as f:
+            json.dump(stale_state, f)
+
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=tm,
+        )
+        job = scheduler.get_job("periodic_bug_sweep")
+
         self.assertTrue(job.is_running)
         self.assertEqual(job.current_task_id, submitted_task.id)
 

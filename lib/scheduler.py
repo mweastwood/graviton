@@ -483,12 +483,20 @@ class TaskScheduler:
                 if job.job_id in self.job_handlers or job.agent in self.job_handlers:
                     continue
 
-                target_id = f"sched:{job.job_id}"
                 active_task = None
                 for task in self.task_manager.get_all_tasks():
-                    if task.target_id == target_id and task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
-                        active_task = task
-                        break
+                    if task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
+                        t_id = getattr(task, "target_id", None) or ""
+                        is_match = (
+                            t_id == f"sched:{job.job_id}"
+                            or t_id.endswith(f"#sched:{job.job_id}")
+                            or t_id.endswith(f":sched:{job.job_id}")
+                            or t_id.endswith(f"#{job.job_id}")
+                            or (job.current_task_id and task.id == job.current_task_id)
+                        )
+                        if is_match:
+                            active_task = task
+                            break
 
                 if active_task:
                     if not job.is_running or job.current_task_id != active_task.id:
@@ -782,6 +790,12 @@ class TaskScheduler:
             repo_name = chosen_repo.name
             repo_dir = chosen_repo
             active_prompt = f"Target repository: {repo_name} (at {repo_dir}).\n{job.prompt}"
+        elif self.cwd:
+            repo_dir = Path(self.cwd)
+            repo_name = repo_dir.name
+        elif self.task_manager and getattr(self.task_manager, "cwd", None):
+            repo_dir = Path(self.task_manager.cwd)
+            repo_name = repo_dir.name
 
         if handler:
             with self._lock:
@@ -812,7 +826,7 @@ class TaskScheduler:
             self.save_state()
 
             try:
-                target_id = f"sched:{job.job_id}"
+                target_id = f"{repo_name}#sched:{job.job_id}" if repo_name else f"sched:{job.job_id}"
                 task = self.task_manager.submit_task(
                     agent=job.agent,
                     prompt=active_prompt,
