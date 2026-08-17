@@ -143,6 +143,30 @@ class TestUpdater(unittest.TestCase):
         mock_tm.drain_active_tasks.assert_not_called()
         self.assertEqual(get_hot_reload_state(), "IDLE")
 
+    @patch("os.execv")
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_multi_segment_branches(self, mock_git_pull, mock_execv):
+        mock_git_pull.return_value = (True, "Already up to date.")
+        test_cases = [
+            ("refs/heads/feature/hot-reload-fixes", "feature/hot-reload-fixes"),
+            ("refs/heads/release/v1.0", "release/v1.0"),
+            ("refs/heads/fix/issue-219/multi-part-branch", "fix/issue-219/multi-part-branch"),
+            ("refs/heads/main", "main"),
+            ("feature/audit-fixes", "feature/audit-fixes"),
+            ("main", "main"),
+            ("", "main"),
+            (None, "main"),
+        ]
+
+        for ref_input, expected_branch in test_cases:
+            mock_git_pull.reset_mock()
+            mock_execv.reset_mock()
+            sync_repo_and_reload(
+                repo_root=Path("/tmp/fake_repo"),
+                ref=ref_input,
+            )
+            mock_git_pull.assert_called_once_with(Path("/tmp/fake_repo"), branch=expected_branch)
+
     def test_stop_smee_listener_graceful_exit(self):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None

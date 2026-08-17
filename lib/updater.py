@@ -228,7 +228,12 @@ def sync_repo_and_reload(
     :param listener_proc: Optional subprocess.Popen instance of background smee listener.
     :param quota_tracker: Optional QuotaTracker instance to persist model selection state before reload.
     """
-    branch = ref.split("/")[-1] if "/" in ref else "main"
+    if ref and ref.startswith("refs/heads/"):
+        branch = ref[len("refs/heads/") :]
+    elif not ref:
+        branch = "main"
+    else:
+        branch = ref
     logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
     set_hot_reload_state("PULLING_GIT")
     success, git_output = perform_git_pull(repo_root, branch=branch)
