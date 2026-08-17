@@ -164,8 +164,8 @@ def handle_pull_request_review_comment_event(
     comment_author = comment.get("user") or comment.get("author")
     file_path = comment.get("path", "")
     line = comment.get("line") or comment.get("original_line")
-    pr = payload.get("pull_request", {})
-    pr_url = pr.get("html_url", "")
+    pr = payload.get("pull_request", {}) if isinstance(payload.get("pull_request"), dict) else {}
+    pr_url = pr.get("html_url", "") or ""
     pr_number = pr.get("number") or (pr_url.rstrip("/").split("/")[-1] if pr_url else "")
     repo_full_name, repo_name, clone_url = _extract_repo_info(payload)
 

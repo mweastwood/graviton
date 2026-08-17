@@ -115,3 +115,72 @@ class TestSubRoutersDirectImport(unittest.TestCase):
         self.assertEqual(comment_res["status"], "accepted")
         self.assertEqual(comment_res["agent"], "code_fixer")
 
+    def test_null_fields_in_webhook_payloads(self):
+        # 1. Null issue in issues event (opened)
+        res_null_issue = handle_issues_event({"action": "opened", "issue": None})
+        self.assertEqual(res_null_issue["status"], "accepted")
+        self.assertEqual(res_null_issue["agent"], "issue_triager")
+
+        # 2. Null label in issues labeled event
+        res_null_label = handle_issues_event({"action": "labeled", "issue": {"number": 1}, "label": None})
+        self.assertEqual(res_null_label["status"], "ignored")
+
+        # 3. Valid label with null issue in issues labeled event
+        res_null_issue_labeled = handle_issues_event(
+            {"action": "labeled", "issue": None, "label": {"name": "ready-for-pr"}}
+        )
+        self.assertEqual(res_null_issue_labeled["status"], "accepted")
+        self.assertEqual(res_null_issue_labeled["agent"], "pr_drafter")
+
+        # 4. Null issue in issue_comment event
+        res_comment_null_issue = handle_issue_comment_event(
+            {"action": "created", "issue": None, "comment": {"body": "hello"}}
+        )
+        self.assertEqual(res_comment_null_issue["status"], "accepted")
+        self.assertEqual(res_comment_null_issue["agent"], "issue_triager")
+
+        # 5. Issue with null labels and null user in issue_comment event
+        res_comment_null_labels = handle_issue_comment_event(
+            {
+                "action": "created",
+                "issue": {"number": 1, "labels": None, "user": None},
+                "comment": {"body": "hello"},
+            }
+        )
+        self.assertEqual(res_comment_null_labels["status"], "accepted")
+        self.assertEqual(res_comment_null_labels["agent"], "issue_triager")
+
+        # 6. Null comment and null issue in issue_comment event
+        res_comment_null_all = handle_issue_comment_event(
+            {"action": "created", "issue": None, "comment": None}
+        )
+        self.assertEqual(res_comment_null_all["status"], "accepted")
+
+        # 7. Null pull_request in pull_request_review_comment event
+        res_pr_comment_null_pr = handle_pull_request_review_comment_event(
+            {"action": "created", "pull_request": None, "comment": {"body": "test"}}
+        )
+        self.assertEqual(res_pr_comment_null_pr["status"], "accepted")
+        self.assertEqual(res_pr_comment_null_pr["agent"], "code_fixer")
+
+        # 8. Null comment and null pull_request in pull_request_review_comment event
+        res_pr_comment_null_all = handle_pull_request_review_comment_event(
+            {"action": "created", "pull_request": None, "comment": None}
+        )
+        self.assertEqual(res_pr_comment_null_all["status"], "accepted")
+        self.assertEqual(res_pr_comment_null_all["agent"], "code_fixer")
+
+        # 9. Null pull_request in pull_request event
+        res_pr_null_pr = handle_pull_request_event(
+            {"action": "opened", "pull_request": None}
+        )
+        self.assertEqual(res_pr_null_pr["status"], "accepted")
+        self.assertEqual(res_pr_null_pr["agent"], "code_reviewer")
+
+        # 10. Null pull_request and null review in pull_request_review event
+        res_pr_review_null_all = handle_pull_request_review_event(
+            {"action": "submitted", "pull_request": None, "review": None}
+        )
+        self.assertEqual(res_pr_review_null_all["status"], "ignored")
+
+
