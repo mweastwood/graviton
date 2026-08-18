@@ -733,6 +733,37 @@ class TestQuotaTracker(unittest.TestCase):
 
         self.assertEqual(fetch_call_count, 1)
 
+    def test_concurrent_poll_live_quota_different_pools_not_blocked(self):
+        tracker = QuotaTracker()
+        w5h_gemini = QuotaWindow(name="5H", remaining_percentage=85.0)
+        w1w_gemini = QuotaWindow(name="1W", remaining_percentage=75.0)
+        w5h_claude = QuotaWindow(name="5H", remaining_percentage=90.0)
+        w1w_claude = QuotaWindow(name="1W", remaining_percentage=80.0)
+        pools_fetched = []
+        fetch_lock = threading.Lock()
+
+        def slow_fetch(token=None, quota_pool=None, **kwargs):
+            with fetch_lock:
+                pools_fetched.append(quota_pool)
+            time.sleep(0.1)
+            if quota_pool == "claude_gpt":
+                return w5h_claude, w1w_claude
+            return w5h_gemini, w1w_gemini
+
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+            t1 = threading.Thread(target=tracker.poll_live_quota, kwargs={"quota_pool": "gemini", "force": True})
+            t2 = threading.Thread(target=tracker.poll_live_quota, kwargs={"quota_pool": "claude_gpt", "force": True})
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        self.assertEqual(len(pools_fetched), 2)
+        self.assertIn("gemini", pools_fetched)
+        self.assertIn("claude_gpt", pools_fetched)
+        self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 85.0)
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 90.0)
+
     def test_fetch_failure_updates_timestamps_to_prevent_endpoint_hammering(self):
         tracker = QuotaTracker()
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
