@@ -287,23 +287,6 @@ class TaskManager:
                 self._rebuild_queue_locked()
                 logger.info("TaskManager resumed task acceptance and worker execution.")
             return self._paused
-
-    def _rebuild_queue_locked(self):
-        """
-        Rebuild internal queue from self._tasks for queued and quota-paused tasks.
-        Must be called while holding self._lock.
-        """
-        while True:
-            try:
-                self._queue.get_nowait()
-                self._queue.task_done()
-            except (queue.Empty, ValueError):
-                break
-
-        for task in self._tasks.values():
-            if task.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA):
-                self._queue.put(task)
-
     def rebuild_queue(self):
         """Rebuild internal task queue from active task registry."""
         with self._lock:
