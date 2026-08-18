@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 logger = logging.getLogger("graviton.quota")
 
@@ -863,7 +863,7 @@ class QuotaTracker:
         self.interval_1w = 60.0
         self._last_fetch_5h: Dict[str, float] = {}
         self._last_fetch_1w: Dict[str, float] = {}
-        self._in_flight: bool = False
+        self._in_flight_pools: Set[str] = set()
         self._stop_polling_event = threading.Event()
         self._polling_thread: Optional[threading.Thread] = None
 
@@ -1358,7 +1358,7 @@ class QuotaTracker:
         pool = quota_pool if quota_pool is not None else self.quota_pool
         pk = _normalize_pool_key(pool)
         with self._lock:
-            if self._in_flight:
+            if pk in self._in_flight_pools:
                 return self.get_pool_windows(pool)
 
             last_5h = self._last_fetch_5h.get(pk, 0.0)
@@ -1369,13 +1369,13 @@ class QuotaTracker:
             if not (due_5h or due_1w):
                 return self.get_pool_windows(pool)
 
-            self._in_flight = True
+            self._in_flight_pools.add(pk)
 
         try:
             res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
         finally:
             with self._lock:
-                self._in_flight = False
+                self._in_flight_pools.discard(pk)
 
         with self._lock:
             now = time.time()
