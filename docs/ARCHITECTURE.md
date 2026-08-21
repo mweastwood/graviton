@@ -128,10 +128,39 @@ stateDiagram-v2
 
 1. **`periodic_bug_sweep`**:
    - **Target Agent**: `codebase_auditor`
-   - **Frequency**: Every 24 hours (86,400s) by default.
+   - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `true`).
    - **Action**: Queries open GitHub issues, scans `/workspace` for unhandled exceptions, resource leaks, broken paths, or race conditions, deduplicates findings, and files new issues via `gh issue create --label "bug"`.
 2. **`periodic_quality_sweep`**:
    - **Target Agent**: `codebase_auditor`
-   - **Frequency**: Every 24 hours (86,400s) by default.
+   - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `true`).
    - **Action**: Queries open refactoring/enhancement issues, scans codebase for performance bottlenecks, long functions, or modularization needs, deduplicates findings, and files new issues via `gh issue create --label "enhancement"`.
+3. **`periodic_security_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `false`).
+   - **Action**: Scans the codebase for security vulnerabilities, hardcoded secrets, injection vectors, or vulnerable dependencies, deduplicates findings, and files new issues via `gh issue create --label "bug"`.
+4. **`periodic_test_coverage_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `false`).
+   - **Action**: Analyzes test coverage across modules, identifying untested edge cases, missing assertions, or untested helper routines, and files new issues via `gh issue create --label "enhancement"`.
+5. **`periodic_typing_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `false`).
+   - **Action**: Inspects codebase for missing or loose type annotations, `Any` overuse, and signature mismatches, filing new issues via `gh issue create --label "enhancement"`.
+6. **`periodic_dead_code_sweep`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 7 days (604,800s) by default (Enabled: `false`).
+   - **Action**: Identifies unreachable branches, unreferenced private helpers, obsolete configuration flags, or unused exports, filing new issues via `gh issue create --label "enhancement"`.
+7. **`periodic_docs_audit`**:
+   - **Target Agent**: `codebase_auditor`
+   - **Frequency**: Every 7 days (604,800s) by default (Enabled: `false`).
+   - **Action**: Inspects documentation (`README.md`, `docs/ARCHITECTURE.md`, CLI options, docstrings) for drift against actual implementation, filing new issues via `gh issue create --label "documentation"`.
+8. **`periodic_ready_pr_sweep`**:
+   - **Target Agent**: `pr_drafter`
+   - **Frequency**: Every 4 hours (14,400s) by default (Enabled: `false`).
+   - **Action**: Periodically queries open issues labeled `ready-for-pr` without open PRs, initiating `pr_drafter` to create a feature branch, run local tests, and draft a pull request.
+9. **`periodic_pr_hygiene_sweep`**:
+   - **Target Agent**: `code_reviewer`
+   - **Frequency**: Every 12 hours (43,200s) by default (Enabled: `false`).
+   - **Action**: Scans open automated pull requests for merge conflicts or failing presubmit CI checks, alerting or queuing remediation.
+
 

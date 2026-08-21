@@ -59,6 +59,116 @@ DEFAULT_JOBS = [
         "next_run": None,
         "repo_cycling": True,
     },
+    {
+        "job_id": "periodic_security_sweep",
+        "name": "Periodic Security & Dependency Vulnerability Sweep",
+        "interval_seconds": 86400,
+        "agent": "codebase_auditor",
+        "prompt": (
+            "Perform periodic security sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "scan the codebase for security vulnerabilities, hardcoded secrets, injection vectors, or vulnerable dependencies. "
+            "Deduplicate findings against open issues. For any new security finding, file a new issue using "
+            "`gh issue create --title \"[Security Sweep] <summary>\" --body \"<details & remediation>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"bug\"`."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_test_coverage_sweep",
+        "name": "Periodic Test Coverage & Quality Sweep",
+        "interval_seconds": 86400,
+        "agent": "codebase_auditor",
+        "prompt": (
+            "Perform periodic test coverage sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "scan the codebase for untested modules, critical untested helper routines, or missing edge-case unit tests. "
+            "Deduplicate findings against open issues. For any new testing gap, file a new issue using "
+            "`gh issue create --title \"[Test Sweep] Add unit test coverage for <module>\" --body \"<rationale & proposed test cases>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_typing_sweep",
+        "name": "Periodic Type Annotation & Strict Typing Audit",
+        "interval_seconds": 86400,
+        "agent": "codebase_auditor",
+        "prompt": (
+            "Perform periodic typing sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "scan the codebase for missing or loose type annotations, Any overuse, deprecated standard library constructs, "
+            "and type signature mismatches. Deduplicate findings against open issues. For any new typing gap, file a new issue using "
+            "`gh issue create --title \"[Typing Sweep] Add strict type annotations to <module>\" --body \"<rationale & code snippet>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_dead_code_sweep",
+        "name": "Periodic Dead Code & Obsolete Helper Pruning",
+        "interval_seconds": 604800,
+        "agent": "codebase_auditor",
+        "prompt": (
+            "Perform periodic dead code sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "scan the codebase for unreachable branches, unreferenced private helpers, obsolete configuration flags, "
+            "or unused exports. Deduplicate findings against open issues. For any new dead code finding, file a new issue using "
+            "`gh issue create --title \"[Dead Code Sweep] Remove obsolete <symbol/module>\" --body \"<location and evidence of non-usage>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_docs_audit",
+        "name": "Periodic Documentation & Architecture Drift Audit",
+        "interval_seconds": 604800,
+        "agent": "codebase_auditor",
+        "prompt": (
+            "Perform periodic documentation audit: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "inspect documentation (README, ARCHITECTURE.md, CLI options, docstrings) for drift against actual implementation. "
+            "Deduplicate findings against open issues. For any documentation drift, file a new issue using "
+            "`gh issue create --title \"[Docs Audit] <scope>: <discrepancy>\" --body \"<discrepancy details & suggested fix>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"documentation\"`."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_ready_pr_sweep",
+        "name": "Periodic Ready-for-PR Backlog Processing",
+        "interval_seconds": 14400,
+        "agent": "pr_drafter",
+        "prompt": (
+            "Perform periodic ready-for-pr backlog processing: query open issues labeled `ready-for-pr` using "
+            "`gh issue list --state open --label \"ready-for-pr\" --json number,title,body`, select the oldest "
+            "unassigned or pending issue without an open PR, create a feature branch, execute local unit tests, and draft an initial PR."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
+    {
+        "job_id": "periodic_pr_hygiene_sweep",
+        "name": "Periodic PR Hygiene & Conflict Sweep",
+        "interval_seconds": 43200,
+        "agent": "code_reviewer",
+        "prompt": (
+            "Perform periodic PR hygiene sweep: query open automated pull requests using "
+            "`gh pr list --state open --json number,title,headRefName,mergeable`, inspect for merge conflicts "
+            "or failing presubmit checks, and post status notifications or trigger automated code fixes."
+        ),
+        "enabled": False,
+        "last_run": None,
+        "next_run": None,
+        "repo_cycling": True,
+    },
 ]
 
 

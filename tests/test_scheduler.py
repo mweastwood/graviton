@@ -217,8 +217,26 @@ class TestTaskScheduler(unittest.TestCase):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, runner=mock_runner)
         self.assertTrue(self.config_path.exists())
         self.assertTrue(self.state_path.exists())
-        self.assertIn("periodic_bug_sweep", scheduler.jobs)
-        self.assertIn("periodic_quality_sweep", scheduler.jobs)
+        expected_jobs = [
+            "periodic_bug_sweep",
+            "periodic_quality_sweep",
+            "periodic_security_sweep",
+            "periodic_test_coverage_sweep",
+            "periodic_typing_sweep",
+            "periodic_dead_code_sweep",
+            "periodic_docs_audit",
+            "periodic_ready_pr_sweep",
+            "periodic_pr_hygiene_sweep",
+        ]
+        for job_id in expected_jobs:
+            self.assertIn(job_id, scheduler.jobs)
+        self.assertTrue(scheduler.jobs["periodic_bug_sweep"].enabled)
+        self.assertTrue(scheduler.jobs["periodic_quality_sweep"].enabled)
+        self.assertFalse(scheduler.jobs["periodic_security_sweep"].enabled)
+        self.assertFalse(scheduler.jobs["periodic_ready_pr_sweep"].enabled)
+        self.assertEqual(scheduler.jobs["periodic_ready_pr_sweep"].agent, "pr_drafter")
+        self.assertEqual(scheduler.jobs["periodic_pr_hygiene_sweep"].agent, "code_reviewer")
+
 
     def test_add_get_remove_job(self):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)
