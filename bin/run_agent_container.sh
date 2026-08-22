@@ -64,19 +64,31 @@ fi
 # Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
 CONTAINER_NAME="graviton-agent-run-${RUN_ID}"
 cleanup() {
+  if [ "$USE_CONTAINER_EXEC" = true ]; then
+    if [ -n "${CACHE_DIR}" ] && [ "${EXIT_CODE:-1}" -ne 0 ]; then
+      docker exec "${CONTAINER_NAME}" chmod -R ugo+rwX /workspace 2>/dev/null || true
+    else
+      docker exec "${CONTAINER_NAME}" rm -rf /workspace/* /workspace/.* 2>/dev/null || true
+    fi
+  fi
   docker rm -f "${CONTAINER_NAME}" &>/dev/null || true
   if [ -n "${CACHE_DIR}" ]; then
     if [ "${EXIT_CODE:-1}" -ne 0 ]; then
       echo "Syncing workspace to cache: ${CACHE_DIR}"
+      rm -rf "${CACHE_DIR}" 2>/dev/null || docker run --rm -v "${CACHE_DIR}:/target" alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true' 2>/dev/null || true
       rm -rf "${CACHE_DIR}" 2>/dev/null || true
       mkdir -p "${CACHE_DIR}"
       cp -a "${TEMP_WORKSPACE}/." "${CACHE_DIR}/" 2>/dev/null || true
     else
       echo "Cleaning up workspace cache on success: ${CACHE_DIR}"
+      rm -rf "${CACHE_DIR}" 2>/dev/null || docker run --rm -v "${CACHE_DIR}:/target" alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true' 2>/dev/null || true
       rm -rf "${CACHE_DIR}" 2>/dev/null || true
     fi
   fi
-  rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true
+  if [ -d "${TEMP_WORKSPACE}" ]; then
+    rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || docker run --rm -v "${TEMP_WORKSPACE}:/target" alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true' 2>/dev/null || true
+    rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 

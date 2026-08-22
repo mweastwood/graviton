@@ -650,6 +650,9 @@ LAST_WS="$(cat "{self.test_dir}/last_ws_cache_del.txt" 2>/dev/null || echo "")"
 if [ "$1" = "run" ] && [ "$2" = "-d" ]; then
     exit 0
 elif [ "$1" = "exec" ]; then
+    if [[ "$*" == *"chmod"* ]] || [[ "$*" == *"rm "* ]] || [[ "$*" == *"rm -rf"* ]]; then
+        exit 0
+    fi
     if [ ! -f "$LAST_WS/work_attempt_1.txt" ]; then
         # First pass: create file1 and file_to_delete, then fail to populate cache
         echo "keep" > "$LAST_WS/work_attempt_1.txt"

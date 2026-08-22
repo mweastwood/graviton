@@ -4,14 +4,17 @@ Thread-safe Task Queue & Execution Manager for Graviton.
 
 import collections
 import logging
+import os
 import queue
 import re
+import shutil
+import stat
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
@@ -224,6 +227,131 @@ def resolve_task_pool_and_model(quota_tracker: Optional[Any] = None) -> Tuple[st
     return (selected_pool, selected_model, all_exhausted)
 
 
+def clean_workspace_dir(path: Optional[Union[Path, str]]) -> bool:
+    """
+    Robustly removes a workspace directory, handling root-owned files or permission errors
+    by adjusting file permissions and falling back to a docker rm helper if needed.
+    """
+    if path is None:
+        return True
+    p = Path(path)
+    if not p.exists():
+        return True
+
+    def _handle_remove_readonly(func, target_path, exc_info):
+        try:
+            os.chmod(target_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            func(target_path)
+        except Exception:
+            pass
+
+    try:
+        shutil.rmtree(p, onerror=_handle_remove_readonly)
+    except Exception:
+        pass
+
+    if not p.exists():
+        return True
+
+    # If directory still exists on host (e.g. root-owned files), fallback to helper container
+    try:
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{p.resolve()}:/target", "alpine", "sh", "-c", "rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        try:
+            shutil.rmtree(p, ignore_errors=True)
+            if p.exists():
+                p.rmdir()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"Docker fallback cleanup failed for {p}: {e}")
+
+    return not p.exists()
+
+
+def prune_abandoned_workspaces(
+    base_dir: Union[Path, str] = Path("/tmp/graviton-workspaces"),
+    max_age_seconds: int = 86400,
+) -> int:
+    """
+    Garbage collect abandoned /tmp/graviton-workspaces/run-* directories and stale cache entries
+    older than max_age_seconds (default 24 hours) whose corresponding Docker containers are not running.
+    Returns the number of cleaned up workspace directories.
+    """
+    base = Path(base_dir)
+    if not base.exists() or not base.is_dir():
+        return 0
+
+    now = time.time()
+    targets: List[Path] = []
+    try:
+        for entry in base.iterdir():
+            if entry.is_dir():
+                if entry.name.startswith("run-"):
+                    targets.append(entry)
+                elif entry.name == "cache":
+                    for cache_entry in entry.iterdir():
+                        if cache_entry.is_dir():
+                            targets.append(cache_entry)
+    except Exception as e:
+        logger.warning(f"Error scanning workspace directory {base} for GC: {e}")
+        return 0
+
+    if not targets:
+        return 0
+
+    aged_targets: List[Path] = []
+    has_aged_run = False
+    for target in targets:
+        try:
+            mtime = target.stat().st_mtime
+            if (now - mtime) >= max_age_seconds:
+                aged_targets.append(target)
+                if target.name.startswith("run-"):
+                    has_aged_run = True
+        except Exception:
+            pass
+
+    if not aged_targets:
+        return 0
+
+    running_containers = set()
+    if has_aged_run:
+        try:
+            res = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if res.returncode == 0:
+                running_containers = {c.strip() for c in res.stdout.splitlines() if c.strip()}
+        except Exception:
+            pass
+
+    pruned_count = 0
+    for target in aged_targets:
+        try:
+            if target.name.startswith("run-"):
+                run_id = target.name[len("run-"):]
+                container_name = f"graviton-agent-run-{run_id}"
+                if container_name in running_containers:
+                    continue
+            if clean_workspace_dir(target):
+                pruned_count += 1
+                logger.info(f"Garbage collected abandoned workspace directory: {target}")
+        except Exception as err:
+            logger.debug(f"Could not prune workspace directory {target}: {err}")
+
+    return pruned_count
+
+
 class TaskManager:
     """
     Thread-safe Task Manager managing pending queued tasks, active workers,
@@ -322,7 +450,12 @@ class TaskManager:
             return self._can_accept_task_locked(agent=agent, prompt=prompt)
 
     def start(self):
-        """Start worker daemon threads."""
+        """Start worker daemon threads and prune stale workspaces."""
+        try:
+            prune_abandoned_workspaces()
+        except Exception as e:
+            logger.warning(f"Initial workspace cleanup sweep failed: {e}")
+
         with self._lock:
             if self._running:
                 return
@@ -714,9 +847,8 @@ class TaskManager:
                 task.status = TaskStatus.ABORTED
                 task.finish_time = time.time()
                 task.error_message = "Aborted by user"
-                if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                    import shutil
-                    shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                if task.cached_workspace_dir:
+                    clean_workspace_dir(task.cached_workspace_dir)
                 self._rebuild_queue_locked()
                 self._prune_tasks_locked()
                 logger.info(f"Queued task '{task_id}' aborted by user.")
@@ -749,9 +881,8 @@ class TaskManager:
             except Exception as e:
                 logger.warning(f"Error terminating process for task '{task_id}': {e}")
 
-        if task_to_cleanup and task_to_cleanup.cached_workspace_dir and task_to_cleanup.cached_workspace_dir.exists():
-            import shutil
-            shutil.rmtree(task_to_cleanup.cached_workspace_dir, ignore_errors=True)
+        if task_to_cleanup and task_to_cleanup.cached_workspace_dir:
+            clean_workspace_dir(task_to_cleanup.cached_workspace_dir)
 
         return True
 
@@ -980,17 +1111,15 @@ class TaskManager:
                     self._active_processes.pop(task.id, None)
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED by user.")
-                        if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                            import shutil
-                            shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                        if task.cached_workspace_dir:
+                            clean_workspace_dir(task.cached_workspace_dir)
                     elif return_code == 0:
                         task.finish_time = time.time()
                         task.return_code = return_code
                         task.status = TaskStatus.COMPLETED
                         logger.info(f"[{worker_id}] Task '{task.id}' COMPLETED successfully.")
-                        if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                            import shutil
-                            shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                        if task.cached_workspace_dir:
+                            clean_workspace_dir(task.cached_workspace_dir)
                     else:
                         if task.attempt >= task.max_attempts:
                             if task.attempt < task.max_total_attempts:
@@ -1015,18 +1144,16 @@ class TaskManager:
                                     f"[{worker_id}] Task '{task.id}' FAILED after reaching max_total_attempts "
                                     f"({task.attempt}/{task.max_total_attempts})."
                                 )
-                                if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                                    import shutil
-                                    shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                                if task.cached_workspace_dir:
+                                    clean_workspace_dir(task.cached_workspace_dir)
                         else:
                             task.finish_time = time.time()
                             task.return_code = return_code
                             task.status = TaskStatus.FAILED
                             task.error_message = stderr_output or f"Process exited with code {return_code}"
                             logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
-                            if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                                import shutil
-                                shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                            if task.cached_workspace_dir:
+                                clean_workspace_dir(task.cached_workspace_dir)
                     self._prune_tasks_locked()
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")
@@ -1037,9 +1164,8 @@ class TaskManager:
                         task.return_code = -1
                         task.error_message = str(e)
                         task.status = TaskStatus.FAILED
-                    if task.cached_workspace_dir and task.cached_workspace_dir.exists():
-                        import shutil
-                        shutil.rmtree(task.cached_workspace_dir, ignore_errors=True)
+                    if task.cached_workspace_dir:
+                        clean_workspace_dir(task.cached_workspace_dir)
                     self._prune_tasks_locked()
             finally:
                 if self.quota_tracker:
