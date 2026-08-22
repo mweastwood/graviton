@@ -16,8 +16,14 @@ from lib.quota import (
     QuotaTracker,
     QuotaWindow,
 )
-from lib.runner import run_agent_container
-from lib.tasks import Task, TaskManager, TaskStatus, resolve_task_pool_and_model
+from lib.tasks import (
+    Task,
+    TaskManager,
+    TaskStatus,
+    clean_workspace_dir,
+    prune_abandoned_workspaces,
+    resolve_task_pool_and_model,
+)
 
 
 class TestTaskManager(unittest.TestCase):
@@ -624,6 +630,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task1.status, TaskStatus.FAILED)
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         mock_quota.reset_mock()
@@ -638,6 +645,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task2.status, TaskStatus.FAILED)
         self.assertEqual(task2.error_message, "Worker process crashed")
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
@@ -1133,6 +1141,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
@@ -2183,6 +2192,104 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
         pool, model, exhausted = resolve_task_pool_and_model(tracker)
         self.assertEqual(pool, "gemini")
         self.assertEqual(model, "gemini-custom")
+
+    def test_clean_workspace_dir_basic_and_none(self):
+        self.assertTrue(clean_workspace_dir(None))
+        self.assertTrue(clean_workspace_dir(Path("/tmp/non_existent_graviton_dir_12345")))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "test_ws"
+            target.mkdir()
+            (target / "file.txt").write_text("hello")
+            nested = target / "nested"
+            nested.mkdir()
+            (nested / "nested.txt").write_text("world")
+
+            self.assertTrue(clean_workspace_dir(target))
+            self.assertFalse(target.exists())
+
+    def test_clean_workspace_dir_readonly_files(self):
+        import stat
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "test_ws_ro"
+            target.mkdir()
+            ro_file = target / "readonly.txt"
+            ro_file.write_text("protected content")
+            ro_file.chmod(stat.S_IREAD)
+
+            ro_dir = target / "readonly_dir"
+            ro_dir.mkdir()
+            (ro_dir / "sub.txt").write_text("sub")
+            ro_dir.chmod(stat.S_IREAD | stat.S_IEXEC)
+
+            self.assertTrue(clean_workspace_dir(target))
+            self.assertFalse(target.exists())
+
+    @patch("lib.tasks.subprocess.run")
+    def test_clean_workspace_dir_docker_fallback(self, mock_subproc):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "test_ws_docker"
+            target.mkdir()
+            (target / "dummy.txt").write_text("dummy")
+
+            mock_subproc.return_value = MagicMock(returncode=0)
+            res = clean_workspace_dir(target)
+            self.assertTrue(res)
+            self.assertFalse(target.exists())
+
+    def test_prune_abandoned_workspaces_empty_or_missing(self):
+        self.assertEqual(prune_abandoned_workspaces(Path("/tmp/non_existent_ws_root_999")), 0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(prune_abandoned_workspaces(Path(tmpdir)), 0)
+
+    @patch("lib.tasks.subprocess.run")
+    def test_prune_abandoned_workspaces_gc_sweep(self, mock_subproc):
+        import os
+        mock_subproc.return_value = MagicMock(returncode=0, stdout="graviton-agent-run-active_123\n")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            
+            # 1. Abandoned old run directory (age 48 hours)
+            old_run = base / "run-old_456"
+            old_run.mkdir()
+            (old_run / "file.o").write_text("build artifact")
+            old_mtime = time.time() - (48 * 3600)
+            os.utime(old_run, (old_mtime, old_mtime))
+
+            # 2. Active run directory (currently running in docker)
+            active_run = base / "run-active_123"
+            active_run.mkdir()
+            (active_run / "file.o").write_text("active artifact")
+            os.utime(active_run, (old_mtime, old_mtime))
+
+            # 3. Fresh run directory (age 1 hour, within TTL)
+            fresh_run = base / "run-fresh_789"
+            fresh_run.mkdir()
+            (fresh_run / "file.o").write_text("fresh artifact")
+            fresh_mtime = time.time() - 3600
+            os.utime(fresh_run, (fresh_mtime, fresh_mtime))
+
+            # 4. Old cache directory
+            cache_dir = base / "cache" / "task-old"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "cache.o").write_text("cached artifact")
+            os.utime(cache_dir, (old_mtime, old_mtime))
+
+            pruned = prune_abandoned_workspaces(base, max_age_seconds=86400)
+            self.assertEqual(pruned, 2)
+            self.assertFalse(old_run.exists())
+            self.assertTrue(active_run.exists())
+            self.assertTrue(fresh_run.exists())
+            self.assertFalse(cache_dir.exists())
+
+    @patch("lib.tasks.prune_abandoned_workspaces")
+    def test_task_manager_start_invokes_prune(self, mock_prune):
+        manager = TaskManager(max_workers=1)
+        manager.start()
+        mock_prune.assert_called_once()
+        manager.stop(wait=False)
 
 
 if __name__ == "__main__":
