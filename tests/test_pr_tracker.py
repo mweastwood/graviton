@@ -970,6 +970,42 @@ class TestPRTracker(unittest.TestCase):
         tracker.sync_github_prs(repo_root=Path("/tmp"))
         self.assertEqual(mock_run.call_count, 2)
 
+    def test_module_level_negative_approval_phrases_constant(self):
+        from lib.pr_tracker import _NEGATIVE_APPROVAL_PHRASES, has_approval_marker
+
+        self.assertIsInstance(_NEGATIVE_APPROVAL_PHRASES, tuple)
+        self.assertGreater(len(_NEGATIVE_APPROVAL_PHRASES), 0)
+        self.assertIn("not approved", _NEGATIVE_APPROVAL_PHRASES)
+        self.assertIn("not lgtm", _NEGATIVE_APPROVAL_PHRASES)
+        self.assertIn("is this pr approved", _NEGATIVE_APPROVAL_PHRASES)
+
+        for phrase in _NEGATIVE_APPROVAL_PHRASES:
+            self.assertFalse(
+                has_approval_marker(phrase),
+                f"Expected has_approval_marker to return False for '{phrase}'",
+            )
+
+    def test_module_level_explicit_bot_logins_constant(self):
+        from lib.pr_tracker import _EXPLICIT_BOT_LOGINS, is_bot_event
+
+        self.assertIsInstance(_EXPLICIT_BOT_LOGINS, tuple)
+        self.assertIn("antigravity", _EXPLICIT_BOT_LOGINS)
+        self.assertIn("code_reviewer", _EXPLICIT_BOT_LOGINS)
+        self.assertIn("code_fixer", _EXPLICIT_BOT_LOGINS)
+        self.assertIn("issue_triager", _EXPLICIT_BOT_LOGINS)
+        self.assertIn("pr_drafter", _EXPLICIT_BOT_LOGINS)
+        self.assertIn("codebase_auditor", _EXPLICIT_BOT_LOGINS)
+
+        for bot_login in _EXPLICIT_BOT_LOGINS:
+            self.assertTrue(
+                is_bot_event("", bot_login),
+                f"Expected is_bot_event to return True for bot login string '{bot_login}'",
+            )
+            self.assertTrue(
+                is_bot_event("", {"login": bot_login}),
+                f"Expected is_bot_event to return True for bot login dict '{bot_login}'",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

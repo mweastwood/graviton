@@ -30,6 +30,51 @@ _NEG_CR_PATTERN = re.compile(r'\b(no|not|without|zero|never|don\'t|didn\'t|haven
 _BOT_LOGIN_PATTERN = re.compile(r'(?:^|[-_])bot(?:[-_]|$)')
 _ORIGIN_URL_PATTERN = re.compile(r'[:/]([^/]+/[^/]+)$')
 
+_NEGATIVE_APPROVAL_PHRASES: Tuple[str, ...] = (
+    "not approved",
+    "unapproved",
+    "disapproved",
+    "non-approved",
+    "not yet approved",
+    "not been approved",
+    "not fully approved",
+    "not completely approved",
+    "not be approved",
+    "cannot be approved",
+    "can't be approved",
+    "won't be approved",
+    "will be approved",
+    "to be approved",
+    "should be approved",
+    "must be approved",
+    "may be approved",
+    "would be approved",
+    "could be approved",
+    "pending approval",
+    "awaiting approval",
+    "needs approval",
+    "requiring approval",
+    "requires approval",
+    "not lgtm",
+    "no lgtm",
+    "non-lgtm",
+    "un-lgtm",
+    "is this pr approved",
+    "is this approved",
+    "was this approved",
+    "has this been approved",
+    "has it been approved",
+)
+
+_EXPLICIT_BOT_LOGINS: Tuple[str, ...] = (
+    "antigravity",
+    "code_reviewer",
+    "code_fixer",
+    "issue_triager",
+    "pr_drafter",
+    "codebase_auditor",
+)
+
 
 
 def _parse_event_timestamp(ts: Any) -> float:
@@ -80,42 +125,7 @@ def has_approval_marker(text: str) -> bool:
     if _MULTI_WORD_NEG_PATTERN.search(text_lower) or _PREFIX_NEG_PATTERN.search(text_lower):
         return False
 
-    negative_phrases = (
-        "not approved",
-        "unapproved",
-        "disapproved",
-        "non-approved",
-        "not yet approved",
-        "not been approved",
-        "not fully approved",
-        "not completely approved",
-        "not be approved",
-        "cannot be approved",
-        "can't be approved",
-        "won't be approved",
-        "will be approved",
-        "to be approved",
-        "should be approved",
-        "must be approved",
-        "may be approved",
-        "would be approved",
-        "could be approved",
-        "pending approval",
-        "awaiting approval",
-        "needs approval",
-        "requiring approval",
-        "requires approval",
-        "not lgtm",
-        "no lgtm",
-        "non-lgtm",
-        "un-lgtm",
-        "is this pr approved",
-        "is this approved",
-        "was this approved",
-        "has this been approved",
-        "has it been approved",
-    )
-    if any(neg in text_lower for neg in negative_phrases):
+    if any(neg in text_lower for neg in _NEGATIVE_APPROVAL_PHRASES):
         return False
 
     if "lgtm" in text_lower or "approved" in text_lower:
@@ -159,15 +169,7 @@ def is_bot_event(body: str, author_raw: Any = None) -> bool:
         return True
     if _BOT_LOGIN_PATTERN.search(login):
         return True
-    explicit_bots = (
-        "antigravity",
-        "code_reviewer",
-        "code_fixer",
-        "issue_triager",
-        "pr_drafter",
-        "codebase_auditor",
-    )
-    if any(b in login for b in explicit_bots):
+    if any(b in login for b in _EXPLICIT_BOT_LOGINS):
         return True
     return False
 
