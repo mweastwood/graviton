@@ -185,8 +185,21 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn('SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/skills:/root/.gemini/config/skills:ro")', content)
         self.assertNotIn("${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro", content)
 
+    def test_codebase_auditor_guidelines_includes_flaky_and_low_quality_test_checks(self):
+        skill_path = SKILLS_DIR / "codebase-auditor-guidelines" / "SKILL.md"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("Flaky Tests", content)
+        self.assertIn("Low-Quality Tests", content)
+        self.assertIn("Root-Cause Analysis & Resolution Suggestions", content)
+        self.assertIn("time.sleep()", content)
+        self.assertIn("assertTrue(True)", content)
+        self.assertIn("Fix flaky/low-quality test in <module>: <test_name>", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -20,7 +20,11 @@ This skill provides comprehensive instructions for the `codebase_auditor` agent 
    - For **Bug Sweeps**: Search `/workspace` for unhandled exceptions, resource leaks, missing validation, edge cases, broken error paths, or race conditions.
    - For **Quality Sweeps**: Analyze file sizes, long functions, high complexity, missing docstrings/comments, redundant computations, or tightly coupled modules.
    - For **Security Sweeps**: Scan package dependencies for known CVEs, search for hardcoded secrets/credentials, SQL/shell injection vectors, insecure deserialization, or weak cryptography.
-   - For **Test Sweeps**: Identify untested modules, missing assertions, untested critical utility functions, or untested error-handling branches.
+   - For **Test Sweeps**:
+     - **Missing Coverage**: Identify untested modules, untested critical utility functions, or untested error-handling branches.
+     - **Flaky Tests**: Detect tests with timing or concurrency race conditions, arbitrary `time.sleep()` synchronization, order-dependent execution, uncleaned shared global/module state, or unmocked external dependencies (network, clock/timestamps, filesystem).
+     - **Low-Quality Tests**: Detect missing or vacuous assertions (e.g. `self.assertTrue(True)`, swallowed exceptions in broad `try/except` blocks, empty test bodies), tautological logic, fragile/excessive mocking that bypasses actual code execution, or lack of boundary assertions.
+     - **Root-Cause Analysis & Resolution Suggestions**: Detail why the test is flaky or low quality and provide a concrete remediation strategy (e.g., using condition polling, deterministic fixtures, parameterization, or explicit assertions).
    - For **Typing Sweeps**: Inspect codebase for missing type annotations, `Any` overuse, deprecated constructs, and type signature mismatches.
    - For **Dead Code Sweeps**: Search for unreachable code branches, obsolete private helper functions, unused configuration options, or dead exports.
    - For **Docs Audits**: Check for drift between implementation and documentation (`README.md`, `docs/ARCHITECTURE.md`, docstrings, CLI arguments, configuration schemas).
@@ -34,7 +38,9 @@ This skill provides comprehensive instructions for the `codebase_auditor` agent 
      - Bug Sweep: `gh issue create --title "[Bug Sweep] <summary>" --body "<details & repro>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "bug"`
      - Quality Sweep: `gh issue create --title "[Quality Sweep] <scope>: <recommendation>" --body "<rationale & code snippet>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
      - Security Sweep: `gh issue create --title "[Security Sweep] <summary>" --body "<details & remediation>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "bug"`
-     - Test Sweep: `gh issue create --title "[Test Sweep] Add unit test coverage for <module>" --body "<rationale & proposed test cases>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
+     - Test Sweep:
+       - Missing Coverage: `gh issue create --title "[Test Sweep] Add unit test coverage for <module>" --body "<rationale & proposed test cases>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
+       - Flaky/Low-Quality Test: `gh issue create --title "[Test Sweep] Fix flaky/low-quality test in <module>: <test_name>" --body "<analysis, root cause, & suggested resolution>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
      - Typing Sweep: `gh issue create --title "[Typing Sweep] Add strict type annotations to <module>" --body "<rationale & code snippet>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
      - Dead Code Sweep: `gh issue create --title "[Dead Code Sweep] Remove obsolete <symbol/module>" --body "<location and evidence of non-usage>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "enhancement"`
      - Docs Audit: `gh issue create --title "[Docs Audit] <scope>: <discrepancy>" --body "<discrepancy details & suggested fix>\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:codebase_auditor -->" --label "documentation"`
