@@ -141,7 +141,7 @@ stateDiagram-v2
 4. **`periodic_test_coverage_sweep`**:
    - **Target Agent**: `codebase_auditor`
    - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `false`).
-   - **Action**: Analyzes test coverage across modules, identifying untested edge cases, missing assertions, or untested helper routines, and files new issues via `gh issue create --label "enhancement"`.
+   - **Action**: Analyzes test coverage and test quality across modules, identifying coverage gaps, flaky tests (race conditions, sleep-based waits, order dependencies, unmocked state), and low-quality test patterns (vacuous assertions, swallowed exceptions, over-mocking), filing new issues with root-cause analysis and suggested resolutions via `gh issue create --label "enhancement"`.
 5. **`periodic_typing_sweep`**:
    - **Target Agent**: `codebase_auditor`
    - **Frequency**: Every 24 hours (86,400s) by default (Enabled: `false`).

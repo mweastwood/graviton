@@ -237,6 +237,31 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertEqual(scheduler.jobs["periodic_ready_pr_sweep"].agent, "pr_drafter")
         self.assertEqual(scheduler.jobs["periodic_pr_hygiene_sweep"].agent, "code_reviewer")
 
+    def test_default_jobs_and_config_schedules_consistency(self):
+        """Verify that DEFAULT_JOBS in lib/scheduler.py matches config/schedules.json."""
+        default_config_path = Path(__file__).resolve().parent.parent / "config" / "schedules.json"
+        with open(default_config_path, "r", encoding="utf-8") as f:
+            config_jobs = json.load(f)
+
+        from lib.scheduler import DEFAULT_JOBS
+
+        config_jobs_by_id = {j["job_id"]: j for j in config_jobs}
+        default_jobs_by_id = {j["job_id"]: j for j in DEFAULT_JOBS}
+
+        self.assertEqual(set(config_jobs_by_id.keys()), set(default_jobs_by_id.keys()))
+
+        for job_id, default_job in default_jobs_by_id.items():
+            config_job = config_jobs_by_id[job_id]
+            self.assertEqual(default_job["prompt"], config_job["prompt"], f"Prompt mismatch for job '{job_id}'")
+            self.assertEqual(default_job["agent"], config_job["agent"])
+            self.assertEqual(default_job["interval_seconds"], config_job["interval_seconds"])
+            self.assertEqual(default_job["enabled"], config_job["enabled"])
+
+        # Specifically verify periodic_test_coverage_sweep prompt content
+        test_sweep_prompt = default_jobs_by_id["periodic_test_coverage_sweep"]["prompt"]
+        self.assertIn("flaky tests", test_sweep_prompt.lower())
+        self.assertIn("low-quality tests", test_sweep_prompt.lower())
+        self.assertIn("suggested resolution", test_sweep_prompt.lower())
 
     def test_add_get_remove_job(self):
         scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path)

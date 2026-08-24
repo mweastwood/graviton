@@ -81,10 +81,14 @@ DEFAULT_JOBS = [
         "interval_seconds": 86400,
         "agent": "codebase_auditor",
         "prompt": (
-            "Perform periodic test coverage sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
-            "scan the codebase for untested modules, critical untested helper routines, or missing edge-case unit tests. "
-            "Deduplicate findings against open issues. For any new testing gap, file a new issue using "
-            "`gh issue create --title \"[Test Sweep] Add unit test coverage for <module>\" --body \"<rationale & proposed test cases>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
+            "Perform periodic test coverage and quality sweep: fetch open issues using `gh issue list --state open --json number,title,body,labels`, "
+            "scan the codebase for untested modules, missing coverage, flaky tests (race conditions, sleep-based waits, order dependencies, unmocked state), "
+            "and low-quality tests (missing/vacuous assertions, swallowed exceptions, over-mocking). Deduplicate findings against open issues. "
+            "For untested modules or coverage gaps, file an issue using `gh issue create --title \"[Test Sweep] Add unit test coverage for <module>\" "
+            "--body \"<rationale & proposed test cases>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`. "
+            "For flaky or low-quality tests, file an issue with root-cause analysis and suggested resolution using "
+            "`gh issue create --title \"[Test Sweep] Fix flaky/low-quality test in <module>: <test_name>\" "
+            "--body \"<analysis, root cause, & suggested resolution>\\n\\n<!-- antigravity-auto-reply -->\\n<!-- graviton:codebase_auditor -->\" --label \"enhancement\"`."
         ),
         "enabled": False,
         "last_run": None,
