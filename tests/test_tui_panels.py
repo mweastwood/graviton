@@ -12,8 +12,10 @@ from lib.quota import QuotaTracker
 from lib.scheduler import ScheduledJob, TaskScheduler
 from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
+    ACTIVE_TASK_REDUCTION_STEPS,
     ColumnSpec,
     TableLayoutSpec,
+    allocate_active_task_columns,
     allocate_approved_pr_columns,
     allocate_declarative_columns,
     allocate_scheduled_job_columns,
@@ -522,7 +524,12 @@ class TestTUIPanels(unittest.TestCase):
         self.assertIn("claude-3-5-sonne", row_claude)
 
     def test_allocate_active_task_columns_narrow_and_wide(self):
-        from lib.tui_panels import allocate_active_task_columns
+        # Verify declarative reduction table structure
+        self.assertEqual(len(ACTIVE_TASK_REDUCTION_STEPS), 27)
+        valid_cols = {"id", "agent", "model", "target", "attempt", "elapsed"}
+        for col_name, floor in ACTIVE_TASK_REDUCTION_STEPS:
+            self.assertIn(col_name, valid_cols)
+            self.assertGreaterEqual(floor, 0)
 
         # Wide width (inner_w = 96)
         id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(96)
@@ -537,6 +544,21 @@ class TestTUIPanels(unittest.TestCase):
         # Narrow width (inner_w = 51)
         id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(51)
         self.assertEqual(id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5, 51)
+
+        # Boundary width testing across all widths from 0 to 120
+        for w in range(0, 121):
+            id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(w)
+            total = id_w + agent_w + model_w + target_w + attempt_w + elapsed_w + 5
+            if w >= 67:
+                self.assertLessEqual(total, max(67, w))
+            else:
+                self.assertLessEqual(total, 67)
+                self.assertGreaterEqual(id_w, 0)
+                self.assertGreaterEqual(agent_w, 0)
+                self.assertGreaterEqual(model_w, 0)
+                self.assertGreaterEqual(target_w, 0)
+                self.assertGreaterEqual(attempt_w, 0)
+                self.assertGreaterEqual(elapsed_w, 0)
 
         # Very narrow width (inner_w < 35, e.g. 30 and 25)
         id_w, agent_w, model_w, target_w, attempt_w, elapsed_w = allocate_active_task_columns(30)
