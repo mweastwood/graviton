@@ -5,7 +5,7 @@ Unit tests for lib/updater.py
 import subprocess
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 from lib.updater import (
     get_git_info,
     perform_git_pull,
@@ -217,20 +217,22 @@ class TestUpdater(unittest.TestCase):
         self.assertEqual(commit, "a1b2c3d")
         self.assertEqual(branch, "main")
         self.assertEqual(mock_run.call_count, 2)
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=None,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=None,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        mock_run.assert_has_calls([
+            call(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=None,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+            call(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=None,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+        ])
 
     @patch("subprocess.run")
     def test_get_git_info_custom_repo_root(self, mock_run):
@@ -254,20 +256,22 @@ class TestUpdater(unittest.TestCase):
         self.assertEqual(commit, "a1b2c3d")
         self.assertEqual(branch, "main")
         self.assertEqual(mock_run.call_count, 2)
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        mock_run.assert_has_calls([
+            call(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+            call(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+        ])
 
     @patch("subprocess.run")
     def test_get_git_info_string_repo_root(self, mock_run):
@@ -291,20 +295,22 @@ class TestUpdater(unittest.TestCase):
         self.assertEqual(commit, "a1b2c3d")
         self.assertEqual(branch, "main")
         self.assertEqual(mock_run.call_count, 2)
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd="/custom/string/path",
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        mock_run.assert_any_call(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd="/custom/string/path",
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        mock_run.assert_has_calls([
+            call(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd="/custom/string/path",
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+            call(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd="/custom/string/path",
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ),
+        ])
 
     @patch("subprocess.run")
     def test_get_git_info_nonzero_returncode_or_empty_output(self, mock_run):

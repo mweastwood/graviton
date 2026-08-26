@@ -65,8 +65,8 @@ def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str
         )
         if res_sha.returncode == 0 and res_sha.stdout.strip():
             commit = res_sha.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to retrieve git commit SHA: %s", e)
 
     try:
         res_branch = subprocess.run(
@@ -78,8 +78,8 @@ def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str
         )
         if res_branch.returncode == 0 and res_branch.stdout.strip():
             branch = res_branch.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to retrieve git branch: %s", e)
 
     return commit, branch
 
