@@ -321,6 +321,76 @@ class TestUpdater(unittest.TestCase):
         self.assertEqual(commit, "unknown")
         self.assertEqual(branch, "unknown")
 
+    @patch("subprocess.run")
+    def test_get_git_info_partial_execution_failure(self, mock_run):
+        # Case A: SHA succeeds, branch fails with non-zero exit code
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=128,
+                stdout="fatal: ref HEAD is not a symbolic ref",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "unknown")
+
+        # Case B: SHA succeeds, branch returns empty stdout
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="   \n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "unknown")
+
+    @patch("subprocess.run")
+    def test_get_git_info_partial_exception_resilience(self, mock_run):
+        # Case A: SHA succeeds, branch raises TimeoutExpired
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.TimeoutExpired(cmd="git", timeout=5),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "unknown")
+
+        # Case B: SHA succeeds, branch raises FileNotFoundError
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            FileNotFoundError("[Errno 2] No such file or directory: 'git'"),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
