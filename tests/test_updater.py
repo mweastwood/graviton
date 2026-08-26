@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from lib.updater import (
+    get_git_info,
     perform_git_pull,
     check_if_dockerfile_changed,
     rebuild_agent_container,
@@ -195,6 +196,132 @@ class TestUpdater(unittest.TestCase):
         mock_proc.wait.assert_called_once_with(timeout=2)
         mock_execv.assert_called_once()
 
+    @patch("subprocess.run")
+    def test_get_git_info_success(self, mock_run):
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "main")
+        self.assertEqual(mock_run.call_count, 2)
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=None,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=None,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @patch("subprocess.run")
+    def test_get_git_info_custom_repo_root(self, mock_run):
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        repo_root = Path("/custom/repo/path")
+        commit, branch = get_git_info(repo_root=repo_root)
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "main")
+        self.assertEqual(mock_run.call_count, 2)
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @patch("subprocess.run")
+    def test_get_git_info_nonzero_returncode_or_empty_output(self, mock_run):
+        # Case A: returncode != 0
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=128,
+                stdout="fatal: not a git repository",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=128,
+                stdout="fatal: not a git repository",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "unknown")
+
+        # Case B: returncode == 0 but stdout is empty / whitespace
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="   \n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "unknown")
+
+    @patch("subprocess.run")
+    def test_get_git_info_exception_resilience(self, mock_run):
+        # Case A: TimeoutExpired exception
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=5)
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "unknown")
+
+        # Case B: FileNotFoundError exception
+        mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: 'git'")
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
+
