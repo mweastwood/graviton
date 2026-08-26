@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.updater")
 
@@ -45,11 +45,11 @@ def get_uptime_str() -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def get_git_info(repo_root: Optional[Path] = None) -> Tuple[str, str]:
+def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str]:
     """
     Retrieve current git commit SHA and branch name.
 
-    :param repo_root: Optional Path to repository root.
+    :param repo_root: Optional Path or str to repository root.
     :return: Tuple (commit_sha, branch_name).
     """
     cwd = str(repo_root) if repo_root else None
@@ -65,7 +65,10 @@ def get_git_info(repo_root: Optional[Path] = None) -> Tuple[str, str]:
         )
         if res_sha.returncode == 0 and res_sha.stdout.strip():
             commit = res_sha.stdout.strip()
+    except Exception as e:
+        logger.debug("Failed to retrieve git commit SHA: %s", e)
 
+    try:
         res_branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=cwd,
@@ -75,8 +78,8 @@ def get_git_info(repo_root: Optional[Path] = None) -> Tuple[str, str]:
         )
         if res_branch.returncode == 0 and res_branch.stdout.strip():
             branch = res_branch.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to retrieve git branch: %s", e)
 
     return commit, branch
 
