@@ -40,16 +40,16 @@ class TestRunListener(unittest.TestCase):
         return min_bin
 
     def test_missing_smee_url_argument(self):
-        """Test execution when no arguments are provided to ensure it prints usage instructions and exits with exit code 1."""
+        """Test execution when no arguments are provided to ensure it prints usage instructions to stderr and exits with exit code 1."""
         res = subprocess.run(
             [str(RUN_LISTENER_PATH)],
             capture_output=True,
             text=True,
         )
         self.assertEqual(res.returncode, 1)
-        output = res.stdout + res.stderr
-        self.assertIn("Usage:", output)
-        self.assertIn("<SMEE_URL> [TARGET_PORT]", output)
+        self.assertEqual(res.stdout, "")
+        self.assertIn("Usage:", res.stderr)
+        self.assertIn("<SMEE_URL> [TARGET_PORT]", res.stderr)
 
     def test_standard_smee_cli_in_path(self):
         """Test execution when smee command is available on system PATH."""
@@ -82,6 +82,34 @@ class TestRunListener(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            npm_bin = fake_home / ".npm-global" / "bin"
+            mock_smee = self._create_mock_binary(npm_bin, "smee")
+
+            min_bin = self._setup_minimal_bin(tmp_path)
+
+            env = os.environ.copy()
+            env["HOME"] = str(fake_home)
+            env["PATH"] = str(min_bin)
+
+            res = subprocess.run(
+                [str(RUN_LISTENER_PATH), "https://smee.io/channel", "9000"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(res.returncode, 0)
+            output = res.stdout
+            self.assertIn("--url https://smee.io/channel", output)
+            self.assertIn("--path /", output)
+            self.assertIn("--port 9000", output)
+            self.assertIn(str(mock_smee), output)
+
+    def test_npm_global_fallback_spaces_in_home(self):
+        """Test fallback to ${HOME}/.npm-global/bin/smee when HOME path contains spaces."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            fake_home = tmp_path / "home with spaces"
             fake_home.mkdir()
             npm_bin = fake_home / ".npm-global" / "bin"
             mock_smee = self._create_mock_binary(npm_bin, "smee")
