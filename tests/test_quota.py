@@ -1171,6 +1171,31 @@ class TestFetchCliModels(unittest.TestCase):
             saved = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(saved["active_gemini_model"], "gemini-3.6-flash-medium")
 
+    def test_set_active_model_third_party_persists_state(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(Path(tmpdir) / ".graviton_model_selection.json")
+            tracker = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+                state_path=state_file,
+            )
+            tracker.set_active_model("claude_gpt", "claude-opus-4-6-thinking")
+            self.assertTrue(Path(state_file).exists())
+            saved = json.loads(Path(state_file).read_text(encoding="utf-8"))
+            self.assertEqual(saved["active_third_party_model"], "claude-opus-4-6-thinking")
+
+    def test_restore_model_selection_empty_file(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / ".graviton_model_selection.json"
+            state_file.write_text("   \n", encoding="utf-8")
+            tracker = QuotaTracker()
+            res = tracker.restore_model_selection(filepath=state_file)
+            self.assertFalse(res)
+
     def test_restore_model_selection_nonexistent_file(self):
         from pathlib import Path
         tracker = QuotaTracker()
