@@ -921,6 +921,15 @@ class TestTerminalDashboard(unittest.TestCase):
 
             dashboard.stop()
 
+    @staticmethod
+    def _wait_for_condition(condition, timeout=1.0, interval=0.01):
+        start = time.time()
+        while time.time() - start < timeout:
+            if condition():
+                return True
+            time.sleep(interval)
+        return bool(condition())
+
     def test_stdin_arrow_keys_navigation(self):
         import os
         import pty
@@ -960,82 +969,80 @@ class TestTerminalDashboard(unittest.TestCase):
 
             mock_stdin = MockStdin()
 
+            handled_keys = []
+            orig_handle_key = dashboard.handle_key
+            def handle_key_wrapper(key):
+                handled_keys.append(key)
+                orig_handle_key(key)
+            dashboard.handle_key = handle_key_wrapper
+
             with patch("sys.stdin", mock_stdin):
                 dashboard._running = True
                 stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
                 stdin_thread.start()
-                time.sleep(0.05)
+                self.assertTrue(self._wait_for_condition(lambda: getattr(dashboard, "_old_term_settings", None) is not None))
 
                 try:
                     # Send Down arrow sequence
                     os.write(master, b"\x1b[B")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 1))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Send Down arrow sequence again
                     os.write(master, b"\x1b[B")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 2))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Send Up arrow sequence
                     os.write(master, b"\x1b[A")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 1))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test streaming partial escape sequence (b"\x1b" followed after delay by b"[B")
                     os.write(master, b"\x1b")
                     time.sleep(0.01)
                     os.write(master, b"[B")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 2))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test streaming partial escape sequence (b"\x1b[" followed after delay by b"A")
                     os.write(master, b"\x1b[")
                     time.sleep(0.01)
                     os.write(master, b"A")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 1))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test multi-key chunk (b"\x1b[B\x1b[B" - 2 down arrows in a single write)
                     dashboard.selected_job_index = 0
                     os.write(master, b"\x1b[B\x1b[B")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 2)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 2))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test multi-key chunk (b"kk" - 2 'k' keypresses in a single write)
                     os.write(master, b"kk")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 0)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 0))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test Application Cursor Mode (SS3) arrow sequences (\x1bOB and \x1bOA)
                     os.write(master, b"\x1bOB")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 1)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 1))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     os.write(master, b"\x1bOA")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.selected_job_index, 0)
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.selected_job_index == 0))
                     self.assertEqual(dashboard.active_screen, "jobs")
 
                     # Test streaming partial multi-byte UTF-8 sequence (b"\xc3" followed by b"\xa1")
+                    handled_keys.clear()
                     os.write(master, b"\xc3")
                     time.sleep(0.01)
                     os.write(master, b"\xa1")
-                    time.sleep(0.15)
+                    self.assertTrue(self._wait_for_condition(lambda: "á" in handled_keys))
                     self.assertEqual(dashboard.selected_job_index, 0)
 
                     # Send standalone ESC key
                     os.write(master, b"\x1b")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.active_screen, "main")
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.active_screen == "main"))
 
                 finally:
                     dashboard._running = False
@@ -1071,7 +1078,7 @@ class TestTerminalDashboard(unittest.TestCase):
                 dashboard._running = True
                 stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
                 stdin_thread.start()
-                time.sleep(0.05)
+                self.assertTrue(self._wait_for_condition(lambda: getattr(dashboard, "_old_term_settings", None) is not None))
 
                 try:
                     # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
@@ -1082,8 +1089,7 @@ class TestTerminalDashboard(unittest.TestCase):
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
                     os.write(master, b"e")
-                    time.sleep(0.15)
-                    self.assertEqual(dashboard.active_screen, "logs")
+                    self.assertTrue(self._wait_for_condition(lambda: dashboard.active_screen == "logs"))
                 finally:
                     dashboard._running = False
                     stdin_thread.join(timeout=1.0)
