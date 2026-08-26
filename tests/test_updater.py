@@ -198,6 +198,7 @@ class TestUpdater(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_get_git_info_success(self, mock_run):
+        """Test get_git_info returns valid commit SHA and branch name when git subprocess commands succeed."""
         mock_run.side_effect = [
             subprocess.CompletedProcess(
                 args=["git", "rev-parse", "--short", "HEAD"],
@@ -233,6 +234,7 @@ class TestUpdater(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_get_git_info_custom_repo_root(self, mock_run):
+        """Test get_git_info passes Path repo_root as cwd string to git subprocess calls."""
         mock_run.side_effect = [
             subprocess.CompletedProcess(
                 args=["git", "rev-parse", "--short", "HEAD"],
@@ -268,7 +270,45 @@ class TestUpdater(unittest.TestCase):
         )
 
     @patch("subprocess.run")
+    def test_get_git_info_string_repo_root(self, mock_run):
+        """Test get_git_info accepts string repo_root paths as well as Path objects."""
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="a1b2c3d\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        repo_root_str = "/custom/string/path"
+        commit, branch = get_git_info(repo_root=repo_root_str)
+        self.assertEqual(commit, "a1b2c3d")
+        self.assertEqual(branch, "main")
+        self.assertEqual(mock_run.call_count, 2)
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd="/custom/string/path",
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        mock_run.assert_any_call(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd="/custom/string/path",
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @patch("subprocess.run")
     def test_get_git_info_nonzero_returncode_or_empty_output(self, mock_run):
+        """Test get_git_info returns ('unknown', 'unknown') when git subprocess calls fail or return empty output."""
         # Case A: returncode != 0
         mock_run.side_effect = [
             subprocess.CompletedProcess(
@@ -309,6 +349,7 @@ class TestUpdater(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_get_git_info_exception_resilience(self, mock_run):
+        """Test get_git_info returns ('unknown', 'unknown') when git subprocess calls raise exceptions."""
         # Case A: TimeoutExpired exception
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=5)
         commit, branch = get_git_info()
@@ -323,6 +364,7 @@ class TestUpdater(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_get_git_info_partial_execution_failure(self, mock_run):
+        """Test get_git_info returns (commit, 'unknown') when SHA retrieval succeeds but branch retrieval fails or returns empty output."""
         # Case A: SHA succeeds, branch fails with non-zero exit code
         mock_run.side_effect = [
             subprocess.CompletedProcess(
@@ -363,6 +405,7 @@ class TestUpdater(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_get_git_info_partial_exception_resilience(self, mock_run):
+        """Test get_git_info returns (commit, 'unknown') when SHA retrieval succeeds but branch retrieval raises an exception."""
         # Case A: SHA succeeds, branch raises TimeoutExpired
         mock_run.side_effect = [
             subprocess.CompletedProcess(
@@ -390,6 +433,78 @@ class TestUpdater(unittest.TestCase):
         commit, branch = get_git_info()
         self.assertEqual(commit, "a1b2c3d")
         self.assertEqual(branch, "unknown")
+
+    @patch("subprocess.run")
+    def test_get_git_info_reverse_partial_execution_failure(self, mock_run):
+        """Test get_git_info returns ('unknown', branch) when SHA retrieval fails or returns empty output while branch retrieval succeeds."""
+        # Case A: SHA fails with non-zero exit code, branch succeeds
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=128,
+                stdout="fatal: ambiguous argument 'HEAD'",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "main")
+
+        # Case B: SHA returns empty stdout, branch succeeds
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--short", "HEAD"],
+                returncode=0,
+                stdout="   \n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="feature/test\n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "feature/test")
+
+    @patch("subprocess.run")
+    def test_get_git_info_reverse_partial_exception_resilience(self, mock_run):
+        """Test get_git_info returns ('unknown', branch) when SHA retrieval raises an exception while branch retrieval succeeds."""
+        # Case A: SHA raises TimeoutExpired, branch succeeds
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired(cmd="git", timeout=5),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "main")
+
+        # Case B: SHA raises FileNotFoundError, branch succeeds
+        mock_run.side_effect = [
+            FileNotFoundError("[Errno 2] No such file or directory: 'git'"),
+            subprocess.CompletedProcess(
+                args=["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            ),
+        ]
+        commit, branch = get_git_info()
+        self.assertEqual(commit, "unknown")
+        self.assertEqual(branch, "main")
 
 
 if __name__ == "__main__":
