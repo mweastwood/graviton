@@ -3,6 +3,7 @@ Unit tests for bin/run_listener.sh
 """
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -30,12 +31,12 @@ class TestRunListener(unittest.TestCase):
         min_bin = target_dir / "min_bin"
         min_bin.mkdir(parents=True, exist_ok=True)
         for tool in ["bash", "env"]:
-            tool_path = Path(f"/usr/bin/{tool}")
-            if not tool_path.exists():
-                tool_path = Path(f"/bin/{tool}")
-            symlink_path = min_bin / tool
-            if not symlink_path.exists():
-                symlink_path.symlink_to(tool_path)
+            resolved = shutil.which(tool)
+            if resolved:
+                tool_path = Path(resolved)
+                symlink_path = min_bin / tool
+                if not symlink_path.exists():
+                    symlink_path.symlink_to(tool_path)
         return min_bin
 
     def test_missing_smee_url_argument(self):
@@ -54,11 +55,14 @@ class TestRunListener(unittest.TestCase):
         """Test execution when smee command is available on system PATH."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
             min_bin = self._setup_minimal_bin(tmp_path)
             mock_bin = tmp_path / "mock_bin"
             self._create_mock_binary(mock_bin, "smee")
 
             env = os.environ.copy()
+            env["HOME"] = str(fake_home)
             env["PATH"] = f"{mock_bin}:{min_bin}"
 
             res = subprocess.run(
@@ -153,11 +157,14 @@ class TestRunListener(unittest.TestCase):
         """Test that target port defaults to 8000 when omitted."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
             min_bin = self._setup_minimal_bin(tmp_path)
             mock_bin = tmp_path / "mock_bin"
             self._create_mock_binary(mock_bin, "smee")
 
             env = os.environ.copy()
+            env["HOME"] = str(fake_home)
             env["PATH"] = f"{mock_bin}:{min_bin}"
 
             res = subprocess.run(
