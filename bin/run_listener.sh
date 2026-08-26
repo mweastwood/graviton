@@ -8,8 +8,8 @@ SMEE_URL="${1:-}"
 PORT="${2:-8000}"
 
 if [ -z "${SMEE_URL}" ]; then
-  echo "Usage: $0 <SMEE_URL> [TARGET_PORT]"
-  echo "Example: $0 https://smee.io/your-channel-id 8000"
+  echo "Usage: $0 <SMEE_URL> [TARGET_PORT]" >&2
+  echo "Example: $0 https://smee.io/your-channel-id 8000" >&2
   exit 1
 fi
 
@@ -21,7 +21,7 @@ elif [ -x "${HOME}/.npm-global/bin/smee" ]; then
 elif command -v npx &>/dev/null; then
   SMEE_CMD="npx smee"
 else
-  echo "Error: 'smee' CLI tool not found. Install it using: npm install -g smee-client"
+  echo "Error: 'smee' CLI tool not found. Install it using: npm install -g smee-client" >&2
   exit 1
 fi
 

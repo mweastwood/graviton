@@ -32,11 +32,11 @@ class TestRunListener(unittest.TestCase):
         min_bin.mkdir(parents=True, exist_ok=True)
         for tool in ["bash", "env"]:
             resolved = shutil.which(tool)
-            if resolved:
-                tool_path = Path(resolved)
-                symlink_path = min_bin / tool
-                if not symlink_path.exists():
-                    symlink_path.symlink_to(tool_path)
+            self.assertIsNotNone(resolved, f"Required tool '{tool}' not found on host PATH")
+            tool_path = Path(resolved)
+            symlink_path = min_bin / tool
+            if not symlink_path.exists():
+                symlink_path.symlink_to(tool_path)
         return min_bin
 
     def test_missing_smee_url_argument(self):
@@ -150,8 +150,7 @@ class TestRunListener(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(res.returncode, 1)
-            output = res.stdout + res.stderr
-            self.assertIn("Error: 'smee' CLI tool not found", output)
+            self.assertIn("Error: 'smee' CLI tool not found", res.stderr)
 
     def test_default_target_port(self):
         """Test that target port defaults to 8000 when omitted."""
