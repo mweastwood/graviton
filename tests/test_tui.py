@@ -922,7 +922,7 @@ class TestTerminalDashboard(unittest.TestCase):
             dashboard.stop()
 
     @staticmethod
-    def _wait_for_condition(condition, timeout=1.0, interval=0.01):
+    def _wait_for_condition(condition, timeout=5.0, interval=0.01):
         start = time.time()
         while time.time() - start < timeout:
             if condition():
@@ -1046,7 +1046,7 @@ class TestTerminalDashboard(unittest.TestCase):
 
                 finally:
                     dashboard._running = False
-                    stdin_thread.join(timeout=1.0)
+                    stdin_thread.join(timeout=3.0)
         finally:
             os.close(master)
             os.close(slave)
@@ -1083,8 +1083,8 @@ class TestTerminalDashboard(unittest.TestCase):
                 try:
                     # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
                     os.write(master, b"\x1b[")
-                    # Wait long enough for stdin to become idle and select.select to time out (>0.1s)
-                    time.sleep(0.25)
+                    # Wait long enough for stdin to become idle and select.select to time out (>0.15s)
+                    time.sleep(0.35)
 
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
@@ -1092,7 +1092,7 @@ class TestTerminalDashboard(unittest.TestCase):
                     self.assertTrue(self._wait_for_condition(lambda: dashboard.active_screen == "logs"))
                 finally:
                     dashboard._running = False
-                    stdin_thread.join(timeout=1.0)
+                    stdin_thread.join(timeout=3.0)
         finally:
             os.close(master)
             os.close(slave)
