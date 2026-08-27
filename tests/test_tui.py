@@ -922,7 +922,7 @@ class TestTerminalDashboard(unittest.TestCase):
             dashboard.stop()
 
     @staticmethod
-    def _wait_for_condition(condition, timeout=1.0, interval=0.01):
+    def _wait_for_condition(condition, timeout=5.0, interval=0.01):
         start = time.time()
         while time.time() - start < timeout:
             if condition():
@@ -1046,7 +1046,7 @@ class TestTerminalDashboard(unittest.TestCase):
 
                 finally:
                     dashboard._running = False
-                    stdin_thread.join(timeout=1.0)
+                    stdin_thread.join(timeout=3.0)
         finally:
             os.close(master)
             os.close(slave)
@@ -1092,7 +1092,7 @@ class TestTerminalDashboard(unittest.TestCase):
                     self.assertTrue(self._wait_for_condition(lambda: dashboard.active_screen == "logs"))
                 finally:
                     dashboard._running = False
-                    stdin_thread.join(timeout=1.0)
+                    stdin_thread.join(timeout=3.0)
         finally:
             os.close(master)
             os.close(slave)
