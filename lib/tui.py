@@ -493,8 +493,9 @@ class TerminalDashboard:
             if not sys.stdin.isatty():
                 return
             fd = sys.stdin.fileno()
-            self._old_term_settings = termios.tcgetattr(fd)
+            old_settings = termios.tcgetattr(fd)
             tty.setcbreak(fd)
+            self._old_term_settings = old_settings
         except Exception:
             self._old_term_settings = None
             return
@@ -527,7 +528,7 @@ class TerminalDashboard:
 
                     while self._running and self._is_incomplete_escape_sequence(raw_bytes):
                         try:
-                            rlist_seq, _, _ = select.select([fd], [], [], 0.05)
+                            rlist_seq, _, _ = select.select([fd], [], [], 0.15)
                         except (BlockingIOError, InterruptedError):
                             time.sleep(0.01)
                             continue

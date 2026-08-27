@@ -1083,8 +1083,8 @@ class TestTerminalDashboard(unittest.TestCase):
                 try:
                     # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
                     os.write(master, b"\x1b[")
-                    # Wait long enough for stdin to become idle and select.select to time out (>0.1s)
-                    time.sleep(0.25)
+                    # Wait long enough for stdin to become idle and select.select to time out (>0.15s)
+                    time.sleep(0.35)
 
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
