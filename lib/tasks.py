@@ -3,6 +3,7 @@ Thread-safe Task Queue & Execution Manager for Graviton.
 """
 
 import collections
+import json
 import logging
 import os
 import queue
@@ -578,7 +579,6 @@ class TaskManager:
             return 0
 
         try:
-            import json
             data = json.loads(path.read_text(encoding="utf-8"))
             try:
                 path.unlink()
@@ -1057,7 +1057,6 @@ class TaskManager:
                         if not exec_cwd.exists():
                             logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
                             try:
-                                import subprocess
                                 exec_cwd.parent.mkdir(parents=True, exist_ok=True)
                                 subprocess.run(
                                     ["git", "clone", "--", task.clone_url, str(exec_cwd)],
