@@ -19,10 +19,12 @@ from lib.quota import (
     QuotaWindow,
     _atomic_write_json,
     _normalize_now_datetime,
+    fetch_all_live_antigravity_quota,
     fetch_cli_models,
     fetch_live_antigravity_quota,
     format_quota_badge,
     format_reset_countdown,
+    parse_all_antigravity_quota_json,
     parse_antigravity_quota_json,
     parse_quota_headers,
 )
@@ -1333,6 +1335,188 @@ class TestFetchCliModels(unittest.TestCase):
         self.assertTrue(tracker.is_quota_ready())
         self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 88.0)
         self.assertEqual(tracker.claude_window_5h.remaining_percentage, 78.0)
+
+    def test_parse_all_antigravity_quota_json(self):
+        # 1. Multi-group payload with Gemini and Claude/GPT
+        data = {
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "description": "Models within this group: Gemini Flash, Gemini Pro",
+                    "buckets": [
+                        {
+                            "bucketId": "gemini-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-08-12T06:51:41Z",
+                            "remainingFraction": 0.85,
+                        },
+                        {
+                            "bucketId": "gemini-5h",
+                            "window": "5h",
+                            "resetTime": "2026-08-09T12:18:17Z",
+                            "remainingFraction": 0.90,
+                        },
+                    ],
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+                    "buckets": [
+                        {
+                            "bucketId": "3p-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-08-12T08:55:05Z",
+                            "remainingFraction": 0.21,
+                        },
+                        {
+                            "bucketId": "3p-5h",
+                            "window": "5h",
+                            "resetTime": "2026-08-09T13:23:08Z",
+                            "remainingFraction": 0.77,
+                        },
+                    ],
+                },
+            ]
+        }
+        res = parse_all_antigravity_quota_json(data)
+        self.assertIn("gemini", res)
+        self.assertIn("claude_gpt", res)
+
+        w_5h_g, w_1w_g = res["gemini"]
+        self.assertEqual(w_5h_g.remaining_percentage, 90.0)
+        self.assertEqual(w_5h_g.reset_time, "2026-08-09T12:18:17Z")
+        self.assertEqual(w_1w_g.remaining_percentage, 85.0)
+        self.assertEqual(w_1w_g.reset_time, "2026-08-12T06:51:41Z")
+
+        w_5h_c, w_1w_c = res["claude_gpt"]
+        self.assertEqual(w_5h_c.remaining_percentage, 77.0)
+        self.assertEqual(w_5h_c.reset_time, "2026-08-09T13:23:08Z")
+        self.assertEqual(w_1w_c.remaining_percentage, 21.0)
+        self.assertEqual(w_1w_c.reset_time, "2026-08-12T08:55:05Z")
+
+        # 2. Single group payload
+        single_group_data = {
+            "groups": [
+                {
+                    "displayName": "Claude 3P models",
+                    "buckets": [
+                        {
+                            "bucketId": "3p-5h",
+                            "window": "5h",
+                            "remainingFraction": 0.60,
+                        },
+                        {
+                            "bucketId": "3p-1w",
+                            "window": "1w",
+                            "remainingFraction": 0.50,
+                        },
+                    ],
+                }
+            ]
+        }
+        res_single = parse_all_antigravity_quota_json(single_group_data)
+        self.assertIn("claude_gpt", res_single)
+        self.assertEqual(res_single["claude_gpt"][0].remaining_percentage, 60.0)
+
+        # 3. Flat buckets payload
+        flat_data = {
+            "buckets": [
+                {"bucketId": "5h", "window": "5h", "remainingFraction": 0.95},
+                {"bucketId": "1w", "window": "1w", "remainingFraction": 0.80},
+            ]
+        }
+        res_flat = parse_all_antigravity_quota_json(flat_data)
+        self.assertIn("gemini", res_flat)
+        self.assertEqual(res_flat["gemini"][0].remaining_percentage, 95.0)
+
+        # 4. Error and invalid payloads
+        self.assertEqual(parse_all_antigravity_quota_json({"error": {"code": 401}}), {})
+        self.assertEqual(parse_all_antigravity_quota_json("invalid"), {})
+        self.assertEqual(parse_all_antigravity_quota_json({}), {})
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_all_live_antigravity_quota(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.70},
+                        {"window": "weekly", "remainingFraction": 0.80},
+                    ],
+                },
+                {
+                    "displayName": "Claude and GPT Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.60},
+                        {"window": "weekly", "remainingFraction": 0.50},
+                    ],
+                },
+            ]
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        res = fetch_all_live_antigravity_quota(token="test-oauth-token")
+        self.assertIsNotNone(res)
+        self.assertIn("gemini", res)
+        self.assertIn("claude_gpt", res)
+        self.assertEqual(res["gemini"][0].remaining_percentage, 70.0)
+        self.assertEqual(res["gemini"][1].remaining_percentage, 80.0)
+        self.assertEqual(res["claude_gpt"][0].remaining_percentage, 60.0)
+        self.assertEqual(res["claude_gpt"][1].remaining_percentage, 50.0)
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+        # Failure returns None
+        mock_resp.status = 500
+        res_fail = fetch_all_live_antigravity_quota(token="test-oauth-token")
+        self.assertIsNone(res_fail)
+
+    @patch("lib.quota.fetch_all_live_antigravity_quota")
+    def test_poll_all_pools_single_rpc(self, mock_fetch_all):
+        w_gemini = (QuotaWindow(name="5H", remaining_percentage=92.0), QuotaWindow(name="1W", remaining_percentage=94.0))
+        w_claude = (QuotaWindow(name="5H", remaining_percentage=82.0), QuotaWindow(name="1W", remaining_percentage=84.0))
+        mock_fetch_all.return_value = {"gemini": w_gemini, "claude_gpt": w_claude}
+
+        tracker = QuotaTracker()
+        self.assertFalse(tracker.is_quota_ready())
+
+        tracker.poll_all_pools(token="test-token", force=True)
+
+        self.assertEqual(mock_fetch_all.call_count, 1)
+        self.assertTrue(tracker.is_quota_ready())
+        self.assertEqual(tracker.gemini_window_5h.remaining_percentage, 92.0)
+        self.assertEqual(tracker.gemini_window_1w.remaining_percentage, 94.0)
+        self.assertEqual(tracker.claude_window_5h.remaining_percentage, 82.0)
+        self.assertEqual(tracker.claude_window_1w.remaining_percentage, 84.0)
+
+    def test_background_polling_dual_pools(self):
+        tracker = QuotaTracker()
+        with patch.object(tracker, "poll_all_pools") as mock_poll_all, \
+             patch.object(tracker, "poll_live_quota") as mock_poll_single:
+
+            # 1. Start with quota_pool=None -> calls poll_all_pools
+            tracker.start_background_polling(token="test-token", quota_pool=None, poll_interval=0.01)
+            time.sleep(0.05)
+            tracker.stop_background_polling()
+
+            self.assertGreaterEqual(mock_poll_all.call_count, 1)
+            mock_poll_all.assert_called_with(token="test-token", force=False)
+            mock_poll_single.assert_not_called()
+
+        tracker2 = QuotaTracker()
+        with patch.object(tracker2, "poll_all_pools") as mock_poll_all2, \
+             patch.object(tracker2, "poll_live_quota") as mock_poll_single2:
+
+            # 2. Start with specific pool -> calls poll_live_quota
+            tracker2.start_background_polling(token="test-token", quota_pool="claude_gpt", poll_interval=0.01)
+            time.sleep(0.05)
+            tracker2.stop_background_polling()
+
+            self.assertGreaterEqual(mock_poll_single2.call_count, 1)
+            mock_poll_single2.assert_called_with(token="test-token", quota_pool="claude_gpt", force=False)
+            mock_poll_all2.assert_not_called()
 
 
 if __name__ == "__main__":
