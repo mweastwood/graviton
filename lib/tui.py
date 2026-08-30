@@ -193,6 +193,8 @@ class TerminalDashboard:
     - Event Logs panel.
     """
 
+    ESCAPE_TIMEOUT: float = 0.025
+
     def __init__(
         self,
         task_manager: TaskManager,
@@ -528,7 +530,7 @@ class TerminalDashboard:
 
                     while self._running and self._is_incomplete_escape_sequence(raw_bytes):
                         try:
-                            rlist_seq, _, _ = select.select([fd], [], [], 0.15)
+                            rlist_seq, _, _ = select.select([fd], [], [], self.ESCAPE_TIMEOUT)
                         except (BlockingIOError, InterruptedError):
                             time.sleep(0.01)
                             continue

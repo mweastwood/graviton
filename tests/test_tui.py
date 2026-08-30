@@ -2004,9 +2004,64 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.focused_panel, "active")
         self.assertEqual(dashboard.selected_active_index, 0)
 
+    def test_escape_timeout_constant(self):
+        """Verify ESCAPE_TIMEOUT is configured to 0.025s (25ms) on TerminalDashboard."""
+        self.assertEqual(TerminalDashboard.ESCAPE_TIMEOUT, 0.025)
+        manager = TaskManager(max_workers=2)
+        dashboard = TerminalDashboard(task_manager=manager)
+        self.assertEqual(dashboard.ESCAPE_TIMEOUT, 0.025)
+
+    def test_stdin_esc_latency_subscreens_navigation(self):
+        """Verify that pressing Esc (\x1b) across all sub-screens returns to main screen quickly via stdin."""
+        import os
+        import pty
+        from unittest.mock import patch
+
+        master, slave = pty.openpty()
+        try:
+            manager = TaskManager(max_workers=2)
+            self.addCleanup(manager.stop)
+            stream = io.StringIO()
+            dashboard = TerminalDashboard(task_manager=manager, out_stream=stream)
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+            with patch("sys.stdin", mock_stdin):
+                dashboard._running = True
+                stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
+                stdin_thread.start()
+                self.assertTrue(self._wait_for_condition(lambda: getattr(dashboard, "_old_term_settings", None) is not None))
+
+                try:
+                    sub_screens = ["jobs", "logs", "task_logs", "gemini_models", "third_party_models"]
+                    for screen in sub_screens:
+                        dashboard.active_screen = screen
+                        self.assertEqual(dashboard.active_screen, screen)
+                        start_t = time.time()
+                        os.write(master, b"\x1b")
+                        self.assertTrue(
+                            self._wait_for_condition(lambda: dashboard.active_screen == "main", timeout=1.0),
+                            f"Failed returning to main from screen '{screen}'",
+                        )
+                        elapsed = time.time() - start_t
+                        # Perceived latency should easily be well under 150ms timeout threshold
+                        self.assertLess(elapsed, 0.5)
+                finally:
+                    dashboard._running = False
+                    stdin_thread.join(timeout=3.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
