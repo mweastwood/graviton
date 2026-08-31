@@ -4,6 +4,7 @@ Unit tests for Periodic Background Task Scheduler Engine (lib/scheduler.py).
 
 import json
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -473,6 +474,41 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertFalse(job.is_due())
 
     def test_scheduler_loop_executes_due_job(self):
+        job_executed = threading.Event()
+
+        def runner_side_effect(*args, **kwargs):
+            job_executed.set()
+
+        mock_runner = MagicMock(side_effect=runner_side_effect)
+        past_dt = datetime.now(timezone.utc) - timedelta(days=1)
+        job = ScheduledJob(
+            job_id="due_job",
+            name="Due Job",
+            interval_seconds=1,
+            agent="codebase_auditor",
+            prompt="Audit now",
+            enabled=True,
+            next_run=past_dt.isoformat(),
+        )
+
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump([job.to_dict()], f)
+
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            runner=mock_runner,
+            check_interval_seconds=0.01,
+        )
+        scheduler.start()
+        try:
+            self.assertTrue(job_executed.wait(timeout=5.0), "Job execution event was not triggered within timeout")
+        finally:
+            scheduler.stop()
+
+        mock_runner.assert_called()
+
+    def test_check_and_run_jobs_executes_due_job_single_threaded(self):
         mock_runner = MagicMock()
         past_dt = datetime.now(timezone.utc) - timedelta(days=1)
         job = ScheduledJob(
@@ -492,15 +528,9 @@ class TestTaskScheduler(unittest.TestCase):
             config_path=self.config_path,
             state_path=self.state_path,
             runner=mock_runner,
-            check_interval_seconds=0.05,
         )
-        scheduler.start()
-        import time
-
-        time.sleep(0.3)
-        scheduler.stop()
-
-        mock_runner.assert_called()
+        scheduler._check_and_run_jobs()
+        mock_runner.assert_called_once()
 
     def test_task_manager_routing_and_running_state(self):
         from lib.tasks import TaskManager
@@ -835,19 +865,75 @@ class TestTaskScheduler(unittest.TestCase):
             config_path=self.config_path,
             state_path=self.state_path,
             task_manager=mock_tm,
-            check_interval_seconds=0.05,
+            check_interval_seconds=0.01,
         )
         scheduler.jobs = {"test_deferred_loop_job": job}
 
-        with patch.object(scheduler, "_execute_job", wraps=scheduler._execute_job) as mock_exec:
+        tick_count = 0
+        tick_cond = threading.Condition()
+        orig_update_running_states = scheduler.update_running_states
+
+        def count_ticks(*args, **kwargs):
+            nonlocal tick_count
+            res = orig_update_running_states(*args, **kwargs)
+            with tick_cond:
+                tick_count += 1
+                tick_cond.notify_all()
+            return res
+
+        job_executed = threading.Event()
+        original_execute_job = scheduler._execute_job
+
+        def execute_job_wrapper(j):
+            res = original_execute_job(j)
+            job_executed.set()
+            return res
+
+        with patch.object(scheduler, "update_running_states", side_effect=count_ticks), \
+             patch.object(scheduler, "_execute_job", side_effect=execute_job_wrapper) as mock_exec:
             scheduler.start()
-            import time
-            time.sleep(0.25)
-            scheduler.stop()
+            try:
+                self.assertTrue(job_executed.wait(timeout=5.0), "_execute_job was not called within timeout")
+                with tick_cond:
+                    tick_cond.wait_for(lambda: tick_count >= 3, timeout=5.0)
+                self.assertGreaterEqual(tick_count, 3, "Expected at least 3 loop ticks to occur")
+            finally:
+                scheduler.stop()
 
             # _execute_job should be called exactly once, mark execution time, and not be continuously re-triggered
             self.assertEqual(mock_exec.call_count, 1)
             self.assertFalse(job.is_due())
+            mock_tm.submit_task.assert_not_called()
+
+    def test_check_and_run_jobs_defers_without_retriggering_single_threaded(self):
+        mock_tm = MagicMock()
+        mock_tm.can_accept_task.return_value = False
+
+        past_dt = datetime.now(timezone.utc) - timedelta(days=1)
+        job = ScheduledJob(
+            job_id="test_deferred_loop_job",
+            name="Test Deferred Loop Job",
+            agent="codebase_auditor",
+            prompt="Run audit",
+            enabled=True,
+            interval_seconds=3600,
+            next_run=past_dt.isoformat(),
+        )
+        scheduler = TaskScheduler(
+            config_path=self.config_path,
+            state_path=self.state_path,
+            task_manager=mock_tm,
+        )
+        scheduler.jobs = {"test_deferred_loop_job": job}
+
+        with patch.object(scheduler, "_execute_job", wraps=scheduler._execute_job) as mock_exec:
+            scheduler._check_and_run_jobs()
+            self.assertEqual(mock_exec.call_count, 1)
+            self.assertFalse(job.is_due())
+
+            # Second tick should not re-trigger job execution
+            scheduler._check_and_run_jobs()
+            self.assertEqual(mock_exec.call_count, 1)
             mock_tm.submit_task.assert_not_called()
 
     def test_atomic_file_writes_for_state_and_config(self):
