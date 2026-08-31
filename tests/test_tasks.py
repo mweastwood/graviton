@@ -597,6 +597,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
 
@@ -685,6 +686,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
         self.assertEqual(task1.selected_pool, "claude_gpt")
         mock_quota.poll_live_quota_async.assert_called_with(
@@ -706,6 +708,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task2.status, TaskStatus.FAILED)
         self.assertEqual(task2.selected_pool, "claude_gpt")
         mock_quota.poll_live_quota_async.assert_called_with(
@@ -1194,6 +1197,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task.status, TaskStatus.FAILED)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
@@ -1218,6 +1222,7 @@ class TestTaskManager(unittest.TestCase):
                 break
             time.sleep(0.05)
 
+        manager._queue.join()
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertIn("Worker execution exception", task.error_message)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
