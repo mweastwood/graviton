@@ -1001,26 +1001,33 @@ class TaskScheduler:
         """
         return self._thread is not None and self._thread.is_alive() and not self._stop_event.is_set()
 
+    def _check_and_run_jobs(self):
+        """
+        Check running states and execute any due scheduled jobs in a single tick.
+        """
+        self.update_running_states()
+        now_dt = datetime.now(timezone.utc)
+        with self._lock:
+            jobs_to_check = list(self.jobs.values())
+        for job in jobs_to_check:
+            if self._stop_event.is_set():
+                break
+            with self._lock:
+                due = job.is_due(now_dt)
+            if due:
+                self._execute_job(job)
+
     def _scheduler_loop(self):
         """
         Main loop for checking and executing due jobs.
         """
         while not self._stop_event.is_set():
             try:
-                self.update_running_states()
-                now_dt = datetime.now(timezone.utc)
-                with self._lock:
-                    jobs_to_check = list(self.jobs.values())
-                for job in jobs_to_check:
-                    if self._stop_event.is_set():
-                        break
-                    with self._lock:
-                        due = job.is_due(now_dt)
-                    if due:
-                        self._execute_job(job)
+                self._check_and_run_jobs()
             except Exception as e:
                 logger.exception(f"Unexpected error in scheduler loop: {e}")
 
             # Interruptible sleep
             self._stop_event.wait(timeout=self.check_interval_seconds)
+
 
