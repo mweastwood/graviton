@@ -541,7 +541,13 @@ class TestTaskManager(unittest.TestCase):
 
         # Start workers while behind pacing - tasks should be popped, updated to PAUSED_FOR_QUOTA, and re-queued
         manager.start()
-        time.sleep(0.3)
+        for _ in range(50):
+            if (
+                t_active.status == TaskStatus.PAUSED_FOR_QUOTA
+                and t_behind.status == TaskStatus.PAUSED_FOR_QUOTA
+            ):
+                break
+            time.sleep(0.02)
         self.assertEqual(len(manager.get_active_tasks()), 0)
         self.assertEqual(mock_run.call_count, 0)
         self.assertEqual(t_active.status, TaskStatus.PAUSED_FOR_QUOTA)
@@ -549,7 +555,14 @@ class TestTaskManager(unittest.TestCase):
 
         # Recover pacing - tasks should now be executed by worker
         quota.update_quota(100.0, remaining_percentage_5h=100.0, reset_time_5h=now)
-        time.sleep(0.5)
+        for _ in range(50):
+            if (
+                mock_run.call_count >= 2
+                and t_active.status == TaskStatus.COMPLETED
+                and t_behind.status == TaskStatus.COMPLETED
+            ):
+                break
+            time.sleep(0.02)
         self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(t_active.status, TaskStatus.COMPLETED)
         self.assertEqual(t_behind.status, TaskStatus.COMPLETED)
