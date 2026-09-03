@@ -14,6 +14,7 @@ from lib.tasks import Task, TaskManager, TaskStatus
 from lib.tui_panels import (
     ACTIVE_TASK_REDUCTION_STEPS,
     ColumnSpec,
+    TARGET_TAG_PATTERN,
     TableLayoutSpec,
     allocate_active_task_columns,
     allocate_approved_pr_columns,
@@ -464,6 +465,9 @@ class TestTUIPanels(unittest.TestCase):
         self.assertEqual(format_target_for_display("", 8), "-")
         self.assertEqual(format_target_for_display("-", 8), "-")
         self.assertEqual(format_target_for_display("#148", 8), "#148")
+
+        # Precompiled regex validation
+        self.assertEqual(TARGET_TAG_PATTERN.pattern, r"^(.*?)(#\d+)$")
 
     def test_render_active_tasks_panel_empty_and_populated(self):
         empty_lines = render_active_tasks_panel(width=80, tasks=[], max_workers=2)

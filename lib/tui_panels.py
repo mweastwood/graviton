@@ -14,6 +14,7 @@ from lib.scheduler import ScheduledJob, TaskScheduler, parse_iso_timestamp
 from lib.tasks import TaskManager, TaskStatus
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+TARGET_TAG_PATTERN = re.compile(r"^(.*?)(#\d+)$")
 
 
 def get_display_width(s: str) -> int:
@@ -144,7 +145,7 @@ def format_target_for_display(target: Optional[str], max_w: int) -> str:
     if get_display_width(target) <= max_w:
         return target
 
-    match = re.search(r"^(.*?)(#\d+)$", target)
+    match = TARGET_TAG_PATTERN.search(target)
     if match:
         repo_part = match.group(1)
         tag_part = match.group(2)
