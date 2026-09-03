@@ -23,6 +23,11 @@ from lib.security import is_valid_repo_name
 
 logger = logging.getLogger("graviton.tasks")
 
+AUTO_CONTINUE_PATTERN = re.compile(
+    r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
+    re.IGNORECASE,
+)
+
 
 class TaskStatus:
     QUEUED = "QUEUED"
@@ -93,7 +98,9 @@ class Task:
 
     def update_attempt_from_line(self, line: str) -> bool:
         """Parse retry log line and update attempt / max_attempts if present."""
-        match = re.search(r"(?i)Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)", line)
+        if not line or ("Auto-continuing conversation" not in line and "auto-continuing conversation" not in line):
+            return False
+        match = AUTO_CONTINUE_PATTERN.search(line)
         if match:
             self.attempt = int(match.group(1))
             if match.group(2):
