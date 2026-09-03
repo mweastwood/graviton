@@ -1035,6 +1035,14 @@ class TaskManager:
             )
 
             try:
+                with self._lock:
+                    if task.status == TaskStatus.ABORTED:
+                        logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
+                        if task.cached_workspace_dir:
+                            clean_workspace_dir(task.cached_workspace_dir)
+                        self._prune_tasks_locked()
+                        continue
+
                 # Resolve target repository checkout directory
                 exec_cwd = task.repo_dir
                 if not exec_cwd and task.repo_name and self.repos_dir:
@@ -1055,6 +1063,13 @@ class TaskManager:
                 if exec_cwd and task.clone_url:
                     with self._clone_lock:
                         if not exec_cwd.exists():
+                            with self._lock:
+                                if task.status == TaskStatus.ABORTED:
+                                    logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to clone. Skipping execution.")
+                                    if task.cached_workspace_dir:
+                                        clean_workspace_dir(task.cached_workspace_dir)
+                                    self._prune_tasks_locked()
+                                    continue
                             logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
                             try:
                                 exec_cwd.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,9 +1093,33 @@ class TaskManager:
 
                 initial_att = task.attempt + 1 if task.requeue_count > 0 else 1
 
+                with self._lock:
+                    if task.status == TaskStatus.ABORTED:
+                        logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
+                        if task.cached_workspace_dir:
+                            clean_workspace_dir(task.cached_workspace_dir)
+                        self._prune_tasks_locked()
+                        continue
+
                 def _on_process_created(proc):
                     with self._lock:
-                        self._active_processes[task.id] = proc
+                        if task.status == TaskStatus.ABORTED:
+                            try:
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=1.0)
+                                except Exception:
+                                    proc.kill()
+                                    try:
+                                        proc.wait(timeout=0.5)
+                                    except Exception:
+                                        pass
+                            except (ProcessLookupError, OSError):
+                                pass
+                            except Exception as e:
+                                logger.warning(f"[{worker_id}] Error terminating process for aborted task '{task.id}': {e}")
+                        else:
+                            self._active_processes[task.id] = proc
 
                 if self.script_path and exec_cwd:
                     res = run_agent_container(
