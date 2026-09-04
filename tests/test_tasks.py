@@ -2118,6 +2118,82 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.abort_task(t3.id))
         self.assertFalse(manager.abort_task(t3.id))
 
+    @patch("lib.tasks.run_agent_container")
+    def test_abort_task_pre_execution_skips_container_launch(self, mock_run):
+        temp_dir = tempfile.mkdtemp(prefix="test_graviton_ws_")
+        ws_path = Path(temp_dir)
+        (ws_path / "dummy.txt").write_text("dummy")
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+            repos_dir=Path("/tmp"),
+        )
+
+        task = manager.submit_task(
+            "code_reviewer", "Pre-execution abort test", repo_name="fake_repo"
+        )
+        task.cached_workspace_dir = ws_path
+
+        from lib import tasks as tasks_mod
+        orig_is_valid = tasks_mod.is_valid_repo_name
+
+        def aborting_is_valid(name):
+            # Abort task while worker is resolving repository in pre-execution
+            manager.abort_task(task.id)
+            return orig_is_valid(name)
+
+        with patch("lib.tasks.is_valid_repo_name", side_effect=aborting_is_valid):
+            manager.start()
+            time.sleep(0.3)
+
+        mock_run.assert_not_called()
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertEqual(task.error_message, "Aborted by user")
+        self.assertFalse(ws_path.exists())
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        self.assertEqual(len(manager.get_queued_tasks()), 0)
+        manager.stop()
+
+    @patch("lib.tasks.run_agent_container")
+    def test_abort_task_on_process_created_race_terminates_subprocess(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = [Exception("Timeout"), 0]
+
+        manager = TaskManager(
+            max_workers=1,
+            script_path=Path("/tmp/fake_script.sh"),
+            cwd=Path("/tmp/fake_repo"),
+        )
+
+        task = manager.submit_task("code_reviewer", "Process race test")
+
+        def fake_run(agent_name, prompt, script_path, cwd, **kwargs):
+            # Simulate abort occurring right before on_process_created is invoked
+            manager.abort_task(task.id)
+            on_proc = kwargs.get("on_process_created")
+            if on_proc:
+                on_proc(mock_proc)
+            res = MagicMock()
+            res.returncode = -15
+            res.stdout = ""
+            res.stderr = ""
+            return res
+
+        mock_run.side_effect = fake_run
+
+        manager.start()
+        time.sleep(0.3)
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+        self.assertNotIn(task.id, manager._active_processes)
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertEqual(len(manager.get_active_tasks()), 0)
+        self.assertEqual(len(manager.get_queued_tasks()), 0)
+        manager.stop()
+
 
 class TestResolveTaskPoolAndModel(unittest.TestCase):
     """
