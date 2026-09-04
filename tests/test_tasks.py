@@ -17,6 +17,7 @@ from lib.quota import (
     QuotaWindow,
 )
 from lib.tasks import (
+    AUTO_CONTINUE_PATTERN,
     Task,
     TaskManager,
     TaskStatus,
@@ -86,6 +87,46 @@ class TestTaskManager(unittest.TestCase):
         t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)...")
         self.assertEqual(t.attempt, 2)
         self.assertEqual(t.max_attempts, 6)
+
+    def test_auto_continue_pattern_and_fast_path(self):
+        """Verify precompiled regex matching, case insensitivity, and fast-path substring check."""
+        self.assertIsNotNone(AUTO_CONTINUE_PATTERN)
+        self.assertTrue(hasattr(AUTO_CONTINUE_PATTERN, "search"))
+
+        # Regex pattern matching with and without max_attempts
+        m1 = AUTO_CONTINUE_PATTERN.search("Auto-continuing conversation (Attempt 2/3)...")
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1.group(1), "2")
+        self.assertEqual(m1.group(2), "3")
+
+        m2 = AUTO_CONTINUE_PATTERN.search("auto-continuing conversation (Attempt 4)...")
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2.group(1), "4")
+        self.assertIsNone(m2.group(2))
+
+        # Both title-case and lower-case retry lines update Task state
+        t = Task(id="task-retry", agent="code_reviewer", prompt="Test")
+        self.assertTrue(t.update_attempt_from_line("auto-continuing conversation (Attempt 3/5)"))
+        self.assertEqual(t.attempt, 3)
+        self.assertEqual(t.max_attempts, 5)
+
+        self.assertTrue(t.update_attempt_from_line("Auto-continuing conversation (Attempt 4)"))
+        self.assertEqual(t.attempt, 4)
+        self.assertEqual(t.max_attempts, 5)
+
+        # Fast-path rejection avoids regex search invocation on non-retry lines
+        with patch("lib.tasks.AUTO_CONTINUE_PATTERN") as mock_pattern:
+            mock_pattern.search.return_value = None
+
+            self.assertFalse(t.update_attempt_from_line("Regular container log output line"))
+            self.assertFalse(t.update_attempt_from_line("Attempt 3 failed with timeout"))
+            self.assertFalse(t.update_attempt_from_line(""))
+            self.assertFalse(t.update_attempt_from_line(None))
+            mock_pattern.search.assert_not_called()
+
+            # When candidate substring is present, regex search is executed
+            t.update_attempt_from_line("Auto-continuing conversation (Attempt 5/5)")
+            mock_pattern.search.assert_called_once()
 
     @patch("lib.tasks.run_agent_container")
     def test_task_manager_submit_task_custom_max_attempts(self, mock_run):
