@@ -86,6 +86,7 @@ class TestTerminalDashboard(unittest.TestCase):
             root_logger = logging.getLogger()
             mock_stderr_handler = logging.StreamHandler(stderr_capture)
             root_logger.addHandler(mock_stderr_handler)
+            self.addCleanup(root_logger.removeHandler, mock_stderr_handler)
 
             manager = TaskManager(max_workers=2)
             dashboard = TerminalDashboard(
@@ -128,8 +129,6 @@ class TestTerminalDashboard(unittest.TestCase):
 
             test_logger.info("Log after dashboard stop")
             self.assertIn("Log after dashboard stop", stderr_capture.getvalue())
-
-            root_logger.removeHandler(mock_stderr_handler)
 
     def test_display_width_helpers(self):
         # 1. get_display_width
