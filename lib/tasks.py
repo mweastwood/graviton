@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
@@ -384,8 +384,10 @@ class TaskManager:
 
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
+        self._task_state_cond = threading.Condition(self._lock)
         self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
+        self._pruned_task_ids: Set[str] = set()
         self._active_processes: Dict[str, subprocess.Popen] = {}
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
@@ -508,29 +510,150 @@ class TaskManager:
         :param timeout: Maximum seconds to wait for active tasks to complete. If None, waits indefinitely.
         :return: True if all active running tasks completed cleanly, False if timed out.
         """
-        with self._lock:
-            self._draining = True
-
         logger.info("TaskManager entering drain mode. Pausing new active task execution...")
         start_time = time.time()
-        while timeout is None or (time.time() - start_time < timeout):
-            if not self.get_active_tasks():
-                queued_count = len(self.get_queued_tasks())
-                logger.info(
-                    f"TaskManager drain completed cleanly. No active tasks remain ({queued_count} queued task(s) preserved)."
-                )
-                return True
-            time.sleep(0.1)
+        with self._task_state_cond:
+            self._draining = True
+            while True:
+                active_tasks = [t for t in self._tasks.values() if t.status == TaskStatus.RUNNING]
+                if not active_tasks:
+                    queued_count = sum(
+                        1
+                        for t in self._tasks.values()
+                        if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
+                    )
+                    logger.info(
+                        f"TaskManager drain completed cleanly. No active tasks remain ({queued_count} queued task(s) preserved)."
+                    )
+                    return True
 
-        remaining_active = len(self.get_active_tasks())
-        remaining_queued = len(self.get_queued_tasks())
-        if remaining_active > 0:
+                if timeout is not None:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        break
+                    self._task_state_cond.wait(timeout=remaining)
+                else:
+                    self._task_state_cond.wait()
+
+            remaining_active = len([t for t in self._tasks.values() if t.status == TaskStatus.RUNNING])
+            remaining_queued = len(
+                [
+                    t
+                    for t in self._tasks.values()
+                    if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
+                ]
+            )
             logger.warning(
                 f"TaskManager drain timed out after {timeout}s with "
                 f"{remaining_active} running and {remaining_queued} queued task(s) remaining."
             )
             return False
-        return True
+
+    def wait_for_task(
+        self,
+        task_id: Union[str, Task],
+        target_statuses: Optional[Collection[str]] = None,
+        timeout: Optional[float] = 5.0,
+    ) -> bool:
+        """
+        Wait until the specified task reaches one of the target statuses (or terminal statuses by default).
+
+        :param task_id: The task ID string or Task instance.
+        :param target_statuses: Collection of status strings to wait for.
+                                Defaults to (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED).
+        :param timeout: Maximum seconds to wait. If None, waits indefinitely.
+        :return: True if task reached one of the target statuses within timeout, False otherwise.
+        """
+        tid = task_id.id if isinstance(task_id, Task) else str(task_id)
+        if target_statuses is None:
+            targets = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
+        else:
+            targets = set(target_statuses)
+
+        start_time = time.time()
+        with self._task_state_cond:
+            while True:
+                task = self._tasks.get(tid)
+                if task is not None and task.status in targets:
+                    return True
+                if task is None and tid in self._pruned_task_ids:
+                    terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
+                    if targets.intersection(terminal_statuses):
+                        return True
+
+                if timeout is not None:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        return False
+                    self._task_state_cond.wait(timeout=remaining)
+                else:
+                    self._task_state_cond.wait()
+
+    def wait_for_all(
+        self,
+        tasks: Optional[Collection[Union[Task, str]]] = None,
+        timeout: Optional[float] = 5.0,
+    ) -> bool:
+        """
+        Wait until all specified tasks (or all known tasks if None) reach a terminal status.
+
+        :param tasks: Collection of tasks or task IDs to wait for. If None, waits for all tasks in self._tasks.
+        :param timeout: Maximum seconds to wait. If None, waits indefinitely.
+        :return: True if all specified tasks reached terminal status within timeout, False otherwise.
+        """
+        start_time = time.time()
+        terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
+
+        with self._task_state_cond:
+            if tasks is None:
+                target_ids = set(self._tasks.keys())
+            else:
+                target_ids = {t.id if isinstance(t, Task) else str(t) for t in tasks}
+
+            while True:
+                all_done = True
+                for tid in target_ids:
+                    task = self._tasks.get(tid)
+                    if task is not None:
+                        if task.status not in terminal_statuses:
+                            all_done = False
+                            break
+                    elif tid not in self._pruned_task_ids:
+                        all_done = False
+                        break
+
+                if all_done:
+                    return True
+
+                if timeout is not None:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        return False
+                    self._task_state_cond.wait(timeout=remaining)
+                else:
+                    self._task_state_cond.wait()
+
+    def join(self, timeout: Optional[float] = None) -> bool:
+        """
+        Wait until all tasks submitted to the task manager queue have been processed.
+
+        Wraps queue.Queue.all_tasks_done with optional timeout support.
+        :param timeout: Maximum seconds to wait. If None, waits indefinitely.
+        :return: True if all queue tasks completed, False if timed out.
+        """
+        with self._queue.all_tasks_done:
+            if timeout is None:
+                while self._queue.unfinished_tasks:
+                    self._queue.all_tasks_done.wait()
+                return True
+            else:
+                endtime = time.time() + timeout
+                while self._queue.unfinished_tasks:
+                    remaining = endtime - time.time()
+                    if remaining <= 0.0:
+                        return False
+                    self._queue.all_tasks_done.wait(timeout=remaining)
+                return True
 
     def _get_default_state_path(self, filepath: Optional[Path] = None) -> Path:
         if filepath is not None:
@@ -669,6 +792,7 @@ class TaskManager:
                     continue
             self._rebuild_queue_locked()
             self._prune_tasks_locked()
+            self._task_state_cond.notify_all()
 
         logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
         return restored_count
@@ -698,7 +822,10 @@ class TaskManager:
         excess = len(self._tasks) - self.max_tasks
         to_remove = finished_tasks[:excess]
         for task in to_remove:
+            self._pruned_task_ids.add(task.id)
             del self._tasks[task.id]
+        if to_remove:
+            self._task_state_cond.notify_all()
 
     def clear_completed_tasks(self) -> int:
         """
@@ -712,7 +839,10 @@ class TaskManager:
                 if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED)
             ]
             for task_id in to_remove:
+                self._pruned_task_ids.add(task_id)
                 del self._tasks[task_id]
+            if to_remove:
+                self._task_state_cond.notify_all()
             return len(to_remove)
 
     def submit_task(
@@ -789,6 +919,7 @@ class TaskManager:
             self._tasks[task_id] = task
             self._prune_tasks_locked()
             self._rebuild_queue_locked()
+            self._task_state_cond.notify_all()
 
         logger.info(f"Task '{task_id}' submitted (agent: {agent}, target: {formatted_target_id}).")
         return task
@@ -858,6 +989,7 @@ class TaskManager:
                     clean_workspace_dir(task.cached_workspace_dir)
                 self._rebuild_queue_locked()
                 self._prune_tasks_locked()
+                self._task_state_cond.notify_all()
                 logger.info(f"Queued task '{task_id}' aborted by user.")
                 return True
 
@@ -867,6 +999,7 @@ class TaskManager:
                 task.error_message = "Aborted by user"
                 proc_to_kill = self._active_processes.get(task_id)
                 task_to_cleanup = task
+                self._task_state_cond.notify_all()
                 logger.info(f"Active task '{task_id}' marked ABORTED. Terminating subprocess...")
 
             else:
@@ -1005,6 +1138,7 @@ class TaskManager:
                                 if all_exhausted:
                                     if item.status != TaskStatus.PAUSED_FOR_QUOTA:
                                         item.status = TaskStatus.PAUSED_FOR_QUOTA
+                                        self._task_state_cond.notify_all()
                                         was_exhausted = False
                                     else:
                                         was_exhausted = True
@@ -1019,6 +1153,7 @@ class TaskManager:
                                 item.status = TaskStatus.RUNNING
                                 item.start_time = time.time()
                                 item.worker_thread_id = worker_id
+                                self._task_state_cond.notify_all()
                                 task = item
                     except queue.Empty:
                         task = None
@@ -1048,6 +1183,7 @@ class TaskManager:
                         if task.cached_workspace_dir:
                             clean_workspace_dir(task.cached_workspace_dir)
                         self._prune_tasks_locked()
+                        self._task_state_cond.notify_all()
                         continue
 
                 # Resolve target repository checkout directory
@@ -1076,6 +1212,7 @@ class TaskManager:
                                     if task.cached_workspace_dir:
                                         clean_workspace_dir(task.cached_workspace_dir)
                                     self._prune_tasks_locked()
+                                    self._task_state_cond.notify_all()
                                     continue
                             logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
                             try:
@@ -1106,6 +1243,7 @@ class TaskManager:
                         if task.cached_workspace_dir:
                             clean_workspace_dir(task.cached_workspace_dir)
                         self._prune_tasks_locked()
+                        self._task_state_cond.notify_all()
                         continue
 
                 def _on_process_created(proc):
@@ -1200,6 +1338,7 @@ class TaskManager:
                             if task.cached_workspace_dir:
                                 clean_workspace_dir(task.cached_workspace_dir)
                     self._prune_tasks_locked()
+                    self._task_state_cond.notify_all()
             except Exception as e:
                 logger.exception(f"[{worker_id}] Exception executing task '{task.id}': {e}")
                 with self._lock:
@@ -1212,6 +1351,7 @@ class TaskManager:
                     if task.cached_workspace_dir:
                         clean_workspace_dir(task.cached_workspace_dir)
                     self._prune_tasks_locked()
+                    self._task_state_cond.notify_all()
             finally:
                 if self.quota_tracker:
                     try:
