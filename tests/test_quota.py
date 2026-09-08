@@ -715,23 +715,37 @@ class TestQuotaTracker(unittest.TestCase):
         tracker = QuotaTracker()
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
+        fetch_started = threading.Event()
+        fetch_resume = threading.Event()
         fetch_call_count = 0
         fetch_lock = threading.Lock()
 
-        def slow_fetch(*args, **kwargs):
+        def controlled_fetch(*args, **kwargs):
             nonlocal fetch_call_count
             with fetch_lock:
                 fetch_call_count += 1
-            time.sleep(0.1)
+            fetch_started.set()
+            if not fetch_resume.wait(timeout=10.0):
+                raise TimeoutError("Timed out waiting for fetch_resume signal")
             return w5h, w1w
 
-        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=controlled_fetch):
             t1 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
             t2 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
+
+            # 1. Start t1 and deterministically wait until it enters controlled_fetch
             t1.start()
+            self.assertTrue(fetch_started.wait(timeout=10.0), "Thread 1 failed to reach fetch within timeout")
+
+            # 2. While t1 is blocked in controlled_fetch (pool remains in _in_flight_pools), run t2
             t2.start()
-            t1.join()
-            t2.join()
+            t2.join(timeout=10.0)
+            self.assertFalse(t2.is_alive(), "Thread 2 timed out during poll_live_quota")
+
+            # 3. Unblock t1 to complete the first fetch
+            fetch_resume.set()
+            t1.join(timeout=10.0)
+            self.assertFalse(t1.is_alive(), "Thread 1 timed out during poll_live_quota")
 
         self.assertEqual(fetch_call_count, 1)
 
