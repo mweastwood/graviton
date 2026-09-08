@@ -335,7 +335,12 @@ class TestTerminalDashboard(unittest.TestCase):
         )
 
         dashboard.start()
-        time.sleep(0.15)
+        self.assertTrue(
+            self._wait_for_condition(
+                lambda: "GRAVITON SERVER DASHBOARD" in stream.getvalue(),
+                timeout=5.0,
+            )
+        )
         dashboard.stop()
 
         output = stream.getvalue()
@@ -348,7 +353,8 @@ class TestTerminalDashboard(unittest.TestCase):
             git_cache_ttl=0.2,
         )
 
-        with patch("lib.tui.get_git_info", return_value=("a1b2c3d", "main")) as mock_get_git:
+        with patch("lib.tui.get_git_info", return_value=("a1b2c3d", "main")) as mock_get_git, \
+             patch("lib.tui.time.time", return_value=1000.0) as mock_time:
             # 1. Initial render populates cache
             self.assertIsNone(dashboard._git_info_cache)
             dashboard.render(width=80)
@@ -356,6 +362,7 @@ class TestTerminalDashboard(unittest.TestCase):
             self.assertEqual(mock_get_git.call_count, 1)
 
             # 2. Subsequent render within TTL uses cached metadata
+            mock_time.return_value = 1000.1
             dashboard.render(width=80)
             self.assertEqual(mock_get_git.call_count, 1)
 
@@ -365,9 +372,9 @@ class TestTerminalDashboard(unittest.TestCase):
             dashboard.render(width=80)
             self.assertEqual(mock_get_git.call_count, 2)
 
-            # 4. Render after TTL expiration fetches fresh metadata
+            # 4. Advance mock time beyond TTL to deterministically trigger expiration without sleep
             mock_get_git.return_value = ("e5f6g7h", "feat/test")
-            time.sleep(0.25)
+            mock_time.return_value = 1000.1 + dashboard.git_cache_ttl + 0.1
             dashboard.render(width=80)
             self.assertEqual(mock_get_git.call_count, 3)
             self.assertEqual(dashboard._git_info_cache, ("e5f6g7h", "feat/test"))
