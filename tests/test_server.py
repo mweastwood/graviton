@@ -36,6 +36,12 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
 
+    def tearDown(self):
+        server_mod._is_shutting_down = False
+        server_mod._shutdown_thread = None
+        GravitonHandler.scheduler = None
+        GravitonHandler.task_manager = None
+
     def test_health_check_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
         handler.task_manager = None
@@ -782,29 +788,35 @@ class TestGravitonHandler(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             tm = TaskManager(cwd=tmp_path)
-            task = tm.submit_task("code_reviewer", "Persist signal task", target_id="owner/repo#100")
-            mock_sched = MagicMock()
-            mock_httpd = MagicMock()
+            try:
+                task = tm.submit_task("code_reviewer", "Persist signal task", target_id="owner/repo#100")
+                mock_sched = MagicMock()
+                mock_httpd = MagicMock()
 
-            t = server_mod.graceful_shutdown(
-                task_manager=tm,
-                scheduler=mock_sched,
-                dashboard=None,
-                httpd=mock_httpd,
-                grace_period=0.01,
-            )
-            t.join(timeout=3.0)
+                t = server_mod.graceful_shutdown(
+                    task_manager=tm,
+                    scheduler=mock_sched,
+                    dashboard=None,
+                    httpd=mock_httpd,
+                    grace_period=0.01,
+                )
+                t.join(timeout=5.0)
+                self.assertFalse(t.is_alive(), "Shutdown thread did not complete in time")
 
-            state_file = tmp_path / ".graviton_queue_state.json"
-            self.assertTrue(state_file.exists())
+                state_file = tmp_path / ".graviton_queue_state.json"
+                self.assertTrue(state_file.exists())
 
-            new_tm = TaskManager(cwd=tmp_path)
-            restored_count = new_tm.restore_queue_state()
-            self.assertEqual(restored_count, 1)
-            restored = new_tm.get_task(task.id)
-            self.assertIsNotNone(restored)
-            self.assertEqual(restored.prompt, "Persist signal task")
-            new_tm.stop()
+                new_tm = TaskManager(cwd=tmp_path)
+                try:
+                    restored_count = new_tm.restore_queue_state()
+                    self.assertEqual(restored_count, 1)
+                    restored = new_tm.get_task(task.id)
+                    self.assertIsNotNone(restored)
+                    self.assertEqual(restored.prompt, "Persist signal task")
+                finally:
+                    new_tm.stop()
+            finally:
+                tm.stop()
 
     @patch("subprocess.Popen")
     def test_start_smee_listener_valid_url(self, mock_popen):
