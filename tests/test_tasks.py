@@ -2109,6 +2109,69 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.wait_for_task(t1.id, timeout=1.0))
         manager.stop()
 
+    def test_wait_for_task_pruned_task_non_terminal_returns_false_immediately(self):
+        manager = TaskManager(max_workers=1, max_tasks=1)
+        manager.start()
+        t1 = manager.submit_task("code_reviewer", "Task 1")
+        self.assertTrue(manager.wait_for_task(t1, timeout=5.0))
+
+        # Submit second task which forces eviction of t1
+        t2 = manager.submit_task("code_reviewer", "Task 2")
+        self.assertTrue(manager.wait_for_task(t2, timeout=5.0))
+
+        self.assertNotIn(t1.id, manager._tasks)
+        self.assertIn(t1.id, manager._pruned_task_ids)
+
+        # Calling wait_for_task with non-terminal status on pruned task must return False immediately
+        start_t = time.time()
+        result = manager.wait_for_task(t1.id, target_statuses=(TaskStatus.RUNNING,), timeout=5.0)
+        elapsed = time.time() - start_t
+        self.assertFalse(result)
+        self.assertLess(elapsed, 1.0)
+        manager.stop()
+
+    def test_stop_unblocks_condition_waiters(self):
+        manager = TaskManager(max_workers=0)
+        manager.start()
+        task = manager.submit_task("code_reviewer", "Unprocessed")
+
+        wait_task_result = []
+        def _waiter():
+            wait_task_result.append(
+                manager.wait_for_task(task.id, target_statuses=(TaskStatus.COMPLETED,), timeout=None)
+            )
+
+        t = threading.Thread(target=_waiter)
+        t.start()
+        time.sleep(0.05)
+
+        manager.stop()
+        t.join(timeout=2.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(wait_task_result, [False])
+
+    def test_pruned_task_ids_bounded_capacity(self):
+        manager = TaskManager(max_tasks=5)
+        self.assertEqual(manager.max_pruned_tasks, 1000)
+        self.assertEqual(manager._pruned_task_ids.maxlen, 1000)
+
+        from lib.tasks import _PrunedTaskIds
+        bounded = _PrunedTaskIds(maxlen=3)
+        bounded.add("task-1")
+        bounded.add("task-2")
+        bounded.add("task-3")
+        self.assertEqual(list(bounded), ["task-1", "task-2", "task-3"])
+
+        # Adding 4th item evicts oldest (task-1)
+        bounded.add("task-4")
+        self.assertEqual(list(bounded), ["task-2", "task-3", "task-4"])
+        self.assertNotIn("task-1", bounded)
+        self.assertIn("task-4", bounded)
+
+        # Adding existing item moves it to the most recent position
+        bounded.add("task-2")
+        self.assertEqual(list(bounded), ["task-3", "task-4", "task-2"])
+
     def test_wait_for_all_and_join(self):
         manager = TaskManager(max_workers=2)
         manager.start()

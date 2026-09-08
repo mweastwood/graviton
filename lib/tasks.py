@@ -360,6 +360,16 @@ def prune_abandoned_workspaces(
     return pruned_count
 
 
+class _PrunedTaskIds(collections.deque):
+    """Bounded collection tracking pruned task IDs with FIFO eviction."""
+
+    def add(self, item: str) -> None:
+        """Add an item to the collection, moving it to the most recent position if present."""
+        if item in self:
+            self.remove(item)
+        self.append(item)
+
+
 class TaskManager:
     """
     Thread-safe Task Manager managing pending queued tasks, active workers,
@@ -377,6 +387,7 @@ class TaskManager:
     ):
         self.max_workers = max_workers
         self.max_tasks = max_tasks
+        self.max_pruned_tasks = max(1000, self.max_tasks * 10)
         self.script_path = script_path
         self.cwd = cwd
         self.quota_tracker = quota_tracker
@@ -387,7 +398,7 @@ class TaskManager:
         self._task_state_cond = threading.Condition(self._lock)
         self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
-        self._pruned_task_ids: Set[str] = set()
+        self._pruned_task_ids: collections.deque[str] = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
         self._active_processes: Dict[str, subprocess.Popen] = {}
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
@@ -490,6 +501,7 @@ class TaskManager:
             was_running = self._running
             self._running = False
             self._stopped = True
+            self._task_state_cond.notify_all()
             if not was_running:
                 return
 
@@ -501,6 +513,8 @@ class TaskManager:
             for worker in self._workers:
                 worker.join(timeout=1.0)
         self._workers.clear()
+        with self._lock:
+            self._task_state_cond.notify_all()
         logger.info("TaskManager stopped.")
 
     def drain_active_tasks(self, timeout: Optional[float] = None) -> bool:
@@ -526,6 +540,9 @@ class TaskManager:
                         f"TaskManager drain completed cleanly. No active tasks remain ({queued_count} queued task(s) preserved)."
                     )
                     return True
+
+                if self._stopped:
+                    break
 
                 if timeout is not None:
                     remaining = timeout - (time.time() - start_time)
@@ -578,8 +595,10 @@ class TaskManager:
                     return True
                 if task is None and tid in self._pruned_task_ids:
                     terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
-                    if targets.intersection(terminal_statuses):
-                        return True
+                    return bool(targets.intersection(terminal_statuses))
+
+                if self._stopped:
+                    return False
 
                 if timeout is not None:
                     remaining = timeout - (time.time() - start_time)
@@ -624,6 +643,9 @@ class TaskManager:
 
                 if all_done:
                     return True
+
+                if self._stopped:
+                    return False
 
                 if timeout is not None:
                     remaining = timeout - (time.time() - start_time)
