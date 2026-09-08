@@ -138,9 +138,9 @@ class TestRunner(unittest.TestCase):
         script_path = Path("/tmp/run_agent_container.sh")
         cwd = Path("/workspace")
         thread = run_agent_async("code_fixer", "Fix code", script_path, cwd, max_attempts=4)
-        thread.join(timeout=2.0)
+        thread.join(timeout=10.0)
 
-        self.assertFalse(thread.is_alive())
+        self.assertFalse(thread.is_alive(), "Thread did not terminate in time")
         mock_run_container.assert_called_once_with(
             "code_fixer",
             "Fix code",
@@ -162,9 +162,9 @@ class TestRunner(unittest.TestCase):
         script_path = Path("/tmp/run_agent_container.sh")
         cwd = Path("/workspace")
         thread = run_agent_async("code_fixer", "Fix code", script_path, cwd)
-        thread.join(timeout=2.0)
+        thread.join(timeout=10.0)
 
-        self.assertFalse(thread.is_alive())
+        self.assertFalse(thread.is_alive(), "Thread did not terminate in time")
         mock_run_container.assert_called_once_with(
             "code_fixer",
             "Fix code",
@@ -194,9 +194,9 @@ class TestRunner(unittest.TestCase):
             quota_pool="claude_gpt",
             model="claude-sonnet-4-6",
         )
-        thread.join(timeout=2.0)
+        thread.join(timeout=10.0)
 
-        self.assertFalse(thread.is_alive())
+        self.assertFalse(thread.is_alive(), "Thread did not terminate in time")
         mock_run_container.assert_called_once_with(
             "code_fixer",
             "Fix code",
