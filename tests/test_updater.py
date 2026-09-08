@@ -3,6 +3,7 @@ Unit tests for lib/updater.py
 """
 
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -76,17 +77,48 @@ class TestUpdater(unittest.TestCase):
 
     @patch("os.execv")
     def test_hot_reload_server_drains_tasks(self, mock_execv):
+        mock_manager = MagicMock()
         mock_tm = MagicMock()
         mock_httpd = MagicMock()
         mock_qt = MagicMock()
 
+        mock_manager.attach_mock(mock_tm, "task_manager")
+        mock_manager.attach_mock(mock_qt, "quota_tracker")
+        mock_manager.attach_mock(mock_httpd, "httpd")
+        mock_manager.attach_mock(mock_execv, "execv")
+
+        observed_states = {}
+
+        def drain_side_effect(*args, **kwargs):
+            observed_states["drain"] = get_hot_reload_state()
+
+        def server_close_side_effect(*args, **kwargs):
+            observed_states["server_close"] = get_hot_reload_state()
+
+        def execv_side_effect(*args, **kwargs):
+            observed_states["execv"] = get_hot_reload_state()
+
+        mock_tm.drain_active_tasks.side_effect = drain_side_effect
+        mock_httpd.server_close.side_effect = server_close_side_effect
+        mock_execv.side_effect = execv_side_effect
+
         hot_reload_server(httpd=mock_httpd, task_manager=mock_tm, quota_tracker=mock_qt)
 
-        mock_tm.drain_active_tasks.assert_called_once()
-        mock_tm.dump_queue_state.assert_called_once()
-        mock_qt.dump_model_selection.assert_called_once()
-        mock_httpd.server_close.assert_called_once()
-        mock_execv.assert_called_once()
+        expected_calls = [
+            call.task_manager.drain_active_tasks(),
+            call.task_manager.dump_queue_state(),
+            call.quota_tracker.dump_model_selection(),
+            call.httpd.server_close(),
+            call.execv(sys.executable, [sys.executable] + sys.argv),
+        ]
+        actual_calls = [c for c in mock_manager.mock_calls if not c[0].endswith(".__bool__")]
+        self.assertEqual(actual_calls, expected_calls)
+
+        self.assertEqual(observed_states.get("drain"), "DRAINING_TASKS")
+        self.assertEqual(observed_states.get("server_close"), "RELOADING")
+        self.assertEqual(observed_states.get("execv"), "RELOADING")
+
+        mock_execv.assert_called_once_with(sys.executable, [sys.executable] + sys.argv)
 
     @patch("os.execv")
     def test_hot_reload_server_extracts_quota_tracker_from_task_manager(self, mock_execv):
@@ -99,7 +131,53 @@ class TestUpdater(unittest.TestCase):
         mock_tm.drain_active_tasks.assert_called_once()
         mock_tm.dump_queue_state.assert_called_once()
         mock_qt.dump_model_selection.assert_called_once()
-        mock_execv.assert_called_once()
+        mock_execv.assert_called_once_with(sys.executable, [sys.executable] + sys.argv)
+
+    @patch("os.execv")
+    def test_hot_reload_server_server_close_exception_still_execs(self, mock_execv):
+        mock_httpd = MagicMock()
+        mock_httpd.server_close.side_effect = RuntimeError("Socket error")
+
+        with self.assertLogs("graviton.updater", level="WARNING") as cm:
+            hot_reload_server(httpd=mock_httpd)
+
+        mock_httpd.server_close.assert_called_once()
+        mock_execv.assert_called_once_with(sys.executable, [sys.executable] + sys.argv)
+        self.assertTrue(any("Error closing server socket: Socket error" in log for log in cm.output))
+
+    @patch("os.execv")
+    @patch("lib.updater.stop_smee_listener")
+    def test_hot_reload_server_ordered_shutdown_with_listener(self, mock_stop_smee, mock_execv):
+        mock_manager = MagicMock()
+        mock_tm = MagicMock()
+        mock_httpd = MagicMock()
+        mock_qt = MagicMock()
+        mock_listener = MagicMock()
+
+        mock_manager.attach_mock(mock_tm, "task_manager")
+        mock_manager.attach_mock(mock_qt, "quota_tracker")
+        mock_manager.attach_mock(mock_stop_smee, "stop_smee_listener")
+        mock_manager.attach_mock(mock_httpd, "httpd")
+        mock_manager.attach_mock(mock_execv, "execv")
+
+        hot_reload_server(
+            httpd=mock_httpd,
+            task_manager=mock_tm,
+            listener_proc=mock_listener,
+            quota_tracker=mock_qt,
+        )
+
+        expected_calls = [
+            call.task_manager.drain_active_tasks(),
+            call.task_manager.dump_queue_state(),
+            call.quota_tracker.dump_model_selection(),
+            call.stop_smee_listener(mock_listener),
+            call.httpd.server_close(),
+            call.execv(sys.executable, [sys.executable] + sys.argv),
+        ]
+        actual_calls = [c for c in mock_manager.mock_calls if not c[0].endswith(".__bool__")]
+        self.assertEqual(actual_calls, expected_calls)
+        mock_execv.assert_called_once_with(sys.executable, [sys.executable] + sys.argv)
 
     @patch("os.execv")
     @patch("lib.updater.perform_git_pull")
