@@ -129,6 +129,85 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(kwargs["env"].get("ANTIGRAVITY_MODEL"), "claude-sonnet-4-6")
         self.assertEqual(kwargs["env"].get("MODEL_NAME"), "claude-sonnet-4-6")
 
+    @patch("subprocess.Popen")
+    def test_run_agent_container_on_process_created_exception_is_swallowed(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = []
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        def bad_callback(proc):
+            raise RuntimeError("process callback error")
+
+        with self.assertLogs("graviton.runner", level="DEBUG") as cm:
+            res = run_agent_container(
+                "code_reviewer",
+                "Review PR",
+                Path("/tmp/run_agent_container.sh"),
+                Path("/workspace"),
+                on_process_created=bad_callback,
+            )
+
+        self.assertEqual(res.returncode, 0)
+        self.assertTrue(any("Error in on_process_created callback: process callback error" in log for log in cm.output))
+
+    @patch("subprocess.Popen")
+    def test_run_agent_container_on_output_exception_is_swallowed(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ["line 1\n", "line 2\n"]
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        def bad_output_callback(line):
+            raise ValueError("output callback error")
+
+        with self.assertLogs("graviton.runner", level="DEBUG") as cm:
+            res = run_agent_container(
+                "code_reviewer",
+                "Review PR",
+                Path("/tmp/run_agent_container.sh"),
+                Path("/workspace"),
+                on_output=bad_output_callback,
+            )
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout, "line 1\nline 2\n")
+        self.assertTrue(any("Error in on_output callback: output callback error" in log for log in cm.output))
+
+    @patch("subprocess.Popen")
+    def test_run_agent_container_on_output_continues_after_exception(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ["first\n", "second\n", "third\n"]
+        mock_proc.stderr = []
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        seen_lines = []
+
+        def faulty_callback(line):
+            seen_lines.append(line)
+            if "first" in line:
+                raise RuntimeError("first line error")
+
+        with self.assertLogs("graviton.runner", level="DEBUG") as cm:
+            res = run_agent_container(
+                "code_reviewer",
+                "Review PR",
+                Path("/tmp/run_agent_container.sh"),
+                Path("/workspace"),
+                on_output=faulty_callback,
+            )
+
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(seen_lines, ["first\n", "second\n", "third\n"])
+        self.assertEqual(res.stdout, "first\nsecond\nthird\n")
+        self.assertTrue(any("Error in on_output callback: first line error" in log for log in cm.output))
+
     @patch("lib.runner.run_agent_container")
     def test_run_agent_async(self, mock_run_container):
         mock_run_container.return_value = subprocess.CompletedProcess(
