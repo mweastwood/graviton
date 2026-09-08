@@ -3,7 +3,6 @@ Unit tests for lib/router.py
 """
 
 from pathlib import Path
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 from lib.router import (
@@ -874,11 +873,12 @@ class TestRouter(unittest.TestCase):
         res4 = route_webhook_event("pull_request", payload_sync_other)
         self.assertEqual(res4["status"], "ignored")
 
-        # 5. After debounce_window expires (using small window), synchronize should be accepted
-        handle_pull_request_event(payload_sync, debounce_window=0.01)
-        time.sleep(0.02)
-        res6 = handle_pull_request_event(payload_sync, debounce_window=0.01)
-        self.assertEqual(res6["status"], "accepted")
+        # 5. After debounce_window expires, synchronize should be accepted
+        clear_pr_review_cache()
+        with patch("lib.routers.pr_router.time.time", side_effect=[1000.0, 1035.0]):
+            handle_pull_request_event(payload_sync, debounce_window=30.0)
+            res6 = handle_pull_request_event(payload_sync, debounce_window=30.0)
+            self.assertEqual(res6["status"], "accepted")
 
     def test_format_event_summary_pull_request(self):
         # pull_request opened
