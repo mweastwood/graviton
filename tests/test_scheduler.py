@@ -659,6 +659,8 @@ class TestTaskScheduler(unittest.TestCase):
         for t in threads:
             t.join()
 
+        if errors:
+            raise errors[0]
         self.assertEqual(errors, [])
 
     def test_update_running_states_persists_state_changes(self):
@@ -1102,6 +1104,8 @@ class TestTaskScheduler(unittest.TestCase):
             for t in threads:
                 t.join()
 
+        if errors:
+            raise errors[0]
         self.assertEqual(errors, [])
 
 
