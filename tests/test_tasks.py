@@ -2189,6 +2189,45 @@ class TestTaskManager(unittest.TestCase):
         self.assertFalse(manager.join(timeout=0.05))
         manager.stop()
 
+    def test_join_unblocks_and_returns_false_on_stop(self):
+        manager = TaskManager(max_workers=0)
+        manager.start()
+        manager.submit_task("code_reviewer", "Unprocessed task")
+
+        join_result = []
+
+        def _waiter():
+            join_result.append(manager.join(timeout=None))
+
+        t = threading.Thread(target=_waiter)
+        t.start()
+        time.sleep(0.05)
+
+        manager.stop()
+        t.join(timeout=2.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(join_result, [False])
+
+        # Calling join on stopped manager with unprocessed tasks returns False immediately
+        start_t = time.time()
+        self.assertFalse(manager.join(timeout=5.0))
+        self.assertLess(time.time() - start_t, 1.0)
+
+    def test_wait_for_task_completed_non_matching_target_returns_false_immediately(self):
+        manager = TaskManager(max_workers=1)
+        manager.start()
+        task = manager.submit_task("code_reviewer", "Quick task")
+        self.assertTrue(manager.wait_for_task(task, timeout=5.0))
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertIn(task.id, manager._tasks)
+
+        start_t = time.time()
+        result = manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING,), timeout=5.0)
+        elapsed = time.time() - start_t
+        self.assertFalse(result)
+        self.assertLess(elapsed, 1.0)
+        manager.stop()
+
 
 class TestResolveTaskPoolAndModel(unittest.TestCase):
     """

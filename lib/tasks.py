@@ -502,6 +502,8 @@ class TaskManager:
             self._running = False
             self._stopped = True
             self._task_state_cond.notify_all()
+            with self._queue.all_tasks_done:
+                self._queue.all_tasks_done.notify_all()
             if not was_running:
                 return
 
@@ -515,6 +517,8 @@ class TaskManager:
         self._workers.clear()
         with self._lock:
             self._task_state_cond.notify_all()
+            with self._queue.all_tasks_done:
+                self._queue.all_tasks_done.notify_all()
         logger.info("TaskManager stopped.")
 
     def drain_active_tasks(self, timeout: Optional[float] = None) -> bool:
@@ -588,13 +592,16 @@ class TaskManager:
             targets = set(target_statuses)
 
         start_time = time.time()
+        terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
         with self._task_state_cond:
             while True:
                 task = self._tasks.get(tid)
-                if task is not None and task.status in targets:
-                    return True
-                if task is None and tid in self._pruned_task_ids:
-                    terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.ABORTED}
+                if task is not None:
+                    if task.status in targets:
+                        return True
+                    if task.status in terminal_statuses:
+                        return False
+                elif tid in self._pruned_task_ids:
                     return bool(targets.intersection(terminal_statuses))
 
                 if self._stopped:
@@ -661,21 +668,25 @@ class TaskManager:
 
         Wraps queue.Queue.all_tasks_done with optional timeout support.
         :param timeout: Maximum seconds to wait. If None, waits indefinitely.
-        :return: True if all queue tasks completed, False if timed out.
+        :return: True if all queue tasks completed, False if timed out or stopped with unfinished tasks.
         """
         with self._queue.all_tasks_done:
             if timeout is None:
                 while self._queue.unfinished_tasks:
+                    if self._stopped:
+                        return False
                     self._queue.all_tasks_done.wait()
-                return True
+                return not self._stopped
             else:
                 endtime = time.time() + timeout
                 while self._queue.unfinished_tasks:
+                    if self._stopped:
+                        return False
                     remaining = endtime - time.time()
                     if remaining <= 0.0:
                         return False
                     self._queue.all_tasks_done.wait(timeout=remaining)
-                return True
+                return not self._stopped
 
     def _get_default_state_path(self, filepath: Optional[Path] = None) -> Path:
         if filepath is not None:
