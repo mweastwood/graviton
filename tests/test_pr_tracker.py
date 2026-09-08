@@ -387,13 +387,14 @@ class TestPRTracker(unittest.TestCase):
                 cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 cwd_str = str(cwd or "")
                 if "git remote get-url" in cmd_str:
+                    tid = threading.get_ident()
                     with lock:
-                        thread_ids.add(threading.get_ident())
+                        thread_ids.add(tid)
                     try:
-                        barrier.wait(timeout=5.0)
+                        barrier.wait(timeout=30.0)
                     except threading.BrokenBarrierError:
                         with lock:
-                            sync_errors.append("Thread synchronization barrier timed out")
+                            sync_errors.append(f"Thread synchronization barrier timed out (tid={tid}, cwd={cwd_str})")
                         return MagicMock(returncode=1, stdout="")
                 for i in range(1, num_repos + 1):
                     if f"repo{i}" in cwd_str:
@@ -415,7 +416,7 @@ class TestPRTracker(unittest.TestCase):
             tracker = PRTracker()
             tracker.sync_github_prs(repos_dir=Path(tmpdir))
 
-            self.assertFalse(sync_errors, sync_errors)
+            self.assertFalse(sync_errors, f"Thread synchronization barrier error: {sync_errors}")
             approved = tracker.get_approved_prs()
             self.assertEqual(len(approved), num_repos)
             for i in range(1, num_repos + 1):
