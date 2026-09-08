@@ -4,6 +4,7 @@ Integration/HTTP unit tests for bin/graviton-server.py
 
 import importlib.util
 import json
+import logging
 import signal
 import socket
 import subprocess
@@ -688,15 +689,16 @@ class TestGravitonHandler(unittest.TestCase):
 
                 if not health_ok:
                     raise RuntimeError("Health check endpoint did not respond with 200")
-
-                signal.raise_signal(signal.SIGINT)
             except Exception as e:
                 client_errors.append(e)
+            finally:
+                signal.raise_signal(signal.SIGINT)
 
         client_thread = threading.Thread(target=client_worker, daemon=True)
 
         orig_sigint = signal.getsignal(signal.SIGINT)
         orig_sigterm = signal.getsignal(signal.SIGTERM)
+        orig_handlers = list(logging.getLogger().handlers)
 
         try:
             with patch("graviton_server.HTTPServer", TrackingHTTPServer):
@@ -704,6 +706,9 @@ class TestGravitonHandler(unittest.TestCase):
                     client_thread.start()
                     server_mod.main()
         finally:
+            logging.getLogger().handlers = orig_handlers
+            GravitonHandler.pr_tracker = None
+            GravitonHandler.scheduler = None
             try:
                 signal.signal(signal.SIGINT, orig_sigint)
             except Exception:
