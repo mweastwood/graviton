@@ -5,6 +5,7 @@ Unit tests for lib/reactions.py
 import json
 import os
 import subprocess
+import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -141,13 +142,17 @@ class TestReactions(unittest.TestCase):
 
     @patch("lib.reactions.post_emoji_reaction")
     def test_post_emoji_reaction_async(self, mock_post):
+        called = threading.Event()
+        mock_post.side_effect = lambda *args, **kwargs: called.set()
+
         payload = {
             "repository": {"full_name": "mweastwood/graviton"},
             "issue": {"number": 99},
         }
         thread = post_emoji_reaction_async("issues", payload, reaction="eyes")
-        thread.join(timeout=2.0)
-        self.assertFalse(thread.is_alive())
+        self.assertTrue(called.wait(timeout=10.0), "Async reaction thread did not execute target function")
+        thread.join(timeout=5.0)
+        self.assertFalse(thread.is_alive(), "Async reaction thread did not terminate")
         mock_post.assert_called_once_with("issues", payload, "eyes")
 
 
