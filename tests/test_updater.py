@@ -62,6 +62,143 @@ class TestUpdater(unittest.TestCase):
         self.assertIn("Already up to date", output)
 
     @patch("subprocess.run")
+    def test_perform_git_pull_default_branch(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=0,
+            stdout="Already up to date.",
+            stderr="",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        success, output = perform_git_pull(repo_root)
+
+        mock_run.assert_called_once_with(
+            ["git", "pull", "origin", "main"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertTrue(success)
+        self.assertEqual(output, "Already up to date.")
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_custom_branch(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=0,
+            stdout="Fast-forward",
+            stderr="",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        success, output = perform_git_pull(repo_root, branch="release/v2.0")
+
+        mock_run.assert_called_once_with(
+            ["git", "pull", "origin", "release/v2.0"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertTrue(success)
+        self.assertEqual(output, "Fast-forward")
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_none_outputs(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=0,
+            stdout=None,
+            stderr=None,
+        )
+        repo_root = Path("/tmp/fake_repo")
+        success, output = perform_git_pull(repo_root)
+        self.assertTrue(success)
+        self.assertEqual(output, "")
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_nonzero_returncode(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=1,
+            stdout="error: Your local changes would be overwritten\n",
+            stderr="Please commit your changes",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        success, output = perform_git_pull(repo_root, branch="main")
+
+        mock_run.assert_called_once_with(
+            ["git", "pull", "origin", "main"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertFalse(success)
+        self.assertIn("error: Your local changes would be overwritten", output)
+        self.assertIn("Please commit your changes", output)
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_timeout_expired(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=30)
+        repo_root = Path("/tmp/fake_repo")
+
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            success, output = perform_git_pull(repo_root, branch="main")
+
+        self.assertFalse(success)
+        self.assertIn("30", output)
+        self.assertTrue(any("Failed to execute git pull on branch 'main'" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_called_process_error(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(128, ["git", "pull"], output="fatal: repository not found")
+        repo_root = Path("/tmp/fake_repo")
+
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            success, output = perform_git_pull(repo_root, branch="feature")
+
+        self.assertFalse(success)
+        self.assertIn("128", output)
+        self.assertTrue(any("Failed to execute git pull on branch 'feature'" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_filenotfound_error(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: 'git'")
+        repo_root = Path("/tmp/fake_repo")
+
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            success, output = perform_git_pull(repo_root, branch="main")
+
+        self.assertFalse(success)
+        self.assertIn("No such file or directory", output)
+        self.assertTrue(any("Failed to execute git pull on branch 'main'" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_permission_error(self, mock_run):
+        mock_run.side_effect = PermissionError("[Errno 13] Permission denied")
+        repo_root = Path("/tmp/fake_repo")
+
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            success, output = perform_git_pull(repo_root, branch="main")
+
+        self.assertFalse(success)
+        self.assertIn("Permission denied", output)
+        self.assertTrue(any("Failed to execute git pull on branch 'main'" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_perform_git_pull_oserror(self, mock_run):
+        mock_run.side_effect = OSError("Disk read error")
+        repo_root = Path("/tmp/fake_repo")
+
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            success, output = perform_git_pull(repo_root, branch="main")
+
+        self.assertFalse(success)
+        self.assertIn("Disk read error", output)
+        self.assertTrue(any("Failed to execute git pull on branch 'main'" in log for log in cm.output))
+
+    @patch("subprocess.run")
     def test_rebuild_agent_container(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["build_agent_container.sh"],
@@ -74,6 +211,91 @@ class TestUpdater(unittest.TestCase):
             repo_root = Path("/tmp/fake_repo")
             success = rebuild_agent_container(repo_root)
             self.assertTrue(success)
+            mock_run.assert_called_once_with(
+                [str(repo_root / "bin" / "build_agent_container.sh")],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_script_not_found(self, mock_run):
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=False):
+            with self.assertLogs("graviton.updater", level="WARNING") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        mock_run.assert_not_called()
+        self.assertTrue(any("Build script not found at:" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_nonzero_returncode(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["build_agent_container.sh"],
+            returncode=1,
+            stdout="",
+            stderr="docker: command not found",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertLogs("graviton.updater", level="ERROR") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        mock_run.assert_called_once_with(
+            [str(repo_root / "bin" / "build_agent_container.sh")],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        self.assertTrue(any("Agent container rebuild failed (code 1): docker: command not found" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_timeout_expired(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["build_agent_container.sh"], timeout=300)
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertLogs("graviton.updater", level="ERROR") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        self.assertTrue(any("Error rebuilding agent container:" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_filenotfound_error(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory")
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertLogs("graviton.updater", level="ERROR") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        self.assertTrue(any("Error rebuilding agent container:" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_permission_error(self, mock_run):
+        mock_run.side_effect = PermissionError("[Errno 13] Permission denied")
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertLogs("graviton.updater", level="ERROR") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        self.assertTrue(any("Error rebuilding agent container:" in log for log in cm.output))
+
+    @patch("subprocess.run")
+    def test_rebuild_agent_container_oserror(self, mock_run):
+        mock_run.side_effect = OSError("General OS error")
+        repo_root = Path("/tmp/fake_repo")
+        with patch("pathlib.Path.exists", return_value=True):
+            with self.assertLogs("graviton.updater", level="ERROR") as cm:
+                success = rebuild_agent_container(repo_root)
+
+        self.assertFalse(success)
+        self.assertTrue(any("Error rebuilding agent container:" in log for log in cm.output))
 
     @patch("os.execv")
     def test_hot_reload_server_drains_tasks(self, mock_execv):
