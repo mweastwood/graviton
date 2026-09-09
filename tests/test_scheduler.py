@@ -3,6 +3,7 @@ Unit tests for Periodic Background Task Scheduler Engine (lib/scheduler.py).
 """
 
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,6 +15,8 @@ from unittest.mock import MagicMock, patch
 from lib.scheduler import (
     ScheduledJob,
     TaskScheduler,
+    _issues_cache,
+    _issues_cache_lock,
     _normalize_title,
     fetch_open_issues,
     is_duplicate_issue,
@@ -1275,48 +1278,186 @@ class TestIssueUtilities(unittest.TestCase):
         self.assertTrue(is_duplicate_issue("Unhandled null pointer exception in router.py", existing_with_invalid))
         self.assertFalse(is_duplicate_issue("Completely new bug report", existing_with_invalid))
 
+class TestFetchOpenIssues(unittest.TestCase):
+
+    def setUp(self):
+        with _issues_cache_lock:
+            _issues_cache.clear()
+
+    def tearDown(self):
+        with _issues_cache_lock:
+            _issues_cache.clear()
+
     @patch("lib.scheduler.subprocess.run")
-    def test_fetch_open_issues(self, mock_run):
-        mock_res = MagicMock()
-        mock_res.returncode = 0
-        mock_res.stdout = json.dumps([{"number": 10, "title": "Periodic tasks"}])
-        mock_run.return_value = mock_res
-
-        issues = fetch_open_issues(force=True)
-        self.assertEqual(len(issues), 1)
-        self.assertEqual(issues[0]["number"], 10)
+    def test_fetch_open_issues_success(self, mock_run):
+        """Parses subprocess stdout as JSON and returns issue list."""
+        mock_run.return_value = MagicMock(stdout='[{"number": 1, "title": "Bug"}]', returncode=0)
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [{"number": 1, "title": "Bug"}])
 
     @patch("lib.scheduler.subprocess.run")
-    def test_fetch_open_issues_caching_and_timeout(self, mock_run):
-        mock_res = MagicMock()
-        mock_res.returncode = 0
-        mock_res.stdout = json.dumps([{"number": 1, "title": "Cached issue"}])
-        mock_run.return_value = mock_res
+    def test_fetch_open_issues_cached(self, mock_run):
+        """Second call within TTL window returns cached result without subprocess call."""
+        mock_run.return_value = MagicMock(stdout='[]', returncode=0)
+        fetch_open_issues()
+        fetch_open_issues()
+        mock_run.assert_called_once()
 
-        issues1 = fetch_open_issues(ttl=60.0, force=True)
-        self.assertEqual(len(issues1), 1)
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_empty_stdout(self, mock_run):
+        """Empty or whitespace-only stdout parses as empty list and caches the result."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="   \n")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [])
+        cached = fetch_open_issues(force=False)
+        self.assertEqual(cached, [])
         self.assertEqual(mock_run.call_count, 1)
 
-        # Subsequent call within TTL should return cached result without calling subprocess.run
-        issues2 = fetch_open_issues(ttl=60.0, force=False)
-        self.assertEqual(issues2, issues1)
-        self.assertEqual(mock_run.call_count, 1)
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_subprocess_exception_no_cache(self, mock_run):
+        """Returns empty list and does not raise on subprocess TimeoutExpired when cache is empty."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30.0)
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [])
 
     @patch("lib.scheduler.subprocess.run")
-    def test_fetch_open_issues_non_zero_exit_preserves_cache(self, mock_run):
-        mock_success = MagicMock(returncode=0, stdout=json.dumps([{"number": 1, "title": "Valid Issue"}]))
-        mock_failure = MagicMock(returncode=1, stderr="CLI error", stdout="")
-        mock_run.side_effect = [mock_success, mock_failure]
+    def test_fetch_open_issues_subprocess_exception_with_cached_data(self, mock_run):
+        """Falls back to cached data when subprocess raises an exception."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 42, "title": "Existing Issue"}]')
+        result1 = fetch_open_issues(force=True)
+        self.assertEqual(result1, [{"number": 42, "title": "Existing Issue"}])
 
-        # 1. Successful fetch populates cache
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh")
+        result2 = fetch_open_issues(force=True)
+        self.assertEqual(result2, [{"number": 42, "title": "Existing Issue"}])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_nonzero_exit_no_cache(self, mock_run):
+        """Returns empty list on non-zero exit code when cache is empty."""
+        mock_run.return_value = MagicMock(returncode=1, stderr="error: not a git repo", stdout="")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_nonzero_exit_preserves_cache(self, mock_run):
+        """Falls back to cached issues when subsequent call encounters non-zero exit code."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 1, "title": "Valid Issue"}]')
         issues1 = fetch_open_issues(force=True)
-        self.assertEqual(len(issues1), 1)
-        self.assertEqual(issues1[0]["title"], "Valid Issue")
+        self.assertEqual(issues1, [{"number": 1, "title": "Valid Issue"}])
 
-        # 2. Transient failure should return cached issues instead of overwriting with empty list
+        mock_run.return_value = MagicMock(returncode=1, stderr="CLI error", stdout="")
         issues2 = fetch_open_issues(force=True)
-        self.assertEqual(len(issues2), 1)
-        self.assertEqual(issues2[0]["title"], "Valid Issue")
+        self.assertEqual(issues2, [{"number": 1, "title": "Valid Issue"}])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_malformed_json_no_cache(self, mock_run):
+        """Returns empty list on malformed JSON without raising."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="<html>502 Bad Gateway</html>")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_malformed_json_with_cache(self, mock_run):
+        """Falls back to cached issues when gh CLI outputs malformed JSON."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 1, "title": "Valid Issue"}]')
+        fetch_open_issues(force=True)
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="malformed json")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [{"number": 1, "title": "Valid Issue"}])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_non_list_json(self, mock_run):
+        """Returns empty list when JSON root is not a list (e.g. dict error payload)."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"message": "rate limit exceeded"}', stderr="")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_non_list_json_with_cache(self, mock_run):
+        """Falls back to cached data when JSON root is not a list."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 5, "title": "Known Issue"}]', stderr="")
+        fetch_open_issues(force=True)
+
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"message": "rate limit exceeded"}', stderr="")
+        result = fetch_open_issues(force=True)
+        self.assertEqual(result, [{"number": 5, "title": "Known Issue"}])
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_cwd_scoping(self, mock_run):
+        """Different cwd paths maintain separate cache entries without cross-talk."""
+        repo_a = Path("/tmp/repo_a")
+        repo_b = Path("/tmp/repo_b")
+
+        mock_res_a = MagicMock(returncode=0, stdout=json.dumps([{"number": 1, "title": "Repo A Issue"}]))
+        mock_res_b = MagicMock(returncode=0, stdout=json.dumps([{"number": 2, "title": "Repo B Issue"}]))
+        mock_run.side_effect = [mock_res_a, mock_res_b]
+
+        issues_a = fetch_open_issues(cwd=repo_a, force=True)
+        issues_b = fetch_open_issues(cwd=repo_b, force=True)
+
+        self.assertEqual(issues_a, [{"number": 1, "title": "Repo A Issue"}])
+        self.assertEqual(issues_b, [{"number": 2, "title": "Repo B Issue"}])
+        self.assertEqual(mock_run.call_count, 2)
+
+        mock_run.assert_any_call(
+            ["gh", "issue", "list", "--state", "open", "--json", "number,title,body,labels"],
+            cwd=str(repo_a),
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "list", "--state", "open", "--json", "number,title,body,labels"],
+            cwd=str(repo_b),
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+
+        cached_a = fetch_open_issues(cwd=repo_a, force=False)
+        cached_b = fetch_open_issues(cwd=repo_b, force=False)
+        self.assertEqual(cached_a, [{"number": 1, "title": "Repo A Issue"}])
+        self.assertEqual(cached_b, [{"number": 2, "title": "Repo B Issue"}])
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("lib.scheduler.subprocess.run")
+    def test_fetch_open_issues_command_and_timeout(self, mock_run):
+        """Passes exact CLI arguments, cwd, and timeout parameters to subprocess.run."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+        test_dir = Path("/tmp/repo_c")
+        fetch_open_issues(cwd=test_dir, timeout=15.0, force=True)
+        mock_run.assert_called_once_with(
+            ["gh", "issue", "list", "--state", "open", "--json", "number,title,body,labels"],
+            cwd=str(test_dir),
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+
+    @patch("lib.scheduler.subprocess.run")
+    @patch("lib.scheduler.time.time")
+    def test_fetch_open_issues_ttl_expiration(self, mock_time, mock_run):
+        """Subprocess.run is invoked again once TTL elapses."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 1, "title": "First"}]')
+        mock_time.return_value = 1000.0
+
+        res1 = fetch_open_issues(ttl=60.0, force=False)
+        self.assertEqual(res1, [{"number": 1, "title": "First"}])
+        self.assertEqual(mock_run.call_count, 1)
+
+        # Within TTL: returns cached
+        mock_time.return_value = 1050.0
+        res2 = fetch_open_issues(ttl=60.0, force=False)
+        self.assertEqual(res2, [{"number": 1, "title": "First"}])
+        self.assertEqual(mock_run.call_count, 1)
+
+        # After TTL expired: invokes subprocess.run again
+        mock_time.return_value = 1065.0
+        mock_run.return_value = MagicMock(returncode=0, stdout='[{"number": 2, "title": "Updated"}]')
+        res3 = fetch_open_issues(ttl=60.0, force=False)
+        self.assertEqual(res3, [{"number": 2, "title": "Updated"}])
+        self.assertEqual(mock_run.call_count, 2)
 
 
 if __name__ == "__main__":
