@@ -6,6 +6,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -193,10 +194,15 @@ class TestPRTracker(unittest.TestCase):
     def test_sync_github_prs_handles_exception(self, mock_run):
         tracker = PRTracker()
         tracker.add_approved_pr(1, "Existing PR", "dev", "https://example.com/1")
-        
-        # Sync fails, existing state should not crash
-        tracker.sync_github_prs()
+
+        # Sync fails, existing state should not crash and warning logs should be captured
+        with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
+            tracker.sync_github_prs()
+
         self.assertEqual(len(tracker.get_approved_prs()), 1)
+        output_text = "\n".join(cm.output)
+        self.assertIn("Failed to sync PRs", output_text)
+        self.assertIn("PRTracker sync failed for all target directories", output_text)
 
     def test_multi_repo_approved_prs_tracking(self):
         tracker = PRTracker()
@@ -425,34 +431,35 @@ class TestPRTracker(unittest.TestCase):
                 self.assertEqual(matching[0]["number"], i * 10)
             self.assertEqual(len(thread_ids), num_repos)
 
-    @patch("lib.pr_tracker.ThreadPoolExecutor")
-    @patch("subprocess.run")
-    def test_thread_pool_worker_bounds(self, mock_run, mock_executor_cls):
-        from concurrent.futures import ThreadPoolExecutor
-        
-        # Test max_workers calculation for 15 repositories (bounded to min(10, len(target_dirs)))
+    def test_thread_pool_worker_bounds(self):
+        # Test concurrency bounds empirically when syncing 15 repositories (bounded to min(10, len(target_dirs)))
+        active_concurrency = 0
+        max_observed_concurrency = 0
+        lock = threading.Lock()
+
+        def mock_sync_dir(d):
+            nonlocal active_concurrency, max_observed_concurrency
+            with lock:
+                active_concurrency += 1
+                if active_concurrency > max_observed_concurrency:
+                    max_observed_concurrency = active_concurrency
+            time.sleep(0.02)
+            with lock:
+                active_concurrency -= 1
+            return (f"org/{d.name}", [])
+
         with tempfile.TemporaryDirectory() as tmpdir:
             for i in range(15):
                 r_dir = Path(tmpdir) / f"repo{i}"
                 r_dir.mkdir()
                 (r_dir / ".git").mkdir()
 
-            mock_run.return_value = MagicMock(returncode=0, stdout="[]")
-            
-            # Use real ThreadPoolExecutor context manager inside mock
-            real_executor_instances = []
-            def executor_factory(max_workers=None):
-                executor = ThreadPoolExecutor(max_workers=max_workers)
-                real_executor_instances.append((max_workers, executor))
-                return executor
-
-            mock_executor_cls.side_effect = executor_factory
-
             tracker = PRTracker()
-            tracker.sync_github_prs(repos_dir=Path(tmpdir))
+            with patch.object(tracker, "_sync_directory", side_effect=mock_sync_dir):
+                tracker.sync_github_prs(repos_dir=Path(tmpdir))
 
-            self.assertTrue(len(real_executor_instances) > 0)
-            self.assertEqual(real_executor_instances[0][0], 10)  # Bound capped at 10 for 15 repos
+            self.assertGreater(max_observed_concurrency, 1)
+            self.assertLessEqual(max_observed_concurrency, 10)
 
     @patch("subprocess.run")
     def test_sync_github_prs_with_bot_approval(self, mock_run):
