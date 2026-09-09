@@ -204,6 +204,44 @@ class TestPRTracker(unittest.TestCase):
         self.assertIn("Failed to sync PRs", output_text)
         self.assertIn("PRTracker sync failed for all target directories", output_text)
 
+    @patch("lib.pr_tracker.ThreadPoolExecutor")
+    def test_sync_github_prs_outer_exception_is_handled(self, mock_executor_cls):
+        """Function-level exception handler prevents propagation of unexpected errors and preserves state."""
+        mock_executor_cls.return_value.__enter__.side_effect = RuntimeError("executor init failure")
+        tracker = PRTracker(cache_ttl=60.0)
+        tracker.add_approved_pr(1, "Existing PR", "dev", "https://example.com/1", repo_full_name="owner/repo")
+
+        with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
+            tracker.sync_github_prs(force=True)
+
+        self.assertTrue(
+            any("PRTracker initial background sync skipped/failed: executor init failure" in log for log in cm.output),
+            "Expected warning log from outer exception safety net",
+        )
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 1)
+        self.assertEqual(approved[0]["repo_full_name"], "owner/repo")
+
+    @patch("pathlib.Path.cwd", side_effect=OSError("Permission denied"))
+    def test_sync_github_prs_outer_exception_path_resolution(self, mock_cwd):
+        """Directory resolution failure triggers the outer exception handler."""
+        tracker = PRTracker(cache_ttl=60.0)
+        tracker.add_approved_pr(1, "Existing PR", "dev", "https://example.com/1", repo_full_name="owner/repo")
+
+        with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
+            tracker.sync_github_prs(repo_root=None, repos_dir=None, force=True)
+
+        self.assertTrue(
+            any("PRTracker initial background sync skipped/failed: Permission denied" in log for log in cm.output),
+            "Expected warning log for directory resolution failure",
+        )
+        approved = tracker.get_approved_prs()
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 1)
+        self.assertEqual(approved[0]["repo_full_name"], "owner/repo")
+
+
     def test_multi_repo_approved_prs_tracking(self):
         tracker = PRTracker()
         tracker.add_approved_pr(42, "Feature Alpha", "alice", "https://github.com/owner/repo-alpha/pull/42", repo_full_name="owner/repo-alpha")
