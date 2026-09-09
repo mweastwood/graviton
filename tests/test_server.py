@@ -2,6 +2,8 @@
 Integration/HTTP unit tests for bin/graviton-server.py
 """
 
+import hashlib
+import hmac
 import importlib.util
 import json
 import logging
@@ -86,6 +88,99 @@ class TestGravitonHandler(unittest.TestCase):
         handler.path = "/invalid"
         GravitonHandler.do_GET(handler)
         handler._send_json.assert_called_once_with(404, {"error": "Not Found"})
+
+    def test_do_post_missing_signature_returns_401(self):
+        """Returns HTTP 401 when webhook secret is configured but HMAC signature header is missing."""
+        payload = json.dumps({"action": "opened", "number": 7}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = "test-secret"
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(401, {"error": "Invalid signature"})
+
+    def test_do_post_invalid_hmac_returns_401(self):
+        """Returns HTTP 401 when webhook HMAC signature does not match computed digest."""
+        payload = json.dumps({"action": "opened", "number": 7}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+            "X-Hub-Signature-256": "sha256=badsignature",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = "test-secret"
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(401, {"error": "Invalid signature"})
+
+    @patch("graviton_server.route_webhook_event")
+    def test_do_post_valid_hmac_proceeds(self, mock_route):
+        """Passes HMAC verification and routes event when signature is valid."""
+        mock_route.return_value = {"status": "ignored", "reason": "not_relevant"}
+        payload = json.dumps({"action": "opened", "number": 7}).encode("utf-8")
+        secret = "test-secret"
+        valid_digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+            "X-Hub-Signature-256": f"sha256={valid_digest}",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = secret
+        handler.default_reviewer = "code_reviewer"
+        handler.default_fixer = "code_fixer"
+        handler.default_triager = "issue_triager"
+        handler.default_drafter = "pr_drafter"
+        handler.pr_tracker = None
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+
+        mock_route.assert_called_once()
+        handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "not_relevant"})
+
+    def test_do_post_malformed_json_returns_400(self):
+        """Returns HTTP 400 when webhook request body is not valid JSON."""
+        payload = b"not-json-{{{"
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(400, {"error": "Invalid JSON payload"})
+
+    def test_do_post_malformed_json_with_valid_hmac_returns_400(self):
+        """Returns HTTP 400 when HMAC verification passes but payload is malformed JSON."""
+        payload = b"not-json-{{{"
+        secret = "test-secret"
+        valid_digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+            "X-Hub-Signature-256": f"sha256={valid_digest}",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = secret
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(400, {"error": "Invalid JSON payload"})
 
     @patch("graviton_server.run_agent_async")
     def test_do_post_valid_pr_event(self, mock_run_async):
