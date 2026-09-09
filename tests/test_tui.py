@@ -1836,6 +1836,195 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.ABORTED)
         self.assertTrue(any(f"Task '{task.id}' aborted by user via TUI" in msg for msg in log_cm.output))
 
+    def test_abort_selected_task_no_task_manager(self):
+        """Returns False when task_manager is None."""
+        dashboard = TerminalDashboard(task_manager=None)
+        self.assertFalse(dashboard.abort_selected_task())
+
+    def test_abort_selected_task_active_panel(self):
+        """Aborts the selected task when focused on the active panel, including index clamping."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        task1 = MagicMock(id="act-1")
+        task2 = MagicMock(id="act-2")
+        mock_tm.get_active_tasks.return_value = [task1, task2]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.abort_task.return_value = True
+
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+        dashboard.focused_panel = "active"
+        dashboard.selected_active_index = 1
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            res = dashboard.abort_selected_task()
+
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("act-2")
+        self.assertTrue(any("Task 'act-2' aborted by user via TUI" in msg for msg in log_cm.output))
+
+        # Test index clamping when selected_active_index is out of bounds (> max index)
+        mock_tm.reset_mock()
+        dashboard.selected_active_index = 99
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("act-2")
+        self.assertEqual(dashboard.selected_active_index, 1)
+
+        # Test index clamping when selected_active_index is negative
+        mock_tm.reset_mock()
+        dashboard.selected_active_index = -5
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("act-1")
+        self.assertEqual(dashboard.selected_active_index, 0)
+
+        # When abort_task returns False (e.g. task abort failure)
+        mock_tm.reset_mock()
+        mock_tm.abort_task.return_value = False
+        dashboard.selected_active_index = 0
+        res = dashboard.abort_selected_task()
+        self.assertFalse(res)
+        mock_tm.abort_task.assert_called_once_with("act-1")
+
+    def test_abort_selected_task_queued_panel(self):
+        """Aborts the selected task when focused on the queued panel, including index clamping."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        task_q1 = MagicMock(id="q-1")
+        task_q2 = MagicMock(id="q-2")
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = [task_q1, task_q2]
+        mock_tm.abort_task.return_value = True
+
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+        dashboard.focused_panel = "queued"
+        dashboard.selected_queue_index = 1
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            res = dashboard.abort_selected_task()
+
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("q-2")
+        self.assertTrue(any("Task 'q-2' aborted by user via TUI" in msg for msg in log_cm.output))
+
+        # Test index clamping when selected_queue_index is out of bounds (> max index)
+        mock_tm.reset_mock()
+        dashboard.selected_queue_index = 100
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("q-2")
+        self.assertEqual(dashboard.selected_queue_index, 1)
+
+        # Test index clamping when selected_queue_index is negative
+        mock_tm.reset_mock()
+        dashboard.selected_queue_index = -10
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("q-1")
+        self.assertEqual(dashboard.selected_queue_index, 0)
+
+    def test_abort_selected_task_fallback(self):
+        """Verifies fallback selection when focused_panel is neither active nor queued."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        task_a = MagicMock(id="act-fallback")
+        task_q = MagicMock(id="q-fallback")
+        mock_tm.abort_task.return_value = True
+
+        # Fallback priority: queued_tasks first if present
+        mock_tm.get_active_tasks.return_value = [task_a]
+        mock_tm.get_queued_tasks.return_value = [task_q]
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+        dashboard.focused_panel = "unknown_panel"
+        dashboard.selected_queue_index = 0
+
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("q-fallback")
+
+        # Fallback when queued_tasks is empty but active_tasks has items
+        mock_tm.reset_mock()
+        mock_tm.get_active_tasks.return_value = [task_a]
+        mock_tm.get_queued_tasks.return_value = []
+        dashboard.focused_panel = "unknown_panel"
+        dashboard.selected_active_index = 0
+
+        res = dashboard.abort_selected_task()
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("act-fallback")
+
+    def test_abort_selected_task_empty_lists(self):
+        """Returns False and does not invoke abort_task when no tasks exist."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+        dashboard.focused_panel = "active"
+
+        res = dashboard.abort_selected_task()
+        self.assertFalse(res)
+        mock_tm.abort_task.assert_not_called()
+
+    def test_abort_selected_task_in_task_logs_screen(self):
+        """Aborts the task currently viewed on the task_logs screen."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        mock_tm.abort_task.return_value = True
+
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+        dashboard.active_screen = "task_logs"
+        dashboard.selected_task_id_for_logs = "act-log-1"
+
+        with self.assertLogs("graviton.tui", level="INFO") as log_cm:
+            res = dashboard.abort_selected_task()
+
+        self.assertTrue(res)
+        mock_tm.abort_task.assert_called_once_with("act-log-1")
+        self.assertTrue(any("Task 'act-log-1' aborted by user via TUI" in msg for msg in log_cm.output))
+
+        # When abort_task returns False (e.g. task already stopped)
+        mock_tm.reset_mock()
+        mock_tm.abort_task.return_value = False
+        res = dashboard.abort_selected_task()
+        self.assertFalse(res)
+        mock_tm.abort_task.assert_called_once_with("act-log-1")
+
+        # When selected_task_id_for_logs is None
+        mock_tm.reset_mock()
+        dashboard.selected_task_id_for_logs = None
+        res = dashboard.abort_selected_task()
+        self.assertFalse(res)
+        mock_tm.abort_task.assert_not_called()
+
+    def test_abort_selected_task_hotkeys(self):
+        """Verifies hotkey triggers (x/X) invoke abort_selected_task on main and task_logs screens."""
+        stream = io.StringIO()
+        mock_tm = MagicMock()
+        dashboard = TerminalDashboard(task_manager=mock_tm, out_stream=stream)
+
+        with patch.object(dashboard, "abort_selected_task") as mock_abort:
+            # On main screen
+            dashboard.active_screen = "main"
+            dashboard.handle_key("x")
+            dashboard.handle_key("X")
+            self.assertEqual(mock_abort.call_count, 2)
+
+            # On task_logs screen
+            mock_abort.reset_mock()
+            dashboard.active_screen = "task_logs"
+            dashboard.handle_key("x")
+            dashboard.handle_key("X")
+            self.assertEqual(mock_abort.call_count, 2)
+
+            # On unrelated screen (e.g. logs)
+            mock_abort.reset_mock()
+            dashboard.active_screen = "logs"
+            dashboard.handle_key("x")
+            dashboard.handle_key("X")
+            mock_abort.assert_not_called()
+
     def test_unified_task_navigation_seamless_transitions(self):
         manager = TaskManager(max_workers=2)
         act1 = Task(id="act-1", agent="code_reviewer", prompt="Review PR #1", status=TaskStatus.RUNNING)
