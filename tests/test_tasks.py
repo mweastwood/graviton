@@ -144,10 +144,7 @@ class TestTaskManager(unittest.TestCase):
         task = manager.submit_task("code_fixer", "Fix issue", target_id="#9", max_attempts=5)
         self.assertEqual(task.max_attempts, 5)
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task))
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         mock_run.assert_called_once_with(
@@ -190,10 +187,7 @@ class TestTaskManager(unittest.TestCase):
         self.assertIn(task1.status, (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.COMPLETED))
 
         # Wait for worker thread to process dummy execution
-        for _ in range(50):
-            if task1.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task1))
 
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
         self.assertEqual(task1.return_code, 0)
@@ -228,10 +222,7 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_fixer", "Fix issue", target_id="#9")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task))
 
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertEqual(task.return_code, 1)
@@ -263,10 +254,11 @@ class TestTaskManager(unittest.TestCase):
         task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
 
         # Wait for worker thread to pick up/complete task1 before initiating drain
-        for _ in range(50):
-            if task1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(
+            manager.wait_for_task(
+                task1, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)
+            )
+        )
 
         # Initiate drain
         drained = manager.drain_active_tasks(timeout=5.0)
@@ -289,10 +281,11 @@ class TestTaskManager(unittest.TestCase):
         task1 = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
 
         # Wait for worker thread to pick up/complete task1 before initiating drain
-        for _ in range(50):
-            if task1.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(
+            manager.wait_for_task(
+                task1, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)
+            )
+        )
 
         # Initiate drain without parameters (defaulting to timeout=None / indefinite wait)
         drained = manager.drain_active_tasks()
@@ -418,10 +411,7 @@ class TestTaskManager(unittest.TestCase):
 
         manager.submit_task("code_fixer", "Fix issue", target_id="#9")
         # Give worker time to transition task to RUNNING
-        for _ in range(50):
-            if manager.get_active_tasks():
-                break
-            time.sleep(0.01)
+        self.assertTrue(manager.wait_for_task("task-1", target_statuses=(TaskStatus.RUNNING,)))
 
         # Drain with short timeout (0.1s) while task is still running
         drained = manager.drain_active_tasks(timeout=0.1)
@@ -440,10 +430,7 @@ class TestTaskManager(unittest.TestCase):
             tasks.append(t)
 
         # Wait for all tasks to complete
-        for _ in range(50):
-            if all(t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for t in tasks):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_all(tasks))
 
         stats = manager.get_stats()
         self.assertEqual(stats["max_tasks"], 3)
@@ -469,10 +456,7 @@ class TestTaskManager(unittest.TestCase):
             t = manager.submit_task("code_reviewer", f"Task {i+1}")
             tasks.append(t)
 
-        for _ in range(50):
-            if all(t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for t in tasks):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_all(tasks))
 
         cleared = manager.clear_completed_tasks()
         self.assertEqual(cleared, 3)
@@ -494,10 +478,7 @@ class TestTaskManager(unittest.TestCase):
         manager.start()
         task1 = manager.submit_task("code_reviewer", "Task under low quota")
 
-        for _ in range(50):
-            if task1.status == TaskStatus.COMPLETED:
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task1))
 
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
 
@@ -527,10 +508,7 @@ class TestTaskManager(unittest.TestCase):
 
         # 3. Recover quota to NORMAL -> worker resumes and completes task2
         quota.update_quota(100.0)
-        for _ in range(100):
-            if task2.status == TaskStatus.COMPLETED:
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task2))
 
         self.assertEqual(task2.status, TaskStatus.COMPLETED)
         manager.stop()
@@ -582,13 +560,8 @@ class TestTaskManager(unittest.TestCase):
 
         # Start workers while behind pacing - tasks should be popped, updated to PAUSED_FOR_QUOTA, and re-queued
         manager.start()
-        for _ in range(50):
-            if (
-                t_active.status == TaskStatus.PAUSED_FOR_QUOTA
-                and t_behind.status == TaskStatus.PAUSED_FOR_QUOTA
-            ):
-                break
-            time.sleep(0.02)
+        self.assertTrue(manager.wait_for_task(t_active, target_statuses=(TaskStatus.PAUSED_FOR_QUOTA,)))
+        self.assertTrue(manager.wait_for_task(t_behind, target_statuses=(TaskStatus.PAUSED_FOR_QUOTA,)))
         self.assertEqual(len(manager.get_active_tasks()), 0)
         self.assertEqual(mock_run.call_count, 0)
         self.assertEqual(t_active.status, TaskStatus.PAUSED_FOR_QUOTA)
@@ -596,14 +569,8 @@ class TestTaskManager(unittest.TestCase):
 
         # Recover pacing - tasks should now be executed by worker
         quota.update_quota(100.0, remaining_percentage_5h=100.0, reset_time_5h=now)
-        for _ in range(50):
-            if (
-                mock_run.call_count >= 2
-                and t_active.status == TaskStatus.COMPLETED
-                and t_behind.status == TaskStatus.COMPLETED
-            ):
-                break
-            time.sleep(0.02)
+        self.assertTrue(manager.wait_for_task(t_active, target_statuses=(TaskStatus.COMPLETED,)))
+        self.assertTrue(manager.wait_for_task(t_behind, target_statuses=(TaskStatus.COMPLETED,)))
         self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(t_active.status, TaskStatus.COMPLETED)
         self.assertEqual(t_behind.status, TaskStatus.COMPLETED)
@@ -646,12 +613,8 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_reviewer", "Review PR #1", target_id="#1")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
 
@@ -680,12 +643,8 @@ class TestTaskManager(unittest.TestCase):
         # 1. Test TaskStatus.FAILED via returncode != 0
         task1 = manager.submit_task("code_fixer", "Fix issue", target_id="#2")
 
-        for _ in range(50):
-            if task1.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task1))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task1.status, TaskStatus.FAILED)
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         mock_quota.reset_mock()
@@ -695,12 +654,8 @@ class TestTaskManager(unittest.TestCase):
 
         task2 = manager.submit_task("code_fixer", "Fix issue exception", target_id="#3")
 
-        for _ in range(50):
-            if task2.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task2))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task2.status, TaskStatus.FAILED)
         self.assertEqual(task2.error_message, "Worker process crashed")
         mock_quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
@@ -735,12 +690,8 @@ class TestTaskManager(unittest.TestCase):
         # 1. Test TaskStatus.COMPLETED under 3rd-party pool ("claude_gpt")
         task1 = manager.submit_task("code_reviewer", "Review PR under 3rd-party pool", target_id="#3rd-1")
 
-        for _ in range(50):
-            if task1.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task1))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task1.status, TaskStatus.COMPLETED)
         self.assertEqual(task1.selected_pool, "claude_gpt")
         mock_quota.poll_live_quota_async.assert_called_with(
@@ -757,12 +708,8 @@ class TestTaskManager(unittest.TestCase):
 
         task2 = manager.submit_task("code_fixer", "Fix issue under 3rd-party pool", target_id="#3rd-2")
 
-        for _ in range(50):
-            if task2.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task2))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task2.status, TaskStatus.FAILED)
         self.assertEqual(task2.selected_pool, "claude_gpt")
         mock_quota.poll_live_quota_async.assert_called_with(
@@ -796,10 +743,7 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_reviewer", "Review PR under equal percentage preference", target_id="#eq-1")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task))
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         self.assertEqual(task.selected_pool, "claude_gpt")
@@ -872,10 +816,7 @@ class TestTaskManager(unittest.TestCase):
             manager2.max_workers = 1
             manager2.start()
 
-            for _ in range(50):
-                if manager2.get_task(t2.id).status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager2.wait_for_all([t1.id, t2.id]))
 
             self.assertEqual(manager2.get_task(t1.id).status, TaskStatus.COMPLETED)
             self.assertEqual(manager2.get_task(t2.id).status, TaskStatus.COMPLETED)
@@ -926,10 +867,7 @@ class TestTaskManager(unittest.TestCase):
                 clone_url="https://github.com/owner/repo-alpha.git",
             )
 
-            for _ in range(50):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task))
 
             self.assertEqual(task.status, TaskStatus.COMPLETED)
 
@@ -984,10 +922,7 @@ class TestTaskManager(unittest.TestCase):
                 clone_url="https://github.com/owner/repo-alpha.git",
             )
 
-            for _ in range(100):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.FAILED,)))
 
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertEqual(task.return_code, -1)
@@ -1021,10 +956,7 @@ class TestTaskManager(unittest.TestCase):
                 repo_name="/tmp/bad",
             )
 
-            for _ in range(50):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.FAILED,)))
 
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertIn("attempting path traversal", task.error_message)
@@ -1060,10 +992,7 @@ class TestTaskManager(unittest.TestCase):
                 repo_name="bad",
             )
 
-            for _ in range(50):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task))
 
             self.assertEqual(task.status, TaskStatus.COMPLETED)
             mock_run_agent.assert_called_once()
@@ -1095,10 +1024,7 @@ class TestTaskManager(unittest.TestCase):
                 repo_name="..",
             )
 
-            for _ in range(50):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.FAILED,)))
 
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertIn("attempting path traversal", task.error_message)
@@ -1152,10 +1078,7 @@ class TestTaskManager(unittest.TestCase):
             t1 = manager.submit_task("code_reviewer", "Prompt 1", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
             t2 = manager.submit_task("code_reviewer", "Prompt 2", repo_name="myrepo", clone_url="https://github.com/owner/myrepo.git")
 
-            for _ in range(50):
-                if t1.status == TaskStatus.COMPLETED and t2.status == TaskStatus.COMPLETED:
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_all([t1, t2]))
 
             self.assertEqual(t1.status, TaskStatus.COMPLETED)
             self.assertEqual(t2.status, TaskStatus.COMPLETED)
@@ -1175,10 +1098,7 @@ class TestTaskManager(unittest.TestCase):
 
             task = manager.submit_task("code_reviewer", "Test prompt")
 
-            for _ in range(50):
-                if task.status == TaskStatus.FAILED:
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.FAILED,)))
 
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertIn("Target repository directory", task.error_message)
@@ -1193,12 +1113,8 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_reviewer", "Test prompt")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task.status, TaskStatus.COMPLETED)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
@@ -1212,12 +1128,8 @@ class TestTaskManager(unittest.TestCase):
 
             task = manager.submit_task("code_reviewer", "Test prompt")
 
-            for _ in range(50):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.05)
-
-            manager._queue.join()
+            self.assertTrue(manager.wait_for_task(task))
+            self.assertTrue(manager.join(timeout=5.0))
             manager.stop()
 
         self.assertEqual(task.status, TaskStatus.COMPLETED)
@@ -1246,12 +1158,8 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_fixer", "Test failing prompt")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task.status, TaskStatus.FAILED)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
         manager.stop()
@@ -1271,12 +1179,8 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_fixer", "Test exception prompt")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.05)
-
-        manager._queue.join()
+        self.assertTrue(manager.wait_for_task(task))
+        self.assertTrue(manager.join(timeout=5.0))
         self.assertEqual(task.status, TaskStatus.FAILED)
         self.assertIn("Worker execution exception", task.error_message)
         quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
@@ -1388,10 +1292,7 @@ class TestTaskManager(unittest.TestCase):
 
         # Resuming task manager allows worker to pick up and process queued task
         manager.resume()
-        for _ in range(50):
-            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)))
 
         self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
@@ -1427,10 +1328,7 @@ class TestTaskManager(unittest.TestCase):
         start_time = time.time()
         task = manager.submit_task("code_reviewer", "Test non-blocking prompt")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                break
-            time.sleep(0.02)
+        self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.COMPLETED, TaskStatus.FAILED)))
 
         finish_duration = time.time() - start_time
         self.assertEqual(task.status, TaskStatus.COMPLETED)
@@ -1733,10 +1631,7 @@ class TestTaskManager(unittest.TestCase):
             manager.max_workers = 1
             manager.start()
 
-            for _ in range(50):
-                if len(execution_order) == 3:
-                    break
-                time.sleep(0.05)
+            self.assertTrue(manager.join(timeout=5.0))
 
             self.assertEqual(execution_order, ["Prompt 1", "Prompt 2", "Prompt 3"])
             manager.stop()
@@ -1817,10 +1712,7 @@ class TestTaskManager(unittest.TestCase):
         task3 = manager.submit_task("code_fixer", "Prompt 3", target_id="#3")
 
         # Wait for workers to finish processing
-        for _ in range(50):
-            if len(manager.get_active_tasks()) == 0 and len(manager.get_queued_tasks()) == 0:
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.join(timeout=5.0))
 
         manager.stop()
         # Max tasks limit (2) should be strictly enforced via pruning on task completion
@@ -1837,10 +1729,7 @@ class TestTaskManager(unittest.TestCase):
 
         task = manager.submit_task("code_reviewer", "Test prompt dual pool")
 
-        for _ in range(50):
-            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)))
 
         self.assertEqual(task.selected_pool, "claude_gpt")
         self.assertEqual(task.selected_model, "claude-sonnet-4-6")
@@ -2009,10 +1898,7 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(quota.is_quota_ready())
 
         # Worker immediately picks up and processes the task
-        for _ in range(50):
-            if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
-                break
-            time.sleep(0.05)
+        self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)))
 
         self.assertIn(task.status, (TaskStatus.RUNNING, TaskStatus.COMPLETED))
         manager.stop()
@@ -2040,7 +1926,7 @@ class TestTaskManager(unittest.TestCase):
 
         # Start worker and verify worker never executes the aborted task
         manager.start()
-        time.sleep(0.1)
+        self.assertTrue(manager.join(timeout=1.0))
         self.assertEqual(len(manager.get_active_tasks()), 0)
         self.assertEqual(task.status, TaskStatus.ABORTED)
         manager.stop()
@@ -2086,11 +1972,12 @@ class TestTaskManager(unittest.TestCase):
         aborted = manager.abort_task(task.id)
         self.assertTrue(aborted)
         self.assertTrue(terminate_called.is_set())
+        self.assertTrue(manager.wait_for_task(task.id, target_statuses=(TaskStatus.ABORTED,)))
         self.assertEqual(task.status, TaskStatus.ABORTED)
         self.assertEqual(task.error_message, "Aborted by user")
 
         # Ensure task is not re-queued or auto-retried
-        time.sleep(0.2)
+        self.assertTrue(manager.join(timeout=2.0))
         self.assertEqual(task.status, TaskStatus.ABORTED)
         self.assertEqual(len(manager.get_queued_tasks()), 0)
         self.assertEqual(len(manager.get_active_tasks()), 0)
@@ -2146,7 +2033,7 @@ class TestTaskManager(unittest.TestCase):
 
         with patch("lib.tasks.is_valid_repo_name", side_effect=aborting_is_valid):
             manager.start()
-            time.sleep(0.3)
+            self.assertTrue(manager.join(timeout=5.0))
 
         mock_run.assert_not_called()
         self.assertEqual(task.status, TaskStatus.ABORTED)
@@ -2184,7 +2071,7 @@ class TestTaskManager(unittest.TestCase):
         mock_run.side_effect = fake_run
 
         manager.start()
-        time.sleep(0.3)
+        self.assertTrue(manager.join(timeout=5.0))
 
         mock_proc.terminate.assert_called_once()
         mock_proc.kill.assert_called_once()
@@ -2192,6 +2079,153 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.ABORTED)
         self.assertEqual(len(manager.get_active_tasks()), 0)
         self.assertEqual(len(manager.get_queued_tasks()), 0)
+        manager.stop()
+
+    def test_wait_for_task_success_and_timeout(self):
+        manager = TaskManager(max_workers=1)
+        manager.start()
+        task = manager.submit_task("code_reviewer", "Review test")
+        self.assertTrue(manager.wait_for_task(task, timeout=5.0))
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+
+        # Non-existent or unfinished condition timeout
+        unreal_task = Task(id="unreal-task", agent="code_reviewer", prompt="test", status=TaskStatus.QUEUED)
+        self.assertFalse(manager.wait_for_task(unreal_task, target_statuses=(TaskStatus.COMPLETED,), timeout=0.05))
+        manager.stop()
+
+    def test_wait_for_task_pruned_task_resolution(self):
+        manager = TaskManager(max_workers=1, max_tasks=1)
+        manager.start()
+        t1 = manager.submit_task("code_reviewer", "Task 1")
+        self.assertTrue(manager.wait_for_task(t1, timeout=5.0))
+
+        # Submit second task which forces eviction of t1
+        t2 = manager.submit_task("code_reviewer", "Task 2")
+        self.assertTrue(manager.wait_for_task(t2, timeout=5.0))
+
+        # t1 was pruned from _tasks and recorded in _pruned_task_ids
+        self.assertNotIn(t1.id, manager._tasks)
+        self.assertIn(t1.id, manager._pruned_task_ids)
+        self.assertTrue(manager.wait_for_task(t1.id, timeout=1.0))
+        manager.stop()
+
+    def test_wait_for_task_pruned_task_non_terminal_returns_false_immediately(self):
+        manager = TaskManager(max_workers=1, max_tasks=1)
+        manager.start()
+        t1 = manager.submit_task("code_reviewer", "Task 1")
+        self.assertTrue(manager.wait_for_task(t1, timeout=5.0))
+
+        # Submit second task which forces eviction of t1
+        t2 = manager.submit_task("code_reviewer", "Task 2")
+        self.assertTrue(manager.wait_for_task(t2, timeout=5.0))
+
+        self.assertNotIn(t1.id, manager._tasks)
+        self.assertIn(t1.id, manager._pruned_task_ids)
+
+        # Calling wait_for_task with non-terminal status on pruned task must return False immediately
+        start_t = time.time()
+        result = manager.wait_for_task(t1.id, target_statuses=(TaskStatus.RUNNING,), timeout=5.0)
+        elapsed = time.time() - start_t
+        self.assertFalse(result)
+        self.assertLess(elapsed, 1.0)
+        manager.stop()
+
+    def test_stop_unblocks_condition_waiters(self):
+        manager = TaskManager(max_workers=0)
+        manager.start()
+        task = manager.submit_task("code_reviewer", "Unprocessed")
+
+        wait_task_result = []
+        def _waiter():
+            wait_task_result.append(
+                manager.wait_for_task(task.id, target_statuses=(TaskStatus.COMPLETED,), timeout=None)
+            )
+
+        t = threading.Thread(target=_waiter)
+        t.start()
+        time.sleep(0.05)
+
+        manager.stop()
+        t.join(timeout=2.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(wait_task_result, [False])
+
+    def test_pruned_task_ids_bounded_capacity(self):
+        manager = TaskManager(max_tasks=5)
+        self.assertEqual(manager.max_pruned_tasks, 1000)
+        self.assertEqual(manager._pruned_task_ids.maxlen, 1000)
+
+        from lib.tasks import _PrunedTaskIds
+        bounded = _PrunedTaskIds(maxlen=3)
+        bounded.add("task-1")
+        bounded.add("task-2")
+        bounded.add("task-3")
+        self.assertEqual(list(bounded), ["task-1", "task-2", "task-3"])
+
+        # Adding 4th item evicts oldest (task-1)
+        bounded.add("task-4")
+        self.assertEqual(list(bounded), ["task-2", "task-3", "task-4"])
+        self.assertNotIn("task-1", bounded)
+        self.assertIn("task-4", bounded)
+
+        # Adding existing item moves it to the most recent position
+        bounded.add("task-2")
+        self.assertEqual(list(bounded), ["task-3", "task-4", "task-2"])
+
+    def test_wait_for_all_and_join(self):
+        manager = TaskManager(max_workers=2)
+        manager.start()
+        tasks = [manager.submit_task("code_reviewer", f"Task {i}") for i in range(3)]
+        self.assertTrue(manager.wait_for_all(tasks, timeout=5.0))
+        self.assertTrue(manager.join(timeout=5.0))
+        for t in tasks:
+            self.assertEqual(t.status, TaskStatus.COMPLETED)
+        manager.stop()
+
+    def test_join_timeout_when_queue_not_done(self):
+        manager = TaskManager(max_workers=0)
+        manager.submit_task("code_reviewer", "Unprocessed task")
+        # Since workers are 0, task is never processed
+        self.assertFalse(manager.join(timeout=0.05))
+        manager.stop()
+
+    def test_join_unblocks_and_returns_false_on_stop(self):
+        manager = TaskManager(max_workers=0)
+        manager.start()
+        manager.submit_task("code_reviewer", "Unprocessed task")
+
+        join_result = []
+
+        def _waiter():
+            join_result.append(manager.join(timeout=None))
+
+        t = threading.Thread(target=_waiter)
+        t.start()
+        time.sleep(0.05)
+
+        manager.stop()
+        t.join(timeout=2.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(join_result, [False])
+
+        # Calling join on stopped manager with unprocessed tasks returns False immediately
+        start_t = time.time()
+        self.assertFalse(manager.join(timeout=5.0))
+        self.assertLess(time.time() - start_t, 1.0)
+
+    def test_wait_for_task_completed_non_matching_target_returns_false_immediately(self):
+        manager = TaskManager(max_workers=1)
+        manager.start()
+        task = manager.submit_task("code_reviewer", "Quick task")
+        self.assertTrue(manager.wait_for_task(task, timeout=5.0))
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertIn(task.id, manager._tasks)
+
+        start_t = time.time()
+        result = manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING,), timeout=5.0)
+        elapsed = time.time() - start_t
+        self.assertFalse(result)
+        self.assertLess(elapsed, 1.0)
         manager.stop()
 
 
