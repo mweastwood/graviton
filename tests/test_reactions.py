@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import unittest
+import urllib.error
 from unittest.mock import patch, MagicMock
 
 from lib.reactions import (
@@ -139,6 +140,129 @@ class TestReactions(unittest.TestCase):
             res = post_emoji_reaction("issues", payload)
 
         self.assertFalse(res)
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_network_url_error(self, mock_run, mock_urlopen):
+        mock_run.side_effect = FileNotFoundError("gh cli not found")
+        mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="+1")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib request failed for reaction" in line and "connection refused" in line for line in cm.output))
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_network_error(self, mock_run, mock_urlopen):
+        mock_run.return_value = MagicMock(returncode=1, stderr="Not found")
+        mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GH_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="+1")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib request failed for reaction" in line and "connection refused" in line for line in cm.output))
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_http_error(self, mock_run, mock_urlopen):
+        mock_run.side_effect = FileNotFoundError("gh cli not found")
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://api.github.com/repos/mweastwood/graviton/issues/99/reactions",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=None,
+        )
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="eyes")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib request failed for reaction" in line and "Internal Server Error" in line for line in cm.output))
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_http_403(self, mock_run, mock_urlopen):
+        mock_run.return_value = MagicMock(returncode=1, stderr="gh failed")
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://api.github.com/repos/mweastwood/graviton/issues/99/reactions",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        )
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="eyes")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib request failed for reaction" in line and "Forbidden" in line for line in cm.output))
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_non_2xx_status(self, mock_run, mock_urlopen):
+        mock_run.side_effect = FileNotFoundError("gh cli not found")
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="eyes")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib returned HTTP status 404" in line for line in cm.output))
+
+    @patch("urllib.request.urlopen")
+    @patch("subprocess.run")
+    def test_post_emoji_reaction_urllib_generic_exception(self, mock_run, mock_urlopen):
+        mock_run.side_effect = FileNotFoundError("gh cli not found")
+        mock_urlopen.side_effect = ConnectionResetError("connection reset by peer")
+
+        payload = {
+            "repository": {"full_name": "mweastwood/graviton"},
+            "issue": {"number": 99},
+        }
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}):
+            with self.assertLogs("graviton.reactions", level="WARNING") as cm:
+                res = post_emoji_reaction("issues", payload, reaction="rocket")
+
+        self.assertFalse(res)
+        mock_urlopen.assert_called_once()
+        self.assertTrue(any("urllib request failed for reaction" in line and "connection reset by peer" in line for line in cm.output))
 
     @patch("lib.reactions.post_emoji_reaction")
     def test_post_emoji_reaction_async(self, mock_post):
