@@ -4,10 +4,16 @@ Integration/HTTP unit tests for bin/graviton-server.py
 
 import importlib.util
 import json
+import logging
 import signal
+import socket
 import subprocess
 import sys
+import threading
+import time
 import unittest
+import urllib.request
+from http.server import HTTPServer as RealHTTPServer
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -600,43 +606,135 @@ class TestGravitonHandler(unittest.TestCase):
         handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "behind_quota_pacing"})
 
     @patch("graviton_server.TerminalDashboard")
-    @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
-    @patch("graviton_server.signal.signal")
     def test_server_signal_shutdown_non_blocking(
-        self, mock_signal_func, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_dashboard_cls
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm_inst.get_stats.return_value = {}
         mock_tm.return_value = mock_tm_inst
+
+        mock_quota_inst = MagicMock()
+        mock_quota_inst.get_info.return_value.to_dict.return_value = {}
+        mock_quota.return_value = mock_quota_inst
+
+        mock_pr_inst = MagicMock()
+        mock_pr.return_value = mock_pr_inst
+
         mock_dashboard_inst = MagicMock()
         mock_dashboard_cls.return_value = mock_dashboard_inst
-        mock_server = MagicMock()
-        mock_http.return_value = mock_server
 
-        registered_handlers = {}
+        call_order = []
 
-        def fake_signal(sig, handler):
-            registered_handlers[sig] = handler
+        def fake_drain_active_tasks(timeout=None):
+            call_order.append("drain_active_tasks")
+            return []
 
-        mock_signal_func.side_effect = fake_signal
+        mock_tm_inst.drain_active_tasks.side_effect = fake_drain_active_tasks
 
-        def fake_serve_forever():
-            handler = registered_handlers.get(signal.SIGINT)
-            self.assertIsNotNone(handler)
-            handler(signal.SIGINT, None)
+        def fake_dashboard_graceful_shutdown(timeout=None, grace_period=None):
+            t = server_mod.graceful_shutdown(
+                task_manager=mock_tm_inst,
+                httpd=mock_dashboard_inst.httpd,
+                quota_tracker=mock_quota_inst,
+                grace_period=grace_period if grace_period is not None else 0.01,
+                timeout=timeout,
+                dashboard=None,
+            )
+            mock_dashboard_inst._shutdown_thread = t
+            return t
 
-        mock_server.serve_forever.side_effect = fake_serve_forever
+        mock_dashboard_inst.graceful_shutdown.side_effect = fake_dashboard_graceful_shutdown
 
-        with patch("sys.argv", ["graviton-server.py"]):
-            server_mod.main()
+        server_port = None
+        server_ready = threading.Event()
 
-        mock_dashboard_inst.stop.assert_called_once()
-        mock_tm_inst.stop.assert_called_once()
-        mock_server.server_close.assert_called_once()
-        mock_server.shutdown.assert_not_called()
+        class TrackingHTTPServer(RealHTTPServer):
+            def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+                super().__init__(("127.0.0.1", 0), RequestHandlerClass, bind_and_activate=bind_and_activate)
+                nonlocal server_port
+                server_port = self.server_address[1]
+                server_ready.set()
+
+            def shutdown(self):
+                call_order.append("httpd_shutdown")
+                super().shutdown()
+
+            def server_close(self):
+                call_order.append("httpd_close")
+                super().server_close()
+
+        client_errors = []
+
+        def client_worker():
+            try:
+                if not server_ready.wait(timeout=5.0):
+                    raise TimeoutError("Server did not bind within timeout")
+
+                url = f"http://127.0.0.1:{server_port}/health"
+                health_ok = False
+                for _ in range(50):
+                    try:
+                        req = urllib.request.Request(url)
+                        with urllib.request.urlopen(req, timeout=1.0) as resp:
+                            if resp.status == 200:
+                                health_ok = True
+                                call_order.append("health_ok")
+                                break
+                    except Exception:
+                        time.sleep(0.05)
+
+                if not health_ok:
+                    raise RuntimeError("Health check endpoint did not respond with 200")
+            except Exception as e:
+                client_errors.append(e)
+            finally:
+                signal.raise_signal(signal.SIGINT)
+
+        client_thread = threading.Thread(target=client_worker, daemon=True)
+
+        orig_sigint = signal.getsignal(signal.SIGINT)
+        orig_sigterm = signal.getsignal(signal.SIGTERM)
+        orig_handlers = list(logging.getLogger().handlers)
+
+        try:
+            with patch("graviton_server.HTTPServer", TrackingHTTPServer):
+                with patch("sys.argv", ["graviton-server.py", "--port", "0", "--quit-grace-period", "0.01"]):
+                    client_thread.start()
+                    server_mod.main()
+        finally:
+            logging.getLogger().handlers = orig_handlers
+            GravitonHandler.pr_tracker = None
+            GravitonHandler.scheduler = None
+            try:
+                signal.signal(signal.SIGINT, orig_sigint)
+            except Exception:
+                pass
+            try:
+                signal.signal(signal.SIGTERM, orig_sigterm)
+            except Exception:
+                pass
+            server_mod._is_shutting_down = False
+            server_mod._shutdown_thread = None
+
+        client_thread.join(timeout=2.0)
+        self.assertEqual(client_errors, [])
+
+        self.assertIn("health_ok", call_order)
+        self.assertIn("drain_active_tasks", call_order)
+        self.assertIn("httpd_shutdown", call_order)
+        self.assertIn("httpd_close", call_order)
+
+        self.assertLess(call_order.index("health_ok"), call_order.index("drain_active_tasks"))
+        self.assertLess(call_order.index("drain_active_tasks"), call_order.index("httpd_shutdown"))
+        self.assertLess(call_order.index("httpd_shutdown"), call_order.index("httpd_close"))
+
+        with self.assertRaises((ConnectionRefusedError, OSError)):
+            with socket.create_connection(("127.0.0.1", server_port), timeout=0.5):
+                pass
 
     @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
