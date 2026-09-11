@@ -61,6 +61,9 @@ def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     return True
 
 
+_EXPLICIT_COMMAND_PATTERN = re.compile(r'(?<![\w/])/(?:fix|review)\b|@antigravity')
+
+
 def has_explicit_command(text: str) -> bool:
     """
     Check whether a comment or review body contains an explicit human command.
@@ -71,7 +74,7 @@ def has_explicit_command(text: str) -> bool:
     if not text:
         return False
     text_lower = text.lower()
-    return bool(re.search(r'(?<![\w/])/(?:fix|review)\b|@antigravity', text_lower))
+    return bool(_EXPLICIT_COMMAND_PATTERN.search(text_lower))
 
 
 def _extract_repo_info(payload: Dict[str, Any]):

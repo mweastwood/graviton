@@ -2,12 +2,14 @@
 Unit tests for lib/routers sub-modules.
 """
 
+import re
 import unittest
 from lib.routers import (
     _pr_review_timestamps,
     _pr_review_timestamps_lock,
 )
 from lib.routers.base import (
+    _EXPLICIT_COMMAND_PATTERN,
     clear_pr_review_cache,
     is_pr_created_by_us,
     has_explicit_command,
@@ -21,7 +23,12 @@ from lib.routers.pr_router import (
     handle_pull_request_review_event,
     handle_pull_request_review_comment_event,
 )
-from lib.routers.issue_router import handle_issues_event, handle_issue_comment_event
+from lib.routers.issue_router import (
+    _FIX_COMMAND_PATTERN,
+    _REVIEW_COMMAND_PATTERN,
+    handle_issues_event,
+    handle_issue_comment_event,
+)
 
 
 class TestSubRoutersDirectImport(unittest.TestCase):
@@ -182,5 +189,26 @@ class TestSubRoutersDirectImport(unittest.TestCase):
             {"action": "submitted", "pull_request": None, "review": None}
         )
         self.assertEqual(res_pr_review_null_all["status"], "ignored")
+
+    def test_precompiled_command_patterns(self):
+        self.assertIsInstance(_EXPLICIT_COMMAND_PATTERN, re.Pattern)
+        self.assertIsInstance(_FIX_COMMAND_PATTERN, re.Pattern)
+        self.assertIsInstance(_REVIEW_COMMAND_PATTERN, re.Pattern)
+
+        # Base explicit command pattern matches
+        self.assertTrue(bool(_EXPLICIT_COMMAND_PATTERN.search("/fix bug")))
+        self.assertTrue(bool(_EXPLICIT_COMMAND_PATTERN.search("/review bug")))
+        self.assertTrue(bool(_EXPLICIT_COMMAND_PATTERN.search("@antigravity please check")))
+        self.assertFalse(bool(_EXPLICIT_COMMAND_PATTERN.search("prefix/fix")))
+        self.assertFalse(bool(_EXPLICIT_COMMAND_PATTERN.search("prefix/review")))
+
+        # Issue router fix / review command pattern matches
+        self.assertTrue(bool(_FIX_COMMAND_PATTERN.search("/fix this issue")))
+        self.assertFalse(bool(_FIX_COMMAND_PATTERN.search("/review this issue")))
+        self.assertFalse(bool(_FIX_COMMAND_PATTERN.search("see foo/fix")))
+
+        self.assertTrue(bool(_REVIEW_COMMAND_PATTERN.search("/review this pr")))
+        self.assertFalse(bool(_REVIEW_COMMAND_PATTERN.search("/fix this pr")))
+        self.assertFalse(bool(_REVIEW_COMMAND_PATTERN.search("see foo/review")))
 
 
