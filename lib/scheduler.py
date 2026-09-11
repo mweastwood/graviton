@@ -362,11 +362,15 @@ def fetch_open_issues(
         return []
 
 
+_PREFIX_TAG_PATTERN = re.compile(r"^(?:\s*\[[^\]]+\]\s*)+")
+_WORD_TOKEN_PATTERN = re.compile(r"\w+")
+
+
 def _normalize_title(title: str) -> str:
     """Normalize title by stripping bracketed prefix tags, lowercasing, and stripping whitespace."""
     if not title or not isinstance(title, str):
         return ""
-    cleaned = re.sub(r"^(?:\s*\[[^\]]+\]\s*)+", "", title.strip().lower())
+    cleaned = _PREFIX_TAG_PATTERN.sub("", title.strip().lower())
     return cleaned.strip()
 
 
@@ -377,7 +381,7 @@ def tokenize_title(title: str) -> Set[str]:
     clean = _normalize_title(title)
     if not clean:
         return set()
-    return set(re.findall(r"\w+", clean))
+    return set(_WORD_TOKEN_PATTERN.findall(clean))
 
 
 def pretokenize_issues(existing_issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

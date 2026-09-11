@@ -3,6 +3,7 @@ Unit tests for Periodic Background Task Scheduler Engine (lib/scheduler.py).
 """
 
 import json
+import re
 import subprocess
 import tempfile
 import threading
@@ -15,6 +16,8 @@ from unittest.mock import MagicMock, patch
 from lib.scheduler import (
     ScheduledJob,
     TaskScheduler,
+    _PREFIX_TAG_PATTERN,
+    _WORD_TOKEN_PATTERN,
     _issues_cache,
     _issues_cache_lock,
     _normalize_title,
@@ -1114,6 +1117,12 @@ class TestTaskScheduler(unittest.TestCase):
 
 
 class TestIssueUtilities(unittest.TestCase):
+
+    def test_compiled_patterns(self):
+        self.assertIsInstance(_PREFIX_TAG_PATTERN, re.Pattern)
+        self.assertEqual(_PREFIX_TAG_PATTERN.pattern, r"^(?:\s*\[[^\]]+\]\s*)+")
+        self.assertIsInstance(_WORD_TOKEN_PATTERN, re.Pattern)
+        self.assertEqual(_WORD_TOKEN_PATTERN.pattern, r"\w+")
 
     def test_normalize_title(self):
         self.assertEqual(_normalize_title("[Bug Sweep] [TUI] Decouple panel rendering"), "decouple panel rendering")
