@@ -214,7 +214,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   if [ -n "${CONVERSATION_ID}" ]; then
     TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${CONVERSATION_ID}/.system_generated/logs/transcript.jsonl"
     if [ -f "${TRANSCRIPT_PATH}" ]; then
-      if "${PYTHON_BIN}" "${GRAVITON_ROOT}/lib/runner.py" "${TRANSCRIPT_PATH}" &>/dev/null; then
+      if "${PYTHON_BIN}" "${GRAVITON_ROOT}/lib/runner.py" "${TRANSCRIPT_PATH}" "${AGENT_NAME}" &>/dev/null; then
         IS_INCOMPLETE=true
       fi
     fi
@@ -229,8 +229,17 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     echo "Agent exited with code ${EXIT_CODE} on attempt ${ATTEMPT}."
   fi
 
+  if [ "$IS_INCOMPLETE" = true ]; then
+    # Brief pause to allow in-flight background processes in container to make progress
+    sleep 5
+  fi
+
   ATTEMPT=$((ATTEMPT + 1))
 done
+
+if [ "$IS_INCOMPLETE" = true ] && [ $EXIT_CODE -eq 0 ]; then
+  EXIT_CODE=1
+fi
 
 if [ $EXIT_CODE -ne 0 ]; then
   echo "Agent '${AGENT_NAME}' failed after ${MAX_ATTEMPTS} attempts with exit code ${EXIT_CODE}."

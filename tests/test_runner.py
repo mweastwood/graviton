@@ -1171,6 +1171,104 @@ class TestTranscriptInspector(unittest.TestCase):
             tf.write_text(case, encoding="utf-8")
             self.assertFalse(is_transcript_incomplete(tf))
 
+    def test_is_transcript_incomplete_uncompleted_background_command(self):
+        transcript_file = self.test_dir / "uncompleted_bg.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "flutter test"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-10\\nTask Description: flutter test"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Tests started."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_completed_background_command(self):
+        transcript_file = self.test_dir / "completed_bg.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "flutter test"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-10\\nTask Description: flutter test"}',
+            '{"step_index": 4, "type": "SYSTEM_MESSAGE", "content": "Task id \\"conv-1/task-10\\" finished with result:\\nAll tests passed."}',
+            '{"step_index": 5, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Done."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_canceled_background_command(self):
+        transcript_file = self.test_dir / "canceled_bg.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "flutter test"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-10\\nTask Description: flutter test"}',
+            '{"step_index": 4, "type": "SYSTEM_MESSAGE", "content": "Task id \\"conv-1/task-10\\" was canceled with result:\\nCanceled."}',
+            '{"step_index": 5, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Task canceled, done."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_timer_task_ignored(self):
+        transcript_file = self.test_dir / "timer_bg.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Schedule timer"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": 10}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-5\\nTask Description: Timer: 10s"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "All finished."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_waiting_text_response(self):
+        transcript_file = self.test_dir / "waiting.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run test suite"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "I have launched the deep link dispatcher widget tests and am waiting for them to finish."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_pr_drafter_missing_pr_create(self):
+        transcript_file = self.test_dir / "pr_drafter_no_pr.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Draft PR for #566"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "write_to_file", "args": {}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "File created."}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Finished implementing feature."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        # Generic agent does not fail on missing PR
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+        # pr_drafter requires gh pr create
+        self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
+
+    def test_is_transcript_incomplete_pr_drafter_with_pr_create(self):
+        transcript_file = self.test_dir / "pr_drafter_with_pr.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Draft PR for #566"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr create --title \\"Feature\\" --body \\"Desc\\""}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "https://github.com/mweastwood/TwelveStars/pull/567"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "PR created successfully."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
+
+    def test_is_transcript_incomplete_cli_with_agent_name(self):
+        runner_py = Path(__file__).resolve().parent.parent / "lib" / "runner.py"
+
+        transcript_file = self.test_dir / "cli_pr_drafter.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Draft PR"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Finished edits."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+
+        # Without agent argument, it completes (returns 1)
+        res_no_agent = subprocess.run(["python3", str(runner_py), str(transcript_file)])
+        self.assertEqual(res_no_agent.returncode, 1)
+
+        # With pr_drafter argument, it is incomplete (returns 0)
+        res_pr_agent = subprocess.run(["python3", str(runner_py), str(transcript_file), "pr_drafter"])
+        self.assertEqual(res_pr_agent.returncode, 0)
+
     @patch("subprocess.Popen")
     def test_run_agent_container_on_process_created_callback(self, mock_popen):
         mock_proc = MagicMock()

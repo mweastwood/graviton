@@ -5,6 +5,7 @@ Agent container execution runner for Graviton.
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -13,32 +14,95 @@ from typing import Callable, Optional, Union
 logger = logging.getLogger("graviton.runner")
 
 
-def is_transcript_incomplete(transcript_path: Union[str, Path]) -> bool:
+def is_transcript_incomplete(
+    transcript_path: Union[str, Path],
+    agent_name: Optional[str] = None,
+) -> bool:
     """
-    Check if an agy agent session transcript ended mid-task with unexecuted tool calls.
+    Check if an agy agent session transcript ended prematurely.
+
+    Returns True if:
+    1. The last step is a PLANNER_RESPONSE with unexecuted non-empty tool_calls.
+    2. Any background command task was launched and has not finished or been canceled.
+    3. The final response indicates the agent ended the turn waiting for background commands/tests.
+    4. The agent is 'pr_drafter' and no 'gh pr create' invocation occurred anywhere in the transcript.
 
     :param transcript_path: Path to transcript.jsonl file.
-    :return: True if last step is a PLANNER_RESPONSE with non-empty tool_calls, False otherwise.
+    :param agent_name: Optional name of the running agent (e.g. 'pr_drafter').
+    :return: True if session is incomplete and should be resumed/continued, False otherwise.
     """
     try:
         path = Path(transcript_path)
         if not path.is_file():
             return False
-        last_line = None
+
+        steps = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped:
-                    last_line = stripped
-        if not last_line:
+                    try:
+                        data = json.loads(stripped)
+                        if isinstance(data, dict):
+                            steps.append(data)
+                    except Exception:
+                        continue
+
+        if not steps:
             return False
-        last_step = json.loads(last_line)
-        if not isinstance(last_step, dict):
-            return False
+
+        # 1. Check for unexecuted tool calls at the end of the session
+        last_step = steps[-1]
         if last_step.get("type") == "PLANNER_RESPONSE":
             tool_calls = last_step.get("tool_calls", [])
             if isinstance(tool_calls, list) and tool_calls:
                 return True
+
+        # 2. Check for uncompleted background commands
+        bg_launch_pattern = re.compile(r"Tool is running as a background task with task id:\s*([^\s\r\n]+)")
+        bg_finish_pattern = re.compile(r'Task id\s+"([^"]+)"\s+(?:finished|was canceled)\s+with result:')
+        active_bg_commands = set()
+        for step in steps:
+            content = step.get("content") or ""
+            if isinstance(content, str):
+                m_launch = bg_launch_pattern.search(content)
+                if m_launch:
+                    tid = m_launch.group(1)
+                    m_desc = re.search(r"Task Description:\s*(.*)", content)
+                    if not (m_desc and m_desc.group(1).startswith("Timer:")):
+                        active_bg_commands.add(tid)
+                for tid in bg_finish_pattern.findall(content):
+                    active_bg_commands.discard(tid)
+
+        if active_bg_commands:
+            return True
+
+        # 3. Check if final response indicates waiting for background task / test completion
+        waiting_pattern = re.compile(
+            r"(?i)\b(?:waiting for (?:them|it|the tests?|the command|the task|completion)|launched the .* and am waiting|waiting on the (?:tests?|command|task)|will wait for the (?:tests?|command|task))\b"
+        )
+        if last_step.get("type") == "PLANNER_RESPONSE":
+            last_content = last_step.get("content") or ""
+            if isinstance(last_content, str) and waiting_pattern.search(last_content):
+                return True
+
+        # 4. Agent-specific deliverables: pr_drafter must have executed gh pr create
+        if agent_name == "pr_drafter":
+            pr_created = False
+            for step in steps:
+                for call in step.get("tool_calls") or []:
+                    if isinstance(call, dict):
+                        args = call.get("args") or {}
+                        if isinstance(args, dict):
+                            cmd = args.get("CommandLine") or ""
+                            if isinstance(cmd, str) and re.search(r"\bgh\s+pr\s+create\b", cmd):
+                                pr_created = True
+                                break
+                if pr_created:
+                    break
+            if not pr_created:
+                return True
+
     except Exception as e:
         logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")
     return False
@@ -202,7 +266,8 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         target_file = sys.argv[1]
-        if is_transcript_incomplete(target_file):
+        agent = sys.argv[2] if len(sys.argv) > 2 else None
+        if is_transcript_incomplete(target_file, agent_name=agent):
             sys.exit(0)
         else:
             sys.exit(1)
