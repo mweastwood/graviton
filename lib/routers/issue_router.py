@@ -16,6 +16,10 @@ from lib.routers.base import (
 from lib.security import extract_agent_marker
 
 
+_FIX_COMMAND_PATTERN = re.compile(r'(?<![\w/])/fix\b')
+_REVIEW_COMMAND_PATTERN = re.compile(r'(?<![\w/])/review\b')
+
+
 def handle_issues_event(
     payload: Dict[str, Any],
     default_triager: str = "issue_triager",
@@ -143,8 +147,8 @@ def handle_issue_comment_event(
                 }
 
             body_lower = comment_body.lower()
-            is_fix_cmd = bool(re.search(r'(?<![\w/])/fix\b', body_lower))
-            is_review_cmd = bool(re.search(r'(?<![\w/])/review\b', body_lower))
+            is_fix_cmd = bool(_FIX_COMMAND_PATTERN.search(body_lower))
+            is_review_cmd = bool(_REVIEW_COMMAND_PATTERN.search(body_lower))
 
             if is_fix_cmd:
                 agent = default_fixer
