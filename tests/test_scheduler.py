@@ -690,6 +690,42 @@ class TestTaskScheduler(unittest.TestCase):
         self.assertNotIn("is_running", saved_config_job)
         self.assertNotIn("current_task_id", saved_config_job)
 
+    def test_update_running_states_hoists_get_all_tasks_single_call(self):
+        """Verify update_running_states calls get_all_tasks exactly once regardless of job count."""
+        from lib.tasks import Task, TaskManager
+        tm = TaskManager(max_workers=1)
+        scheduler = TaskScheduler(config_path=self.config_path, state_path=self.state_path, task_manager=tm)
+        self.assertGreater(len(scheduler.jobs), 1)
+
+        task1 = Task(
+            id="task-active-1",
+            agent="auditor",
+            prompt="Sweep code",
+            target_id="sched:periodic_bug_sweep",
+            status="RUNNING",
+        )
+        task2 = Task(
+            id="task-completed-2",
+            agent="auditor",
+            prompt="Sweep code",
+            target_id="sched:periodic_typing_sweep",
+            status="COMPLETED",
+        )
+        with tm._lock:
+            tm._tasks[task1.id] = task1
+            tm._tasks[task2.id] = task2
+
+        with patch.object(tm, "get_all_tasks", wraps=tm.get_all_tasks) as mock_get_all_tasks:
+            scheduler.update_running_states()
+            self.assertEqual(mock_get_all_tasks.call_count, 1)
+
+        sweep_job = scheduler.get_job("periodic_bug_sweep")
+        self.assertTrue(sweep_job.is_running)
+        self.assertEqual(sweep_job.current_task_id, "task-active-1")
+
+        typing_job = scheduler.get_job("periodic_typing_sweep")
+        self.assertFalse(typing_job.is_running)
+
     def test_load_state_resets_stale_is_running_and_current_task_id_on_startup(self):
         """Verify process crash recovery: load_state resets is_running=False on startup to prevent deadlock."""
         # 1. Simulate process crash by writing stale is_running=True state to disk

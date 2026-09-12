@@ -564,6 +564,11 @@ class TaskScheduler:
         if not self.task_manager:
             return
 
+        all_active_tasks = [
+            t for t in self.task_manager.get_all_tasks()
+            if t.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA")
+        ]
+
         state_changed = False
         with self._lock:
             for job in list(self.jobs.values()):
@@ -572,19 +577,18 @@ class TaskScheduler:
                     continue
 
                 active_task = None
-                for task in self.task_manager.get_all_tasks():
-                    if task.status in ("QUEUED", "RUNNING", "PAUSED_FOR_QUOTA"):
-                        t_id = getattr(task, "target_id", None) or ""
-                        is_match = (
-                            t_id == f"sched:{job.job_id}"
-                            or t_id.endswith(f"#sched:{job.job_id}")
-                            or t_id.endswith(f":sched:{job.job_id}")
-                            or t_id.endswith(f"#{job.job_id}")
-                            or (job.current_task_id and task.id == job.current_task_id)
-                        )
-                        if is_match:
-                            active_task = task
-                            break
+                for task in all_active_tasks:
+                    t_id = getattr(task, "target_id", None) or ""
+                    is_match = (
+                        t_id == f"sched:{job.job_id}"
+                        or t_id.endswith(f"#sched:{job.job_id}")
+                        or t_id.endswith(f":sched:{job.job_id}")
+                        or t_id.endswith(f"#{job.job_id}")
+                        or (job.current_task_id and task.id == job.current_task_id)
+                    )
+                    if is_match:
+                        active_task = task
+                        break
 
                 if active_task:
                     if not job.is_running or job.current_task_id != active_task.id:
