@@ -288,7 +288,6 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     if exec_cwd and not exec_cwd.exists() and clone_url:
                         logger.info(f"Repository directory '{exec_cwd}' does not exist in direct execution mode. Auto-cloning from {clone_url}...")
                         try:
-                            import subprocess
                             exec_cwd.parent.mkdir(parents=True, exist_ok=True)
                             subprocess.run(
                                 ["git", "clone", "--", clone_url, str(exec_cwd)],
