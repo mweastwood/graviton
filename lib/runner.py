@@ -22,11 +22,11 @@ def is_transcript_incomplete(
     Check if an agy agent session transcript ended prematurely.
 
     Returns True if:
-    1. The last step is a PLANNER_RESPONSE with unexecuted non-empty tool_calls.
+    1. The last planner response has unexecuted non-empty tool_calls.
     2. Any background command task was launched and has not finished or been canceled.
     3. The final response indicates the agent ended the turn waiting for background machine tasks/tests.
-    4. The agent is 'pr_drafter' and PR creation deliverable was not completed (missing invocation,
-       in-flight background task, or missing GitHub PR URL).
+    4. The agent is 'pr_drafter' and PR creation deliverable was not completed (missing invocation
+       or missing GitHub PR URL following the PR creation invocation).
 
     Note on agent deliverables:
     Deliverable checking at the runner level is intentionally scoped to 'pr_drafter' (verifying
@@ -63,11 +63,22 @@ def is_transcript_incomplete(
             return False
 
         # 1. Check for unexecuted tool calls at the end of the session
-        last_step = steps[-1]
-        if last_step.get("type") == "PLANNER_RESPONSE":
-            tool_calls = last_step.get("tool_calls", [])
+        last_planner_idx = next(
+            (i for i in reversed(range(len(steps))) if steps[i].get("type") == "PLANNER_RESPONSE"),
+            None,
+        )
+        last_planner_step = steps[last_planner_idx] if last_planner_idx is not None else None
+
+        if last_planner_step:
+            tool_calls = last_planner_step.get("tool_calls", [])
             if isinstance(tool_calls, list) and tool_calls:
-                return True
+                subsequent_steps = steps[last_planner_idx + 1:]
+                has_tool_results = any(
+                    s.get("type") in ("TOOL_RESPONSE", "TOOL_RESULT", "GENERIC")
+                    for s in subsequent_steps
+                )
+                if not has_tool_results:
+                    return True
 
         # 2. Check for uncompleted background commands
         bg_launch_pattern = re.compile(
@@ -143,6 +154,8 @@ def is_transcript_incomplete(
         # Matches:
         #   - "I have launched the deep link dispatcher widget tests and am waiting for them to finish."
         #   - "Waiting for the tests to complete."
+        #   - "Waiting for tests to finish."
+        #   - "Waiting for test suite to complete."
         #   - "Waiting for the command to finish."
         #   - "will wait for background task to complete"
         #   - "Waiting for task completion."
@@ -151,8 +164,7 @@ def is_transcript_incomplete(
         #   - "Tests passed! Waiting for your feedback."
         machine_targets = (
             r"(?:them|it|"
-            r"the\s+(?:background\s+)?(?:tests?|command|task|job|build|process)|"
-            r"background\s+(?:tests?|command|task|job|build|process))"
+            r"(?:the\s+|background\s+)?(?:tests?|command|task|job|build|process|test\s+suite))"
         )
         completion_verbs = r"(?:finish|complete|conclude|terminate)"
         waiting_verbs = r"(?:(?:am|is|are|will|currently)\s+)?wait(?:ing)?\s+(?:for|on)"
@@ -164,26 +176,20 @@ def is_transcript_incomplete(
             rf"{waiting_verbs}\s+(?:task|command|test|build|job)\s+completion"
             rf")\b"
         )
-        if last_step.get("type") == "PLANNER_RESPONSE":
-            last_content = last_step.get("content") or ""
+        if last_planner_step:
+            last_content = last_planner_step.get("content") or ""
             if isinstance(last_content, str) and waiting_pattern.search(last_content):
                 return True
 
         # 4. Agent-specific deliverables:
-        # 4a. pr_drafter: must have executed `gh pr create` AND successfully produced a PR URL,
-        # with no associated background task still pending.
+        # 4a. pr_drafter: must have executed `gh pr create` AND successfully produced a PR URL
+        # in a subsequent step.
         if agent_name == "pr_drafter":
             pr_cmd_invoked = False
             pr_url_found = False
+            pr_cmd_step_indices = set()
 
-            # Check if any step contains a GitHub PR URL
-            for step in steps:
-                content = step.get("content") or ""
-                if isinstance(content, str) and github_pr_url_pattern.search(content):
-                    pr_url_found = True
-                    break
-
-            for step in steps:
+            for idx, step in enumerate(steps):
                 for call in step.get("tool_calls") or []:
                     if isinstance(call, dict):
                         args = call.get("args") or {}
@@ -191,17 +197,23 @@ def is_transcript_incomplete(
                             cmd = args.get("CommandLine") or ""
                             if isinstance(cmd, str) and re.search(r"\bgh\s+pr\s+create\b", cmd):
                                 pr_cmd_invoked = True
+                                pr_cmd_step_indices.add(idx)
                                 break
-                if pr_cmd_invoked:
+
+            if not pr_cmd_invoked:
+                return True
+
+            # Ensure the PR URL appears in a non-USER_INPUT step following the gh pr create invocation
+            first_pr_step = min(pr_cmd_step_indices)
+            for step in steps[first_pr_step + 1:]:
+                if step.get("type") == "USER_INPUT":
+                    continue
+                content = step.get("content") or ""
+                if isinstance(content, str) and github_pr_url_pattern.search(content):
+                    pr_url_found = True
                     break
 
-            # Guard against gh pr create running as an uncompleted background task
-            for tid in active_bg_commands:
-                cmd_line = bg_tasks.get(tid, {}).get("cmd") or ""
-                if re.search(r"\bgh\s+pr\s+create\b", cmd_line):
-                    return True
-
-            if not pr_cmd_invoked or not pr_url_found:
+            if not pr_url_found:
                 return True
 
         # 4b. Note on code_fixer:

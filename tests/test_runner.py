@@ -1238,6 +1238,34 @@ class TestTranscriptInspector(unittest.TestCase):
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertTrue(is_transcript_incomplete(transcript_file))
 
+    def test_is_transcript_incomplete_trailing_system_message_after_waiting(self):
+        # Trailing SYSTEM_MESSAGE step following a waiting PLANNER_RESPONSE must still be detected
+        transcript_file = self.test_dir / "waiting_trailing_system.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "I have launched the deep link dispatcher widget tests and am waiting for them to finish."}',
+            '{"step_index": 3, "type": "SYSTEM_MESSAGE", "content": "Notification: Background task status update"}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_waiting_without_definite_article(self):
+        # Common natural waiting phrasing without 'the' or 'background' modifier
+        cases = [
+            "Waiting for tests to finish.",
+            "Waiting for tests to complete.",
+            "I am waiting for tests to finish.",
+            "Waiting for test suite to complete.",
+        ]
+        for idx, text in enumerate(cases):
+            tf = self.test_dir / f"waiting_no_article_{idx}.jsonl"
+            lines = [
+                '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests"}',
+                f'{{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "{text}"}}'
+            ]
+            tf.write_text("\n".join(lines), encoding="utf-8")
+            self.assertTrue(is_transcript_incomplete(tf), f"Failed to match waiting response: {text}")
+
     def test_is_transcript_incomplete_waiting_for_human_approval_not_flagged(self):
         # Normal completion waiting on human review/approval should NOT be flagged incomplete
         cases = [
@@ -1300,6 +1328,21 @@ class TestTranscriptInspector(unittest.TestCase):
             '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr create --title \\"Feature\\" --body \\"Desc\\""}}]}',
             '{"step_index": 3, "type": "GENERIC", "content": "The command exited with code 1.\\nOutput:\\nGraphQL: Resource not accessible by integration"}',
             '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Failed to create PR."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
+
+    def test_is_transcript_incomplete_pr_drafter_early_pr_url_failed_create(self):
+        # Early steps (USER_INPUT or issue view) containing PR URLs must not satisfy pr_url_found
+        # if gh pr create fails without producing a PR URL.
+        transcript_file = self.test_dir / "pr_drafter_early_url_failed.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Draft PR for #566, see previous attempt https://github.com/mweastwood/TwelveStars/pull/500"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh issue view 566"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "Issue details referencing https://github.com/mweastwood/TwelveStars/pull/501"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr create --title \\"Feature\\" --body \\"Desc\\""}}]}',
+            '{"step_index": 5, "type": "GENERIC", "content": "The command exited with code 1.\\nOutput:\\nGraphQL: Resource not accessible by integration"}',
+            '{"step_index": 6, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Failed to create PR due to permissions."}'
         ]
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
