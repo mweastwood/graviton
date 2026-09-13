@@ -1506,26 +1506,42 @@ class TestFetchCliModels(unittest.TestCase):
         self.assertEqual(tracker.claude_window_1w.remaining_percentage, 84.0)
 
     def test_background_polling_dual_pools(self):
-        tracker = QuotaTracker()
+        tracker = QuotaTracker(
+            available_gemini_models=["gemini-test"],
+            available_third_party_models=["claude-test"],
+        )
+        self.addCleanup(tracker.stop_background_polling)
+        poll_event = threading.Event()
+
         with patch.object(tracker, "poll_all_pools") as mock_poll_all, \
              patch.object(tracker, "poll_live_quota") as mock_poll_single:
 
+            mock_poll_all.side_effect = lambda *a, **kw: poll_event.set()
+
             # 1. Start with quota_pool=None -> calls poll_all_pools
             tracker.start_background_polling(token="test-token", quota_pool=None, poll_interval=0.01)
-            time.sleep(0.05)
+            self.assertTrue(poll_event.wait(timeout=5.0), "Background polling thread failed to invoke poll_all_pools")
             tracker.stop_background_polling()
 
             self.assertGreaterEqual(mock_poll_all.call_count, 1)
             mock_poll_all.assert_called_with(token="test-token", force=False)
             mock_poll_single.assert_not_called()
 
-        tracker2 = QuotaTracker()
+        tracker2 = QuotaTracker(
+            available_gemini_models=["gemini-test"],
+            available_third_party_models=["claude-test"],
+        )
+        self.addCleanup(tracker2.stop_background_polling)
+        poll_event2 = threading.Event()
+
         with patch.object(tracker2, "poll_all_pools") as mock_poll_all2, \
              patch.object(tracker2, "poll_live_quota") as mock_poll_single2:
 
+            mock_poll_single2.side_effect = lambda *a, **kw: poll_event2.set()
+
             # 2. Start with specific pool -> calls poll_live_quota
             tracker2.start_background_polling(token="test-token", quota_pool="claude_gpt", poll_interval=0.01)
-            time.sleep(0.05)
+            self.assertTrue(poll_event2.wait(timeout=5.0), "Background polling thread failed to invoke poll_live_quota")
             tracker2.stop_background_polling()
 
             self.assertGreaterEqual(mock_poll_single2.call_count, 1)
