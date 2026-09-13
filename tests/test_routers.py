@@ -2,8 +2,12 @@
 Unit tests for lib/routers sub-modules.
 """
 
+from pathlib import Path
 import re
+import subprocess
 import unittest
+from unittest.mock import MagicMock, patch
+
 from lib.routers import (
     _pr_review_timestamps,
     _pr_review_timestamps_lock,
@@ -15,6 +19,7 @@ from lib.routers.base import (
     has_explicit_command,
     _extract_repo_info,
     _build_accepted_response,
+    _get_git_remote_repo_names,
     get_server_repo_name,
 )
 from lib.routers.push_router import handle_ping_event, handle_push_event
@@ -210,5 +215,155 @@ class TestSubRoutersDirectImport(unittest.TestCase):
         self.assertTrue(bool(_REVIEW_COMMAND_PATTERN.search("/review this pr")))
         self.assertFalse(bool(_REVIEW_COMMAND_PATTERN.search("/fix this pr")))
         self.assertFalse(bool(_REVIEW_COMMAND_PATTERN.search("see foo/review")))
+
+
+class TestGitRemoteRepoResolution(unittest.TestCase):
+    """
+    Unit tests for git remote repository name resolution helpers in lib/routers/base.py:
+    _get_git_remote_repo_names and get_server_repo_name.
+    """
+
+    @patch("subprocess.run")
+    def test_git_remote_url_variations(self, mock_sub_run):
+        test_cases = [
+            # Standard SSH URL
+            ("git@github.com:mweastwood/graviton.git\n", "graviton", "mweastwood/graviton"),
+            # Standard HTTPS URL
+            ("https://github.com/mweastwood/graviton.git\n", "graviton", "mweastwood/graviton"),
+            # HTTPS URL without .git suffix
+            ("https://github.com/mweastwood/graviton\n", "graviton", "mweastwood/graviton"),
+            # HTTPS URL with trailing slashes and whitespace
+            ("https://github.com/mweastwood/graviton/\n", "graviton", "mweastwood/graviton"),
+            ("https://github.com/mweastwood/graviton.git/\n", "graviton", "mweastwood/graviton"),
+            # Port / custom SSH URL
+            ("ssh://git@github.com:22/mweastwood/graviton.git\n", "graviton", "mweastwood/graviton"),
+            # Single path component / fallback format
+            ("/graviton\n", "graviton", None),
+            (":graviton.git\n", "graviton", None),
+        ]
+
+        dummy_root = Path("/workspace/my-repo")
+
+        for stdout, expected_repo, expected_full in test_cases:
+            with self.subTest(stdout=stdout):
+                mock_res = MagicMock()
+                mock_res.returncode = 0
+                mock_res.stdout = stdout
+                mock_sub_run.return_value = mock_res
+
+                repo_name, repo_full_name = _get_git_remote_repo_names(dummy_root)
+                self.assertEqual(repo_name, expected_repo)
+                self.assertEqual(repo_full_name, expected_full)
+
+                server_repo = get_server_repo_name(dummy_root)
+                self.assertEqual(server_repo, expected_repo)
+
+    @patch("subprocess.run")
+    def test_fallback_non_zero_exit_code(self, mock_sub_run):
+        mock_res = MagicMock()
+        mock_res.returncode = 128
+        mock_res.stdout = ""
+        mock_res.stderr = "fatal: not a git repository"
+        mock_sub_run.return_value = mock_res
+
+        dummy_root = Path("/custom/fallback-dir")
+        repo_name, repo_full_name = _get_git_remote_repo_names(dummy_root)
+        self.assertIsNone(repo_name)
+        self.assertIsNone(repo_full_name)
+
+        server_repo = get_server_repo_name(dummy_root)
+        self.assertEqual(server_repo, "fallback-dir")
+
+    @patch("subprocess.run")
+    def test_fallback_empty_or_whitespace_output(self, mock_sub_run):
+        for empty_stdout in ["", "   ", "\n", "\t\n  "]:
+            with self.subTest(empty_stdout=repr(empty_stdout)):
+                mock_res = MagicMock()
+                mock_res.returncode = 0
+                mock_res.stdout = empty_stdout
+                mock_sub_run.return_value = mock_res
+
+                dummy_root = Path("/custom/empty-remote")
+                repo_name, repo_full_name = _get_git_remote_repo_names(dummy_root)
+                self.assertIsNone(repo_name)
+                self.assertIsNone(repo_full_name)
+
+                server_repo = get_server_repo_name(dummy_root)
+                self.assertEqual(server_repo, "empty-remote")
+
+    @patch("subprocess.run")
+    def test_fallback_subprocess_timeout(self, mock_sub_run):
+        mock_sub_run.side_effect = subprocess.TimeoutExpired(cmd=["git"], timeout=5)
+
+        dummy_root = Path("/custom/timeout-repo")
+        repo_name, repo_full_name = _get_git_remote_repo_names(dummy_root)
+        self.assertIsNone(repo_name)
+        self.assertIsNone(repo_full_name)
+
+        server_repo = get_server_repo_name(dummy_root)
+        self.assertEqual(server_repo, "timeout-repo")
+
+    @patch("subprocess.run")
+    def test_fallback_os_error(self, mock_sub_run):
+        mock_sub_run.side_effect = OSError("git command not found")
+
+        dummy_root = Path("/custom/oserror-repo")
+        repo_name, repo_full_name = _get_git_remote_repo_names(dummy_root)
+        self.assertIsNone(repo_name)
+        self.assertIsNone(repo_full_name)
+
+        server_repo = get_server_repo_name(dummy_root)
+        self.assertEqual(server_repo, "oserror-repo")
+
+    @patch("subprocess.run")
+    def test_default_root_resolution_success(self, mock_sub_run):
+        import lib.routers.base as base_mod
+        expected_root = Path(base_mod.__file__).resolve().parent.parent.parent
+
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "git@github.com:mweastwood/graviton.git\n"
+        mock_sub_run.return_value = mock_res
+
+        repo_name, repo_full_name = _get_git_remote_repo_names(repo_root=None)
+        self.assertEqual(repo_name, "graviton")
+        self.assertEqual(repo_full_name, "mweastwood/graviton")
+        mock_sub_run.assert_called_with(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(expected_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        server_repo = get_server_repo_name(repo_root=None)
+        self.assertEqual(server_repo, "graviton")
+
+    @patch("subprocess.run")
+    def test_default_root_resolution_failure_falls_back_to_directory_name(self, mock_sub_run):
+        import lib.routers.base as base_mod
+        expected_root = Path(base_mod.__file__).resolve().parent.parent.parent
+
+        mock_res = MagicMock()
+        mock_res.returncode = 1
+        mock_res.stdout = ""
+        mock_sub_run.return_value = mock_res
+
+        repo_name, repo_full_name = _get_git_remote_repo_names(repo_root=None)
+        self.assertIsNone(repo_name)
+        self.assertIsNone(repo_full_name)
+
+        server_repo = get_server_repo_name(repo_root=None)
+        self.assertEqual(server_repo, expected_root.name)
+
+    def test_default_root_resolution_exception_fallback(self):
+        with patch("lib.routers.base.Path", side_effect=RuntimeError("Filesystem resolve failure")):
+            repo_name, repo_full_name = _get_git_remote_repo_names(repo_root=None)
+            self.assertIsNone(repo_name)
+            self.assertIsNone(repo_full_name)
+
+            server_repo = get_server_repo_name(repo_root=None)
+            self.assertEqual(server_repo, "graviton")
+
 
 
