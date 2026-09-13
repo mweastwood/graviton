@@ -17,6 +17,8 @@ from lib.updater import (
     stop_smee_listener,
     get_hot_reload_state,
     set_hot_reload_state,
+    get_uptime_seconds,
+    get_uptime_str,
 )
 
 
@@ -811,6 +813,59 @@ class TestUpdater(unittest.TestCase):
         commit, branch = get_git_info()
         self.assertEqual(commit, "unknown")
         self.assertEqual(branch, "main")
+
+    def test_get_uptime_seconds_real(self):
+        """Test get_uptime_seconds returns a non-negative float in real execution."""
+        uptime = get_uptime_seconds()
+        self.assertIsInstance(uptime, float)
+        self.assertGreaterEqual(uptime, 0.0)
+
+    @patch("time.time")
+    def test_get_uptime_seconds_mocked_offsets(self, mock_time):
+        """Test get_uptime_seconds returns accurate elapsed seconds against mocked time."""
+        from lib import updater
+
+        base_time = updater.SERVER_START_TIME
+
+        test_offsets = [0.0, 15.25, 59.0, 125.75, 3600.0, 86400.0]
+        for offset in test_offsets:
+            mock_time.return_value = base_time + offset
+            self.assertAlmostEqual(get_uptime_seconds(), offset, places=4)
+
+    @patch("lib.updater.get_uptime_seconds")
+    def test_get_uptime_str_formatting(self, mock_uptime_secs):
+        """Test get_uptime_str formats durations across zero, minutes, hours, and 24h+."""
+        test_cases = [
+            (0, "00:00:00"),
+            (1, "00:00:01"),
+            (45, "00:00:45"),
+            (59, "00:00:59"),
+            (60, "00:01:00"),
+            (125, "00:02:05"),
+            (3599, "00:59:59"),
+            (3600, "01:00:00"),
+            (3661, "01:01:01"),
+            (7322, "02:02:02"),
+            (86400, "24:00:00"),
+            (90061, "25:01:01"),
+            (360000, "100:00:00"),
+        ]
+        for secs, expected_str in test_cases:
+            mock_uptime_secs.return_value = float(secs)
+            self.assertEqual(
+                get_uptime_str(),
+                expected_str,
+                f"Failed formatting for {secs} seconds",
+            )
+
+    @patch("lib.updater.get_uptime_seconds")
+    def test_get_uptime_str_fractional_truncation(self, mock_uptime_secs):
+        """Test get_uptime_str truncates fractional seconds toward zero."""
+        mock_uptime_secs.return_value = 45.999
+        self.assertEqual(get_uptime_str(), "00:00:45")
+
+        mock_uptime_secs.return_value = 0.8
+        self.assertEqual(get_uptime_str(), "00:00:00")
 
 
 if __name__ == "__main__":
