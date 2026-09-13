@@ -230,8 +230,12 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
   fi
 
   if [ "$IS_INCOMPLETE" = true ]; then
-    # Brief pause to allow in-flight background processes in container to make progress
-    sleep 5
+    # Allow in-flight background tasks/processes running inside the persistent container
+    # time to settle or make progress before re-evaluating on the next retry attempt.
+    INCOMPLETE_SETTLE_SECS="${INCOMPLETE_SETTLE_SECS:-5}"
+    if [ "${INCOMPLETE_SETTLE_SECS}" -gt 0 ] 2>/dev/null; then
+      sleep "${INCOMPLETE_SETTLE_SECS}"
+    fi
   fi
 
   ATTEMPT=$((ATTEMPT + 1))

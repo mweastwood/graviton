@@ -24,11 +24,22 @@ def is_transcript_incomplete(
     Returns True if:
     1. The last step is a PLANNER_RESPONSE with unexecuted non-empty tool_calls.
     2. Any background command task was launched and has not finished or been canceled.
-    3. The final response indicates the agent ended the turn waiting for background commands/tests.
-    4. The agent is 'pr_drafter' and no 'gh pr create' invocation occurred anywhere in the transcript.
+    3. The final response indicates the agent ended the turn waiting for background machine tasks/tests.
+    4. The agent is 'pr_drafter' and PR creation deliverable was not completed (missing invocation,
+       in-flight background task, or missing GitHub PR URL).
+
+    Note on agent deliverables:
+    Deliverable checking at the runner level is intentionally scoped to 'pr_drafter' (verifying
+    successful PR creation with a generated PR URL), where opening a PR is an unambiguous, mandatory
+    exit deliverable. For 'code_fixer', while skills/code-fixer-guidelines/SKILL.md instructs the
+    agent to verify 'git push' before concluding when pushing code fixes, this is deliberately not
+    enforced as a hard deliverable requirement at the runner level because legitimate code_fixer
+    sessions may conclude without pushing (e.g. answering reviewer questions, triaging tests, or
+    reporting issues requiring human clarification). Note that any in-flight background tasks or
+    premature waiting responses for code_fixer are still caught by checks #2 and #3.
 
     :param transcript_path: Path to transcript.jsonl file.
-    :param agent_name: Optional name of the running agent (e.g. 'pr_drafter').
+    :param agent_name: Optional name of the running agent (e.g. 'pr_drafter', 'code_fixer').
     :return: True if session is incomplete and should be resumed/continued, False otherwise.
     """
     try:
@@ -59,18 +70,62 @@ def is_transcript_incomplete(
                 return True
 
         # 2. Check for uncompleted background commands
-        bg_launch_pattern = re.compile(r"Tool is running as a background task with task id:\s*([^\s\r\n]+)")
-        bg_finish_pattern = re.compile(r'Task id\s+"([^"]+)"\s+(?:finished|was canceled)\s+with result:')
+        bg_launch_pattern = re.compile(
+            r"Tool is running as a background task with task id:\s*([^\s\r\n]+)"
+        )
+        bg_finish_pattern = re.compile(
+            r'Task id\s+"([^"]+)"\s+(?:finished|was canceled)\s+with result:'
+        )
+        github_pr_url_pattern = re.compile(
+            r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+"
+        )
+
         active_bg_commands = set()
+        bg_tasks = {}  # tid -> {"origin_tool": ..., "cmd": ...}
+        pending_tool_calls = []
+
         for step in steps:
+            step_type = step.get("type")
+            if step_type == "PLANNER_RESPONSE":
+                pending_tool_calls = list(step.get("tool_calls") or [])
+
             content = step.get("content") or ""
             if isinstance(content, str):
                 m_launch = bg_launch_pattern.search(content)
                 if m_launch:
                     tid = m_launch.group(1)
+                    origin_tool = None
+                    cmd_line = None
+                    if pending_tool_calls:
+                        tool_call = pending_tool_calls.pop(0)
+                        if isinstance(tool_call, dict):
+                            origin_tool = tool_call.get("name")
+                            args = tool_call.get("args") or {}
+                            if isinstance(args, dict):
+                                cmd_line = args.get("CommandLine")
+
                     m_desc = re.search(r"Task Description:\s*(.*)", content)
-                    if not (m_desc and m_desc.group(1).startswith("Timer:")):
+                    desc_str = m_desc.group(1).strip() if m_desc else ""
+                    if not cmd_line and desc_str:
+                        cmd_line = desc_str
+
+                    # Identify timer tasks:
+                    # Prefer classifying via originating tool name ('schedule') over internal description format.
+                    # Fallback to Task Description prefix 'Timer:' for backwards compatibility.
+                    is_timer = (origin_tool == "schedule") or (
+                        origin_tool is None and desc_str.startswith("Timer:")
+                    )
+
+                    bg_tasks[tid] = {
+                        "origin_tool": origin_tool,
+                        "cmd": cmd_line,
+                    }
+
+                    if not is_timer:
                         active_bg_commands.add(tid)
+                elif step_type in ("GENERIC", "TOOL_RESPONSE") and pending_tool_calls:
+                    pending_tool_calls.pop(0)
+
                 for tid in bg_finish_pattern.findall(content):
                     active_bg_commands.discard(tid)
 
@@ -78,17 +133,56 @@ def is_transcript_incomplete(
             return True
 
         # 3. Check if final response indicates waiting for background task / test completion
+        # Heuristic: detect when an agent ends turn explicitly waiting on a background machine
+        # task / test suite / command run to finish or complete.
+        #
+        # Intentionally avoids matching normal completion messages where the agent waits for
+        # human review, approval, feedback, or input (e.g., "am waiting for your approval to merge",
+        # "waiting for your feedback", "waiting on user input").
+        #
+        # Matches:
+        #   - "I have launched the deep link dispatcher widget tests and am waiting for them to finish."
+        #   - "Waiting for the tests to complete."
+        #   - "Waiting for the command to finish."
+        #   - "will wait for background task to complete"
+        #   - "Waiting for task completion."
+        # Does NOT match:
+        #   - "I launched the tests and am waiting for your approval to merge"
+        #   - "Tests passed! Waiting for your feedback."
+        machine_targets = (
+            r"(?:them|it|"
+            r"the\s+(?:background\s+)?(?:tests?|command|task|job|build|process)|"
+            r"background\s+(?:tests?|command|task|job|build|process))"
+        )
+        completion_verbs = r"(?:finish|complete|conclude|terminate)"
+        waiting_verbs = r"(?:(?:am|is|are|will|currently)\s+)?wait(?:ing)?\s+(?:for|on)"
+
         waiting_pattern = re.compile(
-            r"(?i)\b(?:waiting for (?:them|it|the tests?|the command|the task|completion)|launched the .* and am waiting|waiting on the (?:tests?|command|task)|will wait for the (?:tests?|command|task))\b"
+            rf"(?i)\b(?:"
+            rf"{waiting_verbs}\s+{machine_targets}\s+to\s+{completion_verbs}|"
+            rf"launched\s+.*?\s+and\s+{waiting_verbs}\s+{machine_targets}\s+to\s+{completion_verbs}|"
+            rf"{waiting_verbs}\s+(?:task|command|test|build|job)\s+completion"
+            rf")\b"
         )
         if last_step.get("type") == "PLANNER_RESPONSE":
             last_content = last_step.get("content") or ""
             if isinstance(last_content, str) and waiting_pattern.search(last_content):
                 return True
 
-        # 4. Agent-specific deliverables: pr_drafter must have executed gh pr create
+        # 4. Agent-specific deliverables:
+        # 4a. pr_drafter: must have executed `gh pr create` AND successfully produced a PR URL,
+        # with no associated background task still pending.
         if agent_name == "pr_drafter":
-            pr_created = False
+            pr_cmd_invoked = False
+            pr_url_found = False
+
+            # Check if any step contains a GitHub PR URL
+            for step in steps:
+                content = step.get("content") or ""
+                if isinstance(content, str) and github_pr_url_pattern.search(content):
+                    pr_url_found = True
+                    break
+
             for step in steps:
                 for call in step.get("tool_calls") or []:
                     if isinstance(call, dict):
@@ -96,12 +190,25 @@ def is_transcript_incomplete(
                         if isinstance(args, dict):
                             cmd = args.get("CommandLine") or ""
                             if isinstance(cmd, str) and re.search(r"\bgh\s+pr\s+create\b", cmd):
-                                pr_created = True
+                                pr_cmd_invoked = True
                                 break
-                if pr_created:
+                if pr_cmd_invoked:
                     break
-            if not pr_created:
+
+            # Guard against gh pr create running as an uncompleted background task
+            for tid in active_bg_commands:
+                cmd_line = bg_tasks.get(tid, {}).get("cmd") or ""
+                if re.search(r"\bgh\s+pr\s+create\b", cmd_line):
+                    return True
+
+            if not pr_cmd_invoked or not pr_url_found:
                 return True
+
+        # 4b. Note on code_fixer:
+        # As noted in the docstring, 'code_fixer' deliverable completeness is enforced via prompt/skill
+        # guidelines rather than at the runner level, allowing legitimate non-push outcomes (e.g. answering
+        # review questions or reporting insurmountable test failures). In-flight background tasks and
+        # premature waiting messages are already caught by checks #2 and #3 above.
 
     except Exception as e:
         logger.debug(f"Error checking transcript completeness for '{transcript_path}': {e}")

@@ -31,7 +31,7 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
 5. **Git Operations & Remote Push**:
    - Stage modified files and create a clean git commit with a descriptive message.
    - Push changes to the target remote branch (`git push origin <branch>`).
-   - **Verification**: Ensure `git push origin <branch>` has successfully executed before finishing the session.
+   - **Verification**: When code modifications are made, ensure `git push origin <branch>` has successfully executed before finishing the session. (Note: Unlike `pr_drafter` which has runner-enforced PR creation checks, `code_fixer` push verification is enforced at the guideline level to allow legitimate non-push outcomes, such as answering informational review comments or diagnosing persistent test failures.)
 
 ## 2. Safety & Loop Protection
 
