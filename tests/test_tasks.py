@@ -1333,12 +1333,15 @@ class TestTaskManager(unittest.TestCase):
             self.assertEqual(task.status, TaskStatus.COMPLETED)
             # Quota polling must not block task completion
             self.assertFalse(poll_called.is_set())
-        finally:
+
+            # Unblock quota polling and verify it completes
             unblock_poll.set()
             self.assertTrue(poll_called.wait(timeout=2.0))
             quota.poll_live_quota_async.assert_called_with(
                 quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1"
             )
+        finally:
+            unblock_poll.set()
             manager.stop()
 
     @patch("lib.tasks.run_agent_container")
