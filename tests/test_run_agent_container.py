@@ -4,7 +4,6 @@ Unit tests for bin/run_agent_container.sh
 
 import json
 import os
-import shutil
 import stat
 import subprocess
 import tempfile
