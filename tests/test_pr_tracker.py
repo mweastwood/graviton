@@ -1052,6 +1052,120 @@ class TestPRTracker(unittest.TestCase):
                 f"Expected is_bot_event to return True for bot login dict '{bot_login}'",
             )
 
+    def test_has_change_request_marker_explicit_fix_command(self):
+        """Validates detection of /fix command in various casing and text contexts."""
+        from lib.pr_tracker import has_change_request_marker
+
+        # Standalone commands
+        self.assertTrue(has_change_request_marker("/fix"))
+        self.assertTrue(has_change_request_marker("/FIX"))
+        self.assertTrue(has_change_request_marker("/Fix"))
+
+        # Embedded within comment text
+        self.assertTrue(has_change_request_marker("Please /fix the formatting in line 42."))
+        self.assertTrue(has_change_request_marker("LGTM\n/fix\nThanks!"))
+
+        # /fix takes precedence even if negation phrases are present
+        self.assertTrue(has_change_request_marker("/fix: no changes requested"))
+
+    def test_has_change_request_marker_standard_phrases(self):
+        """Validates matching for 'changes requested' and 'changes_requested' with case variants."""
+        from lib.pr_tracker import has_change_request_marker
+
+        # Standard space and underscore variants
+        self.assertTrue(has_change_request_marker("changes requested"))
+        self.assertTrue(has_change_request_marker("changes_requested"))
+
+        # Case normalization
+        self.assertTrue(has_change_request_marker("Changes Requested"))
+        self.assertTrue(has_change_request_marker("CHANGES_REQUESTED"))
+        self.assertTrue(has_change_request_marker("Changes_Requested"))
+
+        # Embedded in sentences and punctuation
+        self.assertTrue(has_change_request_marker("Review status: changes requested!"))
+        self.assertTrue(has_change_request_marker("Submitted changes_requested on PR #10."))
+
+    def test_has_change_request_marker_negation_filtering(self):
+        """Validates rejection of negative phrases matching _NEG_CR_PATTERN."""
+        from lib.pr_tracker import has_change_request_marker
+
+        negative_phrases = [
+            "no changes requested",
+            "not changes requested",
+            "without changes requested",
+            "zero changes requested",
+            "never changes requested",
+            "don't changes requested",
+            "didn't changes requested",
+            "haven't changes requested",
+            # Underscore variants
+            "no changes_requested",
+            "not changes_requested",
+            "without changes_requested",
+            # Intervening words (up to 3 words)
+            "no further changes requested",
+            "not any changes requested",
+            "without any additional changes requested",
+            "zero new changes requested",
+            "don't have changes requested",
+            "didn't find changes requested",
+            "haven't made changes requested",
+        ]
+
+        for phrase in negative_phrases:
+            self.assertFalse(
+                has_change_request_marker(phrase),
+                f"Expected has_change_request_marker to return False for negated phrase: '{phrase}'",
+            )
+
+    def test_has_change_request_marker_mixed_counts(self):
+        """Validates ratio handling between positive and negative occurrences."""
+        from lib.pr_tracker import has_change_request_marker
+
+        # Equal counts: 1 negative, 1 total match -> False
+        self.assertFalse(has_change_request_marker("There are no changes requested."))
+
+        # Equal counts: 2 negative, 2 total matches -> False
+        self.assertFalse(
+            has_change_request_marker(
+                "no changes requested and zero changes requested from my side."
+            )
+        )
+
+        # More positive than negative: 2 matches, 1 negative match -> True
+        self.assertTrue(
+            has_change_request_marker(
+                "Initially there were no changes requested, but upon re-review changes requested."
+            )
+        )
+
+        # 3 matches, 1 negative match -> True
+        self.assertTrue(
+            has_change_request_marker(
+                "no changes requested here. However, changes requested on schema and changes requested on tests."
+            )
+        )
+
+    def test_has_change_request_marker_edge_cases(self):
+        """Validates handling of empty, whitespace, None, unrelated text, and non-matches."""
+        from lib.pr_tracker import has_change_request_marker
+
+        # Falsy / empty / None handling
+        self.assertFalse(has_change_request_marker(""))
+        self.assertFalse(has_change_request_marker(None))
+        self.assertFalse(has_change_request_marker("   "))
+        self.assertFalse(has_change_request_marker(" \n\t \r "))
+
+        # Non-matching text
+        self.assertFalse(has_change_request_marker("LGTM!"))
+        self.assertFalse(has_change_request_marker("Looks good to me, approved."))
+        self.assertFalse(has_change_request_marker("Can you review this?"))
+
+        # Partial substrings without word boundaries
+        self.assertFalse(has_change_request_marker("changes request"))
+        self.assertFalse(has_change_request_marker("exchanges requested"))
+        self.assertFalse(has_change_request_marker("changes_requesting"))
+
 
 if __name__ == "__main__":
     unittest.main()
