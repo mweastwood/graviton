@@ -82,7 +82,7 @@ def is_transcript_incomplete(
 
         # 2. Check for uncompleted background commands
         bg_launch_pattern = re.compile(
-            r"Tool is running as a background task with task id:\s*([^\s\r\n]+)"
+            r"Tool is running as a background task with task id:\s*([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)?)"
         )
         bg_finish_pattern = re.compile(
             r'Task id\s+"([^"]+)"\s+(?:finished|was canceled)\s+with result:'
@@ -102,7 +102,18 @@ def is_transcript_incomplete(
             content = step.get("content") or ""
             content_str = content if isinstance(content, str) else ""
 
-            m_launch = bg_launch_pattern.search(content_str) if content_str else None
+            # Genuine background task launches in Antigravity have status == "RUNNING".
+            # Steps with status == "DONE" (e.g. view_file, grep_search, completed git diff)
+            # represent completed tool invocations and must not trigger background task tracking.
+            # In test environments, step status may be omitted (None), so we exclude only "DONE".
+            step_status = step.get("status")
+            is_potential_launch = (step_status != "DONE")
+
+            m_launch = (
+                bg_launch_pattern.search(content_str)
+                if (content_str and is_potential_launch)
+                else None
+            )
             if m_launch:
                 tid = m_launch.group(1)
                 origin_tool = None
@@ -111,18 +122,28 @@ def is_transcript_incomplete(
                     if isinstance(tool_call, dict):
                         origin_tool = tool_call.get("name")
 
-                m_desc = re.search(r"Task Description:\s*(.*)", content_str)
-                desc_str = m_desc.group(1).strip() if m_desc else ""
-
-                # Identify timer tasks:
-                # Prefer classifying via originating tool name ('schedule') over internal description format.
-                # Fallback to Task Description prefix 'Timer:' for backwards compatibility.
-                is_timer = (origin_tool == "schedule") or (
-                    origin_tool is None and desc_str.startswith("Timer:")
+                # Non-backgroundable read/file tools cannot launch background tasks
+                non_launching_tools = (
+                    "view_file",
+                    "grep_search",
+                    "find_by_name",
+                    "read_url_content",
+                    "replace_file_content",
+                    "write_to_file",
                 )
+                if origin_tool not in non_launching_tools:
+                    m_desc = re.search(r"Task Description:\s*(.*)", content_str)
+                    desc_str = m_desc.group(1).strip() if m_desc else ""
 
-                if not is_timer:
-                    active_bg_commands.add(tid)
+                    # Identify timer tasks:
+                    # Prefer classifying via originating tool name ('schedule') over internal description format.
+                    # Fallback to Task Description prefix 'Timer:' for backwards compatibility.
+                    is_timer = (origin_tool == "schedule") or (
+                        origin_tool is None and desc_str.startswith("Timer:")
+                    )
+
+                    if not is_timer:
+                        active_bg_commands.add(tid)
             elif step_type in ("GENERIC", "TOOL_RESPONSE", "TOOL_RESULT") and pending_tool_calls:
                 pending_tool_calls.pop(0)
 

@@ -1437,6 +1437,32 @@ class TestTranscriptInspector(unittest.TestCase):
         res_pr_agent = subprocess.run(["python3", str(runner_py), str(transcript_file), "pr_drafter"])
         self.assertEqual(res_pr_agent.returncode, 0)
 
+    def test_is_transcript_incomplete_file_read_with_mock_bg_pattern_ignored(self):
+        # When an agent views a file (status: "DONE" or origin tool "view_file") containing
+        # background launch syntax or string literals, it must NOT be treated as an active task.
+        transcript_file = self.test_dir / "file_read_bg_pattern.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Review PR"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": "/workspace/lib/runner.py"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "status": "DONE", "content": "Tool is running as a background task with task id: \\\\s*([^\\\\s\\\\r\\\\n]+)\\\\")\\\\n"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Review complete."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
+    def test_is_transcript_incomplete_git_diff_with_test_fixtures_ignored(self):
+        # Completed commands (status: "DONE") whose output contains diffs or file contents with
+        # background launch signatures must NOT be registered as active background commands.
+        transcript_file = self.test_dir / "git_diff_bg_pattern.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Review PR"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "git diff origin/main"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "status": "DONE", "content": "+ Tool is running as a background task with task id: conv-1/task-10\\nTask Description: test"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Diff verified."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
     @patch("subprocess.Popen")
     def test_run_agent_container_on_process_created_callback(self, mock_popen):
         mock_proc = MagicMock()
