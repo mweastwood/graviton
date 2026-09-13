@@ -24,11 +24,14 @@ This skill provides comprehensive instructions for the `code_fixer` agent to res
 4. **Local Test Execution (Test Gate)**:
    - Check for `.githooks/pre-commit` in the repository and verify pre-commit checks pass prior to committing and pushing.
    - Execute local unit tests (e.g. `python3 -m unittest discover tests`) before committing code.
+   - When invoking commands via `run_command`, specify an adequate `WaitMsBeforeAsync` (up to `10000` ms) to allow tests to complete synchronously where possible.
+   - **Crucial - Follow-Through on Background Tasks**: If a test or compilation command is backgrounded as a task, do NOT conclude the agent session or end your turn merely stating that tests are running in the background. Follow through until the task finishes, verify all tests pass, and proceed immediately to git commit and push.
    - If tests fail, diagnose and fix the failure. Do NOT push broken code to remote branches.
 
 5. **Git Operations & Remote Push**:
    - Stage modified files and create a clean git commit with a descriptive message.
    - Push changes to the target remote branch (`git push origin <branch>`).
+   - **Verification**: When code modifications are made, ensure `git push origin <branch>` has successfully executed before finishing the session. (Note: Unlike `pr_drafter` which has runner-enforced PR creation checks, `code_fixer` push verification is enforced at the guideline level to allow legitimate non-push outcomes, such as answering informational review comments or diagnosing persistent test failures.)
 
 ## 2. Safety & Loop Protection
 
