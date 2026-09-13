@@ -112,6 +112,7 @@ def route_webhook_event(
     debounce_window: float = 30.0,
     server_repo_name: Optional[str] = None,
     repo_root: Optional[Path] = None,
+    repos_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -126,6 +127,7 @@ def route_webhook_event(
     :param debounce_window: Debounce window in seconds for rapid PR events (default 30s).
     :param server_repo_name: Optional repository name for graviton server to check on push events.
     :param repo_root: Optional Path to server repository root directory for inspecting git remote origin.
+    :param repos_dir: Optional Path to directory containing managed repositories.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
     handlers = {
@@ -137,7 +139,12 @@ def route_webhook_event(
         "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer, pr_tracker=pr_tracker),
         "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(p, default_fixer=default_fixer),
         "issues": lambda p: handle_issues_event(
-            p, default_triager=default_triager, default_fixer=default_fixer, default_drafter=default_drafter
+            p,
+            default_triager=default_triager,
+            default_fixer=default_fixer,
+            default_drafter=default_drafter,
+            repo_root=repo_root,
+            repos_dir=repos_dir,
         ),
         "issue_comment": lambda p: handle_issue_comment_event(
             p,
@@ -146,6 +153,8 @@ def route_webhook_event(
             default_triager=default_triager,
             default_drafter=default_drafter,
             pr_tracker=pr_tracker,
+            repo_root=repo_root,
+            repos_dir=repos_dir,
         ),
     }
 

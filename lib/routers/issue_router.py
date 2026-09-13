@@ -4,9 +4,18 @@ Webhook router handler for GitHub Issue events:
 """
 
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from lib.pr_tracker import has_approval_marker, has_change_request_marker, is_bot_event
+from lib.release import (
+    DEFAULT_BRANCH,
+    is_release_issue,
+    is_user_authorized_for_release,
+    load_release_config,
+    parse_release_command,
+    resolve_repo_dir,
+)
 from lib.routers.base import (
     _build_accepted_response,
     _extract_repo_info,
@@ -25,6 +34,8 @@ def handle_issues_event(
     default_triager: str = "issue_triager",
     default_fixer: str = "code_fixer",
     default_drafter: str = "pr_drafter",
+    repo_root: Optional[Path] = None,
+    repos_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'issues' webhook event (Opened, Edited, Labeled)."""
     action = payload.get("action")
@@ -42,6 +53,25 @@ def handle_issues_event(
                 "status": "ignored",
                 "reason": "Bot issue event dropped",
             }
+
+        repo_dir = resolve_repo_dir(repo_name, repo_root=repo_root, repos_dir=repos_dir)
+        release_config = load_release_config(repo_dir) if repo_dir else None
+        if is_release_issue(issue_title, release_config):
+            if action == "opened":
+                return {
+                    "status": "accepted",
+                    "action": "release_init",
+                    "issue_number": issue_number,
+                    "repo_full_name": repo_full_name,
+                    "repo_name": repo_name,
+                    "repo_dir": repo_dir,
+                    "release_config": release_config,
+                }
+            return {
+                "status": "ignored",
+                "reason": "Release issue edit does not trigger triage",
+            }
+
         if repo_full_name:
             prompt = f"Triage Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
         else:
@@ -98,6 +128,8 @@ def handle_issue_comment_event(
     default_triager: str = "issue_triager",
     default_drafter: str = "pr_drafter",
     pr_tracker: Optional[Any] = None,
+    repo_root: Optional[Path] = None,
+    repos_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'issue_comment' webhook event."""
     action = payload.get("action")
@@ -178,8 +210,65 @@ def handle_issue_comment_event(
                 pr_number=issue_number,
             )
 
-        # 2. Comment on a pure Issue (Triage vs PR Drafting)
+        # 2. Comment on a pure Issue (Release vs Triage vs PR Drafting)
         else:
+            issue_title = issue.get("title", "") or ""
+            repo_dir = resolve_repo_dir(repo_name, repo_root=repo_root, repos_dir=repos_dir)
+            release_config = load_release_config(repo_dir) if repo_dir else None
+
+            if is_release_issue(issue_title, release_config):
+                user_info = comment.get("user") or comment.get("author") or {}
+                author_login = user_info.get("login") if isinstance(user_info, dict) else str(user_info or "")
+
+                if not is_user_authorized_for_release(author_login, payload, release_config):
+                    return {
+                        "status": "ignored",
+                        "reason": f"User '{author_login}' is not authorized to trigger releases",
+                    }
+
+                cmd_type, cmd_str = parse_release_command(comment_body, release_config)
+                if cmd_type == "help":
+                    return {
+                        "status": "accepted",
+                        "action": "release_help",
+                        "issue_number": issue_number,
+                        "repo_full_name": repo_full_name,
+                        "repo_name": repo_name,
+                        "repo_dir": repo_dir,
+                        "comment_id": comment.get("id"),
+                        "release_config": release_config,
+                    }
+                elif cmd_type:
+                    branch = (release_config or {}).get("branch", DEFAULT_BRANCH)
+                    pre_flight = (release_config or {}).get("pre_flight")
+                    return {
+                        "status": "accepted",
+                        "action": "release",
+                        "release_type": cmd_type,
+                        "command": cmd_str,
+                        "branch": branch,
+                        "pre_flight": pre_flight,
+                        "issue_number": issue_number,
+                        "repo_full_name": repo_full_name,
+                        "repo_name": repo_name,
+                        "clone_url": clone_url,
+                        "repo_dir": repo_dir,
+                        "comment_id": comment.get("id"),
+                        "sender": author_login,
+                    }
+                else:
+                    return {
+                        "status": "accepted",
+                        "action": "release_unrecognized",
+                        "issue_number": issue_number,
+                        "repo_full_name": repo_full_name,
+                        "repo_name": repo_name,
+                        "repo_dir": repo_dir,
+                        "comment_id": comment.get("id"),
+                        "comment_body": comment_body,
+                        "release_config": release_config,
+                    }
+
             labels_raw = issue.get("labels", []) if isinstance(issue.get("labels"), list) else []
             labels = [
                 l.get("name", "") if isinstance(l, dict) else str(l) for l in labels_raw

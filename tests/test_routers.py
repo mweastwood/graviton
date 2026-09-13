@@ -339,6 +339,139 @@ class TestGitRemoteRepoResolution(unittest.TestCase):
         server_repo = get_server_repo_name(repo_root=None)
         self.assertEqual(server_repo, "graviton")
 
+
+class TestReleaseRouting(unittest.TestCase):
+
+    def test_release_issue_opened(self):
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 100,
+                "title": "🚀 Release Controller",
+                "body": "",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issues_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release_init")
+        self.assertEqual(res["issue_number"], 100)
+
+    def test_release_issue_edited(self):
+        payload = {
+            "action": "edited",
+            "issue": {
+                "number": 100,
+                "title": "🚀 Release Controller",
+                "body": "",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issues_event(payload)
+        self.assertEqual(res["status"], "ignored")
+
+    def test_release_comment_patch_authorized(self):
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "🚀 Release Controller",
+            },
+            "comment": {
+                "id": 555,
+                "body": "patch",
+                "user": {"login": "alice"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release")
+        self.assertEqual(res["release_type"], "patch")
+        self.assertEqual(res["command"], "bin/tag.sh patch")
+        self.assertEqual(res["branch"], "main")
+        self.assertEqual(res["issue_number"], 100)
+
+    def test_release_comment_slash_tag_minor(self):
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "Release Tracker",
+            },
+            "comment": {
+                "id": 556,
+                "body": "/tag minor",
+                "user": {"login": "alice"},
+                "author_association": "MEMBER",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release")
+        self.assertEqual(res["release_type"], "minor")
+        self.assertEqual(res["command"], "bin/tag.sh minor")
+
+    def test_release_comment_help(self):
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "Release",
+            },
+            "comment": {
+                "id": 557,
+                "body": "help",
+                "user": {"login": "alice"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release_help")
+
+    def test_release_comment_unrecognized(self):
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "Release",
+            },
+            "comment": {
+                "id": 558,
+                "body": "foobar",
+                "user": {"login": "alice"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release_unrecognized")
+
+    def test_release_comment_unauthorized_user(self):
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "Release",
+            },
+            "comment": {
+                "id": 559,
+                "body": "patch",
+                "user": {"login": "stranger"},
+                "author_association": "NONE",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertIn("not authorized", res["reason"])
+
+
     @patch("subprocess.run")
     def test_default_root_resolution_failure_falls_back_to_directory_name(self, mock_sub_run):
         import lib.routers.base as base_mod
