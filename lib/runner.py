@@ -13,6 +13,11 @@ from typing import Callable, Optional, Union
 
 logger = logging.getLogger("graviton.runner")
 
+# Only run_command and schedule can launch background tasks in Antigravity.
+# Read-only inspection tools (view_file, grep_search, etc.) and file mutations
+# cannot launch background tasks.
+_BACKGROUNDABLE_TOOLS = frozenset({"run_command", "schedule"})
+
 
 def is_transcript_incomplete(
     transcript_path: Union[str, Path],
@@ -82,7 +87,7 @@ def is_transcript_incomplete(
 
         # 2. Check for uncompleted background commands
         bg_launch_pattern = re.compile(
-            r"Tool is running as a background task with task id:\s*([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)?)"
+            r"Tool is running as a background task with task id:\s*([a-zA-Z0-9_\-./]+)"
         )
         bg_finish_pattern = re.compile(
             r'Task id\s+"([^"]+)"\s+(?:finished|was canceled)\s+with result:'
@@ -103,11 +108,11 @@ def is_transcript_incomplete(
             content_str = content if isinstance(content, str) else ""
 
             # Genuine background task launches in Antigravity have status == "RUNNING".
-            # Steps with status == "DONE" (e.g. view_file, grep_search, completed git diff)
+            # Steps with status == "DONE" or "ERROR" (e.g. view_file, grep_search, completed git diff)
             # represent completed tool invocations and must not trigger background task tracking.
-            # In test environments, step status may be omitted (None), so we exclude only "DONE".
+            # In test environments, step status may be omitted (None), so we only allow "RUNNING" or None.
             step_status = step.get("status")
-            is_potential_launch = (step_status != "DONE")
+            is_potential_launch = (step_status in ("RUNNING", None))
 
             m_launch = (
                 bg_launch_pattern.search(content_str)
@@ -122,16 +127,8 @@ def is_transcript_incomplete(
                     if isinstance(tool_call, dict):
                         origin_tool = tool_call.get("name")
 
-                # Non-backgroundable read/file tools cannot launch background tasks
-                non_launching_tools = (
-                    "view_file",
-                    "grep_search",
-                    "find_by_name",
-                    "read_url_content",
-                    "replace_file_content",
-                    "write_to_file",
-                )
-                if origin_tool not in non_launching_tools:
+                # Constrain originating tool to backgroundable tools only
+                if origin_tool is None or origin_tool in _BACKGROUNDABLE_TOOLS:
                     m_desc = re.search(r"Task Description:\s*(.*)", content_str)
                     desc_str = m_desc.group(1).strip() if m_desc else ""
 

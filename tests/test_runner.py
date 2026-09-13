@@ -8,7 +8,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from lib.runner import run_agent_container, run_agent_async, is_transcript_incomplete
+from lib.runner import (
+    run_agent_container,
+    run_agent_async,
+    is_transcript_incomplete,
+    _BACKGROUNDABLE_TOOLS,
+)
 
 
 class TestRunner(unittest.TestCase):
@@ -1459,6 +1464,54 @@ class TestTranscriptInspector(unittest.TestCase):
             '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "git diff origin/main"}}]}',
             '{"step_index": 3, "type": "GENERIC", "status": "DONE", "content": "+ Tool is running as a background task with task id: conv-1/task-10\\nTask Description: test"}',
             '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Diff verified."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
+    def test_backgroundable_tools_constant(self):
+        self.assertEqual(_BACKGROUNDABLE_TOOLS, frozenset({"run_command", "schedule"}))
+
+    def test_is_transcript_incomplete_genuine_background_task_launch_tracked(self):
+        # A run_command step with status == "RUNNING" is registered as active
+        # and flags transcript as incomplete until completion event arrives.
+        transcript_file = self.test_dir / "genuine_bg_task.jsonl"
+        lines_active = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run test"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "pytest"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "status": "RUNNING", "content": "Tool is running as a background task with task id: conv-1/task-99\\nTask Description: pytest"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Checking status."}'
+        ]
+        transcript_file.write_text("\n".join(lines_active), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
+        # Once completion arrives, it is no longer incomplete
+        lines_completed = lines_active + [
+            '{"step_index": 5, "type": "GENERIC", "status": "DONE", "content": "Task id \\"conv-1/task-99\\" finished with result:\\nAll tests passed."}',
+            '{"step_index": 6, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Done."}'
+        ]
+        transcript_file.write_text("\n".join(lines_completed), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
+    def test_is_transcript_incomplete_malformed_task_id_ignored(self):
+        # Non-identifier characters (e.g. regex syntax in source code) must not be parsed as task IDs.
+        transcript_file = self.test_dir / "malformed_task_id.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Inspect code"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "cat file.py"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "status": "RUNNING", "content": "Tool is running as a background task with task id:   "}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
+
+    def test_is_transcript_incomplete_non_backgroundable_tool_ignored(self):
+        # Tool responses from non-backgroundable tools (e.g. grep_search, write_to_file)
+        # must never register background tasks even if status is RUNNING.
+        transcript_file = self.test_dir / "non_bg_tool.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Grep code"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "grep_search", "args": {"Query": "bg_launch"}}]}',
+            '{"step_index": 3, "type": "GENERIC", "status": "RUNNING", "content": "Tool is running as a background task with task id: fake-task-1\\nTask Description: search"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Search complete."}'
         ]
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertFalse(is_transcript_incomplete(transcript_file, agent_name="code_reviewer"))
