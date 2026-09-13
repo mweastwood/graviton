@@ -32,6 +32,15 @@ from lib.quota import (
 
 class TestQuotaTracker(unittest.TestCase):
 
+    def setUp(self):
+        super().setUp()
+        self._models_patcher = patch(
+            "lib.quota.fetch_cli_models",
+            return_value=(DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()),
+        )
+        self._models_patcher.start()
+        self.addCleanup(self._models_patcher.stop)
+
     def test_normalize_now_datetime_boolean_guard(self):
         self.assertIsNone(_normalize_now_datetime(True))
         self.assertIsNone(_normalize_now_datetime(False))
@@ -1087,57 +1096,6 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.gemini_window_5h.remaining_percentage = 10.0
         self.assertEqual(tracker.claude_window_5h.remaining_percentage, 50.0)
 
-
-class TestFetchCliModels(unittest.TestCase):
-
-    @patch("subprocess.run")
-    def test_fetch_cli_models_success(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout=(
-                "gemini-3.6-flash-high\tGemini 3.6 Flash High\n"
-                "gemini-3.6-flash-medium\tGemini 3.6 Flash Medium\n"
-                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
-                "gpt-oss-120b-medium\tGPT OSS 120b\n"
-            ),
-        )
-        gemini, third_party = fetch_cli_models()
-        self.assertEqual(gemini, ["gemini-3.6-flash-high", "gemini-3.6-flash-medium"])
-        self.assertEqual(third_party, ["claude-sonnet-4-6", "gpt-oss-120b-medium"])
-
-    @patch("subprocess.run")
-    def test_fetch_cli_models_fallback_on_error(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="Error")
-        gemini, third_party = fetch_cli_models()
-        self.assertEqual(gemini, DEFAULT_GEMINI_MODELS)
-        self.assertEqual(third_party, DEFAULT_THIRD_PARTY_MODELS)
-
-        mock_run.side_effect = FileNotFoundError("agy not found")
-        gemini2, third_party2 = fetch_cli_models()
-        self.assertEqual(gemini2, DEFAULT_GEMINI_MODELS)
-        self.assertEqual(third_party2, DEFAULT_THIRD_PARTY_MODELS)
-
-    @patch("lib.quota.fetch_cli_models")
-    def test_quota_tracker_refresh_available_models(self, mock_fetch):
-        mock_fetch.return_value = (
-            ["gemini-custom-model"],
-            ["claude-custom-model"],
-        )
-        tracker = QuotaTracker(
-            active_gemini_model="gemini-old-model",
-            active_third_party_model="claude-old-model",
-            available_gemini_models=["gemini-old-model"],
-            available_third_party_models=["claude-old-model"],
-        )
-        self.assertEqual(tracker.active_gemini_model, "gemini-old-model")
-
-        tracker.refresh_available_models()
-
-        self.assertEqual(tracker.available_gemini_models, ["gemini-custom-model"])
-        self.assertEqual(tracker.available_third_party_models, ["claude-custom-model"])
-        self.assertEqual(tracker.active_gemini_model, "gemini-custom-model")
-        self.assertEqual(tracker.active_third_party_model, "claude-custom-model")
-
     def test_dump_and_restore_model_selection_success(self):
         import tempfile
         from pathlib import Path
@@ -1531,6 +1489,57 @@ class TestFetchCliModels(unittest.TestCase):
             self.assertGreaterEqual(mock_poll_single2.call_count, 1)
             mock_poll_single2.assert_called_with(token="test-token", quota_pool="claude_gpt", force=False)
             mock_poll_all2.assert_not_called()
+
+
+class TestFetchCliModels(unittest.TestCase):
+
+    @patch("subprocess.run")
+    def test_fetch_cli_models_success(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "gemini-3.6-flash-high\tGemini 3.6 Flash High\n"
+                "gemini-3.6-flash-medium\tGemini 3.6 Flash Medium\n"
+                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
+                "gpt-oss-120b-medium\tGPT OSS 120b\n"
+            ),
+        )
+        gemini, third_party = fetch_cli_models()
+        self.assertEqual(gemini, ["gemini-3.6-flash-high", "gemini-3.6-flash-medium"])
+        self.assertEqual(third_party, ["claude-sonnet-4-6", "gpt-oss-120b-medium"])
+
+    @patch("subprocess.run")
+    def test_fetch_cli_models_fallback_on_error(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="Error")
+        gemini, third_party = fetch_cli_models()
+        self.assertEqual(gemini, DEFAULT_GEMINI_MODELS)
+        self.assertEqual(third_party, DEFAULT_THIRD_PARTY_MODELS)
+
+        mock_run.side_effect = FileNotFoundError("agy not found")
+        gemini2, third_party2 = fetch_cli_models()
+        self.assertEqual(gemini2, DEFAULT_GEMINI_MODELS)
+        self.assertEqual(third_party2, DEFAULT_THIRD_PARTY_MODELS)
+
+    @patch("lib.quota.fetch_cli_models")
+    def test_quota_tracker_refresh_available_models(self, mock_fetch):
+        mock_fetch.return_value = (
+            ["gemini-custom-model"],
+            ["claude-custom-model"],
+        )
+        tracker = QuotaTracker(
+            active_gemini_model="gemini-old-model",
+            active_third_party_model="claude-old-model",
+            available_gemini_models=["gemini-old-model"],
+            available_third_party_models=["claude-old-model"],
+        )
+        self.assertEqual(tracker.active_gemini_model, "gemini-old-model")
+
+        tracker.refresh_available_models()
+
+        self.assertEqual(tracker.available_gemini_models, ["gemini-custom-model"])
+        self.assertEqual(tracker.available_third_party_models, ["claude-custom-model"])
+        self.assertEqual(tracker.active_gemini_model, "gemini-custom-model")
+        self.assertEqual(tracker.active_third_party_model, "claude-custom-model")
 
 
 if __name__ == "__main__":
