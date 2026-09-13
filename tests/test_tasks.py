@@ -1306,9 +1306,10 @@ class TestTaskManager(unittest.TestCase):
         mock_run.return_value = mock_proc
 
         poll_called = threading.Event()
+        unblock_poll = threading.Event()
 
         def slow_poll_live_quota_async(*args, **kwargs):
-            time.sleep(0.5)
+            unblock_poll.wait(timeout=2.0)
             poll_called.set()
             return MagicMock()
 
@@ -1325,19 +1326,20 @@ class TestTaskManager(unittest.TestCase):
         )
         manager.start()
 
-        start_time = time.time()
-        task = manager.submit_task("code_reviewer", "Test non-blocking prompt")
+        try:
+            task = manager.submit_task("code_reviewer", "Test non-blocking prompt")
 
-        self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.COMPLETED, TaskStatus.FAILED)))
-
-        finish_duration = time.time() - start_time
-        self.assertEqual(task.status, TaskStatus.COMPLETED)
-        self.assertLess(finish_duration, 0.4)
-
-        self.assertTrue(poll_called.wait(timeout=2.0))
-        quota.poll_live_quota_async.assert_called_with(quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1")
-
-        manager.stop()
+            self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.COMPLETED, TaskStatus.FAILED)))
+            self.assertEqual(task.status, TaskStatus.COMPLETED)
+            # Quota polling must not block task completion
+            self.assertFalse(poll_called.is_set())
+        finally:
+            unblock_poll.set()
+            self.assertTrue(poll_called.wait(timeout=2.0))
+            quota.poll_live_quota_async.assert_called_with(
+                quota_pool="gemini", force=True, thread_name="AsyncQuotaPoll-Worker-1"
+            )
+            manager.stop()
 
     @patch("lib.tasks.run_agent_container")
     def test_attempt_exhaustion_caching_and_requeuing(self, mock_run):
