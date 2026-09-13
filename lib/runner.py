@@ -92,7 +92,6 @@ def is_transcript_incomplete(
         )
 
         active_bg_commands = set()
-        bg_tasks = {}  # tid -> {"origin_tool": ..., "cmd": ...}
         pending_tool_calls = []
 
         for step in steps:
@@ -101,43 +100,34 @@ def is_transcript_incomplete(
                 pending_tool_calls = list(step.get("tool_calls") or [])
 
             content = step.get("content") or ""
-            if isinstance(content, str):
-                m_launch = bg_launch_pattern.search(content)
-                if m_launch:
-                    tid = m_launch.group(1)
-                    origin_tool = None
-                    cmd_line = None
-                    if pending_tool_calls:
-                        tool_call = pending_tool_calls.pop(0)
-                        if isinstance(tool_call, dict):
-                            origin_tool = tool_call.get("name")
-                            args = tool_call.get("args") or {}
-                            if isinstance(args, dict):
-                                cmd_line = args.get("CommandLine")
+            content_str = content if isinstance(content, str) else ""
 
-                    m_desc = re.search(r"Task Description:\s*(.*)", content)
-                    desc_str = m_desc.group(1).strip() if m_desc else ""
-                    if not cmd_line and desc_str:
-                        cmd_line = desc_str
+            m_launch = bg_launch_pattern.search(content_str) if content_str else None
+            if m_launch:
+                tid = m_launch.group(1)
+                origin_tool = None
+                if pending_tool_calls:
+                    tool_call = pending_tool_calls.pop(0)
+                    if isinstance(tool_call, dict):
+                        origin_tool = tool_call.get("name")
 
-                    # Identify timer tasks:
-                    # Prefer classifying via originating tool name ('schedule') over internal description format.
-                    # Fallback to Task Description prefix 'Timer:' for backwards compatibility.
-                    is_timer = (origin_tool == "schedule") or (
-                        origin_tool is None and desc_str.startswith("Timer:")
-                    )
+                m_desc = re.search(r"Task Description:\s*(.*)", content_str)
+                desc_str = m_desc.group(1).strip() if m_desc else ""
 
-                    bg_tasks[tid] = {
-                        "origin_tool": origin_tool,
-                        "cmd": cmd_line,
-                    }
+                # Identify timer tasks:
+                # Prefer classifying via originating tool name ('schedule') over internal description format.
+                # Fallback to Task Description prefix 'Timer:' for backwards compatibility.
+                is_timer = (origin_tool == "schedule") or (
+                    origin_tool is None and desc_str.startswith("Timer:")
+                )
 
-                    if not is_timer:
-                        active_bg_commands.add(tid)
-                elif step_type in ("GENERIC", "TOOL_RESPONSE") and pending_tool_calls:
-                    pending_tool_calls.pop(0)
+                if not is_timer:
+                    active_bg_commands.add(tid)
+            elif step_type in ("GENERIC", "TOOL_RESPONSE", "TOOL_RESULT") and pending_tool_calls:
+                pending_tool_calls.pop(0)
 
-                for tid in bg_finish_pattern.findall(content):
+            if content_str:
+                for tid in bg_finish_pattern.findall(content_str):
                     active_bg_commands.discard(tid)
 
         if active_bg_commands:
@@ -203,10 +193,10 @@ def is_transcript_incomplete(
             if not pr_cmd_invoked:
                 return True
 
-            # Ensure the PR URL appears in a non-USER_INPUT step following the gh pr create invocation
+            # Ensure the PR URL appears in a tool output step following the gh pr create invocation
             first_pr_step = min(pr_cmd_step_indices)
             for step in steps[first_pr_step + 1:]:
-                if step.get("type") == "USER_INPUT":
+                if step.get("type") not in ("TOOL_RESPONSE", "TOOL_RESULT", "GENERIC"):
                     continue
                 content = step.get("content") or ""
                 if isinstance(content, str) and github_pr_url_pattern.search(content):

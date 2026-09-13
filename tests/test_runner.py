@@ -1229,6 +1229,41 @@ class TestTranscriptInspector(unittest.TestCase):
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertFalse(is_transcript_incomplete(transcript_file))
 
+    def test_is_transcript_incomplete_timer_task_after_tool_result_advances_pending_calls(self):
+        # A preceding tool call generates a TOOL_RESULT step.
+        # pending_tool_calls must properly advance so that a subsequent schedule call in the same turn
+        # is correctly recognized as a timer task and ignored.
+        transcript_file = self.test_dir / "timer_after_tool_result.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run tests and wait"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": ['
+            '  {"name": "view_file", "args": {"AbsolutePath": "/workspace/lib/runner.py"}},'
+            '  {"name": "schedule", "args": {"DurationSeconds": 30}}'
+            ']}',
+            '{"step_index": 3, "type": "TOOL_RESULT", "content": "File contents of runner.py"}',
+            '{"step_index": 4, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-99\\nTask Description: One-shot wake-up in 30s"}',
+            '{"step_index": 5, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Scheduled reminder."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
+    def test_is_transcript_incomplete_timer_task_after_structured_tool_result(self):
+        # A preceding tool call generates a TOOL_RESULT step with structured (dict) content.
+        # pending_tool_calls must advance reliably even if content is non-string.
+        transcript_file = self.test_dir / "timer_after_structured_tool_result.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Run checks and wait"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": ['
+            '  {"name": "check_status", "args": {}},'
+            '  {"name": "schedule", "args": {"DurationSeconds": 15}}'
+            ']}',
+            '{"step_index": 3, "type": "TOOL_RESULT", "content": {"status": "ok", "count": 5}}',
+            '{"step_index": 4, "type": "GENERIC", "content": "Tool is running as a background task with task id: conv-1/task-100\\nTask Description: One-shot wake-up in 15s"}',
+            '{"step_index": 5, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Done."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertFalse(is_transcript_incomplete(transcript_file))
+
     def test_is_transcript_incomplete_waiting_text_response(self):
         transcript_file = self.test_dir / "waiting.jsonl"
         lines = [
@@ -1343,6 +1378,19 @@ class TestTranscriptInspector(unittest.TestCase):
             '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr create --title \\"Feature\\" --body \\"Desc\\""}}]}',
             '{"step_index": 5, "type": "GENERIC", "content": "The command exited with code 1.\\nOutput:\\nGraphQL: Resource not accessible by integration"}',
             '{"step_index": 6, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "Failed to create PR due to permissions."}'
+        ]
+        transcript_file.write_text("\n".join(lines), encoding="utf-8")
+        self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
+
+    def test_is_transcript_incomplete_pr_drafter_failed_create_with_pr_url_in_planner_response(self):
+        # A failed gh pr create invocation followed by a PLANNER_RESPONSE step mentioning an unrelated/earlier PR URL
+        # must NOT satisfy pr_url_found and must correctly flag the transcript as incomplete.
+        transcript_file = self.test_dir / "pr_drafter_failed_url_in_planner.jsonl"
+        lines = [
+            '{"step_index": 1, "type": "USER_INPUT", "content": "Draft PR for #566"}',
+            '{"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr create --title \\"Feature\\" --body \\"Desc\\""}}]}',
+            '{"step_index": 3, "type": "GENERIC", "content": "The command exited with code 1.\\nOutput:\\nGraphQL: Resource not accessible by integration"}',
+            '{"step_index": 4, "type": "PLANNER_RESPONSE", "tool_calls": [], "content": "PR creation failed; see https://github.com/mweastwood/TwelveStars/pull/500 for the prior PR"}'
         ]
         transcript_file.write_text("\n".join(lines), encoding="utf-8")
         self.assertTrue(is_transcript_incomplete(transcript_file, agent_name="pr_drafter"))
