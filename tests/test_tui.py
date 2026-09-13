@@ -909,23 +909,39 @@ class TestTerminalDashboard(unittest.TestCase):
     def test_quota_fetch_latency_does_not_stall_tui_render(self):
         quota = QuotaTracker(remaining_percentage=90.0, quota_pool="gemini")
         manager = TaskManager(max_workers=2, quota_tracker=quota)
-        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota, out_stream=stream)
+        self.addCleanup(dashboard.stop)
+
+        fetch_started = threading.Event()
+        fetch_can_finish = threading.Event()
 
         def slow_fetch(*args, **kwargs):
-            time.sleep(0.5)  # Simulate network latency
+            fetch_started.set()
+            fetch_can_finish.wait(timeout=5.0)
             return None
 
-        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
-            dashboard.start()
-            t0 = time.time()
+        # 1. Verify standalone render does not invoke fetch_live_antigravity_quota
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch) as mock_fetch:
             rendered = dashboard.render(width=80)
-            render_duration = time.time() - t0
-
-            # Rendering frame should complete almost instantaneously (< 0.1s), not blocked by network latency
-            self.assertLess(render_duration, 0.1)
+            mock_fetch.assert_not_called()
             self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
 
-            dashboard.stop()
+        # 2. Verify background quota fetch latency does not stall concurrent render
+        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+            try:
+                dashboard.start()
+                self.assertTrue(
+                    fetch_started.wait(timeout=2.0),
+                    "Background quota fetch thread did not start within timeout",
+                )
+
+                # Render frame while background network fetch is actively in-flight
+                rendered = dashboard.render(width=80)
+                self.assertIn("ANTIGRAVITY MODEL QUOTA", rendered)
+            finally:
+                fetch_can_finish.set()
+                dashboard.stop()
 
     @staticmethod
     def _wait_for_condition(condition, timeout=5.0, interval=0.01):
