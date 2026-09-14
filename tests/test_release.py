@@ -15,6 +15,7 @@ from lib.release import (
     DEFAULT_BRANCH,
     DEFAULT_COMMANDS,
     DEFAULT_RELEASE_ISSUE_PATTERN,
+    RELEASE_BOT_TAG,
     clear_release_locks,
     execute_release,
     execute_release_async,
@@ -199,6 +200,14 @@ class TestParseReleaseCommand(unittest.TestCase):
         self.assertEqual(parse_release_command("random text"), (None, None))
         self.assertEqual(parse_release_command(""), (None, None))
 
+    def test_multi_word_comments_rejected(self):
+        self.assertEqual(parse_release_command("release patch notes"), (None, None))
+        self.assertEqual(parse_release_command("release patch notes for v1.0.0"), (None, None))
+        self.assertEqual(parse_release_command("tag minor bug in checkout"), (None, None))
+        self.assertEqual(parse_release_command("/release patch notes"), (None, None))
+        self.assertEqual(parse_release_command("/tag minor fix"), (None, None))
+        self.assertEqual(parse_release_command("patch notes for v1.0.0"), (None, None))
+
 
 class TestUserAuthorization(unittest.TestCase):
 
@@ -216,6 +225,19 @@ class TestUserAuthorization(unittest.TestCase):
         self.assertTrue(is_user_authorized_for_release("any_user", payload_member, {}))
 
         payload_contributor = {"comment": {"author_association": "CONTRIBUTOR"}}
+        self.assertFalse(is_user_authorized_for_release("contributor_user", payload_contributor, {}))
+
+    def test_issue_author_association_fallback(self):
+        payload_owner = {"issue": {"author_association": "OWNER"}}
+        self.assertTrue(is_user_authorized_for_release("any_user", payload_owner, {}))
+
+        payload_member = {"issue": {"author_association": "MEMBER"}}
+        self.assertTrue(is_user_authorized_for_release("any_user", payload_member, {}))
+
+        payload_collab = {"issue": {"author_association": "COLLABORATOR"}}
+        self.assertTrue(is_user_authorized_for_release("any_user", payload_collab, {}))
+
+        payload_contributor = {"issue": {"author_association": "CONTRIBUTOR"}}
         self.assertFalse(is_user_authorized_for_release("contributor_user", payload_contributor, {}))
 
     def test_repo_owner_fallback(self):
@@ -263,6 +285,8 @@ class TestExecuteRelease(unittest.TestCase):
         comment_body = mock_comment.call_args[0][2]
         self.assertIn("Patch Release Succeeded!", comment_body)
         self.assertIn("Tagged v1.0.1", comment_body)
+        self.assertIn("<!-- antigravity-auto-reply -->", comment_body)
+        self.assertIn("<!-- graviton:release -->", comment_body)
 
     @patch("lib.release.post_issue_comment")
     @patch("subprocess.run")
@@ -286,6 +310,31 @@ class TestExecuteRelease(unittest.TestCase):
         comment_body = mock_comment.call_args[0][2]
         self.assertIn("Patch Release Failed!", comment_body)
         self.assertIn("Tag already exists", comment_body)
+        self.assertIn("<!-- antigravity-auto-reply -->", comment_body)
+        self.assertIn("<!-- graviton:release -->", comment_body)
+
+    @patch("lib.release.post_issue_comment")
+    @patch("subprocess.run")
+    def test_execute_release_dirty_working_tree(self, mock_subproc, mock_comment):
+        mock_subproc.return_value = subprocess.CompletedProcess(
+            args=["git", "status", "--porcelain", "-uno"],
+            returncode=0,
+            stdout=" M lib/release.py\n",
+            stderr="",
+        )
+        success = execute_release(
+            repo_dir=self.repo_path,
+            repo_full_name="owner/repo",
+            issue_number=42,
+            release_type="patch",
+            command="bin/tag.sh patch",
+            target_branch="main",
+        )
+        self.assertFalse(success)
+        mock_comment.assert_called_once()
+        comment_body = mock_comment.call_args[0][2]
+        self.assertIn("Dirty Working Tree", comment_body)
+        self.assertIn("M lib/release.py", comment_body)
 
     @patch("lib.release.post_issue_comment")
     @patch("subprocess.run")
@@ -355,6 +404,12 @@ class TestPostIssueComment(unittest.TestCase):
         mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         res = post_issue_comment("owner/repo", 12, "Hello world")
         self.assertTrue(res)
+        mock_subproc.assert_called_once()
+        cmd = mock_subproc.call_args[0][0]
+        body_idx = cmd.index("--body") + 1
+        self.assertIn("Hello world", cmd[body_idx])
+        self.assertIn("<!-- antigravity-auto-reply -->", cmd[body_idx])
+        self.assertIn("<!-- graviton:release -->", cmd[body_idx])
 
     @patch("urllib.request.urlopen")
     @patch("subprocess.run")
@@ -373,6 +428,87 @@ class TestPostIssueComment(unittest.TestCase):
         self.assertFalse(post_issue_comment("", 12, "text"))
         self.assertFalse(post_issue_comment("owner/repo", 0, "text"))
         self.assertFalse(post_issue_comment("owner/repo", 12, ""))
+
+
+class TestReleaseBotMarkersAndFormatting(unittest.TestCase):
+
+    def test_format_release_help_contains_bot_marker(self):
+        body = format_release_help()
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:release -->", body)
+
+    def test_format_release_init_contains_bot_marker(self):
+        body = format_release_init()
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:release -->", body)
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_release_help_async_contains_bot_marker(self, mock_comment):
+        t = post_release_help_async("owner/repo", 42)
+        t.join(timeout=2.0)
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:release -->", body)
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_release_init_async_contains_bot_marker(self, mock_comment):
+        t = post_release_init_async("owner/repo", 42)
+        t.join(timeout=2.0)
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:release -->", body)
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_release_unrecognized_async_contains_bot_marker(self, mock_comment):
+        t = post_release_unrecognized_async("owner/repo", 42, "unknown_cmd")
+        t.join(timeout=2.0)
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:release -->", body)
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_release_unrecognized_async_sanitizes_multiline(self, mock_comment):
+        multiline_cmd = "first_line `with backticks`\nsecond_line\nthird_line"
+        t = post_release_unrecognized_async("owner/repo", 42, multiline_cmd)
+        t.join(timeout=2.0)
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        self.assertIn("Unrecognized release command: `first_line 'with backticks'`", body)
+        self.assertNotIn("second_line", body.split("\n\n")[0])
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_release_unrecognized_async_truncates_long_input(self, mock_comment):
+        long_cmd = "a" * 120
+        t = post_release_unrecognized_async("owner/repo", 42, long_cmd)
+        t.join(timeout=2.0)
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        expected_sanitized = "a" * 77 + "..."
+        self.assertIn(f"Unrecognized release command: `{expected_sanitized}`", body)
+
+    @patch("subprocess.run")
+    def test_post_issue_comment_appends_marker_and_does_not_duplicate(self, mock_subproc):
+        mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        # Plain message gets marker appended
+        post_issue_comment("owner/repo", 12, "Message without marker")
+        cmd_args = mock_subproc.call_args[0][0]
+        body_idx = cmd_args.index("--body") + 1
+        posted_body = cmd_args[body_idx]
+        self.assertIn("<!-- antigravity-auto-reply -->", posted_body)
+        self.assertIn("<!-- graviton:release -->", posted_body)
+
+        # Message with existing marker is not duplicated
+        mock_subproc.reset_mock()
+        already_tagged = "Message with marker\n\n<!-- antigravity-auto-reply -->\n<!-- graviton:release -->"
+        post_issue_comment("owner/repo", 12, already_tagged)
+        cmd_args = mock_subproc.call_args[0][0]
+        body_idx = cmd_args.index("--body") + 1
+        posted_body = cmd_args[body_idx]
+        self.assertEqual(posted_body.count("<!-- antigravity-auto-reply -->"), 1)
 
 
 if __name__ == "__main__":

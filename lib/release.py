@@ -16,9 +16,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from lib.security import is_valid_repo_name
+from lib.security import BOT_MARKER, is_valid_repo_name
 
 logger = logging.getLogger("graviton.release")
+
+RELEASE_BOT_TAG = f"{BOT_MARKER}\n<!-- graviton:release -->"
 
 CONFIG_FILENAMES = [".graviton.json", "graviton.json"]
 DEFAULT_RELEASE_ISSUE_PATTERN = r"(?i)^🚀?\s*release\s*(?:controller|tracker)?\b"
@@ -180,7 +182,7 @@ def parse_release_command(
         return text_lower, commands[text_lower]
 
     # 2. Check prefix forms: '/release <key>', '/tag <key>', 'release <key>', 'tag <key>'
-    m = re.match(r"^(?:/(?:release|tag)\s+|(?:release|tag)\s+)([a-zA-Z0-9_\-\.]+)", text_lower)
+    m = re.match(r"^/?(?:release|tag)\s+([a-zA-Z0-9_\-\.]+)\s*$", text_lower)
     if m:
         key = m.group(1)
         if key in commands:
@@ -216,7 +218,8 @@ def is_user_authorized_for_release(
 
     # 2. Fallback check: author_association from comment or issue
     comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
-    author_association = comment.get("author_association", "")
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
+    author_association = comment.get("author_association") or issue.get("author_association", "")
     if isinstance(author_association, str) and author_association.upper() in ("OWNER", "MEMBER", "COLLABORATOR"):
         return True
 
@@ -249,6 +252,9 @@ def post_issue_comment(
     """
     if not repo_full_name or not issue_number or not body:
         return False
+
+    if BOT_MARKER not in body:
+        body = f"{body.rstrip()}\n\n{RELEASE_BOT_TAG}"
 
     # 1. Try gh CLI
     try:
@@ -329,7 +335,8 @@ def format_release_help(
         f"**Available release commands:**\n{cmd_lines}\n\n"
         f"- **Target branch**: `{branch}`\n"
         f"- **Authorized users**: {allowed_str}\n\n"
-        f"*Comment any command above (e.g. `patch` or `/tag patch`) to trigger a release.*"
+        f"*Comment any command above (e.g. `patch` or `/tag patch`) to trigger a release.*\n\n"
+        f"{RELEASE_BOT_TAG}"
     )
 
 
@@ -382,9 +389,13 @@ def post_release_unrecognized_async(
     release_config: Optional[Dict[str, Any]] = None,
 ) -> threading.Thread:
     """Post unrecognized release command feedback asynchronously."""
+    first_line = comment_body.splitlines()[0] if comment_body.splitlines() else comment_body
+    sanitized = first_line.replace("`", "'").strip()
+    if len(sanitized) > 80:
+        sanitized = sanitized[:77] + "..."
     help_msg = format_release_help(release_config)
     body = (
-        f"⚠️ Unrecognized release command: `{comment_body.strip()}`\n\n"
+        f"⚠️ Unrecognized release command: `{sanitized}`\n\n"
         f"{help_msg}"
     )
     t = threading.Thread(
@@ -438,7 +449,7 @@ def execute_release(
         # 1. Pre-flight: Git status check
         try:
             status_res = subprocess.run(
-                ["git", "status", "--porcelain"],
+                ["git", "status", "--porcelain", "-uno"],
                 cwd=str(repo_dir),
                 capture_output=True,
                 text=True,
@@ -449,6 +460,13 @@ def execute_release(
                     repo_full_name,
                     issue_number,
                     f"❌ **Release Failed (Pre-flight Git Error)**\n\nCould not check git status:\n```text\n{status_res.stderr.strip()}\n```",
+                )
+                return False
+            if status_res.stdout.strip():
+                post_issue_comment(
+                    repo_full_name,
+                    issue_number,
+                    f"❌ **Release Failed (Dirty Working Tree)**\n\nWorking tree has uncommitted tracked changes:\n```text\n{status_res.stdout.strip()}\n```",
                 )
                 return False
         except Exception as e:
@@ -563,7 +581,8 @@ def execute_release(
                 f"✅ **{release_type.capitalize()} Release Succeeded!**\n\n"
                 f"- **Command**: `{command}`\n"
                 f"- **Branch**: `{target_branch}`\n\n"
-                f"<details>\n<summary>Output log</summary>\n\n```text\n{tail}\n```\n</details>"
+                f"<details>\n<summary>Output log</summary>\n\n```text\n{tail}\n```\n</details>\n\n"
+                f"{RELEASE_BOT_TAG}"
             )
             post_issue_comment(repo_full_name, issue_number, msg)
             return True
@@ -573,7 +592,8 @@ def execute_release(
                 f"❌ **{release_type.capitalize()} Release Failed!**\n\n"
                 f"- **Command**: `{command}` (exit code {exec_res.returncode})\n"
                 f"- **Branch**: `{target_branch}`\n\n"
-                f"```text\n{tail}\n```"
+                f"```text\n{tail}\n```\n\n"
+                f"{RELEASE_BOT_TAG}"
             )
             post_issue_comment(repo_full_name, issue_number, msg)
             return False
@@ -619,6 +639,7 @@ __all__ = [
     "DEFAULT_RELEASE_ISSUE_PATTERN",
     "DEFAULT_BRANCH",
     "DEFAULT_COMMANDS",
+    "RELEASE_BOT_TAG",
     "clear_release_locks",
     "get_repo_release_lock",
     "resolve_repo_dir",

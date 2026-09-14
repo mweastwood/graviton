@@ -1438,7 +1438,13 @@ class TestGravitonHandler(unittest.TestCase):
     def test_do_post_release_init_action(self, mock_init, mock_reaction):
         payload = json.dumps({
             "action": "opened",
-            "issue": {"number": 89, "title": "🚀 Release Controller", "body": ""},
+            "issue": {
+                "number": 89,
+                "title": "🚀 Release Controller",
+                "body": "",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
             "repository": {"name": "myapp", "full_name": "mweastwood/myapp"},
         }).encode("utf-8")
         handler = MagicMock(spec=GravitonHandler)

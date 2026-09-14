@@ -58,6 +58,17 @@ def handle_issues_event(
         release_config = load_release_config(repo_dir) if repo_dir else None
         if is_release_issue(issue_title, release_config):
             if action == "opened":
+                issue_user = issue.get("user") or issue.get("author") or payload.get("sender") or {}
+                author_login = issue_user.get("login") if isinstance(issue_user, dict) else str(issue_user or "")
+                if not author_login and isinstance(payload.get("sender"), dict):
+                    author_login = payload["sender"].get("login", "")
+
+                if not is_user_authorized_for_release(author_login, payload, release_config):
+                    return {
+                        "status": "ignored",
+                        "reason": f"User '{author_login}' is not authorized to trigger releases",
+                    }
+
                 return {
                     "status": "accepted",
                     "action": "release_init",

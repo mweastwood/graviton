@@ -349,6 +349,8 @@ class TestReleaseRouting(unittest.TestCase):
                 "number": 100,
                 "title": "🚀 Release Controller",
                 "body": "",
+                "user": {"login": "alice"},
+                "author_association": "OWNER",
             },
             "repository": {"name": "app", "full_name": "owner/app"},
         }
@@ -356,6 +358,22 @@ class TestReleaseRouting(unittest.TestCase):
         self.assertEqual(res["status"], "accepted")
         self.assertEqual(res["action"], "release_init")
         self.assertEqual(res["issue_number"], 100)
+
+    def test_release_issue_opened_unauthorized(self):
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 101,
+                "title": "🚀 Release Controller",
+                "body": "",
+                "user": {"login": "eve"},
+                "author_association": "NONE",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issues_event(payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertIn("not authorized", res.get("reason", ""))
 
     def test_release_issue_edited(self):
         payload = {
