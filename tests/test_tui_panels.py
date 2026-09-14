@@ -384,7 +384,7 @@ class TestTUIPanels(unittest.TestCase):
         from lib.quota import QuotaWindow
         now_dt = datetime.now(timezone.utc)
         reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
-        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time=reset_time_str)
         w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
         tracker_behind = QuotaTracker()
         tracker_behind.update_windows(w_behind, w_ok)
