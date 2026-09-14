@@ -114,7 +114,7 @@ Create a `.graviton.json` file in the root of your app repository:
 ```json
 {
   "release": {
-    "issue_pattern": "(?i)^🚀?\\s*release\\s*(?:controller|tracker)?",
+    "issue_pattern": "(?i)^🚀?\\s*release(?:\\s+(?:controller|tracker))?\\s*$",
     "branch": "main",
     "allowed_users": ["your_github_username"],
     "commands": {

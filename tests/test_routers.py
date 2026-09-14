@@ -411,6 +411,28 @@ class TestReleaseRouting(unittest.TestCase):
         self.assertEqual(res["branch"], "main")
         self.assertEqual(res["issue_number"], 100)
 
+    @patch("lib.routers.issue_router.load_release_config")
+    def test_release_comment_branch_none_fallback(self, mock_cfg):
+        mock_cfg.return_value = {"branch": None}
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 100,
+                "title": "🚀 Release Controller",
+            },
+            "comment": {
+                "id": 555,
+                "body": "patch",
+                "user": {"login": "alice"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "app", "full_name": "owner/app"},
+        }
+        res = handle_issue_comment_event(payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["action"], "release")
+        self.assertEqual(res["branch"], "main")
+
     def test_release_comment_slash_tag_minor(self):
         payload = {
             "action": "created",

@@ -245,7 +245,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 repo_full_name = decision.get("repo_full_name") or repo_name
                 issue_number = decision.get("issue_number")
                 command = decision.get("command")
-                branch = decision.get("branch", DEFAULT_BRANCH)
+                branch = decision.get("branch") or DEFAULT_BRANCH
                 pre_flight = decision.get("pre_flight")
                 repo_dir = decision.get("repo_dir")
 
@@ -262,9 +262,9 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
                 post_emoji_reaction_async(event_type, payload, reaction="rocket")
 
-                if repo_dir and repo_dir.exists():
+                if repo_dir and Path(repo_dir).exists():
                     execute_release_async(
-                        repo_dir=repo_dir,
+                        repo_dir=Path(repo_dir),
                         repo_full_name=repo_full_name,
                         issue_number=issue_number,
                         release_type=release_type,
@@ -275,11 +275,16 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 else:
                     logger.error(f"Cannot execute release: directory '{repo_dir}' not found for repo '{repo_name}'")
                     if repo_full_name and issue_number:
-                        post_issue_comment(
-                            repo_full_name,
-                            issue_number,
-                            f"❌ **Release Failed**: Repository directory not found on Graviton server for `{repo_name}`.",
-                        )
+                        threading.Thread(
+                            target=post_issue_comment,
+                            args=(
+                                repo_full_name,
+                                issue_number,
+                                f"❌ **Release Failed**: Repository directory not found on Graviton server for `{repo_name}`.",
+                            ),
+                            daemon=True,
+                            name="ReleaseRepoDirNotFoundThread",
+                        ).start()
                 return
 
             if decision.get("action") == "release_init":

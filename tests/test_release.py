@@ -132,6 +132,10 @@ class TestIsReleaseIssue(unittest.TestCase):
         self.assertFalse(is_release_issue("Bug in login screen"))
         self.assertFalse(is_release_issue("Fix release script typo"))
         self.assertFalse(is_release_issue("Add new feature"))
+        self.assertFalse(is_release_issue("Release notes for v1.0.0"))
+        self.assertFalse(is_release_issue("Release blocker"))
+        self.assertFalse(is_release_issue("Release blocker: payment gateway crash"))
+        self.assertFalse(is_release_issue("Release checklist"))
 
     def test_custom_pattern(self):
         cfg = {"issue_pattern": r"^Deploy\s+Bot\b"}
@@ -215,6 +219,12 @@ class TestUserAuthorization(unittest.TestCase):
         cfg = {"allowed_users": ["mweastwood", "alice"]}
         self.assertTrue(is_user_authorized_for_release("mweastwood", {}, cfg))
         self.assertTrue(is_user_authorized_for_release("@Alice", {}, cfg))
+        self.assertFalse(is_user_authorized_for_release("eve", {}, cfg))
+
+    def test_string_allowed_user(self):
+        cfg = {"allowed_users": "mweastwood"}
+        self.assertTrue(is_user_authorized_for_release("mweastwood", {}, cfg))
+        self.assertTrue(is_user_authorized_for_release("@mweastwood", {}, cfg))
         self.assertFalse(is_user_authorized_for_release("eve", {}, cfg))
 
     def test_author_association_fallback(self):
@@ -395,6 +405,52 @@ class TestExecuteRelease(unittest.TestCase):
         thread.join(timeout=5.0)
         self.assertFalse(thread.is_alive())
         mock_comment.assert_called_once()
+
+    @patch("lib.release.post_issue_comment")
+    @patch("subprocess.run")
+    def test_execute_release_branch_none_fallback(self, mock_subproc, mock_comment):
+        mock_subproc.side_effect = [
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "checkout"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "pull"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["bin/tag.sh", "patch"], returncode=0, stdout="Success", stderr=""),
+        ]
+
+        success = execute_release(
+            repo_dir=self.repo_path,
+            repo_full_name="owner/repo",
+            issue_number=42,
+            release_type="patch",
+            command="bin/tag.sh patch",
+            target_branch=None,
+        )
+        self.assertTrue(success)
+        checkout_call = mock_subproc.call_args_list[1]
+        self.assertEqual(checkout_call[0][0], ["git", "checkout", DEFAULT_BRANCH])
+
+    @patch("lib.release.post_issue_comment")
+    @patch("subprocess.run")
+    def test_execute_release_string_pre_flight(self, mock_subproc, mock_comment):
+        mock_subproc.side_effect = [
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "checkout"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "pull"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git diff --quiet"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["bin/tag.sh", "patch"], returncode=0, stdout="Success", stderr=""),
+        ]
+
+        success = execute_release(
+            repo_dir=self.repo_path,
+            repo_full_name="owner/repo",
+            issue_number=42,
+            release_type="patch",
+            command="bin/tag.sh patch",
+            pre_flight_checks="git diff --quiet",
+        )
+        self.assertTrue(success)
+        self.assertEqual(mock_subproc.call_count, 5)
+        pre_flight_call = mock_subproc.call_args_list[3]
+        self.assertEqual(pre_flight_call[0][0], "git diff --quiet")
 
 
 class TestPostIssueComment(unittest.TestCase):

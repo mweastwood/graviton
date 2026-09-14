@@ -250,7 +250,7 @@ def handle_issue_comment_event(
                         "release_config": release_config,
                     }
                 elif cmd_type:
-                    branch = (release_config or {}).get("branch", DEFAULT_BRANCH)
+                    branch = (release_config or {}).get("branch") or DEFAULT_BRANCH
                     pre_flight = (release_config or {}).get("pre_flight")
                     return {
                         "status": "accepted",

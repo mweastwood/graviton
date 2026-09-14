@@ -23,7 +23,7 @@ logger = logging.getLogger("graviton.release")
 RELEASE_BOT_TAG = f"{BOT_MARKER}\n<!-- graviton:release -->"
 
 CONFIG_FILENAMES = [".graviton.json", "graviton.json"]
-DEFAULT_RELEASE_ISSUE_PATTERN = r"(?i)^🚀?\s*release\s*(?:controller|tracker)?\b"
+DEFAULT_RELEASE_ISSUE_PATTERN = r"(?i)^🚀?\s*release(?:\s+(?:controller|tracker))?\s*$"
 DEFAULT_BRANCH = "main"
 DEFAULT_COMMANDS = {
     "patch": "bin/tag.sh patch",
@@ -212,6 +212,8 @@ def is_user_authorized_for_release(
     # 1. Check explicit allowed_users in release_config
     if release_config and "allowed_users" in release_config:
         allowed = release_config["allowed_users"]
+        if isinstance(allowed, str):
+            allowed = [allowed]
         if isinstance(allowed, list):
             allowed_lower = {str(u).strip().lower().lstrip("@") for u in allowed if u}
             return login_lower in allowed_lower
@@ -415,7 +417,7 @@ def execute_release(
     release_type: str,
     command: str,
     target_branch: str = DEFAULT_BRANCH,
-    pre_flight_checks: Optional[List[str]] = None,
+    pre_flight_checks: Optional[Union[List[str], str]] = None,
     timeout: float = 600.0,
 ) -> bool:
     """
@@ -431,6 +433,10 @@ def execute_release(
     :param timeout: Command timeout in seconds.
     :return: True if command executed with exit code 0, False otherwise.
     """
+    target_branch = target_branch or DEFAULT_BRANCH
+    if isinstance(pre_flight_checks, str):
+        pre_flight_checks = [pre_flight_checks]
+
     repo_key = str(repo_dir.resolve())
     lock = get_repo_release_lock(repo_key)
 
@@ -609,12 +615,16 @@ def execute_release_async(
     release_type: str,
     command: str,
     target_branch: str = DEFAULT_BRANCH,
-    pre_flight_checks: Optional[List[str]] = None,
+    pre_flight_checks: Optional[Union[List[str], str]] = None,
     timeout: float = 600.0,
 ) -> threading.Thread:
     """
     Execute release in a background daemon thread.
     """
+    target_branch = target_branch or DEFAULT_BRANCH
+    if isinstance(pre_flight_checks, str):
+        pre_flight_checks = [pre_flight_checks]
+
     t = threading.Thread(
         target=execute_release,
         kwargs={
