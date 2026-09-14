@@ -36,6 +36,15 @@ from lib.tui import TerminalDashboard, run_graceful_shutdown
 from lib.pr_tracker import PRTracker
 from lib.quota import QuotaTracker, QuotaState
 from lib.reactions import post_emoji_reaction_async
+from lib.release import (
+    DEFAULT_BRANCH,
+    execute_release_async,
+    post_issue_comment,
+    post_release_help_async,
+    post_release_init_async,
+    post_release_unrecognized_async,
+    resolve_repo_dir,
+)
 
 
 _is_shutting_down = False
@@ -189,6 +198,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             pr_tracker=self.pr_tracker,
             server_repo_name=getattr(self, "server_repo_name", get_server_repo_name(REPO_ROOT)),
             repo_root=REPO_ROOT,
+            repos_dir=getattr(self, "repos_dir", None),
         )
 
         status = decision.get("status", "unknown")
@@ -227,6 +237,99 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None), getattr(self, "quota_tracker", None)),
                     daemon=True,
                 ).start()
+                return
+
+            if decision.get("action") == "release":
+                release_type = decision.get("release_type", "release")
+                repo_name = decision.get("repo_name")
+                repo_full_name = decision.get("repo_full_name") or repo_name
+                issue_number = decision.get("issue_number")
+                command = decision.get("command")
+                branch = decision.get("branch") or DEFAULT_BRANCH
+                pre_flight = decision.get("pre_flight")
+                repo_dir = decision.get("repo_dir")
+
+                if not repo_dir:
+                    repo_dir = resolve_repo_dir(repo_name, repo_root=REPO_ROOT, repos_dir=getattr(self, "repos_dir", None))
+
+                self._send_json(200, {
+                    "status": "accepted",
+                    "action": "release",
+                    "release_type": release_type,
+                    "repo_name": repo_name,
+                    "message": f"Release '{release_type}' triggered.",
+                })
+
+                post_emoji_reaction_async(event_type, payload, reaction="rocket")
+
+                if repo_dir and Path(repo_dir).exists():
+                    execute_release_async(
+                        repo_dir=Path(repo_dir),
+                        repo_full_name=repo_full_name,
+                        issue_number=issue_number,
+                        release_type=release_type,
+                        command=command,
+                        target_branch=branch,
+                        pre_flight_checks=pre_flight,
+                    )
+                else:
+                    logger.error(f"Cannot execute release: directory '{repo_dir}' not found for repo '{repo_name}'")
+                    if repo_full_name and issue_number:
+                        threading.Thread(
+                            target=post_issue_comment,
+                            args=(
+                                repo_full_name,
+                                issue_number,
+                                f"❌ **Release Failed**: Repository directory not found on Graviton server for `{repo_name}`.",
+                            ),
+                            daemon=True,
+                            name="ReleaseRepoDirNotFoundThread",
+                        ).start()
+                return
+
+            if decision.get("action") == "release_init":
+                repo_full_name = decision.get("repo_full_name") or decision.get("repo_name")
+                issue_number = decision.get("issue_number")
+                release_config = decision.get("release_config")
+
+                self._send_json(200, {
+                    "status": "accepted",
+                    "action": "release_init",
+                    "message": "Release issue initialized.",
+                })
+                post_emoji_reaction_async(event_type, payload, reaction="rocket")
+                if repo_full_name and issue_number:
+                    post_release_init_async(repo_full_name, issue_number, release_config)
+                return
+
+            if decision.get("action") == "release_help":
+                repo_full_name = decision.get("repo_full_name") or decision.get("repo_name")
+                issue_number = decision.get("issue_number")
+                release_config = decision.get("release_config")
+
+                self._send_json(200, {
+                    "status": "accepted",
+                    "action": "release_help",
+                    "message": "Release help requested.",
+                })
+                post_emoji_reaction_async(event_type, payload, reaction="eyes")
+                if repo_full_name and issue_number:
+                    post_release_help_async(repo_full_name, issue_number, release_config)
+                return
+
+            if decision.get("action") == "release_unrecognized":
+                repo_full_name = decision.get("repo_full_name") or decision.get("repo_name")
+                issue_number = decision.get("issue_number")
+                comment_body = decision.get("comment_body", "")
+                release_config = decision.get("release_config")
+
+                self._send_json(200, {
+                    "status": "accepted",
+                    "action": "release_unrecognized",
+                    "message": "Unrecognized release command.",
+                })
+                if repo_full_name and issue_number:
+                    post_release_unrecognized_async(repo_full_name, issue_number, comment_body, release_config)
                 return
 
             agent = decision.get("agent")

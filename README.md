@@ -12,6 +12,7 @@ It orchestrates sandboxed Docker container agents to automatically review pull r
 - **Self-Healing Code Remediation**: Triggers `code_fixer` on `pull_request_review` or inline `pull_request_review_comment` events to automatically parse review comments, modify code, run test suites, and push commits.
 - **Periodic Codebase Sweeps & Maintenance**: Runs `TaskScheduler` background daemon to trigger `codebase_auditor` sweeps for bug detection, performance optimizations, readability improvements, and refactoring needs.
 - **Infinite Loop Protection**: All agent comments include a signature tag (`<!-- antigravity-auto-reply -->`). Graviton filters out these tags so agents never reply to themselves.
+- **GitHub Mobile Release Controller**: Triggers release tagging scripts (e.g. `bin/tag.sh patch|minor|major`) via comments on a dedicated GitHub issue, configured per-repo via `.graviton.json`.
 - **Human Comment Support**: Responds directly to human review comments and explicit mention commands (`@antigravity` or `/fix`).
 - **Zero External Dependencies**: `bin/graviton-server.py` relies exclusively on Python's standard library (`http.server`, `hmac`, `threading`, `subprocess`, `sched`).
 
@@ -36,6 +37,7 @@ graviton/
 │   └── schedules.json          # Periodic task schedule definitions
 ├── lib/                        # Core library components
 │   ├── __init__.py
+│   ├── release.py              # Repository release controller & script runner
 │   ├── router.py               # GitHub event parsing & routing logic
 │   ├── runner.py               # Subprocess agent container executor
 │   ├── scheduler.py            # Periodic background task scheduler engine
@@ -101,6 +103,53 @@ Alternatively, run the listener separately:
 
 ---
 
+## 🚀 GitHub Mobile Release Controller
+
+Graviton allows you to trigger release tagging scripts (e.g. `bin/tag.sh`) across your app repositories right from the GitHub Mobile app.
+
+### 1. Configure `.graviton.json` in Your App Repository
+
+Create a `.graviton.json` file in the root of your app repository:
+
+```json
+{
+  "release": {
+    "issue_pattern": "(?i)^🚀?\\s*release(?:\\s+(?:controller|tracker))?\\s*$",
+    "branch": "main",
+    "allowed_users": ["your_github_username"],
+    "commands": {
+      "patch": "bin/tag.sh patch",
+      "minor": "bin/tag.sh minor",
+      "major": "bin/tag.sh major"
+    },
+    "pre_flight": [
+      "git diff --quiet"
+    ]
+  }
+}
+```
+
+### 2. Open a Dedicated Release Issue
+
+1. Create a pinned issue in your repository titled **`🚀 Release Controller`**.
+2. Graviton will automatically detect it and post the available release commands.
+
+### 3. Tag Releases on GitHub Mobile
+
+Open the pinned issue in the GitHub Mobile app and comment:
+- `patch` or `/tag patch`
+- `minor` or `/release minor`
+- `major` or `/tag major`
+- `help`
+
+Graviton will:
+1. Instantly react with 🚀 on your comment.
+2. Fast-forward the target branch (`git pull --ff-only origin main`).
+3. Run the configured command in the repository in a background thread.
+4. Reply with a completion comment containing logs, triggering a native push notification on your phone.
+
+---
+
 ## ⚙️ GitHub Webhook Configuration
 
 In any of your GitHub repositories:
@@ -111,6 +160,7 @@ In any of your GitHub repositories:
    - ✅ Pull requests
    - ✅ Pull request reviews
    - ✅ Pull request review comments
+   - ✅ Issues
    - ✅ Issue comments
 
 ---

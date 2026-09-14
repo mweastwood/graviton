@@ -1386,6 +1386,188 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.poll_all_pools.assert_called_once()
 
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.execute_release_async")
+    def test_do_post_release_action(self, mock_exec_release, mock_reaction):
+        payload = json.dumps({
+            "action": "created",
+            "issue": {"number": 88, "title": "🚀 Release Controller"},
+            "comment": {
+                "id": 123,
+                "body": "patch",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "myapp", "full_name": "mweastwood/myapp"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issue_comment",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+        handler.server_repo_name = "graviton"
+
+        with patch("graviton_server.resolve_repo_dir", return_value=REPO_ROOT):
+            GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        status_code = handler._send_json.call_args[0][0]
+        resp_data = handler._send_json.call_args[0][1]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(resp_data.get("action"), "release")
+        self.assertEqual(resp_data.get("release_type"), "patch")
+
+        mock_reaction.assert_called_once()
+        self.assertEqual(mock_reaction.call_args[1].get("reaction"), "rocket")
+        mock_exec_release.assert_called_once_with(
+            repo_dir=REPO_ROOT,
+            repo_full_name="mweastwood/myapp",
+            issue_number=88,
+            release_type="patch",
+            command="bin/tag.sh patch",
+            target_branch="main",
+            pre_flight_checks=None,
+        )
+
+    @patch("graviton_server.post_issue_comment")
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.execute_release_async")
+    def test_do_post_release_action_missing_repo_dir(self, mock_exec_release, mock_reaction, mock_comment):
+        payload = json.dumps({
+            "action": "created",
+            "issue": {"number": 88, "title": "🚀 Release Controller"},
+            "comment": {
+                "id": 123,
+                "body": "patch",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "nonexistent_app", "full_name": "mweastwood/nonexistent_app"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issue_comment",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+        handler.server_repo_name = "graviton"
+
+        with patch("graviton_server.resolve_repo_dir", return_value=None):
+            GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        status_code = handler._send_json.call_args[0][0]
+        self.assertEqual(status_code, 200)
+        mock_exec_release.assert_not_called()
+
+        time.sleep(0.1)
+        mock_comment.assert_called_once()
+        self.assertEqual(mock_comment.call_args[0][0], "mweastwood/nonexistent_app")
+        self.assertEqual(mock_comment.call_args[0][1], 88)
+        self.assertIn("Repository directory not found", mock_comment.call_args[0][2])
+
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.post_release_init_async")
+    def test_do_post_release_init_action(self, mock_init, mock_reaction):
+        payload = json.dumps({
+            "action": "opened",
+            "issue": {
+                "number": 89,
+                "title": "🚀 Release Controller",
+                "body": "",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "myapp", "full_name": "mweastwood/myapp"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issues",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        resp_data = handler._send_json.call_args[0][1]
+        self.assertEqual(resp_data.get("action"), "release_init")
+        mock_reaction.assert_called_once()
+        mock_init.assert_called_once()
+
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.post_release_help_async")
+    def test_do_post_release_help_action(self, mock_help, mock_reaction):
+        payload = json.dumps({
+            "action": "created",
+            "issue": {"number": 88, "title": "🚀 Release Controller"},
+            "comment": {
+                "id": 124,
+                "body": "help",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "myapp", "full_name": "mweastwood/myapp"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issue_comment",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        resp_data = handler._send_json.call_args[0][1]
+        self.assertEqual(resp_data.get("action"), "release_help")
+        mock_reaction.assert_called_once()
+        mock_help.assert_called_once()
+
+    @patch("graviton_server.post_release_unrecognized_async")
+    def test_do_post_release_unrecognized_action(self, mock_unrecognized):
+        payload = json.dumps({
+            "action": "created",
+            "issue": {"number": 88, "title": "🚀 Release Controller"},
+            "comment": {
+                "id": 125,
+                "body": "invalid_cmd",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "myapp", "full_name": "mweastwood/myapp"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issue_comment",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        resp_data = handler._send_json.call_args[0][1]
+        self.assertEqual(resp_data.get("action"), "release_unrecognized")
+        mock_unrecognized.assert_called_once()
+
+
 
 if __name__ == "__main__":
     unittest.main()
