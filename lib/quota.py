@@ -4,6 +4,7 @@ Antigravity Model Quota Tracker & Rate Limit Manager for Graviton.
 
 import json
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -244,6 +245,21 @@ class QuotaWindow:
         now_dt = _normalize_now_datetime(now)
         return self.get_time_fraction(now_dt)
 
+    def get_target_quota_fraction(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        """
+        Calculate the target quota fraction threshold for pacing: (remaining time fraction) ** 2.
+        This provides an ease-in pacing curve allowing higher quota burn immediately following a reset.
+        """
+        t_frac = self.get_time_fraction(now_dt=now_dt, now=now)
+        return t_frac ** 2
+
+    def target_quota_fraction(
+        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+    ) -> float:
+        return self.get_target_quota_fraction(now_dt=now_dt, now=now)
+
     def get_pacing_status(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> Tuple[str, float]:
@@ -252,10 +268,10 @@ class QuotaWindow:
             return "OK", 0.0
         effective_now = now_dt if now_dt is not None else now
         q_frac = self.quota_fraction
-        t_frac = self.get_time_fraction(effective_now)
+        target_q_frac = self.get_target_quota_fraction(effective_now)
 
-        if q_frac < t_frac:
-            deficit = t_frac - q_frac
+        if q_frac < target_q_frac:
+            deficit = target_q_frac - q_frac
             backoff = round(max(0.0, deficit * 10.0), 1)
             return "BEHIND_PACING", backoff
         else:
@@ -276,7 +292,7 @@ class QuotaWindow:
             return 0.0
         rem_sec = self.get_remaining_seconds(norm_dt)
         q_frac = self.quota_fraction
-        recovery = rem_sec - (q_frac * self.duration_seconds)
+        recovery = rem_sec - (math.sqrt(max(0.0, q_frac)) * self.duration_seconds)
         return max(0.0, float(recovery))
 
     def pacing_recovery_seconds(
@@ -1215,7 +1231,7 @@ class QuotaTracker:
     ) -> float:
         """
         Calculate proportional pacing backoff delay for a specific window or max across all windows.
-        pacing_deficit = max(0.0, time_fraction - quota_fraction).
+        pacing_deficit = max(0.0, target_quota_fraction - quota_fraction) where target_quota_fraction = (time_fraction) ** 2.
         """
         with self._lock:
             effective_now = now_dt if now_dt is not None else now

@@ -245,7 +245,7 @@ class TestQuotaTracker(unittest.TestCase):
         )
         self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
-        self.assertAlmostEqual(backoff, 4.0)
+        self.assertAlmostEqual(backoff, 1.6)
         self.assertTrue(tracker.is_behind_pacing(now=now))
         now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
         self.assertTrue(tracker.is_behind_pacing(now=now_dt))
@@ -336,7 +336,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
         self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
-        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 2d 22h)", badge_1w)
+        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 1d 04h)", badge_1w)
 
     def test_pacing_recovery_seconds_and_countdown(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
@@ -347,30 +347,30 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(w_ok.pacing_recovery_seconds(now_dt), 0.0)
         self.assertEqual(w_ok.format_pacing_countdown(now_dt), "00:00:00")
 
-        # 2. 5H Window BEHIND pacing: 40% remaining (q=0.4), 2h 30m reset remaining (9000s)
-        # T_recovery = 9000 - (0.4 * 18000) = 1800s (30 mins)
-        w_5h_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z")
+        # 2. 5H Window BEHIND pacing: 16% remaining (q=0.16), 2h 30m reset remaining (9000s)
+        # T_recovery = 9000 - (sqrt(0.16) * 18000) = 9000 - 7200 = 1800s (30 mins)
+        w_5h_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z")
         self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt), 1800.0)
         self.assertAlmostEqual(w_5h_behind.pacing_recovery_seconds(now_dt), 1800.0)
         self.assertEqual(w_5h_behind.format_pacing_countdown(now_dt), "00:30:00")
         badge_5h = format_quota_badge(w_5h_behind, now_dt=now_dt, quota_pool="gemini")
         self.assertEqual(
             badge_5h,
-            "[ GEMINI 5H QUOTA: 40% | RESET: 02:30:00 | PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 00:30:00) ]",
+            "[ GEMINI 5H QUOTA: 16% | RESET: 02:30:00 | PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 00:30:00) ]",
         )
 
         # 3. 1W Window BEHIND pacing: 20% remaining (q=0.2), 4d 8h reset remaining (374400s)
-        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
+        # T_recovery = 374400 - (sqrt(0.2) * 604800) = 103925.21744...s (1d 04h)
         w_1w_behind = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
-        self.assertAlmostEqual(w_1w_behind.get_pacing_recovery_seconds(now_dt), 253440.0)
-        self.assertEqual(w_1w_behind.format_pacing_countdown(now_dt), "2d 22h")
+        self.assertAlmostEqual(w_1w_behind.get_pacing_recovery_seconds(now_dt), 103925.2, places=1)
+        self.assertEqual(w_1w_behind.format_pacing_countdown(now_dt), "1d 04h")
 
         # 4. QuotaTracker recovery calculation across dual windows
         tracker = QuotaTracker()
         tracker.update_windows(w_5h_behind, w_1w_behind)
-        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
-        self.assertAlmostEqual(tracker.pacing_recovery_seconds(now=now_dt), 253440.0)
-        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
+        self.assertAlmostEqual(tracker.pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "1d 04h")
         self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(window=w_5h_behind, now=now_dt), 1800.0)
         self.assertEqual(tracker.format_pacing_countdown(window=w_5h_behind, now=now_dt), "00:30:00")
 
@@ -378,24 +378,22 @@ class TestQuotaTracker(unittest.TestCase):
         # 1W window with sub-day recovery duration (e.g., 30 minutes / 1800s recovery)
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
         # reset in 3h 30m (12600s), remaining_percentage = 80.0% (q=0.8)
-        # recovery = 12600 - (0.8 * 12600) = 2520s (42m) -> should format as 00:42:00
+        # recovery = 12600 - (sqrt(0.8) * 604800) -> 0
         w_1w_subday = QuotaWindow(
             name="1W",
             duration_seconds=604800.0,
-            remaining_percentage=99.0, # q = 0.99
-            reset_time="2026-08-09T08:36:00Z", # rem = 12600s, t_frac = 12600/604800 = 0.020833
+            remaining_percentage=99.0,  # q = 0.99
+            reset_time="2026-08-09T08:36:00Z",  # rem = 12600s, t_frac = 12600/604800 = 0.020833
         )
-        # 99.0% > 2.0833% time fraction, so pacing is OK
-        # Let's set remaining percentage to 1.0% (q = 0.01) so q_frac < t_frac (behind pacing)
-        # rem = 12600s, recovery = 12600 - (0.01 * 604800) = 12600 - 6048 = 6552s (1h 49m 12s)
-        # Or for exactly 30 minutes recovery (1800s):
-        # recovery = rem_sec - (q_frac * 604800) = 1800
-        # If q_frac = 0.1 (10%), q_frac * 604800 = 60480. rem_sec = 62280s.
+        # 99.0% > (0.020833)^2, so pacing is OK
+        # For exactly 30 minutes recovery (1800s):
+        # recovery = rem_sec - (sqrt(q_frac) * 604800) = 1800
+        # If q_frac = 0.01 (1.0%), sqrt(q_frac) * 604800 = 60480. rem_sec = 62280s.
         w_1w_30m = QuotaWindow(
             name="1W",
             duration_seconds=604800.0,
-            remaining_percentage=10.0,
-            reset_time="2026-08-09T22:24:00Z", # rem = 62280s (17h 18m)
+            remaining_percentage=1.0,
+            reset_time="2026-08-09T22:24:00Z",  # rem = 62280s (17h 18m)
         )
         rec_sec = w_1w_30m.get_pacing_recovery_seconds(now_dt)
         self.assertAlmostEqual(rec_sec, 1800.0)
@@ -408,7 +406,7 @@ class TestQuotaTracker(unittest.TestCase):
         naive_dt = datetime(2026, 8, 9, 5, 6, 0)
 
         w_5h_behind = QuotaWindow(
-            name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z"
+            name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z"
         )
         # Passing float timestamp, int timestamp, and naive datetime as now_dt must not raise TypeError
         self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt=ts_float), 1800.0)
@@ -417,7 +415,7 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_quota_tracker_now_dt_keyword_argument_support(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
-        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z")
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z")
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
 
         tracker = QuotaTracker()
@@ -425,10 +423,93 @@ class TestQuotaTracker(unittest.TestCase):
 
         # Call QuotaTracker methods passing now_dt=... as keyword parameter
         self.assertTrue(tracker.is_behind_pacing(now_dt=now_dt))
-        self.assertAlmostEqual(tracker.get_pacing_backoff_delay(now_dt=now_dt), 1.0)
+        self.assertAlmostEqual(tracker.get_pacing_backoff_delay(now_dt=now_dt), 0.9)
         self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now_dt=now_dt), 1800.0)
         self.assertAlmostEqual(tracker.pacing_recovery_seconds(now_dt=now_dt), 1800.0)
         self.assertEqual(tracker.format_pacing_countdown(now_dt=now_dt), "00:30:00")
+
+    def test_quadratic_target_quota_fraction_calculation(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        # 5H window (18000s duration): 9000s remaining -> time_fraction = 0.5
+        w = QuotaWindow(name="5H", duration_seconds=18000.0, reset_time=str(now_dt.timestamp() + 9000.0))
+        self.assertAlmostEqual(w.get_time_fraction(now_dt), 0.5)
+        self.assertAlmostEqual(w.get_target_quota_fraction(now_dt), 0.25)
+        self.assertAlmostEqual(w.target_quota_fraction(now_dt), 0.25)
+
+    def test_quadratic_pacing_ease_in_after_reset(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        # 1. Immediately following reset: 99% time remaining (T = 0.99)
+        # Consuming 1% leaves Q = 0.99.
+        # Target = 0.99^2 = 0.9801. Since 0.99 >= 0.9801, pacing status is OK (easing in!).
+        w_early = QuotaWindow(
+            name="5H",
+            duration_seconds=18000.0,
+            remaining_percentage=99.0,
+            reset_time=str(now_dt.timestamp() + (0.99 * 18000.0)),
+        )
+        self.assertEqual(w_early.pacing_status(now_dt), "OK")
+        status, backoff = w_early.get_pacing_status(now_dt)
+        self.assertEqual(status, "OK")
+        self.assertEqual(backoff, 0.0)
+        self.assertEqual(w_early.get_pacing_recovery_seconds(now_dt), 0.0)
+
+        # 2. Early in window: 90% time remaining (T = 0.90)
+        # Consuming 15% leaves Q = 0.85.
+        # Under linear pacing: Q (0.85) < T (0.90) -> would be BEHIND_PACING.
+        # Under quadratic pacing: Target = 0.90^2 = 0.81. Since 0.85 >= 0.81, pacing is OK!
+        w_mid_early = QuotaWindow(
+            name="5H",
+            duration_seconds=18000.0,
+            remaining_percentage=85.0,
+            reset_time=str(now_dt.timestamp() + (0.90 * 18000.0)),
+        )
+        self.assertEqual(w_mid_early.pacing_status(now_dt), "OK")
+        status, backoff = w_mid_early.get_pacing_status(now_dt)
+        self.assertEqual(status, "OK")
+        self.assertEqual(backoff, 0.0)
+
+    def test_quadratic_pacing_late_window_throttling(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        # Late in window: 20% time remaining (T = 0.20).
+        # Target = 0.20^2 = 0.04 (4%).
+        # Consuming 98% leaves Q = 0.02 (2%).
+        # Target is 0.04 > 0.02 -> BEHIND_PACING.
+        # Deficit = 0.04 - 0.02 = 0.02 -> backoff = round(0.02 * 10, 1) = 0.2.
+        w_late = QuotaWindow(
+            name="5H",
+            duration_seconds=18000.0,
+            remaining_percentage=2.0,
+            reset_time=str(now_dt.timestamp() + (0.20 * 18000.0)),
+        )
+        status, backoff = w_late.get_pacing_status(now_dt)
+        self.assertEqual(status, "BEHIND_PACING")
+        self.assertAlmostEqual(backoff, 0.2)
+
+    def test_quadratic_pacing_recovery_exactness(self):
+        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
+        # Set up a window behind pacing:
+        # T = 0.5 (9000s remaining of 18000s), remaining_percentage = 9.0% (Q = 0.09)
+        # Target = 0.5^2 = 0.25 > 0.09 -> BEHIND_PACING.
+        # Recovery seconds = rem_sec - sqrt(Q) * duration
+        # = 9000 - sqrt(0.09) * 18000 = 9000 - 0.3 * 18000 = 9000 - 5400 = 3600.0s (1 hour).
+        w = QuotaWindow(
+            name="5H",
+            duration_seconds=18000.0,
+            remaining_percentage=9.0,
+            reset_time=str(now_dt.timestamp() + 9000.0),
+        )
+        self.assertEqual(w.pacing_status(now_dt), "BEHIND_PACING")
+        recovery_sec = w.get_pacing_recovery_seconds(now_dt)
+        self.assertAlmostEqual(recovery_sec, 3600.0)
+
+        # Before recovery: 1 second before full recovery (3599s advanced) -> still BEHIND_PACING
+        just_before = datetime.fromtimestamp(now_dt.timestamp() + recovery_sec - 1.0, tz=timezone.utc)
+        self.assertEqual(w.pacing_status(just_before), "BEHIND_PACING")
+
+        # Exact recovery: advanced by exactly recovery_sec -> status transitions to OK
+        at_recovery = datetime.fromtimestamp(now_dt.timestamp() + recovery_sec, tz=timezone.utc)
+        self.assertEqual(w.pacing_status(at_recovery), "OK")
+        self.assertEqual(w.get_pacing_recovery_seconds(at_recovery), 0.0)
 
     def test_load_oauth_token_nested_json(self):
         import tempfile
@@ -898,14 +979,14 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
 
         # Claude is BEHIND pacing: 1W window has 20% remaining, 4d 8h reset remaining (374400s)
-        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
+        # T_recovery = 374400 - (sqrt(0.2) * 604800) = 103925.21744...s (1d 04h)
         w_5h_claude = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
         w_1w_claude = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         tracker.update_windows(w_5h_claude, w_1w_claude, quota_pool="claude_gpt")
 
         # When no specific window is passed, get_pacing_recovery_seconds and format_pacing_countdown evaluate across both pools
-        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
-        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "1d 04h")
         self.assertTrue(tracker.is_pool_behind_pacing("claude_gpt", now_dt=now_dt))
         self.assertFalse(tracker.is_pool_behind_pacing("gemini", now_dt=now_dt))
         # Overall is_behind_pacing is False because Gemini pool is eligible for tasks
