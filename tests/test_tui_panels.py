@@ -1068,6 +1068,73 @@ class TestTUIPanels(unittest.TestCase):
         self.assertTrue(any("[x] Abort Task" in l for l in lines_task_logs))
         self.assertTrue(any("Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
 
+    def test_display_width_and_truncation_fast_paths(self):
+        # 1. get_display_width tests
+        # Pure ASCII string
+        self.assertEqual(get_display_width("task-123"), 8)
+        self.assertEqual(get_display_width(""), 0)
+        # ANSI formatted ASCII string
+        self.assertEqual(get_display_width("\033[32mOK\033[0m"), 2)
+        self.assertEqual(get_display_width("\x1b[1;34mtest-sha\x1b[0m"), 8)
+        # East Asian wide characters
+        self.assertEqual(get_display_width("⚡"), 2)
+        self.assertEqual(get_display_width("日本語"), 6)
+        # Non-ASCII European characters
+        self.assertEqual(get_display_width("café"), 4)
+        self.assertEqual(get_display_width("résumé"), 6)
+        # ANSI formatted wide characters
+        self.assertEqual(get_display_width("\033[31m日本語\033[0m"), 6)
+        # Non-string / None inputs
+        self.assertEqual(get_display_width(None), 0)
+        self.assertEqual(get_display_width(12345), 5)
+
+        # 2. truncate_to_display_width tests
+        # ASCII strings under, exactly equal to, and exceeding max_w
+        self.assertEqual(truncate_to_display_width("hello", 10), "hello")
+        self.assertEqual(truncate_to_display_width("hello", 5), "hello")
+        self.assertEqual(truncate_to_display_width("hello world", 5), "hello")
+        # Boundary values (max_w = 0, max_w < 0)
+        self.assertEqual(truncate_to_display_width("hello", 0), "")
+        self.assertEqual(truncate_to_display_width("hello", -1), "")
+        self.assertEqual(truncate_to_display_width("hello", -5), "")
+        self.assertEqual(truncate_to_display_width("", 5), "")
+        self.assertEqual(truncate_to_display_width("", 0), "")
+        self.assertEqual(truncate_to_display_width(None, 5), "")
+        self.assertEqual(truncate_to_display_width(12345, 3), "123")
+        # Multi-byte wide Unicode truncation
+        self.assertEqual(truncate_to_display_width("日本語", 4), "日本")
+        self.assertEqual(truncate_to_display_width("日本語", 3), "日 ")
+        self.assertEqual(truncate_to_display_width("日本語", 0), "")
+        # Styled strings with ANSI
+        styled_str = "\033[32mhello world\033[0m"
+        self.assertEqual(truncate_to_display_width(styled_str, 5), "\033[32mhello\033[0m")
+
+        # 3. truncate_with_ellipsis tests
+        # ASCII strings under, exactly equal to, and exceeding max_w
+        self.assertEqual(truncate_with_ellipsis("hello", 10, ".."), "hello")
+        self.assertEqual(truncate_with_ellipsis("hello", 5, ".."), "hello")
+        self.assertEqual(truncate_with_ellipsis("hello world", 7, ".."), "hello..")
+        self.assertEqual(truncate_with_ellipsis("hello world", 10, ".."), "hello wo..")
+        # ASCII strings exceeding max_w where max_w < len(ellipsis)
+        self.assertEqual(truncate_with_ellipsis("hello", 1, ".."), "h")
+        self.assertEqual(truncate_with_ellipsis("hello", 2, ".."), "..")
+        # Boundary values (max_w = 0, max_w < 0)
+        self.assertEqual(truncate_with_ellipsis("hello", 0, ".."), "")
+        self.assertEqual(truncate_with_ellipsis("hello", -1, ".."), "")
+        self.assertEqual(truncate_with_ellipsis("", 5, ".."), "")
+        self.assertEqual(truncate_with_ellipsis(None, 5, ".."), "")
+        self.assertEqual(truncate_with_ellipsis(12345, 4, ".."), "12..")
+        # Custom ellipsis
+        self.assertEqual(truncate_with_ellipsis("hello world", 8, "..."), "hello...")
+        # Multi-byte wide Unicode with ellipsis
+        self.assertEqual(truncate_with_ellipsis("日本語テスト", 6, ".."), "日本..")
+        self.assertEqual(truncate_with_ellipsis("日本語テスト", 7, ".."), "日本 ..")
+        self.assertEqual(get_display_width(truncate_with_ellipsis("日本語テスト", 7, "..")), 7)
+        # Styled string with ellipsis
+        styled_trunc = truncate_with_ellipsis("\033[92mHello World Styled String\033[0m", 15)
+        self.assertTrue(styled_trunc.endswith("\033[0m"))
+        self.assertEqual(get_display_width(styled_trunc), 15)
+
 
 if __name__ == "__main__":
     unittest.main()

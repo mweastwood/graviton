@@ -23,7 +23,15 @@ def get_display_width(s: str) -> int:
         s = ""
     elif not isinstance(s, str):
         s = str(s)
-    clean_str = ANSI_REGEX.sub("", s)
+    if "\x1b" not in s:
+        if s.isascii():
+            return len(s)
+        clean_str = s
+    else:
+        clean_str = ANSI_REGEX.sub("", s)
+        if clean_str.isascii():
+            return len(clean_str)
+
     return sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in clean_str)
 
 
@@ -33,6 +41,8 @@ def truncate_to_display_width(s: str, max_w: int) -> str:
         s = ""
     elif not isinstance(s, str):
         s = str(s)
+    if "\x1b" not in s and s.isascii():
+        return s if len(s) <= max_w else s[:max(0, max_w)]
     if get_display_width(s) <= max_w:
         return s
 
@@ -76,6 +86,13 @@ def truncate_with_ellipsis(s: str, max_w: int, ellipsis: str = "..") -> str:
         ellipsis = ".."
     elif not isinstance(ellipsis, str):
         ellipsis = str(ellipsis)
+    if "\x1b" not in s and s.isascii() and "\x1b" not in ellipsis and ellipsis.isascii():
+        if len(s) <= max_w:
+            return s
+        el_w = len(ellipsis)
+        if max_w >= el_w:
+            return s[:max(0, max_w - el_w)] + ellipsis
+        return s[:max(0, max_w)]
     if get_display_width(s) <= max_w:
         return s
     el_w = get_display_width(ellipsis)
