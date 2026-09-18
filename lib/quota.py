@@ -741,9 +741,9 @@ def fetch_all_live_antigravity_quota(
         return None
 
     target_url = resolve_antigravity_quota_endpoint(api_url)
+    payload = json.dumps({}).encode("utf-8")
 
     try:
-        payload = json.dumps({}).encode("utf-8")
         req = urllib.request.Request(
             target_url,
             data=payload,
@@ -756,15 +756,20 @@ def fetch_all_live_antigravity_quota(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if hasattr(resp, "status") and resp.status != 200:
-                logger.warning(f"Antigravity RPC endpoint returned HTTP status {resp.status}")
-                return None
+                raise urllib.error.HTTPError(
+                    target_url,
+                    resp.status,
+                    f"Antigravity RPC endpoint returned HTTP status {resp.status}",
+                    getattr(resp, "headers", None),
+                    None,
+                )
             body = resp.read().decode("utf-8")
             data = json.loads(body)
             res = parse_all_antigravity_quota_json(data)
             return res if res else None
     except Exception as e:
         logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
-        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT and not api_url:
+        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT:
             try:
                 logger.info(
                     f"Retrying live Antigravity quota fetch using default endpoint {DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT}"
@@ -780,12 +785,16 @@ def fetch_all_live_antigravity_quota(
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    if hasattr(resp, "status") and resp.status == 200:
-                        body = resp.read().decode("utf-8")
-                        data = json.loads(body)
-                        res = parse_all_antigravity_quota_json(data)
-                        if res:
-                            return res
+                    if hasattr(resp, "status") and resp.status != 200:
+                        logger.warning(
+                            f"Fallback Antigravity RPC endpoint returned HTTP status {resp.status}"
+                        )
+                        return None
+                    body = resp.read().decode("utf-8")
+                    data = json.loads(body)
+                    res = parse_all_antigravity_quota_json(data)
+                    if res:
+                        return res
             except Exception as retry_err:
                 logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None
@@ -810,9 +819,9 @@ def fetch_live_antigravity_quota(
 
     pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
     target_url = resolve_antigravity_quota_endpoint(api_url)
+    payload = json.dumps({}).encode("utf-8")
 
     try:
-        payload = json.dumps({}).encode("utf-8")
         req = urllib.request.Request(
             target_url,
             data=payload,
@@ -825,14 +834,19 @@ def fetch_live_antigravity_quota(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if hasattr(resp, "status") and resp.status != 200:
-                logger.warning(f"Antigravity RPC endpoint returned HTTP status {resp.status}")
-                return None
+                raise urllib.error.HTTPError(
+                    target_url,
+                    resp.status,
+                    f"Antigravity RPC endpoint returned HTTP status {resp.status}",
+                    getattr(resp, "headers", None),
+                    None,
+                )
             body = resp.read().decode("utf-8")
             data = json.loads(body)
             return parse_antigravity_quota_json(data, pool=pool)
     except Exception as e:
         logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
-        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT and not api_url:
+        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT:
             try:
                 logger.info(
                     f"Retrying live Antigravity quota fetch using default endpoint {DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT}"
@@ -848,10 +862,14 @@ def fetch_live_antigravity_quota(
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    if hasattr(resp, "status") and resp.status == 200:
-                        body = resp.read().decode("utf-8")
-                        data = json.loads(body)
-                        return parse_antigravity_quota_json(data, pool=pool)
+                    if hasattr(resp, "status") and resp.status != 200:
+                        logger.warning(
+                            f"Fallback Antigravity RPC endpoint returned HTTP status {resp.status}"
+                        )
+                        return None
+                    body = resp.read().decode("utf-8")
+                    data = json.loads(body)
+                    return parse_antigravity_quota_json(data, pool=pool)
             except Exception as retry_err:
                 logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None

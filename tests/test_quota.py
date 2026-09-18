@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -650,8 +651,10 @@ class TestQuotaTracker(unittest.TestCase):
         badge_c = format_quota_badge(w_5h, quota_pool="claude_gpt")
         self.assertIn("[ CLAUDE_GPT 5H QUOTA: 65%", badge_c)
 
+    @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
+    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
     @patch("lib.quota.urllib.request.urlopen")
-    def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen):
+    def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen, mock_detect):
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.read.return_value = json.dumps({
@@ -685,13 +688,15 @@ class TestQuotaTracker(unittest.TestCase):
 
         # Verify request parameters
         req = mock_urlopen.call_args[0][0]
-        self.assertEqual(req.full_url, resolve_antigravity_quota_endpoint())
+        self.assertEqual(req.full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
         self.assertEqual(req.headers.get("User-agent"), "antigravity-cli")
         payload = json.loads(req.data.decode("utf-8"))
         self.assertEqual(payload, {})
 
+    @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
+    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
     @patch("lib.quota.urllib.request.urlopen")
-    def test_fetch_live_antigravity_quota_error_returns_none(self, mock_urlopen):
+    def test_fetch_live_antigravity_quota_error_returns_none(self, mock_urlopen, mock_detect):
         # Simulated API HTTP error payload
         mock_resp = MagicMock()
         mock_resp.status = 401
@@ -1495,8 +1500,10 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(parse_all_antigravity_quota_json("invalid"), {})
         self.assertEqual(parse_all_antigravity_quota_json({}), {})
 
+    @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
+    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
     @patch("lib.quota.urllib.request.urlopen")
-    def test_fetch_all_live_antigravity_quota(self, mock_urlopen):
+    def test_fetch_all_live_antigravity_quota(self, mock_urlopen, mock_detect):
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.read.return_value = json.dumps({
@@ -1528,6 +1535,7 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(res["claude_gpt"][0].remaining_percentage, 60.0)
         self.assertEqual(res["claude_gpt"][1].remaining_percentage, 50.0)
         self.assertEqual(mock_urlopen.call_count, 1)
+        self.assertEqual(mock_urlopen.call_args[0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
 
         # Failure returns None
         mock_resp.status = 500
@@ -1646,6 +1654,8 @@ class TestFetchCliModels(unittest.TestCase):
         self.assertEqual(tracker.active_gemini_model, "gemini-custom-model")
         self.assertEqual(tracker.active_third_party_model, "claude-custom-model")
 
+
+class TestAntigravityQuotaEndpoint(unittest.TestCase):
 
     def test_normalize_antigravity_quota_endpoint(self):
         # 1. Bare domain
@@ -1787,6 +1797,174 @@ class TestFetchCliModels(unittest.TestCase):
         }
         tracker.poll_all_pools(token="test-token")
         mock_fetch_all.assert_called_once_with(token="test-token", api_url=custom_url)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_all_live_antigravity_quota_fallback_on_exception(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        fallback_resp = MagicMock()
+        fallback_resp.status = 200
+        fallback_resp.read.return_value = json.dumps({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.95},
+                        {"window": "weekly", "remainingFraction": 0.85},
+                    ],
+                }
+            ]
+        }).encode("utf-8")
+
+        cm_fallback = MagicMock()
+        cm_fallback.__enter__.return_value = fallback_resp
+        mock_urlopen.side_effect = [
+            urllib.error.URLError("Connection refused"),
+            cm_fallback,
+        ]
+
+        res = fetch_all_live_antigravity_quota(token="test-oauth-token", api_url=custom_url)
+        self.assertIsNotNone(res)
+        self.assertIn("gemini", res)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
+        self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_all_live_antigravity_quota_fallback_on_non_200(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        error_resp = MagicMock()
+        error_resp.status = 502
+        cm_error = MagicMock()
+        cm_error.__enter__.return_value = error_resp
+
+        fallback_resp = MagicMock()
+        fallback_resp.status = 200
+        fallback_resp.read.return_value = json.dumps({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.90},
+                        {"window": "weekly", "remainingFraction": 0.80},
+                    ],
+                }
+            ]
+        }).encode("utf-8")
+        cm_fallback = MagicMock()
+        cm_fallback.__enter__.return_value = fallback_resp
+
+        mock_urlopen.side_effect = [cm_error, cm_fallback]
+
+        res = fetch_all_live_antigravity_quota(token="test-oauth-token", api_url=custom_url)
+        self.assertIsNotNone(res)
+        self.assertIn("gemini", res)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
+        self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_all_live_antigravity_quota_fallback_failure_returns_none(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        mock_urlopen.side_effect = [
+            urllib.error.URLError("Connection refused"),
+            urllib.error.URLError("Fallback unreachable"),
+        ]
+
+        res = fetch_all_live_antigravity_quota(token="test-oauth-token", api_url=custom_url)
+        self.assertIsNone(res)
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_live_antigravity_quota_fallback_on_exception(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        fallback_resp = MagicMock()
+        fallback_resp.status = 200
+        fallback_resp.read.return_value = json.dumps({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.70},
+                        {"window": "weekly", "remainingFraction": 0.60},
+                    ],
+                }
+            ]
+        }).encode("utf-8")
+        cm_fallback = MagicMock()
+        cm_fallback.__enter__.return_value = fallback_resp
+
+        mock_urlopen.side_effect = [
+            urllib.error.URLError("Network timeout"),
+            cm_fallback,
+        ]
+
+        res = fetch_live_antigravity_quota(token="test-oauth-token", api_url=custom_url, quota_pool="gemini")
+        self.assertIsNotNone(res)
+        w_5h, w_1w = res
+        self.assertEqual(w_5h.remaining_percentage, 70.0)
+        self.assertEqual(w_1w.remaining_percentage, 60.0)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
+        self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_live_antigravity_quota_fallback_on_non_200(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        error_resp = MagicMock()
+        error_resp.status = 503
+        cm_error = MagicMock()
+        cm_error.__enter__.return_value = error_resp
+
+        fallback_resp = MagicMock()
+        fallback_resp.status = 200
+        fallback_resp.read.return_value = json.dumps({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"window": "5h", "remainingFraction": 0.85},
+                        {"window": "weekly", "remainingFraction": 0.75},
+                    ],
+                }
+            ]
+        }).encode("utf-8")
+        cm_fallback = MagicMock()
+        cm_fallback.__enter__.return_value = fallback_resp
+
+        mock_urlopen.side_effect = [cm_error, cm_fallback]
+
+        res = fetch_live_antigravity_quota(token="test-oauth-token", api_url=custom_url, quota_pool="gemini")
+        self.assertIsNotNone(res)
+        w_5h, w_1w = res
+        self.assertEqual(w_5h.remaining_percentage, 85.0)
+        self.assertEqual(w_1w.remaining_percentage, 75.0)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
+        self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
+
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fetch_live_antigravity_quota_fallback_failure_returns_none(self, mock_urlopen):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        mock_urlopen.side_effect = [
+            urllib.error.URLError("First failed"),
+            urllib.error.URLError("Second failed"),
+        ]
+
+        res = fetch_live_antigravity_quota(token="test-oauth-token", api_url=custom_url, quota_pool="gemini")
+        self.assertIsNone(res)
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
+    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
+    @patch("lib.quota.urllib.request.urlopen")
+    def test_fallback_not_attempted_if_already_default_endpoint(self, mock_urlopen, mock_detect):
+        mock_resp = MagicMock()
+        mock_resp.status = 500
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        res = fetch_all_live_antigravity_quota(token="test-oauth-token")
+        self.assertIsNone(res)
+        self.assertEqual(mock_urlopen.call_count, 1)
 
 
 if __name__ == "__main__":
