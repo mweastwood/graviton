@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from lib.security import contains_bot_marker
 
@@ -400,16 +400,41 @@ class PRTracker:
 
         try:
             new_approved = {}
-            target_dirs = []
+            target_dirs: List[Path] = []
+            resolved_seen: Set[Path] = set()
+
+            repo_root_failed = False
             if repo_root and Path(repo_root).exists():
-                target_dirs.append(Path(repo_root))
+                try:
+                    resolved_root = Path(repo_root).resolve()
+                    target_dirs.append(resolved_root)
+                    resolved_seen.add(resolved_root)
+                except Exception as e:
+                    repo_root_failed = True
+                    logger.warning(f"Failed to resolve repo_root '{repo_root}': {e}")
+
             if repos_dir and Path(repos_dir).exists():
                 for item in Path(repos_dir).iterdir():
-                    if item.is_dir() and (item / ".git").exists() and item not in target_dirs:
-                        target_dirs.append(item)
+                    try:
+                        if item.is_dir() and (item / ".git").exists():
+                            resolved_item = item.resolve()
+                            if resolved_item not in resolved_seen:
+                                target_dirs.append(resolved_item)
+                                resolved_seen.add(resolved_item)
+                    except Exception as e:
+                        logger.warning(f"Failed inspecting repository directory '{item}': {e}")
 
             if not target_dirs:
-                target_dirs.append(Path(repo_root) if repo_root else Path.cwd())
+                fallback_base = Path(repo_root) if (repo_root and not repo_root_failed) else Path.cwd()
+                try:
+                    fallback_dir = fallback_base.resolve()
+                except Exception as e:
+                    logger.warning(f"Failed to resolve fallback directory '{fallback_base}': {e}")
+                    try:
+                        fallback_dir = Path.cwd().resolve()
+                    except Exception:
+                        fallback_dir = Path.cwd()
+                target_dirs.append(fallback_dir)
 
             success_count = 0
             max_workers = min(10, max(1, len(target_dirs)))
