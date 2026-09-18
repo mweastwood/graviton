@@ -32,6 +32,7 @@ mkdir -p "${TEMP_WORKSPACE}"
 CACHE_DIR="${GRAVITON_WORKSPACE_CACHE_DIR:-}"
 RESTORED_FROM_CACHE=false
 EXIT_CODE=1
+USE_CONTAINER_EXEC=false
 
 if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
   echo "Restoring workspace from cache: ${CACHE_DIR}"
@@ -64,7 +65,7 @@ fi
 # Clean up ephemeral workspace and container instance on exit (suppress permission warnings if created files are restricted)
 CONTAINER_NAME="graviton-agent-run-${RUN_ID}"
 cleanup() {
-  if [ "$USE_CONTAINER_EXEC" = true ]; then
+  if [ "${USE_CONTAINER_EXEC:-false}" = true ]; then
     if [ -n "${CACHE_DIR}" ] && [ "${EXIT_CODE:-1}" -ne 0 ]; then
       docker exec "${CONTAINER_NAME}" chmod -R ugo+rwX /workspace 2>/dev/null || true
     else
