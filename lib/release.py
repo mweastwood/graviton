@@ -417,7 +417,7 @@ def post_release_unrecognized_async(
 
 
 def execute_release(
-    repo_dir: Path,
+    repo_dir: Union[str, Path],
     repo_full_name: str,
     issue_number: int,
     release_type: str,
@@ -429,7 +429,7 @@ def execute_release(
     """
     Execute release script in repo_dir with pre-flight git checks, locking, and status commenting.
 
-    :param repo_dir: Local path to repository.
+    :param repo_dir: Local path to repository (str or Path).
     :param repo_full_name: Full repository name ('owner/repo').
     :param issue_number: Issue number to comment on.
     :param release_type: Release bump name ('patch', 'minor', 'major', etc.).
@@ -443,7 +443,8 @@ def execute_release(
     if isinstance(pre_flight_checks, str):
         pre_flight_checks = [pre_flight_checks]
 
-    repo_key = str(repo_dir.resolve())
+    repo_dir = Path(repo_dir).resolve()
+    repo_key = str(repo_dir)
     lock = get_repo_release_lock(repo_key)
 
     if not lock.acquire(blocking=False):
@@ -615,7 +616,7 @@ def execute_release(
 
 
 def execute_release_async(
-    repo_dir: Path,
+    repo_dir: Union[str, Path],
     repo_full_name: str,
     issue_number: int,
     release_type: str,
@@ -626,6 +627,16 @@ def execute_release_async(
 ) -> threading.Thread:
     """
     Execute release in a background daemon thread.
+
+    :param repo_dir: Local path to repository (str or Path).
+    :param repo_full_name: Full repository name ('owner/repo').
+    :param issue_number: Issue number to comment on.
+    :param release_type: Release bump name ('patch', 'minor', 'major', etc.).
+    :param command: Shell command to execute.
+    :param target_branch: Branch to checkout and pull (default: 'main').
+    :param pre_flight_checks: Optional list of pre-flight shell commands.
+    :param timeout: Command timeout in seconds.
+    :return: Started daemon thread.
     """
     target_branch = target_branch or DEFAULT_BRANCH
     if isinstance(pre_flight_checks, str):

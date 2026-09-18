@@ -479,6 +479,51 @@ class TestExecuteRelease(unittest.TestCase):
         pre_flight_call = mock_subproc.call_args_list[3]
         self.assertEqual(pre_flight_call[0][0], "git diff --quiet")
 
+    @patch("lib.release.post_issue_comment")
+    @patch("subprocess.run")
+    def test_execute_release_string_repo_dir(self, mock_subproc, mock_comment):
+        mock_subproc.side_effect = [
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "checkout"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "pull"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["bin/tag.sh", "patch"], returncode=0, stdout="Tagged v1.0.1", stderr=""),
+        ]
+
+        success = execute_release(
+            repo_dir=str(self.repo_path),
+            repo_full_name="owner/repo",
+            issue_number=42,
+            release_type="patch",
+            command="bin/tag.sh patch",
+            target_branch="main",
+        )
+        self.assertTrue(success)
+        mock_comment.assert_called_once()
+        comment_body = mock_comment.call_args[0][2]
+        self.assertIn("Patch Release Succeeded!", comment_body)
+        self.assertIn("Tagged v1.0.1", comment_body)
+
+    @patch("lib.release.post_issue_comment")
+    @patch("subprocess.run")
+    def test_execute_release_async_string_repo_dir(self, mock_subproc, mock_comment):
+        mock_subproc.side_effect = [
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "checkout"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "pull"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["bin/tag.sh", "patch"], returncode=0, stdout="Success", stderr=""),
+        ]
+
+        thread = execute_release_async(
+            repo_dir=str(self.repo_path),
+            repo_full_name="owner/repo",
+            issue_number=42,
+            release_type="patch",
+            command="bin/tag.sh patch",
+        )
+        thread.join(timeout=5.0)
+        self.assertFalse(thread.is_alive())
+        mock_comment.assert_called_once()
+
 
 class TestPostIssueComment(unittest.TestCase):
 
