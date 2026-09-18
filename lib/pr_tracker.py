@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from lib.security import contains_bot_marker
 
@@ -401,14 +401,16 @@ class PRTracker:
         try:
             new_approved = {}
             target_dirs: List[Path] = []
-            resolved_seen: set[Path] = set()
+            resolved_seen: Set[Path] = set()
 
+            repo_root_failed = False
             if repo_root and Path(repo_root).exists():
                 try:
                     resolved_root = Path(repo_root).resolve()
                     target_dirs.append(resolved_root)
                     resolved_seen.add(resolved_root)
                 except Exception as e:
+                    repo_root_failed = True
                     logger.warning(f"Failed to resolve repo_root '{repo_root}': {e}")
 
             if repos_dir and Path(repos_dir).exists():
@@ -423,7 +425,15 @@ class PRTracker:
                         logger.warning(f"Failed inspecting repository directory '{item}': {e}")
 
             if not target_dirs:
-                fallback_dir = (Path(repo_root) if repo_root else Path.cwd()).resolve()
+                fallback_base = Path(repo_root) if (repo_root and not repo_root_failed) else Path.cwd()
+                try:
+                    fallback_dir = fallback_base.resolve()
+                except Exception as e:
+                    logger.warning(f"Failed to resolve fallback directory '{fallback_base}': {e}")
+                    try:
+                        fallback_dir = Path.cwd().resolve()
+                    except Exception:
+                        fallback_dir = Path.cwd()
                 target_dirs.append(fallback_dir)
 
             success_count = 0

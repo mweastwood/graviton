@@ -1237,17 +1237,39 @@ class TestPRTracker(unittest.TestCase):
 
             original_resolve = Path.resolve
 
-            def selective_resolve(path_obj, *args, **kwargs):
-                if str(path_obj) == str(repo_dir):
+            def selective_resolve(*args, **kwargs):
+                if args and str(args[0]) == str(repo_dir):
                     raise OSError("Symlink loop detected")
-                return original_resolve(path_obj, *args, **kwargs)
+                return original_resolve(*args, **kwargs)
 
-            with patch("pathlib.Path.resolve", side_effect=selective_resolve):
+            with patch.object(Path, "resolve", autospec=True, side_effect=selective_resolve):
                 tracker = PRTracker()
                 with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
                     tracker.sync_github_prs(repo_root=repo_dir, repos_dir=None, force=True)
 
                 self.assertTrue(any("Failed to resolve repo_root" in msg for msg in cm.output))
+                self.assertEqual(mock_sync_dir.call_count, 1)
+                self.assertEqual(mock_sync_dir.call_args[0][0], Path.cwd().resolve())
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_handles_fallback_resolve_exception(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_resolve = Path.resolve
+
+            def selective_resolve(*args, **kwargs):
+                if args and str(args[0]) == str(Path.cwd()):
+                    raise OSError("Permission denied")
+                return original_resolve(*args, **kwargs)
+
+            with patch.object(Path, "resolve", autospec=True, side_effect=selective_resolve):
+                tracker = PRTracker()
+                with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
+                    tracker.sync_github_prs(repo_root=None, repos_dir=Path(tmpdir), force=True)
+
+                self.assertTrue(any("Failed to resolve fallback directory" in msg for msg in cm.output))
+                self.assertEqual(mock_sync_dir.call_count, 1)
+                self.assertEqual(mock_sync_dir.call_args[0][0], Path.cwd())
 
     @patch.object(PRTracker, "_sync_directory")
     def test_sync_github_prs_broken_symlinks_ignored(self, mock_sync_dir):
