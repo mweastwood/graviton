@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -449,6 +450,99 @@ def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
     return os.getenv("ANTIGRAVITY_TOKEN")
 
 
+DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+)
+DAILY_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+)
+
+
+def normalize_antigravity_quota_endpoint(url: str) -> str:
+    """Normalize a quota endpoint URL to ensure proper endpoint path."""
+    url = url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"https://{url}"
+    if not url.endswith(":retrieveUserQuotaSummary"):
+        url = url.rstrip("/")
+        if not url.endswith("/v1internal"):
+            url = f"{url}/v1internal:retrieveUserQuotaSummary"
+        else:
+            url = f"{url}:retrieveUserQuotaSummary"
+    return url
+
+
+def detect_antigravity_quota_endpoint_from_logs(
+    log_file: Optional[Path] = None,
+    max_bytes: int = 65536,
+) -> Optional[str]:
+    """
+    Attempt to discover active Antigravity API endpoint from recent agy CLI logs.
+    Scans the latest cli.log or recent logs in ~/.gemini/antigravity-cli/log.
+    """
+    candidate_paths: List[Path] = []
+    if log_file is not None:
+        candidate_paths.append(Path(log_file))
+    else:
+        base_dir = Path.home() / ".gemini" / "antigravity-cli"
+        cli_log = base_dir / "cli.log"
+        candidate_paths.append(cli_log)
+
+        log_dir = base_dir / "log"
+        if log_dir.is_dir():
+            try:
+                recent_logs = sorted(
+                    log_dir.glob("cli-*.log"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for rlog in recent_logs[:3]:
+                    if rlog not in candidate_paths:
+                        candidate_paths.append(rlog)
+            except Exception:
+                pass
+
+    domain_re = re.compile(r"https://([a-zA-Z0-9.-]*cloudcode-pa\.googleapis\.com)")
+
+    for path in candidate_paths:
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    chunk = f.read(max_bytes)
+                m = domain_re.search(chunk)
+                if m:
+                    base = m.group(0)
+                    return f"{base}/v1internal:retrieveUserQuotaSummary"
+            except Exception as e:
+                logger.debug(f"Failed scanning {path} for quota endpoint: {e}")
+
+    return None
+
+
+def resolve_antigravity_quota_endpoint(api_url: Optional[str] = None) -> str:
+    """
+    Resolve the Antigravity quota retrieval endpoint.
+    Order of precedence:
+    1. Explicitly passed api_url
+    2. ANTIGRAVITY_QUOTA_ENDPOINT / ANTIGRAVITY_API_URL / ANTIGRAVITY_ENDPOINT env vars
+    3. Auto-detected endpoint from local antigravity-cli logs
+    4. DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT (production cloudcode-pa)
+    """
+    if api_url and api_url.strip():
+        return normalize_antigravity_quota_endpoint(api_url)
+
+    for env_var in ("ANTIGRAVITY_QUOTA_ENDPOINT", "ANTIGRAVITY_API_URL", "ANTIGRAVITY_ENDPOINT"):
+        val = os.getenv(env_var)
+        if val and val.strip():
+            return normalize_antigravity_quota_endpoint(val)
+
+    detected = detect_antigravity_quota_endpoint_from_logs()
+    if detected:
+        return detected
+
+    return DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT
+
+
 def _group_matches_pool(group: dict, pool: str) -> bool:
     """Check if group matches requested pool (e.g. 'gemini' or 'claude_gpt')."""
     if not isinstance(group, dict):
@@ -632,7 +726,7 @@ def parse_antigravity_quota_json(
 
 def fetch_all_live_antigravity_quota(
     token: Optional[str] = None,
-    api_url: str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    api_url: Optional[str] = None,
     timeout: float = 10.0,
 ) -> Optional[Dict[str, Tuple[QuotaWindow, QuotaWindow]]]:
     """
@@ -646,10 +740,12 @@ def fetch_all_live_antigravity_quota(
         logger.warning("No OAuth token available for fetching live Antigravity quota.")
         return None
 
+    target_url = resolve_antigravity_quota_endpoint(api_url)
+
     try:
         payload = json.dumps({}).encode("utf-8")
         req = urllib.request.Request(
-            api_url,
+            target_url,
             data=payload,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -667,13 +763,37 @@ def fetch_all_live_antigravity_quota(
             res = parse_all_antigravity_quota_json(data)
             return res if res else None
     except Exception as e:
-        logger.warning(f"Failed to fetch live Antigravity quota: {e}")
+        logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
+        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT and not api_url:
+            try:
+                logger.info(
+                    f"Retrying live Antigravity quota fetch using default endpoint {DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT}"
+                )
+                req = urllib.request.Request(
+                    DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT,
+                    data=payload,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "antigravity-cli",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if hasattr(resp, "status") and resp.status == 200:
+                        body = resp.read().decode("utf-8")
+                        data = json.loads(body)
+                        res = parse_all_antigravity_quota_json(data)
+                        if res:
+                            return res
+            except Exception as retry_err:
+                logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None
 
 
 def fetch_live_antigravity_quota(
     token: Optional[str] = None,
-    api_url: str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    api_url: Optional[str] = None,
     timeout: float = 10.0,
     quota_pool: Optional[str] = None,
 ) -> Optional[Tuple[QuotaWindow, QuotaWindow]]:
@@ -689,11 +809,12 @@ def fetch_live_antigravity_quota(
         return None
 
     pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
+    target_url = resolve_antigravity_quota_endpoint(api_url)
 
     try:
         payload = json.dumps({}).encode("utf-8")
         req = urllib.request.Request(
-            api_url,
+            target_url,
             data=payload,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -710,7 +831,29 @@ def fetch_live_antigravity_quota(
             data = json.loads(body)
             return parse_antigravity_quota_json(data, pool=pool)
     except Exception as e:
-        logger.warning(f"Failed to fetch live Antigravity quota: {e}")
+        logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
+        if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT and not api_url:
+            try:
+                logger.info(
+                    f"Retrying live Antigravity quota fetch using default endpoint {DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT}"
+                )
+                req = urllib.request.Request(
+                    DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT,
+                    data=payload,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "antigravity-cli",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if hasattr(resp, "status") and resp.status == 200:
+                        body = resp.read().decode("utf-8")
+                        data = json.loads(body)
+                        return parse_antigravity_quota_json(data, pool=pool)
+            except Exception as retry_err:
+                logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None
 
 
@@ -891,10 +1034,12 @@ class QuotaTracker:
         available_gemini_models: Optional[List[str]] = None,
         available_third_party_models: Optional[List[str]] = None,
         state_path: Optional[Union[str, Path]] = None,
+        api_url: Optional[str] = None,
     ):
         self._lock = threading.RLock()
         self.state_path = Path(state_path) if state_path is not None else Path(".graviton_model_selection.json")
         self.quota_pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
+        self.api_url = api_url
         self._remaining_percentage = max(0.0, min(100.0, float(remaining_percentage)))
         self._reset_time = reset_time
         self._requests_remaining: Optional[int] = None
@@ -1484,8 +1629,12 @@ class QuotaTracker:
             for pk in pk_list:
                 self._in_flight_pools.add(pk)
 
+        fetch_kwargs: Dict[str, Any] = {"token": token}
+        if self.api_url is not None:
+            fetch_kwargs["api_url"] = self.api_url
+
         try:
-            res_all = fetch_all_live_antigravity_quota(token=token)
+            res_all = fetch_all_live_antigravity_quota(**fetch_kwargs)
         finally:
             with self._lock:
                 for pk in pk_list:
@@ -1531,8 +1680,12 @@ class QuotaTracker:
 
             self._in_flight_pools.add(pk)
 
+        live_kwargs: Dict[str, Any] = {"token": token, "quota_pool": pool}
+        if self.api_url is not None:
+            live_kwargs["api_url"] = self.api_url
+
         try:
-            res = fetch_live_antigravity_quota(token=token, quota_pool=pool)
+            res = fetch_live_antigravity_quota(**live_kwargs)
         finally:
             with self._lock:
                 self._in_flight_pools.discard(pk)

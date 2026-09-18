@@ -448,6 +448,11 @@ def main():
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
     parser.add_argument(
+        "--quota-endpoint",
+        default=os.getenv("ANTIGRAVITY_QUOTA_ENDPOINT", ""),
+        help="Antigravity RPC endpoint URL for quota retrieval (default: auto-detected or env ANTIGRAVITY_QUOTA_ENDPOINT)",
+    )
+    parser.add_argument(
         "--model-state",
         "--model-selection-state",
         default=os.getenv("MODEL_SELECTION_STATE", str(REPO_ROOT / ".graviton_model_selection.json")),
@@ -489,7 +494,13 @@ def main():
     shutdown_thread: Optional[threading.Thread] = None
 
     try:
-        quota_tracker = QuotaTracker(quota_pool=args.quota_pool, state_path=Path(args.model_state))
+        quota_kwargs = {
+            "quota_pool": args.quota_pool,
+            "state_path": Path(args.model_state),
+        }
+        if args.quota_endpoint:
+            quota_kwargs["api_url"] = args.quota_endpoint
+        quota_tracker = QuotaTracker(**quota_kwargs)
         GravitonHandler.quota_tracker = quota_tracker
         quota_tracker.restore_model_selection()
         try:
