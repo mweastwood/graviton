@@ -681,6 +681,48 @@ class TestRunAgentContainer(unittest.TestCase):
             rm_calls = [c for c in calls if c["args"] and c["args"][0] == "rm" and "-f" in c["args"]]
             self.assertEqual(len(rm_calls), 1)
 
+    def test_cleanup_trap_early_exit_removes_temp_workspace(self):
+        """Verify cleanup trap removes ephemeral workspace when script aborts prior to container execution."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            mock_dirname_script = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+workspace_file = os.environ.get("MOCK_DOCKER_WORKSPACE_PATH_FILE")
+workspaces_dir = Path("/tmp/graviton-workspaces")
+if workspaces_dir.exists():
+    run_dirs = sorted(workspaces_dir.glob("run-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if run_dirs and workspace_file:
+        Path(workspace_file).write_text(str(run_dirs[0]))
+
+print("/nonexistent/directory/for/testing/failure")
+sys.exit(0)
+"""
+            self._create_mock_binary(ctx["mock_bin"], "dirname", mock_dirname_script)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Early exit test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(ctx["fake_cwd"]),
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertNotIn("USE_CONTAINER_EXEC: unbound variable", res.stderr)
+
+            ws_file = ctx["workspace_file"]
+            self.assertTrue(ws_file.exists())
+            ephemeral_ws = Path(ws_file.read_text().strip())
+            self.assertTrue(str(ephemeral_ws).startswith("/tmp/graviton-workspaces/run-"))
+            self.assertFalse(ephemeral_ws.exists())
+
+            # Verify no container was created since exit occurred before container launch
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_calls = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]]
+            self.assertEqual(len(run_calls), 0)
+
     # -------------------------------------------------------------------------
     # G. Additional Fallbacks, Environment Forwarding, and Tool Mounts
     # -------------------------------------------------------------------------
