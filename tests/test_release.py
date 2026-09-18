@@ -234,8 +234,35 @@ class TestUserAuthorization(unittest.TestCase):
         payload_member = {"comment": {"author_association": "MEMBER"}}
         self.assertTrue(is_user_authorized_for_release("any_user", payload_member, {}))
 
+        payload_collab = {"comment": {"author_association": "COLLABORATOR"}}
+        self.assertTrue(is_user_authorized_for_release("any_user", payload_collab, {}))
+
         payload_contributor = {"comment": {"author_association": "CONTRIBUTOR"}}
         self.assertFalse(is_user_authorized_for_release("contributor_user", payload_contributor, {}))
+
+    def test_comment_author_association_does_not_fallback_to_issue(self):
+        # Even if the issue was created by OWNER, an unauthorized comment author should not inherit OWNER privilege
+        for empty_val in ("", None, "NONE", "CONTRIBUTOR"):
+            payload = {
+                "issue": {"author_association": "OWNER"},
+                "comment": {"author_association": empty_val},
+            }
+            self.assertFalse(is_user_authorized_for_release("unauthorized_user", payload, {}))
+
+        # Missing author_association key in comment
+        payload_missing = {
+            "issue": {"author_association": "OWNER"},
+            "comment": {},
+        }
+        self.assertFalse(is_user_authorized_for_release("unauthorized_user", payload_missing, {}))
+
+        # Privileged author_association on comment still returns True even if issue is NONE
+        for priv_val in ("OWNER", "MEMBER", "COLLABORATOR"):
+            payload = {
+                "issue": {"author_association": "NONE"},
+                "comment": {"author_association": priv_val},
+            }
+            self.assertTrue(is_user_authorized_for_release("privileged_user", payload, {}))
 
     def test_issue_author_association_fallback(self):
         payload_owner = {"issue": {"author_association": "OWNER"}}

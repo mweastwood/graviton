@@ -219,10 +219,16 @@ def is_user_authorized_for_release(
             return login_lower in allowed_lower
 
     # 2. Fallback check: author_association from comment or issue
-    comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
-    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
-    author_association = comment.get("author_association") or issue.get("author_association", "")
-    if isinstance(author_association, str) and author_association.upper() in ("OWNER", "MEMBER", "COLLABORATOR"):
+    if isinstance(payload.get("comment"), dict):
+        raw_assoc = payload["comment"].get("author_association")
+        author_association = raw_assoc if isinstance(raw_assoc, str) else ""
+    elif isinstance(payload.get("issue"), dict):
+        raw_assoc = payload["issue"].get("author_association")
+        author_association = raw_assoc if isinstance(raw_assoc, str) else ""
+    else:
+        author_association = ""
+
+    if author_association.upper() in ("OWNER", "MEMBER", "COLLABORATOR"):
         return True
 
     # 3. Fallback check: repository owner
