@@ -1166,6 +1166,104 @@ class TestPRTracker(unittest.TestCase):
         self.assertFalse(has_change_request_marker("exchanges requested"))
         self.assertFalse(has_change_request_marker("changes_requesting"))
 
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_deduplicates_symlinks_to_repo_root(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo1", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo1 = Path(tmpdir) / "repo1"
+            repo1.mkdir()
+            (repo1 / ".git").mkdir()
+
+            repos_dir = Path(tmpdir) / "repos_dir"
+            repos_dir.mkdir()
+            symlink = repos_dir / "repo1_link"
+            symlink.symlink_to(repo1)
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repo_root=repo1, repos_dir=repos_dir, force=True)
+
+            self.assertEqual(mock_sync_dir.call_count, 1)
+            self.assertEqual(mock_sync_dir.call_args[0][0], repo1.resolve())
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_deduplicates_multiple_symlinks_in_repos_dir(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo_a", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_a = Path(tmpdir) / "repo_a"
+            repo_a.mkdir()
+            (repo_a / ".git").mkdir()
+
+            repos_dir = Path(tmpdir) / "repos_dir"
+            repos_dir.mkdir()
+            symlink1 = repos_dir / "link1"
+            symlink2 = repos_dir / "link2"
+            symlink1.symlink_to(repo_a)
+            symlink2.symlink_to(repo_a)
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repo_root=None, repos_dir=repos_dir, force=True)
+
+            self.assertEqual(mock_sync_dir.call_count, 1)
+            self.assertEqual(mock_sync_dir.call_args[0][0], repo_a.resolve())
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_fallback_resolution(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/cwd_repo", [])
+        with tempfile.TemporaryDirectory() as empty_dir:
+            tracker = PRTracker()
+            tracker.sync_github_prs(repo_root=None, repos_dir=Path(empty_dir), force=True)
+
+            self.assertEqual(mock_sync_dir.call_count, 1)
+            self.assertEqual(mock_sync_dir.call_args[0][0], Path.cwd().resolve())
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_fallback_resolution_with_nonexistent_repo_root(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo", [])
+        with tempfile.TemporaryDirectory() as empty_dir:
+            nonexistent = Path(empty_dir) / "does_not_exist"
+            tracker = PRTracker()
+            tracker.sync_github_prs(repo_root=nonexistent, repos_dir=Path(empty_dir), force=True)
+
+            self.assertEqual(mock_sync_dir.call_count, 1)
+            self.assertEqual(mock_sync_dir.call_args[0][0], nonexistent.resolve())
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_handles_resolve_exception_gracefully(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = Path(tmpdir) / "repo"
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+
+            original_resolve = Path.resolve
+
+            def selective_resolve(path_obj, *args, **kwargs):
+                if str(path_obj) == str(repo_dir):
+                    raise OSError("Symlink loop detected")
+                return original_resolve(path_obj, *args, **kwargs)
+
+            with patch("pathlib.Path.resolve", side_effect=selective_resolve):
+                tracker = PRTracker()
+                with self.assertLogs("graviton.pr_tracker", level="WARNING") as cm:
+                    tracker.sync_github_prs(repo_root=repo_dir, repos_dir=None, force=True)
+
+                self.assertTrue(any("Failed to resolve repo_root" in msg for msg in cm.output))
+
+    @patch.object(PRTracker, "_sync_directory")
+    def test_sync_github_prs_broken_symlinks_ignored(self, mock_sync_dir):
+        mock_sync_dir.return_value = ("owner/repo", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos_dir = Path(tmpdir) / "repos_dir"
+            repos_dir.mkdir()
+            broken_link = repos_dir / "broken_link"
+            broken_link.symlink_to(Path(tmpdir) / "nonexistent_target")
+
+            tracker = PRTracker()
+            tracker.sync_github_prs(repo_root=None, repos_dir=repos_dir, force=True)
+
+            self.assertEqual(mock_sync_dir.call_count, 1)
+            self.assertEqual(mock_sync_dir.call_args[0][0], Path.cwd().resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -400,16 +400,31 @@ class PRTracker:
 
         try:
             new_approved = {}
-            target_dirs = []
+            target_dirs: List[Path] = []
+            resolved_seen: set[Path] = set()
+
             if repo_root and Path(repo_root).exists():
-                target_dirs.append(Path(repo_root))
+                try:
+                    resolved_root = Path(repo_root).resolve()
+                    target_dirs.append(resolved_root)
+                    resolved_seen.add(resolved_root)
+                except Exception as e:
+                    logger.warning(f"Failed to resolve repo_root '{repo_root}': {e}")
+
             if repos_dir and Path(repos_dir).exists():
                 for item in Path(repos_dir).iterdir():
-                    if item.is_dir() and (item / ".git").exists() and item not in target_dirs:
-                        target_dirs.append(item)
+                    try:
+                        if item.is_dir() and (item / ".git").exists():
+                            resolved_item = item.resolve()
+                            if resolved_item not in resolved_seen:
+                                target_dirs.append(resolved_item)
+                                resolved_seen.add(resolved_item)
+                    except Exception as e:
+                        logger.warning(f"Failed inspecting repository directory '{item}': {e}")
 
             if not target_dirs:
-                target_dirs.append(Path(repo_root) if repo_root else Path.cwd())
+                fallback_dir = (Path(repo_root) if repo_root else Path.cwd()).resolve()
+                target_dirs.append(fallback_dir)
 
             success_count = 0
             max_workers = min(10, max(1, len(target_dirs)))
