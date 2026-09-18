@@ -453,6 +453,8 @@ def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
 DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 )
+# Internal/daily Antigravity quota retrieval endpoint exported for testing,
+# debugging, and manual override configuration in internal/daily CLI environments.
 DAILY_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 )
@@ -460,7 +462,9 @@ DAILY_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
 
 def normalize_antigravity_quota_endpoint(url: str) -> str:
     """Normalize a quota endpoint URL to ensure proper endpoint path."""
-    url = url.strip()
+    if not url or not str(url).strip():
+        return ""
+    url = str(url).strip()
     if not url.startswith("http://") and not url.startswith("https://"):
         url = f"https://{url}"
     if not url.endswith(":retrieveUserQuotaSummary"):
@@ -502,7 +506,7 @@ def detect_antigravity_quota_endpoint_from_logs(
             except Exception:
                 pass
 
-    domain_re = re.compile(r"https://([a-zA-Z0-9.-]*cloudcode-pa\.googleapis\.com)")
+    domain_re = re.compile(r"https://([a-zA-Z0-9.-]*cloudcode-pa\.googleapis\.com)(?:/|:|$)")
 
     for path in candidate_paths:
         if path.exists():
@@ -511,7 +515,7 @@ def detect_antigravity_quota_endpoint_from_logs(
                     chunk = f.read(max_bytes)
                 m = domain_re.search(chunk)
                 if m:
-                    base = m.group(0)
+                    base = f"https://{m.group(1)}"
                     return f"{base}/v1internal:retrieveUserQuotaSummary"
             except Exception as e:
                 logger.debug(f"Failed scanning {path} for quota endpoint: {e}")

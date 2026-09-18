@@ -1678,6 +1678,15 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
             normalize_antigravity_quota_endpoint("https://custom.endpoint.com/v1internal:retrieveUserQuotaSummary"),
             "https://custom.endpoint.com/v1internal:retrieveUserQuotaSummary",
         )
+        # 5. Empty or whitespace strings
+        self.assertEqual(normalize_antigravity_quota_endpoint(""), "")
+        self.assertEqual(normalize_antigravity_quota_endpoint("   "), "")
+
+    def test_daily_antigravity_quota_endpoint_constant(self):
+        self.assertEqual(
+            DAILY_ANTIGRAVITY_QUOTA_ENDPOINT,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        )
 
     def test_detect_antigravity_quota_endpoint_from_logs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1690,6 +1699,13 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
                 detected,
                 "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
             )
+
+            # Unintended domain suffix should not match (boundary check)
+            log_path.write_text(
+                "I0918 10:19:00.057242 1 http_helpers.go:299] URL: https://cloudcode-pa.googleapis.com.evil.com/v1internal:loadCodeAssist\n"
+            )
+            detected_evil = detect_antigravity_quota_endpoint_from_logs(log_file=log_path)
+            self.assertIsNone(detected_evil)
 
             # File without endpoint
             log_path.write_text("Some normal log output with no cloudcode URL\n")
@@ -1797,6 +1813,17 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         }
         tracker.poll_all_pools(token="test-token")
         mock_fetch_all.assert_called_once_with(token="test-token", api_url=custom_url)
+
+    @patch("lib.quota.fetch_live_antigravity_quota")
+    def test_quota_tracker_poll_live_quota_passes_custom_api_url(self, mock_fetch_live):
+        custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        tracker = QuotaTracker(api_url=custom_url)
+        mock_fetch_live.return_value = (
+            QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0),
+            QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=75.0),
+        )
+        tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=True)
+        mock_fetch_live.assert_called_once_with(token="test-token", quota_pool="gemini", api_url=custom_url)
 
     @patch("lib.quota.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota_fallback_on_exception(self, mock_urlopen):
