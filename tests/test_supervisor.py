@@ -6,13 +6,17 @@ import subprocess
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from lib.supervisor import (
+    ContainerSupervisor,
     StreamSession,
     SupervisorError,
     SupervisorResult,
     SupervisorTimeoutError,
+    clean_workspace_dir,
+    run_container_turn,
     run_stream_turn,
 )
 
@@ -88,6 +92,27 @@ class TestStreamSession(unittest.TestCase):
             self.assertIn("gemini-pro", cmd)
             self.assertIn("--effort", cmd)
             self.assertIn("high", cmd)
+
+    def test_stream_session_custom_command(self):
+        custom_cmd = ["docker", "run", "-i", "my-container", "agy", "--stream"]
+        session = StreamSession(custom_command=custom_cmd)
+
+        with patch("subprocess.Popen") as mock_popen:
+            self.mock_proc.stdout.readline.side_effect = [
+                json.dumps({
+                    "event": "init",
+                    "conversation_id": "docker-conv-id",
+                    "init": {},
+                }) + "\n",
+                "",
+            ]
+            mock_popen.return_value = self.mock_proc
+
+            conv_id = session.start()
+            self.assertEqual(conv_id, "docker-conv-id")
+
+            cmd = mock_popen.call_args[0][0]
+            self.assertEqual(cmd, custom_cmd)
 
     def test_start_premature_exit(self):
         session = StreamSession(agy_binary="agy")
@@ -483,6 +508,327 @@ class TestStreamSession(unittest.TestCase):
             self.assertEqual(res, expected_res)
 
 
+class TestCleanWorkspaceDir(unittest.TestCase):
+    def test_clean_workspace_dir_none(self):
+        self.assertTrue(clean_workspace_dir(None))
+
+    def test_clean_workspace_dir_non_existent(self):
+        self.assertTrue(clean_workspace_dir("/path/does/not/exist/graviton_test_xyz"))
+
+    def test_clean_workspace_dir_removes_tree(self):
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="graviton-test-clean-"))
+        (tmp / "subdir").mkdir()
+        (tmp / "subdir" / "file.txt").write_text("hello")
+        self.assertTrue(tmp.exists())
+        self.assertTrue(clean_workspace_dir(tmp))
+        self.assertFalse(tmp.exists())
+
+    def test_clean_workspace_dir_readonly_files(self):
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="graviton-test-clean-ro-"))
+        ro_file = tmp / "readonly.txt"
+        ro_file.write_text("protected")
+        ro_file.chmod(0o400)
+        self.assertTrue(clean_workspace_dir(tmp))
+        self.assertFalse(tmp.exists())
+
+
+class TestContainerSupervisor(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmp_dir.name) / "mock_repo"
+        self.repo_dir.mkdir()
+        (self.repo_dir / "README.md").write_text("# Mock Repo")
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_initialization_defaults(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="test1234",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup.agent_name, "code_reviewer")
+        self.assertTrue(sup.remote_control)
+        self.assertTrue(sup.dangerously_skip_permissions)
+        self.assertEqual(sup.run_id, "test1234")
+        self.assertEqual(sup.container_name, "graviton-stream-run-test1234")
+        self.assertEqual(sup.temp_workspace, Path(self.tmp_dir.name) / "run-test1234")
+        self.assertFalse(sup.is_alive())
+
+    def test_prepare_workspace_cache_restore(self):
+        cache_dir = Path(self.tmp_dir.name) / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "cached_file.txt").write_text("cached content")
+
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="cache_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            cache_dir=cache_dir,
+        )
+        ws = sup.prepare_workspace()
+        self.assertEqual(ws, sup.temp_workspace)
+        self.assertTrue((ws / "cached_file.txt").exists())
+        self.assertEqual((ws / "cached_file.txt").read_text(), "cached content")
+
+    def test_prepare_workspace_clone_fallback(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="clone_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        ws = sup.prepare_workspace()
+        self.assertTrue(ws.exists())
+        self.assertTrue((ws / "README.md").exists())
+
+    def test_build_docker_command(self):
+        home_mock = Path(self.tmp_dir.name) / "fake_home"
+        ssh_dir = home_mock / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        gh_dir = home_mock / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        cli_dir = home_mock / ".gemini" / "antigravity-cli"
+        cli_dir.mkdir(parents=True)
+        (cli_dir / "antigravity-oauth-token").write_text("fake-token")
+        (cli_dir / "settings.json").write_text("{}")
+
+        skills_dir = Path(self.tmp_dir.name) / "skills"
+        skills_dir.mkdir()
+
+        with patch("pathlib.Path.home", return_value=home_mock):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                agent_name="tester",
+                model="claude-3-sonnet",
+                image_name="test-agent-image:custom",
+                remote_control=True,
+                dangerously_skip_permissions=True,
+                extra_args=["--verbose"],
+                run_id="cmd_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                git_user_name="Test User",
+                git_user_email="test@example.com",
+                github_token="gh_secret_123",
+                skills_dir=skills_dir,
+                env={"MY_CUSTOM_VAR": "hello"},
+                docker_binary="/usr/bin/docker",
+                agy_binary="/usr/bin/agy",
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+
+            # Docker run invocation
+            self.assertEqual(cmd[0], "/usr/bin/docker")
+            self.assertEqual(cmd[1], "run")
+            self.assertIn("-i", cmd)
+            self.assertIn("--name", cmd)
+            self.assertIn("graviton-stream-run-cmd_test", cmd)
+            self.assertIn("--security-opt=no-new-privileges", cmd)
+
+            # Workspace mount
+            self.assertIn(f"{sup.temp_workspace.resolve()}:/workspace", cmd)
+            self.assertIn("-w", cmd)
+            self.assertIn("/workspace", cmd)
+
+            # SSH and gh mounts
+            self.assertIn(f"{ssh_dir.resolve()}:/root/.ssh:ro", cmd)
+            self.assertIn(f"{gh_dir.resolve()}:/root/.config/gh:ro", cmd)
+
+            # Antigravity CLI isolation: tmpfs and ro credentials
+            self.assertIn("/root/.gemini/antigravity-cli:rw,exec", cmd)
+            self.assertIn("/root/.gemini/config:rw,exec", cmd)
+            self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
+
+            # Skills mount
+            self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
+
+            # Environment variables
+            self.assertIn("GITHUB_TOKEN=gh_secret_123", cmd)
+            self.assertIn("GIT_AUTHOR_NAME=Test User", cmd)
+            self.assertIn("GIT_AUTHOR_EMAIL=test@example.com", cmd)
+            self.assertIn("ANTIGRAVITY_MODEL=claude-3-sonnet", cmd)
+            self.assertIn("MY_CUSTOM_VAR=hello", cmd)
+
+            # Image
+            self.assertIn("test-agent-image:custom", cmd)
+
+            # Inner agy command
+            self.assertIn("agy", cmd)
+            self.assertIn("--input-format", cmd)
+            self.assertIn("stream-json", cmd)
+            self.assertIn("--output-format", cmd)
+            self.assertIn("--dangerously-skip-permissions", cmd)
+            self.assertIn("--remote-control", cmd)
+            self.assertIn("--agent", cmd)
+            self.assertIn("tester", cmd)
+            self.assertIn("--model", cmd)
+            self.assertIn("claude-3-sonnet", cmd)
+            self.assertIn("--verbose", cmd)
+
+    def test_build_docker_command_with_custom_agy_args(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="custom_agy",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command(agy_args=["custom_binary", "--custom-arg"])
+        self.assertIn("custom_binary", cmd)
+        self.assertIn("--custom-arg", cmd)
+
+    def test_start_and_lifecycle(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="lifecycle_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+
+        with patch("lib.supervisor.StreamSession") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.is_alive.return_value = True
+            mock_session.start.return_value = "docker-conv-789"
+            mock_session.conversation_id = "docker-conv-789"
+            mock_session_cls.return_value = mock_session
+
+            conv_id = sup.start(timeout=45.0)
+            self.assertEqual(conv_id, "docker-conv-789")
+            self.assertEqual(sup.conversation_id, "docker-conv-789")
+            self.assertTrue(sup.is_alive())
+
+            # Verify StreamSession was initialized with custom_command
+            mock_session_cls.assert_called_once()
+            call_kwargs = mock_session_cls.call_args[1]
+            self.assertIn("custom_command", call_kwargs)
+            self.assertEqual(call_kwargs["cwd"], sup.temp_workspace)
+            mock_session.start.assert_called_once_with(timeout=45.0)
+
+            # Calling start again while alive returns conversation_id without respawning
+            conv_id2 = sup.start()
+            self.assertEqual(conv_id2, "docker-conv-789")
+            self.assertEqual(mock_session.start.call_count, 1)
+
+    def test_send_prompt_and_receive_turn(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="turn_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        mock_session = MagicMock()
+        mock_session.is_alive.return_value = True
+        expected_result = SupervisorResult(status="SUCCESS", response="Turn complete")
+        mock_session.receive_turn.return_value = expected_result
+        sup.session = mock_session
+
+        sup.send_prompt("Review the code")
+        mock_session.send_prompt.assert_called_once_with("Review the code")
+
+        cb = MagicMock()
+        res = sup.receive_turn(timeout=30.0, on_event=cb)
+        mock_session.receive_turn.assert_called_once_with(timeout=30.0, on_event=cb)
+        self.assertEqual(res, expected_result)
+
+    def test_send_prompt_raises_when_not_alive(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="not_alive",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with self.assertRaises(SupervisorError):
+            sup.send_prompt("hello")
+
+    def test_receive_turn_raises_when_not_alive(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="not_alive",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with self.assertRaises(SupervisorError):
+            sup.receive_turn()
+
+    def test_run_turn_auto_starts(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="auto_start",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+
+        with patch.object(sup, "start") as mock_start, \
+             patch.object(sup, "send_prompt") as mock_send, \
+             patch.object(sup, "receive_turn") as mock_receive:
+            expected = SupervisorResult(status="SUCCESS")
+            mock_receive.return_value = expected
+
+            res = sup.run_turn("Do work", timeout=20.0)
+            mock_start.assert_called_once()
+            mock_send.assert_called_once_with("Do work")
+            mock_receive.assert_called_once_with(timeout=20.0, on_event=None)
+            self.assertEqual(res, expected)
+
+    def test_cleanup_and_context_manager(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="cleanup_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        sup.prepare_workspace()
+        self.assertTrue(sup.temp_workspace.exists())
+
+        mock_session = MagicMock()
+        mock_session.is_alive.return_value = True
+        sup.session = mock_session
+
+        with patch("subprocess.run") as mock_run:
+            sup.cleanup()
+
+            mock_session.close.assert_called_once()
+            # Verify docker rm -f was invoked
+            rm_calls = [
+                call for call in mock_run.call_args_list
+                if len(call[0]) > 0 and "rm" in call[0][0] and "-f" in call[0][0]
+            ]
+            self.assertTrue(len(rm_calls) > 0)
+            self.assertIn("graviton-stream-run-cleanup_test", rm_calls[0][0][0])
+            self.assertFalse(sup.temp_workspace.exists())
+
+    def test_context_manager(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="cm_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with patch.object(sup, "start") as mock_start, patch.object(sup, "cleanup") as mock_cleanup:
+            with sup as active_sup:
+                self.assertEqual(active_sup, sup)
+                mock_start.assert_called_once()
+            mock_cleanup.assert_called_once()
+
+    def test_run_container_turn_wrapper(self):
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            expected_res = SupervisorResult(status="SUCCESS", response="Container done")
+            mock_inst.run_turn.return_value = expected_res
+
+            res = run_container_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                agent_name="patcher",
+                model="gemini-1.5-pro",
+                timeout=120.0,
+            )
+
+            mock_cls.assert_called_once()
+            self.assertEqual(mock_cls.call_args[1]["agent_name"], "patcher")
+            self.assertEqual(mock_cls.call_args[1]["model"], "gemini-1.5-pro")
+            mock_inst.run_turn.assert_called_once_with("Fix bug", timeout=120.0, on_event=None)
+            self.assertEqual(res, expected_res)
+
+
 class TestSupervisorIntegration(unittest.TestCase):
     def test_live_stream_session(self):
         try:
@@ -496,3 +842,4 @@ class TestSupervisorIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
