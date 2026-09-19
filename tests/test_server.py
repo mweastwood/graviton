@@ -1268,6 +1268,66 @@ class TestGravitonHandler(unittest.TestCase):
         )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_quota_endpoint_cli_arg(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_endpoint = "https://custom-daily.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        with patch.dict("os.environ", {"ANTIGRAVITY_QUOTA_ENDPOINT": ""}):
+            with patch("sys.argv", ["graviton-server.py", "--quota-endpoint", custom_endpoint]):
+                server_mod.main()
+
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=REPO_ROOT / ".graviton_model_selection.json",
+            api_url=custom_endpoint,
+        )
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_quota_endpoint_env_var(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_qt_inst = MagicMock()
+        mock_quota_cls.return_value = mock_qt_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_endpoint = "https://custom-env.googleapis.com/v1internal:retrieveUserQuotaSummary"
+        with patch.dict("os.environ", {"ANTIGRAVITY_QUOTA_ENDPOINT": custom_endpoint}):
+            with patch("sys.argv", ["graviton-server.py"]):
+                server_mod.main()
+
+        mock_quota_cls.assert_called_once_with(
+            quota_pool="gemini",
+            state_path=REPO_ROOT / ".graviton_model_selection.json",
+            api_url=custom_endpoint,
+        )
+
     def test_graceful_shutdown_persists_model_selection_state(self):
         mock_tm = MagicMock()
         mock_sched = MagicMock()
