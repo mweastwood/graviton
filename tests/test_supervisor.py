@@ -102,6 +102,24 @@ class TestStreamSession(unittest.TestCase):
             with self.assertRaises(SupervisorError) as ctx:
                 session.start(timeout=1.0)
             self.assertIn("exited prematurely", str(ctx.exception))
+            self.assertTrue(session._is_closed)
+            self.mock_proc.stdin.close.assert_called()
+
+    def test_start_premature_exit_on_line_none(self):
+        session = StreamSession(agy_binary="agy")
+        with patch("subprocess.Popen") as mock_popen:
+            self.mock_proc.poll.return_value = 1
+            self.mock_proc.returncode = 1
+            self.mock_proc.stderr.readline.side_effect = ["Process exited\n", ""]
+            self.mock_proc.stderr.read.return_value = "Process exited"
+            self.mock_proc.stdout.readline.side_effect = [""]
+            mock_popen.return_value = self.mock_proc
+
+            with self.assertRaises(SupervisorError) as ctx:
+                session.start(timeout=1.0)
+            self.assertIn("exited prematurely", str(ctx.exception))
+            self.assertTrue(session._is_closed)
+            self.mock_proc.stdin.close.assert_called()
 
     def test_start_malformed_init_json(self):
         session = StreamSession(agy_binary="agy")
@@ -310,6 +328,35 @@ class TestStreamSession(unittest.TestCase):
         self.mock_proc.terminate.assert_called_once()
         self.mock_proc.kill.assert_called_once()
 
+    def test_drain_stdout_retries_on_queue_full(self):
+        session = StreamSession()
+        session.proc = self.mock_proc
+        self.mock_proc.stdout.readline.side_effect = ["event 1\n", ""]
+
+        call_count = 0
+        def fake_put(item, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise queue.Full()
+            return None
+
+        with patch.object(session._stdout_queue, "put", side_effect=fake_put):
+            session._drain_stdout()
+            self.assertGreaterEqual(call_count, 2)
+
+    def test_drain_stdout_exits_retry_loop_when_closed(self):
+        session = StreamSession()
+        session.proc = self.mock_proc
+        self.mock_proc.stdout.readline.side_effect = ["event 1\n", ""]
+
+        def fake_put(item, timeout=None):
+            session._is_closed = True
+            raise queue.Full()
+
+        with patch.object(session._stdout_queue, "put", side_effect=fake_put):
+            session._drain_stdout()
+
     def test_run_stream_turn_wrapper(self):
         with patch("lib.supervisor.StreamSession") as mock_cls:
             mock_instance = MagicMock()
@@ -332,9 +379,45 @@ class TestStreamSession(unittest.TestCase):
                 model="gemini",
                 cwd="/tmp",
                 remote_control=True,
+                dangerously_skip_permissions=True,
                 extra_args=["--verbose"],
+                agy_binary=None,
+                env=None,
             )
             mock_instance.run_turn.assert_called_once_with("Test prompt", timeout=12.0, on_event=None)
+            self.assertEqual(res, expected_res)
+
+    def test_run_stream_turn_wrapper_custom_parameters(self):
+        with patch("lib.supervisor.StreamSession") as mock_cls:
+            mock_instance = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_instance
+            expected_res = SupervisorResult(status="SUCCESS", response="turn output")
+            mock_instance.run_turn.return_value = expected_res
+
+            res = run_stream_turn(
+                prompt="Custom prompt",
+                agent_name="coder",
+                model="gemini-exp",
+                cwd="/custom/dir",
+                remote_control=False,
+                dangerously_skip_permissions=False,
+                timeout=60.0,
+                extra_args=["--flag"],
+                agy_binary="/custom/bin/agy",
+                env={"CUSTOM_KEY": "val"},
+            )
+
+            mock_cls.assert_called_once_with(
+                agent_name="coder",
+                model="gemini-exp",
+                cwd="/custom/dir",
+                remote_control=False,
+                dangerously_skip_permissions=False,
+                extra_args=["--flag"],
+                agy_binary="/custom/bin/agy",
+                env={"CUSTOM_KEY": "val"},
+            )
+            mock_instance.run_turn.assert_called_once_with("Custom prompt", timeout=60.0, on_event=None)
             self.assertEqual(res, expected_res)
 
 

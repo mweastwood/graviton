@@ -81,7 +81,7 @@ class StreamSession:
         self.conversation_id: Optional[str] = None
         self.init_data: Dict[str, Any] = {}
         self._is_closed = False
-        self._stdout_queue: queue.Queue = queue.Queue(maxsize=10000)
+        self._stdout_queue: queue.Queue = queue.Queue(maxsize=0)
         self._stdout_thread: Optional[threading.Thread] = None
         self._stderr_lines: deque = deque(maxlen=2000)
         self._stderr_thread: Optional[threading.Thread] = None
@@ -101,10 +101,12 @@ class StreamSession:
                     break
                 if not isinstance(line, str):
                     break
-                try:
-                    self._stdout_queue.put(line, timeout=0.2)
-                except queue.Full:
-                    pass
+                while not self._is_closed:
+                    try:
+                        self._stdout_queue.put(line, timeout=0.2)
+                        break
+                    except queue.Full:
+                        continue
         except (ValueError, OSError, StopIteration):
             pass
         except Exception as e:
@@ -178,7 +180,7 @@ class StreamSession:
             return self.conversation_id or ""
 
         self._is_closed = False
-        self._stdout_queue = queue.Queue(maxsize=10000)
+        self._stdout_queue = queue.Queue(maxsize=0)
         self._stderr_lines.clear()
         self._stdout_thread = None
         self._stderr_thread = None
@@ -233,6 +235,7 @@ class StreamSession:
 
             if self.proc.poll() is not None and self._stdout_queue.empty():
                 stderr_output = self.get_stderr()
+                self.close()
                 raise SupervisorError(
                     f"agy process exited prematurely with code {self.proc.returncode}. stderr: {stderr_output.strip()}"
                 )
@@ -242,6 +245,7 @@ class StreamSession:
             except queue.Empty:
                 if self.proc.poll() is not None and self._stdout_queue.empty():
                     stderr_output = self.get_stderr()
+                    self.close()
                     raise SupervisorError(
                         f"agy process exited prematurely with code {self.proc.returncode}. stderr: {stderr_output.strip()}"
                     )
@@ -250,6 +254,7 @@ class StreamSession:
             if line is None:
                 self.proc.poll()
                 stderr_output = self.get_stderr()
+                self.close()
                 raise SupervisorError(
                     f"agy process exited prematurely with code {self.proc.returncode}. stderr: {stderr_output.strip()}"
                 )
@@ -491,9 +496,12 @@ def run_stream_turn(
     model: Optional[str] = None,
     cwd: Optional[Union[str, Path]] = None,
     remote_control: bool = False,
+    dangerously_skip_permissions: bool = True,
     timeout: Optional[float] = None,
     on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
     extra_args: Optional[List[str]] = None,
+    agy_binary: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> SupervisorResult:
     """
     Convenience function to execute a single turn using StreamSession with full lifecycle management.
@@ -503,6 +511,9 @@ def run_stream_turn(
         model=model,
         cwd=cwd,
         remote_control=remote_control,
+        dangerously_skip_permissions=dangerously_skip_permissions,
         extra_args=extra_args,
+        agy_binary=agy_binary,
+        env=env,
     ) as session:
         return session.run_turn(prompt, timeout=timeout, on_event=on_event)
