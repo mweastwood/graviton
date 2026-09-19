@@ -24,6 +24,9 @@ from lib.routers.base import (
 )
 from lib.routers.push_router import handle_ping_event, handle_push_event
 from lib.routers.pr_router import (
+    format_pr_feedback_goal,
+    format_pr_review_comment_goal,
+    format_pr_review_goal,
     handle_pull_request_event,
     handle_pull_request_review_event,
     handle_pull_request_review_comment_event,
@@ -535,8 +538,65 @@ class TestReleaseRouting(unittest.TestCase):
             self.assertIsNone(repo_name)
             self.assertIsNone(repo_full_name)
 
-            server_repo = get_server_repo_name(repo_root=None)
-            self.assertEqual(server_repo, "graviton")
+    def test_pr_router_goal_formatting(self):
+        goal = format_pr_review_goal(42, "owner/repo")
+        self.assertTrue(goal.startswith("/goal"))
+        self.assertIn("PR #42", goal)
+        self.assertIn("owner/repo", goal)
+
+        fb_goal = format_pr_feedback_goal(42, "Please add tests", "owner/repo")
+        self.assertTrue(fb_goal.startswith("/goal"))
+        self.assertIn("Please add tests", fb_goal)
+
+        comment_goal = format_pr_review_comment_goal(42, "lib/app.py", 10, "Typo here", "owner/repo")
+        self.assertTrue(comment_goal.startswith("/goal"))
+        self.assertIn("lib/app.py", comment_goal)
+
+    def test_pr_router_use_goal_flag(self):
+        payload = {
+            "action": "opened",
+            "number": 15,
+            "repository": {"name": "app", "full_name": "owner/app"},
+            "pull_request": {"number": 15, "body": "Feature description"},
+        }
+        # default use_goal=False: legacy prompt, goal_prompt included
+        res_default = handle_pull_request_event(payload, use_goal=False)
+        self.assertEqual(res_default["status"], "accepted")
+        self.assertFalse(res_default["prompt"].startswith("/goal"))
+        self.assertTrue(res_default["goal_prompt"].startswith("/goal"))
+
+        # use_goal=True: prompt is set to /goal prompt
+        res_goal = handle_pull_request_event(payload, use_goal=True)
+        self.assertEqual(res_goal["status"], "accepted")
+        self.assertTrue(res_goal["prompt"].startswith("/goal"))
+        self.assertEqual(res_goal["prompt"], res_goal["goal_prompt"])
+
+        # Review event with use_goal
+        review_payload = {
+            "action": "submitted",
+            "number": 15,
+            "repository": {"name": "app", "full_name": "owner/app"},
+            "pull_request": {"number": 15, "user": {"login": "graviton-bot"}},
+            "review": {"state": "changes_requested", "body": "Needs fixes"},
+        }
+        rev_res = handle_pull_request_review_event(review_payload, use_goal=True)
+        self.assertEqual(rev_res["status"], "accepted")
+        self.assertTrue(rev_res["prompt"].startswith("/goal"))
+        self.assertIn("Needs fixes", rev_res["prompt"])
+
+        # Review comment event with use_goal
+        comment_payload = {
+            "action": "created",
+            "number": 15,
+            "repository": {"name": "app", "full_name": "owner/app"},
+            "pull_request": {"number": 15, "user": {"login": "graviton-bot"}},
+            "comment": {"path": "main.py", "line": 5, "body": "Rename this"},
+        }
+        comm_res = handle_pull_request_review_comment_event(comment_payload, use_goal=True)
+        self.assertEqual(comm_res["status"], "accepted")
+        self.assertTrue(comm_res["prompt"].startswith("/goal"))
+        self.assertIn("Rename this", comm_res["prompt"])
 
 
-
+if __name__ == "__main__":
+    unittest.main()

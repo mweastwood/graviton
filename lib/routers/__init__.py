@@ -18,6 +18,9 @@ from lib.routers.issue_router import (
     handle_issues_event,
 )
 from lib.routers.pr_router import (
+    format_pr_feedback_goal,
+    format_pr_review_comment_goal,
+    format_pr_review_goal,
     handle_pull_request_event,
     handle_pull_request_review_comment_event,
     handle_pull_request_review_event,
@@ -37,6 +40,9 @@ __all__ = [
     "_get_git_remote_repo_names",
     "_pr_review_timestamps",
     "_pr_review_timestamps_lock",
+    "format_pr_review_goal",
+    "format_pr_feedback_goal",
+    "format_pr_review_comment_goal",
     "handle_ping_event",
     "handle_push_event",
     "handle_pull_request_event",
