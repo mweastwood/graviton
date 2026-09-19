@@ -271,21 +271,24 @@ class GravitonMCPServer:
         if active:
             lines.append("▶️ **Running Tasks:**")
             for t in active:
-                cid = f" (Conv: `{t['conversation_id']}`)" if t.get("conversation_id") else ""
-                lines.append(f"- **{t['id']}** [{t['agent']}]: {t.get('target_id', '')} - {t['prompt'][:60]}... ({t.get('elapsed_time', 0)}s elapsed){cid}")
+                cid = f" (Conv: `{t.get('conversation_id')}`)" if t.get("conversation_id") else ""
+                prompt_snippet = (t.get("prompt") or "")[:60]
+                lines.append(f"- **{t.get('id', '')}** [{t.get('agent', '')}]: {t.get('target_id', '')} - {prompt_snippet}... ({t.get('elapsed_time', 0)}s elapsed){cid}")
             lines.append("")
 
         if queued:
             lines.append("⏳ **Queued Tasks:**")
             for t in queued:
-                lines.append(f"- **{t['id']}** [{t['agent']}]: {t.get('target_id', '')} - {t['prompt'][:60]}... ({t.get('wait_time', 0)}s waiting)")
+                prompt_snippet = (t.get("prompt") or "")[:60]
+                lines.append(f"- **{t.get('id', '')}** [{t.get('agent', '')}]: {t.get('target_id', '')} - {prompt_snippet}... ({t.get('wait_time', 0)}s waiting)")
             lines.append("")
 
         if history:
             lines.append("📜 **Recent History:**")
             for t in history:
                 icon = "✅" if t.get("status") == "COMPLETED" else "❌"
-                lines.append(f"- {icon} **{t['id']}** [{t.get('status')}]: {t.get('target_id', '')} - {t['prompt'][:50]}... ({t.get('elapsed_time', 0)}s)")
+                prompt_snippet = (t.get("prompt") or "")[:50]
+                lines.append(f"- {icon} **{t.get('id', '')}** [{t.get('status', '')}]: {t.get('target_id', '')} - {prompt_snippet}... ({t.get('elapsed_time', 0)}s)")
             lines.append("")
 
         if not active and not queued and not history:
@@ -404,11 +407,21 @@ class GravitonMCPServer:
 
     # ---------------- JSON-RPC Protocol Handling ----------------
 
-    def handle_request(self, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def handle_request(self, req: Any) -> Optional[Dict[str, Any]]:
         """Handle a single JSON-RPC request."""
+        if not isinstance(req, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: payload must be a JSON object",
+                },
+            }
+
         req_id = req.get("id")
         method = req.get("method")
-        params = req.get("params", {})
+        params = req.get("params") or {}
 
         # Notifications (no id)
         if req_id is None:
@@ -446,7 +459,7 @@ class GravitonMCPServer:
 
         if method == "tools/call":
             tool_name = params.get("name")
-            arguments = params.get("arguments", {})
+            arguments = params.get("arguments") or {}
             handler = self._handlers.get(tool_name)
             if not handler:
                 return {

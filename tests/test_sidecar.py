@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from lib.sidecar import (
     is_pid_alive,
+    is_graviton_process,
     read_sidecar_pid,
     write_sidecar_pid,
     remove_sidecar_pid,
@@ -125,9 +126,10 @@ class TestSidecarManager(unittest.TestCase):
         self.assertIn("running", msg)
         self.assertEqual(read_sidecar_pid(self.pid_file), 4321)
 
+    @patch("lib.sidecar.is_graviton_process", return_value=True)
     @patch("lib.sidecar.is_pid_alive")
     @patch("lib.sidecar.os.kill")
-    def test_stop_sidecar_running(self, mock_kill, mock_alive):
+    def test_stop_sidecar_running(self, mock_kill, mock_alive, mock_graviton):
         self.pid_file.write_text("5555\n")
         mock_alive.side_effect = [True, False]  # alive when reading, then dead after kill
 
@@ -135,6 +137,60 @@ class TestSidecarManager(unittest.TestCase):
         self.assertTrue(success)
         mock_kill.assert_called_with(5555, signal.SIGTERM)
         self.assertFalse(self.pid_file.exists())
+
+    @patch("lib.sidecar.is_graviton_process", return_value=False)
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.os.kill")
+    def test_stop_sidecar_recycled_pid_not_killed(self, mock_kill, mock_alive, mock_graviton):
+        self.pid_file.write_text("5555\n")
+        success, msg = stop_sidecar(pid_file=self.pid_file, timeout=2.0)
+        self.assertTrue(success)
+        self.assertIn("not a Graviton process", msg)
+        mock_kill.assert_not_called()
+        self.assertFalse(self.pid_file.exists())
+
+    @patch("lib.sidecar.stop_sidecar")
+    @patch("lib.sidecar.is_graviton_process", return_value=False)
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.subprocess.Popen")
+    @patch("lib.sidecar.check_health")
+    def test_start_sidecar_recycled_pid_not_killed(self, mock_health, mock_popen, mock_alive, mock_graviton, mock_stop):
+        self.pid_file.write_text("5555\n")
+        mock_health.side_effect = [(False, {}), (False, {}), (True, {"status": "ok"})]
+        mock_proc = MagicMock()
+        mock_proc.pid = 6789
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        fake_script = self.tmp_path / "server.py"
+        fake_script.write_text("#!/usr/bin/env python3\n")
+
+        success, msg = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+            server_script=fake_script,
+            startup_timeout=3.0,
+        )
+        self.assertTrue(success)
+        mock_stop.assert_not_called()
+        self.assertEqual(read_sidecar_pid(self.pid_file), 6789)
+
+    @patch("pathlib.Path.exists")
+    @patch("pathlib.Path.read_bytes")
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    def test_is_graviton_process(self, mock_alive, mock_read, mock_exists):
+        mock_exists.return_value = True
+        mock_read.return_value = b"python3\x00/repo/bin/graviton-server.py\x00--port\x008000"
+        self.assertTrue(is_graviton_process(1234))
+
+        mock_read.return_value = b"/usr/sbin/cron\x00-f"
+        self.assertFalse(is_graviton_process(1234))
+
+        mock_alive.return_value = False
+        self.assertFalse(is_graviton_process(1234))
+        self.assertFalse(is_graviton_process(0))
 
     def test_stop_sidecar_not_running(self):
         success, msg = stop_sidecar(pid_file=self.pid_file)

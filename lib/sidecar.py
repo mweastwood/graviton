@@ -46,6 +46,40 @@ def is_pid_alive(pid: int) -> bool:
         return False
 
 
+def is_graviton_process(pid: int) -> bool:
+    """
+    Verify whether the given PID corresponds to a running Graviton process.
+    Checks /proc/<pid>/cmdline on Linux, with fallback to 'ps' on other POSIX systems.
+    """
+    if pid <= 0 or not is_pid_alive(pid):
+        return False
+
+    # 1. Linux /proc/<pid>/cmdline
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    if proc_cmdline.exists():
+        try:
+            cmdline = proc_cmdline.read_bytes().decode("utf-8", errors="ignore").replace("\x00", " ")
+            return "graviton" in cmdline.lower()
+        except Exception:
+            return False
+
+    # 2. Fallback via ps command
+    try:
+        res = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=1.0,
+        )
+        if res.returncode == 0 and res.stdout:
+            return "graviton" in res.stdout.lower()
+    except Exception:
+        pass
+
+    return False
+
+
 def read_sidecar_pid(pid_file: Optional[Path] = None) -> Optional[int]:
     """Read PID from PID file if it exists and process is alive."""
     path = Path(pid_file) if pid_file else DEFAULT_PID_FILE
@@ -142,8 +176,16 @@ def start_sidecar(
 
     if existing_pid:
         # Process is alive but not answering health check
-        logger.warning(f"Found alive PID {existing_pid} for sidecar, but health check failed. Attempting restart...")
-        stop_sidecar(pid_file=pid_path, timeout=3.0)
+        if is_graviton_process(existing_pid):
+            logger.warning(f"Found alive PID {existing_pid} for sidecar, but health check failed. Attempting restart...")
+            stop_sidecar(pid_file=pid_path, timeout=3.0)
+        else:
+            logger.warning(
+                f"PID {existing_pid} in PID file is alive but is not a Graviton process (PID recycled). "
+                "Removing stale PID file without killing process."
+            )
+            remove_sidecar_pid(pid_path)
+            existing_pid = None
 
     if not script.exists():
         err = f"Graviton server script not found: {script}"
@@ -207,6 +249,7 @@ def start_sidecar(
 def stop_sidecar(
     pid_file: Optional[Path] = None,
     timeout: float = 5.0,
+    verify_process: bool = True,
 ) -> Tuple[bool, str]:
     """
     Stop the running Graviton sidecar process.
@@ -220,6 +263,14 @@ def stop_sidecar(
     if not pid:
         remove_sidecar_pid(pid_path)
         return True, "No running Graviton sidecar found."
+
+    if verify_process and not is_graviton_process(pid):
+        logger.warning(
+            f"PID {pid} in PID file is alive but does not appear to be a Graviton process (PID recycled). "
+            "Removing stale PID file without killing process."
+        )
+        remove_sidecar_pid(pid_path)
+        return True, f"PID {pid} was not a Graviton process; removed stale PID file."
 
     logger.info(f"Stopping Graviton sidecar (PID {pid})...")
     try:

@@ -248,6 +248,57 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
         self.assertIn("prompt is required", resp["result"]["content"][0]["text"])
 
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_call_null_arguments(self, mock_http):
+        mock_http.return_value = (200, {"active": [], "queued": [], "history": []})
+        req = {
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": {"name": "graviton_list_tasks", "arguments": None},
+        }
+        resp = self.server.handle_request(req)
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["id"], 14)
+        self.assertFalse(resp["result"]["isError"])
+        self.assertIn("No active, queued, or recent tasks found", resp["result"]["content"][0]["text"])
+
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_list_tasks_defensive_prompt(self, mock_http):
+        mock_http.return_value = (
+            200,
+            {
+                "active": [{"id": "task-1", "agent": "worker", "prompt": None}],
+                "queued": [{"id": "task-2", "agent": "worker"}],
+                "history": [{"id": "task-3", "status": "COMPLETED", "prompt": None}],
+            },
+        )
+        req = {
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "tools/call",
+            "params": {"name": "graviton_list_tasks", "arguments": {}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("task-1", content)
+        self.assertIn("task-2", content)
+        self.assertIn("task-3", content)
+
+    def test_non_dict_request_payload(self):
+        # List payload
+        resp = self.server.handle_request([1, 2, 3])
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["error"]["code"], -32600)
+        self.assertIsNone(resp["id"])
+
+        # String payload
+        resp = self.server.handle_request("foo")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["error"]["code"], -32600)
+        self.assertIsNone(resp["id"])
+
     def test_stdio_loop(self):
         input_data = (
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
@@ -263,6 +314,24 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertEqual(len(output_lines), 1)
         self.assertEqual(output_lines[0]["id"], 1)
         self.assertEqual(output_lines[0]["result"], {})
+
+    def test_stdio_loop_non_dict_payload(self):
+        input_data = (
+            json.dumps([1, 2, 3]) + "\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 99, "method": "ping"}) + "\n"
+        )
+        fake_stdin = io.StringIO(input_data)
+        fake_stdout = io.StringIO()
+
+        with patch("sys.stdin", fake_stdin), patch("sys.stdout", fake_stdout):
+            self.server.run_stdio()
+
+        output_lines = [json.loads(line) for line in fake_stdout.getvalue().strip().splitlines() if line.strip()]
+        self.assertEqual(len(output_lines), 2)
+        self.assertEqual(output_lines[0]["error"]["code"], -32600)
+        self.assertIsNone(output_lines[0]["id"])
+        self.assertEqual(output_lines[1]["id"], 99)
+        self.assertEqual(output_lines[1]["result"], {})
 
 
 if __name__ == "__main__":
