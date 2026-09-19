@@ -61,7 +61,9 @@ class GravitonMCPServer:
     ) -> Tuple[int, Dict[str, Any]]:
         """Perform an HTTP request to the Graviton server."""
         if self.auto_start_sidecar:
-            ensure_sidecar_running(host=self.host, port=self.port)
+            success, msg = ensure_sidecar_running(host=self.host, port=self.port)
+            if not success:
+                return 503, {"error": f"Failed to ensure Graviton sidecar: {msg}"}
 
         url = f"{self.base_url}{path}"
         data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -333,8 +335,17 @@ class GravitonMCPServer:
         return "\n".join(lines), False
 
     def _tool_submit_review(self, args: Dict[str, Any]) -> Tuple[str, bool]:
-        repo_full = args.get("repo_full_name", "").strip()
+        repo_full = str(args.get("repo_full_name") or "").strip()
         pr_num = args.get("pr_number")
+        if not repo_full:
+            return "Error: repo_full_name is required", True
+        if pr_num is None:
+            return "Error: pr_number is required", True
+        try:
+            pr_num = int(pr_num)
+        except (ValueError, TypeError):
+            return f"Error: Invalid 'pr_number': {pr_num}", True
+
         repo_name = args.get("repo_name") or repo_full.split("/")[-1]
 
         prompt = f"Review PR #{pr_num}. Inspect all changed files, run tests locally, formulate fixes, and submit review using --request-changes for any findings or fixes."
@@ -357,7 +368,10 @@ class GravitonMCPServer:
         return f"🚀 Successfully submitted review task for `{repo_full}#{pr_num}` (Task ID: **{task_id}**). Track progress with `graviton_get_task(task_id='{task_id}')`.", False
 
     def _tool_submit_task(self, args: Dict[str, Any]) -> Tuple[str, bool]:
-        prompt = args.get("prompt", "").strip()
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return "Error: prompt is required", True
+
         agent = args.get("agent", "code_fixer")
         repo_name = args.get("repo_name")
         target_id = args.get("target_id")
@@ -378,7 +392,10 @@ class GravitonMCPServer:
         return f"🚀 Task submitted to Graviton queue (Task ID: **{task_id}**). Track with `graviton_get_task(task_id='{task_id}')`.", False
 
     def _tool_abort_task(self, args: Dict[str, Any]) -> Tuple[str, bool]:
-        task_id = args.get("task_id", "").strip()
+        task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return "Error: task_id is required", True
+
         status_code, data = self._http_request("POST", f"/tasks/{task_id}/abort")
         if status_code != 200:
             return f"Failed to abort task '{task_id}': {data.get('error', data)}", True

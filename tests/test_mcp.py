@@ -194,6 +194,60 @@ class TestGravitonMCPServer(unittest.TestCase):
         content = resp["result"]["content"][0]["text"]
         self.assertIn("task-50", content)
 
+    @patch("lib.mcp.ensure_sidecar_running")
+    def test_http_request_fast_failure_on_sidecar_error(self, mock_ensure):
+        mock_ensure.return_value = (False, "Daemon failed to start: port busy")
+        server = GravitonMCPServer(host="127.0.0.1", port=8000, auto_start_sidecar=True)
+        status_code, data = server._http_request("GET", "/health")
+        self.assertEqual(status_code, 503)
+        self.assertIn("Failed to ensure Graviton sidecar: Daemon failed to start: port busy", data.get("error", ""))
+
+    def test_tool_submit_review_validation(self):
+        # Missing repo_full_name
+        req = {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {"name": "graviton_submit_review", "arguments": {"pr_number": 5}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("repo_full_name is required", resp["result"]["content"][0]["text"])
+
+        # Missing pr_number
+        req["params"]["arguments"] = {"repo_full_name": "owner/repo"}
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("pr_number is required", resp["result"]["content"][0]["text"])
+
+        # Invalid pr_number
+        req["params"]["arguments"] = {"repo_full_name": "owner/repo", "pr_number": "abc"}
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("Invalid 'pr_number'", resp["result"]["content"][0]["text"])
+
+    def test_tool_abort_task_validation(self):
+        req = {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {"name": "graviton_abort_task", "arguments": {"task_id": "   "}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("task_id is required", resp["result"]["content"][0]["text"])
+
+    def test_tool_submit_task_validation(self):
+        req = {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {"name": "graviton_submit_task", "arguments": {"prompt": ""}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("prompt is required", resp["result"]["content"][0]["text"])
+
     def test_stdio_loop(self):
         input_data = (
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"

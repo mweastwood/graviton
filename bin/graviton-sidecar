@@ -15,6 +15,7 @@ import argparse
 import json
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 # Add REPO_ROOT to sys.path
@@ -118,9 +119,16 @@ def cmd_ensure(args):
         extra_args=extra,
     )
     if not success:
-        print(f"Error ensuring sidecar: {msg}", file=sys.stderr)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"Error ensuring sidecar: {msg}", file=sys.stderr)
         sys.exit(1)
-    print(msg)
+
+    if getattr(args, "json", False):
+        print(json.dumps({}))
+    elif not getattr(args, "quiet", False):
+        print(msg)
     sys.exit(0)
 
 
@@ -132,10 +140,11 @@ def cmd_logs(args):
 
     lines = args.lines
     try:
-        content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        tail = content[-lines:] if len(content) > lines else content
-        for line in tail:
-            print(line)
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            tail = deque(f, maxlen=lines)
+            for line in tail:
+                sys.stdout.write(line if line.endswith("\n") else line + "\n")
+            sys.stdout.flush()
 
         if args.follow:
             with open(log_path, "r", encoding="utf-8", errors="replace") as f:
@@ -181,6 +190,8 @@ def main():
     # ensure
     p_ensure = subparsers.add_parser("ensure", help="Ensure sidecar is running (starts if down)")
     p_ensure.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_ensure.add_argument("--json", action="store_true", help="Output JSON for hook runner")
+    p_ensure.add_argument("--quiet", "-q", action="store_true", help="Suppress output on success")
 
     # logs
     p_logs = subparsers.add_parser("logs", help="View sidecar logs")

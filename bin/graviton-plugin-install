@@ -16,7 +16,43 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_SRC = REPO_ROOT / "plugins" / "graviton"
 
 
-def install_plugin(target_dir: Path, use_symlink: bool = True):
+def _ensure_plugin_executables(target_dir: Path, repo_root: Path = REPO_ROOT):
+    """Ensure bin/graviton-sidecar and bin/graviton-mcp exist and are executable in target_dir."""
+    bin_dir = target_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for exe in ["graviton-sidecar", "graviton-mcp"]:
+        exe_path = bin_dir / exe
+        if not exe_path.exists():
+            wrapper_content = f"""#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(os.environ.get("GRAVITON_ROOT", {repr(str(repo_root.resolve()))}))
+target_bin = REPO_ROOT / "bin" / "{exe}"
+
+if not target_bin.exists():
+    current = Path(__file__).resolve().parent
+    for parent in [current.parent, current.parent.parent, current.parent.parent.parent, current.parent.parent.parent.parent]:
+        candidate = parent / "bin" / "{exe}"
+        if candidate.exists() and candidate.resolve() != Path(__file__).resolve():
+            target_bin = candidate
+            break
+
+if target_bin.exists():
+    os.execv(sys.executable, [sys.executable, str(target_bin)] + sys.argv[1:])
+else:
+    sys.stderr.write(f"Error: Could not locate {{target_bin}}\\n")
+    sys.exit(1)
+"""
+            exe_path.write_text(wrapper_content)
+        try:
+            exe_path.chmod(0o755)
+        except OSError:
+            pass
+
+
+def install_plugin(target_dir: Path, use_symlink: bool = True, is_global: bool = False):
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_dir.is_symlink() or target_dir.exists():
         if target_dir.is_symlink():
@@ -28,14 +64,18 @@ def install_plugin(target_dir: Path, use_symlink: bool = True):
 
     if use_symlink:
         try:
-            rel_src = os.path.relpath(PLUGIN_SRC, target_dir.parent)
-            target_dir.symlink_to(rel_src, target_is_directory=True)
-            print(f"✅ Successfully symlinked Graviton plugin: {target_dir} -> {rel_src}")
+            if is_global:
+                link_src = PLUGIN_SRC.resolve()
+            else:
+                link_src = os.path.relpath(PLUGIN_SRC, target_dir.parent)
+            target_dir.symlink_to(link_src, target_is_directory=True)
+            print(f"✅ Successfully symlinked Graviton plugin: {target_dir} -> {link_src}")
             return True
         except Exception as e:
             print(f"⚠️ Symlink failed ({e}), falling back to copy...")
 
     shutil.copytree(PLUGIN_SRC, target_dir)
+    _ensure_plugin_executables(target_dir, repo_root=REPO_ROOT)
     print(f"✅ Successfully copied Graviton plugin to: {target_dir}")
     return True
 
@@ -46,7 +86,6 @@ def main():
     group.add_argument(
         "--workspace",
         action="store_true",
-        default=True,
         help="Install to workspace .agents/plugins/graviton (default)",
     )
     group.add_argument(
@@ -67,7 +106,7 @@ def main():
     else:
         dest = REPO_ROOT / ".agents" / "plugins" / "graviton"
 
-    success = install_plugin(dest, use_symlink=not args.copy)
+    success = install_plugin(dest, use_symlink=not args.copy, is_global=args.is_global)
     if success:
         print("\n🎉 Graviton Antigravity Plugin installed successfully!")
         print("To verify in Antigravity:")

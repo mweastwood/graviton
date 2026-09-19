@@ -199,7 +199,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
         elif path_clean.startswith("/tasks/"):
             task_id = path_clean[len("/tasks/"):]
             if not self.task_manager:
-                self._send_json(404, {"error": "TaskManager not enabled"})
+                self._send_json(503, {"error": "TaskManager not enabled"})
                 return
             task = self.task_manager.get_task(task_id)
             if not task:
@@ -251,6 +251,9 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
         if path_clean.startswith("/tasks/") and path_clean.endswith("/abort"):
             task_id = path_clean[len("/tasks/"):-len("/abort")].rstrip("/")
+            if not task_id:
+                self._send_json(400, {"error": "Missing task ID in path"})
+                return
             if not self.task_manager:
                 self._send_json(503, {"error": "TaskManager not enabled"})
                 return

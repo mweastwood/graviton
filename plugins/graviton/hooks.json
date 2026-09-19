@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "bin/graviton-sidecar ensure",
+        "command": "bin/graviton-sidecar ensure --json",
         "timeout": 15
       }
     ]

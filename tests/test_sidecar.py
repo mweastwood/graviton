@@ -169,5 +169,161 @@ class TestSidecarManager(unittest.TestCase):
         mock_start.assert_called_once()
 
 
+from importlib.machinery import SourceFileLoader
+import io
+
+sidecar_cli = SourceFileLoader("graviton_sidecar_cli", str(REPO_ROOT / "bin" / "graviton-sidecar")).load_module()
+
+
+class TestGravitonSidecarCLI(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmpdir.name)
+        self.pid_file = self.tmp_path / ".graviton.pid"
+        self.log_file = self.tmp_path / ".graviton.log"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_success_default(self, mock_ensure):
+        mock_ensure.return_value = (True, "Graviton sidecar running (PID 1234)")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "ensure"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 0)
+            self.assertIn("Graviton sidecar running", mock_out.getvalue())
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_success_json(self, mock_ensure):
+        mock_ensure.return_value = (True, "Graviton sidecar running (PID 1234)")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "ensure", "--json"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 0)
+            self.assertEqual(json.loads(mock_out.getvalue().strip()), {})
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_success_quiet(self, mock_ensure):
+        mock_ensure.return_value = (True, "Graviton sidecar running (PID 1234)")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "ensure", "--quiet"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 0)
+            self.assertEqual(mock_out.getvalue().strip(), "")
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_failure(self, mock_ensure):
+        mock_ensure.return_value = (False, "Process failed to bind port")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "ensure"]), \
+             patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Process failed to bind port", mock_err.getvalue())
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_failure_json(self, mock_ensure):
+        mock_ensure.return_value = (False, "Process failed to bind port")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "ensure", "--json"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 1)
+            out_json = json.loads(mock_out.getvalue().strip())
+            self.assertEqual(out_json["error"], "Process failed to bind port")
+
+    @patch.object(sidecar_cli, "get_sidecar_status")
+    def test_cli_status_text(self, mock_status):
+        mock_status.return_value = {
+            "running": True,
+            "healthy": True,
+            "pid": 5678,
+            "endpoint": "http://127.0.0.1:8000",
+            "details": {
+                "tasks": {"active_tasks": 2, "queued_tasks": 1},
+                "quota": {"current_pool": "gemini"},
+            },
+        }
+        with patch("sys.argv", ["graviton-sidecar", "status"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            sidecar_cli.main()
+            output = mock_out.getvalue()
+            self.assertIn("RUNNING (HEALTHY)", output)
+            self.assertIn("5678", output)
+            self.assertIn("2 active, 1 queued", output)
+
+    @patch.object(sidecar_cli, "get_sidecar_status")
+    def test_cli_status_json(self, mock_status):
+        mock_status.return_value = {
+            "running": True,
+            "healthy": True,
+            "pid": 5678,
+            "endpoint": "http://127.0.0.1:8000",
+            "details": {},
+        }
+        with patch("sys.argv", ["graviton-sidecar", "status", "--json"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            sidecar_cli.main()
+            data = json.loads(mock_out.getvalue())
+            self.assertEqual(data["pid"], 5678)
+            self.assertTrue(data["healthy"])
+
+    @patch.object(sidecar_cli, "start_sidecar")
+    def test_cli_start(self, mock_start):
+        mock_start.return_value = (True, "Graviton sidecar started (PID 9999)")
+        with patch("sys.argv", [
+            "graviton-sidecar",
+            "--pid-file", str(self.pid_file),
+            "--log-file", str(self.log_file),
+            "start",
+            "--smee-url", "https://smee.io/test1234",
+            "--no-supervisor",
+        ]), patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_start.assert_called_once()
+            _, kwargs = mock_start.call_args
+            self.assertIn("--smee-url", kwargs["extra_args"])
+            self.assertIn("--no-supervisor", kwargs["extra_args"])
+
+    @patch.object(sidecar_cli, "stop_sidecar")
+    def test_cli_stop(self, mock_stop):
+        mock_stop.return_value = (True, "Graviton sidecar stopped")
+        with patch("sys.argv", ["graviton-sidecar", "--pid-file", str(self.pid_file), "stop"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_stop.assert_called_once()
+
+    def test_cli_logs_with_deque(self):
+        # Write 20 lines to log file
+        log_lines = [f"Log line {i}\n" for i in range(20)]
+        self.log_file.write_text("".join(log_lines))
+
+        with patch("sys.argv", ["graviton-sidecar", "--log-file", str(self.log_file), "logs", "-n", "5"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            sidecar_cli.main()
+            output = mock_out.getvalue().strip().splitlines()
+            self.assertEqual(len(output), 5)
+            self.assertEqual(output[0], "Log line 15")
+            self.assertEqual(output[-1], "Log line 19")
+
+    def test_cli_logs_file_not_found(self):
+        missing_log = self.tmp_path / "nonexistent.log"
+        with patch("sys.argv", ["graviton-sidecar", "--log-file", str(missing_log), "logs"]), \
+             patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+            with self.assertRaises(SystemExit) as cm:
+                sidecar_cli.main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Log file not found", mock_err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

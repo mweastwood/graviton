@@ -1808,6 +1808,43 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(data["status"], "aborted")
         self.assertEqual(data["task_id"], "task-100")
 
+    def test_do_post_tasks_abort_missing_id_returns_400(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/abort"
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = BytesIO(b"")
+        handler.task_manager = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertEqual(data["error"], "Missing task ID in path")
+
+    def test_do_post_tasks_abort_without_task_manager_returns_503(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-100/abort"
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = BytesIO(b"")
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertEqual(data["error"], "TaskManager not enabled")
+
+    def test_do_get_task_without_task_manager_returns_503(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-100"
+        handler.task_manager = None
+
+        GravitonHandler.do_GET(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertEqual(data["error"], "TaskManager not enabled")
+
 
 if __name__ == "__main__":
     unittest.main()
