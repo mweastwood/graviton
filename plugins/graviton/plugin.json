@@ -1,0 +1,5 @@
+{
+  "name": "graviton",
+  "description": "Graviton autonomous GitHub webhook reviewer and ContainerSupervisor task pipeline",
+  "version": "1.0.0"
+}

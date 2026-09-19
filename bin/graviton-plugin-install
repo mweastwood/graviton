@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""
+Installer/linker for the Graviton Antigravity plugin.
+
+Usage:
+    graviton-plugin-install [--workspace | --global] [--copy]
+"""
+
+import argparse
+import os
+import shutil
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_SRC = REPO_ROOT / "plugins" / "graviton"
+
+
+def install_plugin(target_dir: Path, use_symlink: bool = True):
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    if target_dir.is_symlink() or target_dir.exists():
+        if target_dir.is_symlink():
+            target_dir.unlink()
+        elif target_dir.is_dir():
+            shutil.rmtree(target_dir)
+        else:
+            target_dir.unlink()
+
+    if use_symlink:
+        try:
+            rel_src = os.path.relpath(PLUGIN_SRC, target_dir.parent)
+            target_dir.symlink_to(rel_src, target_is_directory=True)
+            print(f"✅ Successfully symlinked Graviton plugin: {target_dir} -> {rel_src}")
+            return True
+        except Exception as e:
+            print(f"⚠️ Symlink failed ({e}), falling back to copy...")
+
+    shutil.copytree(PLUGIN_SRC, target_dir)
+    print(f"✅ Successfully copied Graviton plugin to: {target_dir}")
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Install Graviton Antigravity Plugin")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--workspace",
+        action="store_true",
+        default=True,
+        help="Install to workspace .agents/plugins/graviton (default)",
+    )
+    group.add_argument(
+        "--global",
+        dest="is_global",
+        action="store_true",
+        help="Install to user global ~/.gemini/config/plugins/graviton",
+    )
+    parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="Copy directory instead of symlinking",
+    )
+    args = parser.parse_args()
+
+    if args.is_global:
+        dest = Path.home() / ".gemini" / "config" / "plugins" / "graviton"
+    else:
+        dest = REPO_ROOT / ".agents" / "plugins" / "graviton"
+
+    success = install_plugin(dest, use_symlink=not args.copy)
+    if success:
+        print("\n🎉 Graviton Antigravity Plugin installed successfully!")
+        print("To verify in Antigravity:")
+        print("  - Sidecar CLI : bin/graviton-sidecar status")
+        print("  - MCP Server  : bin/graviton-mcp")
+        print("  - Slash Skill : /graviton")
+
+
+if __name__ == "__main__":
+    main()

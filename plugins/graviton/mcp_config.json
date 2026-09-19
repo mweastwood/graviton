@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "graviton": {
+      "command": "python3",
+      "args": ["bin/graviton-mcp"]
+    }
+  }
+}

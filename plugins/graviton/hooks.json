@@ -1,0 +1,11 @@
+{
+  "graviton-sidecar": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "bin/graviton-sidecar ensure",
+        "timeout": 15
+      }
+    ]
+  }
+}
