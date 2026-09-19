@@ -63,6 +63,27 @@ class TestSupervisorResult(unittest.TestCase):
         res4 = SupervisorResult(status="ERROR", response="Failed task", error="Crash")
         self.assertFalse(res4.is_goal_complete)
 
+    def test_result_goal_complete_none_response(self):
+        res_none_err = SupervisorResult(status="ERROR", response=None)
+        self.assertFalse(res_none_err.is_goal_complete)
+
+        res_none_ok = SupervisorResult(status="SUCCESS", response=None)
+        self.assertTrue(res_none_ok.is_goal_complete)
+
+    def test_result_goal_complete_error_with_bare_substring(self):
+        res = SupervisorResult(
+            status="ERROR",
+            response="Error: Agent failed without emitting GOAL_COMPLETE",
+            error="Process error",
+        )
+        self.assertFalse(res.is_goal_complete)
+
+        res2 = SupervisorResult(
+            status="ERROR",
+            response="Subprocess output mentioning GOAL_COMPLETE keyword",
+        )
+        self.assertFalse(res2.is_goal_complete)
+
 
 class TestStreamSession(unittest.TestCase):
     def setUp(self):
@@ -372,6 +393,84 @@ class TestStreamSession(unittest.TestCase):
         elapsed = time.time() - start_time
         self.assertLess(elapsed, 0.5)
         block_event.set()
+
+    def test_receive_turn_max_duration_timeout(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+
+        block_event = threading.Event()
+
+        def blocking_readline():
+            block_event.wait(timeout=1.0)
+            return ""
+
+        self.mock_proc.stdout.readline.side_effect = blocking_readline
+
+        start_time = time.time()
+        with self.assertRaises(SupervisorTimeoutError) as ctx:
+            session.receive_turn(max_duration=0.05)
+        elapsed = time.time() - start_time
+        self.assertLess(elapsed, 0.5)
+        block_event.set()
+        self.assertIn("ceiling", str(ctx.exception).lower())
+
+    def test_run_turn_disabling_max_duration(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+
+        with patch.object(session, "send_prompt"), \
+             patch.object(session, "receive_turn") as mock_receive:
+            mock_receive.return_value = SupervisorResult(status="SUCCESS")
+            session.run_turn("test prompt", max_duration=None)
+            mock_receive.assert_called_once()
+            _, kwargs = mock_receive.call_args
+            self.assertIn("max_duration", kwargs)
+            self.assertIsNone(kwargs["max_duration"])
+
+    def test_receive_turn_tool_calls_deduplication(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-dedup"
+
+        lines = [
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "id": "tool-call-1",
+                    "tool_name": "run_command",
+                    "tool_info": {"CommandLine": "pytest"},
+                    "state": "RUNNING",
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "id": "tool-call-1",
+                    "tool_name": "run_command",
+                    "state": "DONE",
+                    "duration_seconds": 1.2,
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Done! <!-- GOAL_COMPLETE -->",
+                },
+            }) + "\n",
+            "",
+        ]
+        self.mock_proc.stdout.readline.side_effect = lines
+
+        res = session.receive_turn()
+        self.assertEqual(len(res.tool_calls), 1)
+        self.assertEqual(res.tool_calls[0]["id"], "tool-call-1")
+        self.assertEqual(res.tool_calls[0]["name"], "run_command")
+        self.assertEqual(res.tool_calls[0]["info"], {"CommandLine": "pytest"})
+        self.assertEqual(res.tool_calls[0]["state"], "DONE")
+        self.assertEqual(res.tool_calls[0]["duration_seconds"], 1.2)
 
     def test_receive_turn_premature_exit(self):
         session = StreamSession(agy_binary="agy")

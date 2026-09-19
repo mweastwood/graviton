@@ -36,6 +36,8 @@ __all__ = [
     "run_stream_turn",
 ]
 
+_UNSET: Any = object()
+
 
 @dataclass
 class SupervisorResult:
@@ -58,9 +60,10 @@ class SupervisorResult:
 
     @property
     def is_goal_complete(self) -> bool:
+        resp = self.response or ""
         return (
-            "<!-- GOAL_COMPLETE -->" in self.response
-            or "GOAL_COMPLETE" in self.response
+            "<!-- GOAL_COMPLETE -->" in resp
+            or (self.is_success and "GOAL_COMPLETE" in resp)
             or self.is_success
         )
 
@@ -439,13 +442,20 @@ class StreamSession:
             if idle_timeout is not None and (now - last_event_time) > idle_timeout:
                 raise SupervisorTimeoutError(f"Watchdog timeout: agent idle for {idle_timeout}s without emitting events.")
 
+            wait_timeout = 0.1
             if effective_limit is not None:
                 remaining = effective_limit - (now - start_time)
                 if remaining <= 0:
                     raise SupervisorTimeoutError(f"Turn execution exceeded timeout ceiling of {effective_limit}s.")
-                wait_timeout = min(remaining, 0.1)
-            else:
-                wait_timeout = 0.1
+                wait_timeout = min(wait_timeout, remaining)
+
+            if idle_timeout is not None:
+                idle_remaining = idle_timeout - (now - last_event_time)
+                if idle_remaining <= 0:
+                    raise SupervisorTimeoutError(f"Watchdog timeout: agent idle for {idle_timeout}s without emitting events.")
+                wait_timeout = min(wait_timeout, idle_remaining)
+
+            wait_timeout = max(0.0, wait_timeout)
 
             try:
                 line = self._stdout_queue.get(timeout=wait_timeout)
@@ -500,15 +510,39 @@ class StreamSession:
 
                 step_type = su.get("step_type")
                 if step_type == "tool":
+                    tool_id = su.get("tool_call_id") or su.get("call_id") or su.get("id")
                     tool_name = su.get("tool_name") or ""
                     tool_info = su.get("tool_info") or {}
                     state = su.get("state")
-                    tool_calls.append({
+                    duration = su.get("duration_seconds")
+
+                    entry = {
                         "name": tool_name,
                         "info": tool_info,
                         "state": state,
-                        "duration_seconds": su.get("duration_seconds"),
-                    })
+                        "duration_seconds": duration,
+                    }
+                    if tool_id is not None:
+                        entry["id"] = tool_id
+
+                    existing = None
+                    if tool_id is not None:
+                        for item in tool_calls:
+                            if item.get("id") == tool_id:
+                                existing = item
+                                break
+
+                    if existing is not None:
+                        if tool_name:
+                            existing["name"] = tool_name
+                        if tool_info:
+                            existing["info"] = tool_info
+                        if state is not None:
+                            existing["state"] = state
+                        if duration is not None:
+                            existing["duration_seconds"] = duration
+                    else:
+                        tool_calls.append(entry)
                     if on_tool_call:
                         try:
                             on_tool_call(tool_name, tool_info)
@@ -547,7 +581,7 @@ class StreamSession:
         on_chunk: Optional[Callable[[str], None]] = None,
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
-        max_duration: Optional[float] = None,
+        max_duration: Any = _UNSET,
         **kwargs: Any,
     ) -> SupervisorResult:
         """
@@ -568,7 +602,7 @@ class StreamSession:
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
+        if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
         return self.receive_turn(timeout=timeout, on_event=on_event, **extra)
 
@@ -600,8 +634,7 @@ class StreamSession:
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
-            extra["max_duration"] = max_duration
+        extra["max_duration"] = max_duration
         return self.run_turn(
             prompt,
             timeout=timeout,
@@ -678,7 +711,7 @@ def run_stream_turn(
     on_chunk: Optional[Callable[[str], None]] = None,
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     idle_timeout: Optional[float] = None,
-    max_duration: Optional[float] = None,
+    max_duration: Any = _UNSET,
     extra_args: Optional[List[str]] = None,
     agy_binary: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
@@ -708,7 +741,7 @@ def run_stream_turn(
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
+        if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
         return session.run_turn(prompt, timeout=timeout, on_event=on_event, **extra)
 
@@ -756,8 +789,7 @@ def run_goal_turn(
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
-            extra["max_duration"] = max_duration
+        extra["max_duration"] = max_duration
         return session.run_goal(
             goal,
             timeout=timeout,
@@ -1144,7 +1176,7 @@ class ContainerSupervisor:
         on_chunk: Optional[Callable[[str], None]] = None,
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
-        max_duration: Optional[float] = None,
+        max_duration: Any = _UNSET,
         **kwargs: Any,
     ) -> SupervisorResult:
         """Receive a turn response from the container session."""
@@ -1161,7 +1193,7 @@ class ContainerSupervisor:
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
+        if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
         return self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
 
@@ -1175,7 +1207,7 @@ class ContainerSupervisor:
         on_chunk: Optional[Callable[[str], None]] = None,
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
-        max_duration: Optional[float] = None,
+        max_duration: Any = _UNSET,
         **kwargs: Any,
     ) -> SupervisorResult:
         """Execute a turn, starting the container session if not already running."""
@@ -1193,7 +1225,7 @@ class ContainerSupervisor:
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
+        if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
         return self.receive_turn(timeout=timeout, on_event=on_event, **extra)
 
@@ -1223,8 +1255,7 @@ class ContainerSupervisor:
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
-            extra["max_duration"] = max_duration
+        extra["max_duration"] = max_duration
         return self.run_turn(
             prompt,
             timeout=timeout,
@@ -1287,7 +1318,7 @@ def run_container_turn(
     on_chunk: Optional[Callable[[str], None]] = None,
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     idle_timeout: Optional[float] = None,
-    max_duration: Optional[float] = None,
+    max_duration: Any = _UNSET,
     extra_args: Optional[List[str]] = None,
     base_workspaces_dir: Union[str, Path] = "/tmp/graviton-workspaces",
     run_id: Optional[str] = None,
@@ -1335,7 +1366,7 @@ def run_container_turn(
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
+        if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
         return supervisor.run_turn(prompt, timeout=timeout, on_event=on_event, **extra)
 
@@ -1403,8 +1434,7 @@ def run_container_goal(
             extra["on_step"] = on_step
         if idle_timeout is not None:
             extra["idle_timeout"] = idle_timeout
-        if max_duration is not None:
-            extra["max_duration"] = max_duration
+        extra["max_duration"] = max_duration
         return supervisor.run_goal(
             goal,
             timeout=timeout,

@@ -552,6 +552,21 @@ class TestReleaseRouting(unittest.TestCase):
         self.assertTrue(comment_goal.startswith("/goal"))
         self.assertIn("lib/app.py", comment_goal)
 
+    def test_pr_router_goal_formatting_without_repo(self):
+        goal = format_pr_review_goal(42, repo_full_name=None)
+        self.assertTrue(goal.startswith("/goal"))
+        self.assertIn("Review PR #42.", goal)
+        self.assertNotIn("in ", goal)
+
+        fb_goal = format_pr_feedback_goal(42, "Please add tests", repo_full_name=None)
+        self.assertTrue(fb_goal.startswith("/goal"))
+        self.assertIn("Resolve review feedback on PR #42: 'Please add tests'.", fb_goal)
+        self.assertNotIn("in ", fb_goal)
+
+        comment_goal = format_pr_review_comment_goal(42, "lib/app.py", 10, "Typo here", repo_full_name=None)
+        self.assertTrue(comment_goal.startswith("/goal"))
+        self.assertIn("Resolve review comment on PR #42 in file 'lib/app.py' (line 10): 'Typo here'.", comment_goal)
+
     def test_pr_router_use_goal_flag(self):
         payload = {
             "action": "opened",
