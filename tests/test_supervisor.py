@@ -3,8 +3,9 @@
 import io
 import json
 import subprocess
+import threading
+import time
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from lib.supervisor import (
@@ -46,8 +47,8 @@ class TestStreamSession(unittest.TestCase):
         self.mock_proc.poll.return_value = None
         self.mock_proc.returncode = 0
         self.mock_proc.stdin = MagicMock()
-        self.mock_proc.stdout = io.StringIO()
-        self.mock_proc.stderr = io.StringIO()
+        self.mock_proc.stdout = MagicMock()
+        self.mock_proc.stderr = MagicMock()
 
     def test_command_line_args_generation(self):
         session = StreamSession(
@@ -61,14 +62,15 @@ class TestStreamSession(unittest.TestCase):
         )
 
         with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_proc.stdout.readline.return_value = json.dumps({
-                "event": "init",
-                "conversation_id": "test-conv-id",
-                "init": {},
-            }) + "\n"
-            mock_popen.return_value = mock_proc
+            self.mock_proc.stdout.readline.side_effect = [
+                json.dumps({
+                    "event": "init",
+                    "conversation_id": "test-conv-id",
+                    "init": {},
+                }) + "\n",
+                "",
+            ]
+            mock_popen.return_value = self.mock_proc
 
             conv_id = session.start()
             self.assertEqual(conv_id, "test-conv-id")
@@ -90,11 +92,12 @@ class TestStreamSession(unittest.TestCase):
     def test_start_premature_exit(self):
         session = StreamSession(agy_binary="agy")
         with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = 1
-            mock_proc.returncode = 1
-            mock_proc.stderr.read.return_value = "Fatal error"
-            mock_popen.return_value = mock_proc
+            self.mock_proc.poll.return_value = 1
+            self.mock_proc.returncode = 1
+            self.mock_proc.stderr.readline.side_effect = ["Fatal error\n", ""]
+            self.mock_proc.stderr.read.return_value = "Fatal error"
+            self.mock_proc.stdout.readline.side_effect = [""]
+            mock_popen.return_value = self.mock_proc
 
             with self.assertRaises(SupervisorError) as ctx:
                 session.start(timeout=1.0)
@@ -103,10 +106,8 @@ class TestStreamSession(unittest.TestCase):
     def test_start_malformed_init_json(self):
         session = StreamSession(agy_binary="agy")
         with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_proc.stdout.readline.return_value = "NOT_VALID_JSON\n"
-            mock_popen.return_value = mock_proc
+            self.mock_proc.stdout.readline.side_effect = ["NOT_VALID_JSON\n", ""]
+            mock_popen.return_value = self.mock_proc
 
             with self.assertRaises(SupervisorError) as ctx:
                 session.start(timeout=1.0)
@@ -115,24 +116,42 @@ class TestStreamSession(unittest.TestCase):
     def test_start_unexpected_event(self):
         session = StreamSession(agy_binary="agy")
         with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_proc.stdout.readline.return_value = json.dumps({"event": "something_else"}) + "\n"
-            mock_popen.return_value = mock_proc
+            self.mock_proc.stdout.readline.side_effect = [
+                json.dumps({"event": "something_else"}) + "\n",
+                "",
+            ]
+            mock_popen.return_value = self.mock_proc
 
             with self.assertRaises(SupervisorError) as ctx:
                 session.start(timeout=1.0)
             self.assertIn("Expected 'init' event", str(ctx.exception))
 
+    def test_start_timeout_blocking(self):
+        session = StreamSession(agy_binary="agy")
+        with patch("subprocess.Popen") as mock_popen:
+            block_event = threading.Event()
+
+            def blocking_readline():
+                block_event.wait(timeout=1.0)
+                return ""
+
+            self.mock_proc.stdout.readline.side_effect = blocking_readline
+            mock_popen.return_value = self.mock_proc
+
+            start_time = time.time()
+            with self.assertRaises(SupervisorTimeoutError):
+                session.start(timeout=0.05)
+            elapsed = time.time() - start_time
+            self.assertLess(elapsed, 0.5)
+            block_event.set()
+
     def test_send_prompt_formatting(self):
         session = StreamSession(agy_binary="agy")
-        session.proc = MagicMock()
-        session.proc.poll.return_value = None
-        session.proc.stdin = MagicMock()
+        session.proc = self.mock_proc
 
         session.send_prompt("Review PR #42")
-        session.proc.stdin.write.assert_called_once()
-        sent_line = session.proc.stdin.write.call_args[0][0]
+        self.mock_proc.stdin.write.assert_called_once()
+        sent_line = self.mock_proc.stdin.write.call_args[0][0]
         data = json.loads(sent_line)
 
         self.assertEqual(data.get("event"), "user")
@@ -143,8 +162,7 @@ class TestStreamSession(unittest.TestCase):
 
     def test_receive_turn_success(self):
         session = StreamSession(agy_binary="agy")
-        session.proc = MagicMock()
-        session.proc.poll.return_value = None
+        session.proc = self.mock_proc
         session.conversation_id = "conv-abc"
 
         lines = [
@@ -160,8 +178,9 @@ class TestStreamSession(unittest.TestCase):
                     "usage": {"total_tokens": 100},
                 },
             }) + "\n",
+            "",
         ]
-        session.proc.stdout.readline.side_effect = lines
+        self.mock_proc.stdout.readline.side_effect = lines
 
         captured_events = []
         result = session.receive_turn(on_event=lambda ev: captured_events.append(ev))
@@ -173,17 +192,56 @@ class TestStreamSession(unittest.TestCase):
 
     def test_receive_turn_timeout(self):
         session = StreamSession(agy_binary="agy")
-        session.proc = MagicMock()
-        session.proc.poll.return_value = None
-        session.proc.stdout.readline.return_value = ""
+        session.proc = self.mock_proc
 
+        # Simulate a blocking/stalled pipe: readline blocks longer than timeout
+        block_event = threading.Event()
+
+        def blocking_readline():
+            block_event.wait(timeout=1.0)
+            return ""
+
+        self.mock_proc.stdout.readline.side_effect = blocking_readline
+
+        start_time = time.time()
         with self.assertRaises(SupervisorTimeoutError):
             session.receive_turn(timeout=0.05)
+        elapsed = time.time() - start_time
+        self.assertLess(elapsed, 0.5)
+        block_event.set()
+
+    def test_receive_turn_null_metrics(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-null"
+
+        lines = [
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": None,
+                    "response": None,
+                    "duration_seconds": None,
+                    "num_turns": None,
+                    "usage": None,
+                    "error": None,
+                },
+            }) + "\n",
+            "",
+        ]
+        self.mock_proc.stdout.readline.side_effect = lines
+
+        result = session.receive_turn(timeout=1.0)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, "SUCCESS")
+        self.assertEqual(result.response, "")
+        self.assertIsInstance(result.duration_seconds, float)
+        self.assertEqual(result.num_turns, 1)
+        self.assertEqual(result.usage, {})
 
     def test_multi_turn_execution(self):
         session = StreamSession(agy_binary="agy")
-        session.proc = MagicMock()
-        session.proc.poll.return_value = None
+        session.proc = self.mock_proc
         session.conversation_id = "conv-multi"
 
         turn1_lines = [
@@ -191,9 +249,10 @@ class TestStreamSession(unittest.TestCase):
         ]
         turn2_lines = [
             json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "Turn 2 done"}}) + "\n",
+            "",
         ]
 
-        session.proc.stdout.readline.side_effect = turn1_lines + turn2_lines
+        self.mock_proc.stdout.readline.side_effect = turn1_lines + turn2_lines
 
         r1 = session.run_turn("First prompt")
         self.assertEqual(r1.response, "Turn 1 done")
@@ -203,14 +262,80 @@ class TestStreamSession(unittest.TestCase):
 
     def test_context_manager(self):
         with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_proc.stdout.readline.return_value = json.dumps({"event": "init", "conversation_id": "cm-id"}) + "\n"
-            mock_popen.return_value = mock_proc
+            self.mock_proc.stdout.readline.side_effect = [
+                json.dumps({"event": "init", "conversation_id": "cm-id"}) + "\n",
+                "",
+            ]
+            mock_popen.return_value = self.mock_proc
 
             with StreamSession() as session:
                 self.assertEqual(session.conversation_id, "cm-id")
-            mock_proc.stdin.close.assert_called()
+            self.mock_proc.stdin.close.assert_called()
+
+    def test_close_graceful_exit(self):
+        session = StreamSession()
+        session.proc = self.mock_proc
+        self.mock_proc.wait.return_value = 0
+
+        session.close(timeout=1.0)
+        self.mock_proc.stdin.close.assert_called()
+        self.mock_proc.stdout.close.assert_called()
+        self.mock_proc.stderr.close.assert_called()
+        self.mock_proc.wait.assert_called_with(timeout=1.0)
+        self.mock_proc.terminate.assert_not_called()
+        self.mock_proc.kill.assert_not_called()
+
+    def test_close_escalation_terminate(self):
+        session = StreamSession()
+        session.proc = self.mock_proc
+        self.mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="agy", timeout=1.0),
+            0,
+        ]
+
+        session.close(timeout=1.0)
+        self.mock_proc.terminate.assert_called_once()
+        self.mock_proc.kill.assert_not_called()
+
+    def test_close_escalation_kill(self):
+        session = StreamSession()
+        session.proc = self.mock_proc
+        self.mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="agy", timeout=1.0),
+            subprocess.TimeoutExpired(cmd="agy", timeout=2.0),
+            0,
+        ]
+
+        session.close(timeout=1.0)
+        self.mock_proc.terminate.assert_called_once()
+        self.mock_proc.kill.assert_called_once()
+
+    def test_run_stream_turn_wrapper(self):
+        with patch("lib.supervisor.StreamSession") as mock_cls:
+            mock_instance = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_instance
+            expected_res = SupervisorResult(status="SUCCESS", response="turn output")
+            mock_instance.run_turn.return_value = expected_res
+
+            res = run_stream_turn(
+                prompt="Test prompt",
+                agent_name="issue_triager",
+                model="gemini",
+                cwd="/tmp",
+                remote_control=True,
+                timeout=12.0,
+                extra_args=["--verbose"],
+            )
+
+            mock_cls.assert_called_once_with(
+                agent_name="issue_triager",
+                model="gemini",
+                cwd="/tmp",
+                remote_control=True,
+                extra_args=["--verbose"],
+            )
+            mock_instance.run_turn.assert_called_once_with("Test prompt", timeout=12.0, on_event=None)
+            self.assertEqual(res, expected_res)
 
 
 class TestSupervisorIntegration(unittest.TestCase):
