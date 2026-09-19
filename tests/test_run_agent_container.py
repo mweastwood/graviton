@@ -533,6 +533,29 @@ class TestRunAgentContainer(unittest.TestCase):
             self.assertNotIn(":/root/.ssh:ro", run_args_str)
             self.assertNotIn(":/root/.config/gh:ro", run_args_str)
 
+    def test_antigravity_cli_directory_created_and_mounted_when_absent(self):
+        """Verify host ~/.gemini/antigravity-cli is created and mounted even if initially absent."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            cli_dir = ctx["fake_home"] / ".gemini" / "antigravity-cli"
+            self.assertFalse(cli_dir.exists())
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "CLI dir test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(ctx["fake_cwd"]),
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(cli_dir.is_dir())
+
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_call = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]][0]
+            run_args_str = " ".join(run_call["args"])
+            self.assertIn(f"{cli_dir}:/root/.gemini/antigravity-cli", run_args_str)
+
+
     # -------------------------------------------------------------------------
     # E. Retry Loop & Transcript Completion Evaluation
     # -------------------------------------------------------------------------

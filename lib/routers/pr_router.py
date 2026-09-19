@@ -176,31 +176,39 @@ def handle_pull_request_review_event(
             "reason": "PR was not created by us",
         }
 
-    if action == "submitted" and review_state in ("CHANGES_REQUESTED", "COMMENTED"):
+    if action == "submitted":
         if review_state == "COMMENTED" and has_approval_marker(review_body) and not has_change_request_marker(review_body):
             return {
                 "status": "ignored",
                 "reason": f"Review state '{review_state}' with approval marker does not trigger fixer",
             }
-        goal_prompt = format_pr_feedback_goal(pr_number, review_body, repo_full_name=repo_full_name)
-        if use_goal:
-            prompt = goal_prompt
-        elif repo_full_name:
-            prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
-        else:
-            prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
-        return _build_accepted_response(
-            action=action,
-            agent=default_fixer,
-            prompt=prompt,
-            goal_prompt=goal_prompt,
-            repo_full_name=repo_full_name,
-            repo_name=repo_name,
-            clone_url=clone_url,
-            author_agent=author_agent,
-            review_state=review_state,
-            pr_number=pr_number,
-        )
+        if review_state == "CHANGES_REQUESTED" or (
+            review_state == "COMMENTED" and (has_explicit_command(review_body) or has_change_request_marker(review_body))
+        ):
+            goal_prompt = format_pr_feedback_goal(pr_number, review_body, repo_full_name=repo_full_name)
+            if use_goal:
+                prompt = goal_prompt
+            elif repo_full_name:
+                prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
+            else:
+                prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
+            return _build_accepted_response(
+                action=action,
+                agent=default_fixer,
+                prompt=prompt,
+                goal_prompt=goal_prompt,
+                repo_full_name=repo_full_name,
+                repo_name=repo_name,
+                clone_url=clone_url,
+                author_agent=author_agent,
+                review_state=review_state,
+                pr_number=pr_number,
+            )
+        if review_state == "COMMENTED":
+            return {
+                "status": "ignored",
+                "reason": f"Review state '{review_state}' without explicit directive does not trigger fixer",
+            }
 
     return {
         "status": "ignored",

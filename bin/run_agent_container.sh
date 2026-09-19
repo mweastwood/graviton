@@ -87,7 +87,9 @@ cleanup() {
     fi
   fi
   if [ -d "${TEMP_WORKSPACE}" ]; then
-    rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || docker run --rm -v "${TEMP_WORKSPACE}:/target" alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true' 2>/dev/null || true
+    chmod -R ugo+rwX "${TEMP_WORKSPACE}" 2>/dev/null || true
+    rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || docker run --rm -v "${TEMP_WORKSPACE}:/target" alpine sh -c 'chmod -R ugo+rwX /target 2>/dev/null || true; rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true' 2>/dev/null || true
+    rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || docker run --rm -v "$(dirname "${TEMP_WORKSPACE}"):/parent" alpine rm -rf "/parent/$(basename "${TEMP_WORKSPACE}")" 2>/dev/null || true
     rm -rf "${TEMP_WORKSPACE}" 2>/dev/null || true
   fi
 }
@@ -118,6 +120,7 @@ if [ -d "${HOME}/.config/gh" ]; then
   GH_CONFIG_MOUNT=(-v "${HOME}/.config/gh:/root/.config/gh:ro")
 fi
 
+mkdir -p "${HOME}/.gemini/antigravity-cli"
 CLI_DIR_MOUNT=()
 if [ -d "${HOME}/.gemini/antigravity-cli" ]; then
   CLI_DIR_MOUNT=(-v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli")

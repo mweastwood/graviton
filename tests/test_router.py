@@ -1083,6 +1083,68 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(len(tracker.get_approved_prs()), 1)
         self.assertEqual(tracker.get_approved_prs()[0]["number"], 126)
 
+    def test_pull_request_review_commented_without_explicit_directive_ignored(self):
+        """When human reviewer posts an informational COMMENTED review without explicit directive, drop event."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "Can you clarify why this function was split into two?",
+                "user": {"login": "human_reviewer", "type": "User"},
+            },
+            "pull_request": {
+                "number": 127,
+                "title": "Refactor helpers",
+                "html_url": "https://github.com/mweastwood/graviton/pull/127",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Review state 'COMMENTED' without explicit directive does not trigger fixer")
+
+    def test_pull_request_review_commented_with_explicit_directive_accepted(self):
+        """When human reviewer posts a COMMENTED review with /fix directive, route to code_fixer."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "/fix Please update error handling and add a unit test",
+                "user": {"login": "human_reviewer", "type": "User"},
+            },
+            "pull_request": {
+                "number": 128,
+                "title": "Feature enhancement",
+                "html_url": "https://github.com/mweastwood/graviton/pull/128",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "accepted")
+        self.assertEqual(res["agent"], "code_fixer")
+        self.assertIn("/fix Please update error handling and add a unit test", res["prompt"])
+
+    def test_pull_request_review_commented_compliment_ignored(self):
+        """When human reviewer posts a compliment in a COMMENTED review, drop event."""
+        payload = {
+            "action": "submitted",
+            "review": {
+                "state": "COMMENTED",
+                "body": "Great work on this refactor, looks very clean!",
+                "user": {"login": "human_reviewer", "type": "User"},
+            },
+            "pull_request": {
+                "number": 129,
+                "title": "Clean codebase",
+                "html_url": "https://github.com/mweastwood/graviton/pull/129",
+                "user": {"login": "antigravity-bot"},
+            },
+        }
+        res = route_webhook_event("pull_request_review", payload)
+        self.assertEqual(res["status"], "ignored")
+        self.assertEqual(res["reason"], "Review state 'COMMENTED' without explicit directive does not trigger fixer")
+
+
     def test_router_extracts_author_agent_and_routes_issue_triager_to_pr_drafter(self):
         """When issue_triager posts design spec comment on ready-for-pr issue, route to pr_drafter with author_agent."""
         payload = {
