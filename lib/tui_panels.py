@@ -1107,10 +1107,12 @@ def render_task_logs_panel(
         f"Elapsed: {elapsed_str} │ "
         f"Attempt: {att_str}"
     )
+    conv_id = getattr(task, "conversation_id", None)
+    conv_str = f" │ Conv: {conv_id[:12]}" if conv_id else ""
     meta_line_2 = (
         f"Agent: \033[96m{agent_str}\033[0m │ "
         f"Model: {model_str} │ "
-        f"Target: {target_str}"
+        f"Target: {target_str}{conv_str}"
     )
     prompt_str = getattr(task, "prompt", "")
     prompt_line = f"\033[2mPrompt: {prompt_str}\033[0m"

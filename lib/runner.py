@@ -24,7 +24,10 @@ def is_transcript_incomplete(
     agent_name: Optional[str] = None,
 ) -> bool:
     """
-    Check if an agy agent session transcript ended prematurely.
+    [DEPRECATED] Check if an agy agent session transcript ended prematurely.
+
+    Deprecated in favor of lib.supervisor stream-json protocol and multi-turn /goal mode.
+    Retained for backwards compatibility with legacy runner scripts and tests.
 
     Returns True if:
     1. The last planner response has unexecuted non-empty tool_calls.
@@ -250,7 +253,10 @@ def run_agent_container(
     on_process_created: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> subprocess.CompletedProcess:
     """
-    Execute the agent container script synchronously.
+    [DEPRECATED] Execute the agent container script synchronously.
+
+    Deprecated in favor of lib.supervisor.ContainerSupervisor.
+    Retained for backwards compatibility with legacy runner scripts and tests.
 
     :param agent_name: Name of agent specification (e.g. 'code_reviewer').
     :param prompt: Prompt instruction string for agent.

@@ -19,7 +19,7 @@ import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 # Add REPO_ROOT to sys.path to allow importing lib
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -127,6 +127,23 @@ def start_smee_listener(smee_url: str, port: int) -> Optional[subprocess.Popen]:
         return None
 
 
+def is_supervisor_active(handler: Any) -> bool:
+    """Return True only if supervisor mode is explicitly enabled on handler, server, or class."""
+    val = getattr(handler, "use_supervisor", None)
+    if val is True:
+        return True
+    if val is False:
+        return False
+    server = getattr(handler, "server", None)
+    if server is not None:
+        s_val = getattr(server, "use_supervisor", None)
+        if s_val is True:
+            return True
+        if s_val is False:
+            return False
+    return getattr(GravitonHandler, "use_supervisor", False) is True
+
+
 class GravitonHandler(BaseHTTPRequestHandler):
     secret: str = ""
     default_reviewer: str = "code_reviewer"
@@ -139,6 +156,11 @@ class GravitonHandler(BaseHTTPRequestHandler):
     pr_tracker: Optional[PRTracker] = None
     quota_tracker: Optional[QuotaTracker] = None
     listener_proc: Optional[subprocess.Popen] = None
+    use_supervisor: bool = False
+
+    @property
+    def is_supervisor_active(self) -> bool:
+        return is_supervisor_active(self)
 
     def do_GET(self):
         """Health check endpoint."""
@@ -334,6 +356,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
             agent = decision.get("agent")
             prompt = decision.get("prompt")
+            goal_prompt = decision.get("goal_prompt")
             if agent and prompt:
                 target_num = decision.get("pr_number") or decision.get("issue_number")
                 target_id = f"#{target_num}" if target_num is not None else None
@@ -343,14 +366,29 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
                 if self.task_manager:
                     try:
-                        self.task_manager.submit_task(
-                            agent=agent,
-                            prompt=prompt,
-                            target_id=target_id,
-                            repo_full_name=repo_full_name,
-                            repo_name=repo_name,
-                            clone_url=clone_url,
+                        submit_kwargs = {
+                            "agent": agent,
+                            "prompt": prompt,
+                            "target_id": target_id,
+                            "repo_full_name": repo_full_name,
+                            "repo_name": repo_name,
+                            "clone_url": clone_url,
+                        }
+                        tm_use_sup = getattr(self.task_manager, "use_supervisor", None)
+                        is_sup = (
+                            is_supervisor_active(self)
+                            or tm_use_sup is True
+                            or (tm_use_sup is None and getattr(self.task_manager, "script_path", "unset") is None)
                         )
+                        if is_sup:
+                            if goal_prompt:
+                                submit_kwargs["goal_prompt"] = goal_prompt
+                            if event_type:
+                                submit_kwargs["webhook_event_type"] = event_type
+                            if payload:
+                                submit_kwargs["webhook_payload"] = payload
+
+                        self.task_manager.submit_task(**submit_kwargs)
                         post_emoji_reaction_async(event_type, payload)
                     except RuntimeError as e:
                         logger.warning(f"Could not submit task: {e}")
@@ -410,7 +448,18 @@ class GravitonHandler(BaseHTTPRequestHandler):
                         return
 
                     post_emoji_reaction_async(event_type, payload)
-                    run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
+                    if is_supervisor_active(self):
+                        from lib.supervisor import run_container_goal, run_container_turn
+                        target_fn = run_container_goal if goal_prompt else run_container_turn
+                        target_p = goal_prompt or prompt
+                        threading.Thread(
+                            target=target_fn,
+                            args=(target_p, exec_cwd),
+                            kwargs={"agent_name": agent},
+                            daemon=True,
+                        ).start()
+                    else:
+                        run_agent_async(agent, prompt, RUN_CONTAINER_SCRIPT, exec_cwd)
 
             # Omit internal prompt from HTTP response output
             response_payload = {k: v for k, v in decision.items() if k != "prompt"}
@@ -459,6 +508,25 @@ def main():
         help="Path to persisted model selection state JSON file (default: REPO_ROOT/.graviton_model_selection.json)",
     )
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
+    parser.add_argument(
+        "--supervisor",
+        dest="use_supervisor",
+        action="store_true",
+        default=os.getenv("GRAVITON_USE_SUPERVISOR", "true").lower() in ("1", "true", "yes"),
+        help="Use Antigravity ContainerSupervisor pipeline (default: True, env: GRAVITON_USE_SUPERVISOR)",
+    )
+    parser.add_argument(
+        "--no-supervisor",
+        dest="use_supervisor",
+        action="store_false",
+        help="Use legacy bash container runner (bin/run_agent_container.sh)",
+    )
+    parser.add_argument(
+        "--post-completion-comment",
+        action="store_true",
+        default=os.getenv("GRAVITON_POST_COMPLETION_COMMENT", "").lower() in ("1", "true", "yes"),
+        help="Post a completion comment to GitHub issue/PR upon supervisor task finish",
+    )
     args = parser.parse_args()
 
     # Strip any console StreamHandler from root logger to prevent early startup logs from leaking to terminal during hot reload
@@ -515,6 +583,8 @@ def main():
             cwd=REPO_ROOT,
             quota_tracker=quota_tracker,
             repos_dir=repos_dir,
+            use_supervisor=args.use_supervisor,
+            post_completion_comment=args.post_completion_comment,
         )
         restored_count = task_manager.restore_queue_state()
         if restored_count > 0:
@@ -541,9 +611,11 @@ def main():
         pr_tracker = PRTracker()
         pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
         GravitonHandler.pr_tracker = pr_tracker
+        GravitonHandler.use_supervisor = args.use_supervisor
 
         server_address = (args.host, args.port)
         httpd = HTTPServer(server_address, GravitonHandler)
+        httpd.use_supervisor = args.use_supervisor
 
         def shutdown_signal_handler(signum, frame):
             nonlocal shutdown_thread

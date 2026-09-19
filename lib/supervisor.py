@@ -67,6 +67,10 @@ class SupervisorResult:
             or self.is_success
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        from dataclasses import asdict
+        return asdict(self)
+
 
 class SupervisorError(Exception):
     """Base exception for StreamSession supervisor failures."""
@@ -1292,6 +1296,10 @@ class ContainerSupervisor:
 
     def close(self) -> None:
         """Synonym for cleanup."""
+        self.cleanup()
+
+    def abort(self) -> None:
+        """Abort execution and cleanup resources."""
         self.cleanup()
 
     def __enter__(self) -> "ContainerSupervisor":

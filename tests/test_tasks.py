@@ -2466,8 +2466,291 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
         manager.stop(wait=False)
 
 
+class TestTaskManagerSupervisorIntegration(unittest.TestCase):
+    """Unit tests for ContainerSupervisor integration in TaskManager."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmpdir.name)
+        self.repo_dir = self.tmp_path / "repo"
+        self.repo_dir.mkdir()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_task_supervisor_fields_serialization(self):
+        task = Task(
+            id="task-sup-1",
+            agent="code_reviewer",
+            prompt="Review code",
+            goal_prompt="Autonomous goal",
+            use_goal=True,
+            webhook_event_type="pull_request",
+            webhook_payload={"number": 10},
+            conversation_id="conv-12345",
+            thoughts=["Thinking about architecture"],
+            tool_calls=[{"tool": "view_file", "args": {"file": "main.py"}}],
+            supervisor_result={"is_goal_complete": True, "turns": 2},
+        )
+        d = task.to_dict()
+        self.assertEqual(d["goal_prompt"], "Autonomous goal")
+        self.assertTrue(d["use_goal"])
+        self.assertEqual(d["webhook_event_type"], "pull_request")
+        self.assertEqual(d["webhook_payload"], {"number": 10})
+        self.assertEqual(d["conversation_id"], "conv-12345")
+        self.assertEqual(d["thoughts"], ["Thinking about architecture"])
+        self.assertEqual(len(d["tool_calls"]), 1)
+        self.assertEqual(d["supervisor_result"]["is_goal_complete"], True)
+
+        queue_file = self.tmp_path / "queue_state.json"
+        import json
+        queue_file.write_text(json.dumps({
+            "task_counter": 1,
+            "queued_tasks": [d],
+        }))
+        manager = TaskManager(cwd=self.tmp_path)
+        restored_count = manager.restore_queue_state(queue_file)
+        self.assertEqual(restored_count, 1)
+        restored = manager.get_task("task-sup-1")
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.goal_prompt, "Autonomous goal")
+        self.assertTrue(restored.use_goal)
+        self.assertEqual(restored.webhook_event_type, "pull_request")
+        self.assertEqual(restored.webhook_payload, {"number": 10})
+        self.assertEqual(restored.conversation_id, "conv-12345")
+        self.assertEqual(restored.thoughts, ["Thinking about architecture"])
+        self.assertEqual(restored.supervisor_result, {"is_goal_complete": True, "turns": 2})
+
+    @patch("lib.tasks.post_task_completion_comment")
+    @patch("lib.tasks.post_emoji_reaction_async")
+    def test_task_manager_runs_supervisor_success(self, mock_reaction, mock_comment):
+        from lib.supervisor import SupervisorResult
+
+        class MockSupervisor:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.conversation_id = "test-conv-99"
+
+            def start(self):
+                pass
+
+            def cleanup(self):
+                pass
+
+            def run_goal(self, goal, on_event=None, on_thought=None, on_tool_call=None, on_chunk=None, **kwargs):
+                if on_event:
+                    on_event({"event": "init", "conversation_id": self.conversation_id})
+                if on_thought:
+                    on_thought("Analyzing diff")
+                if on_tool_call:
+                    on_tool_call("view_file", {"path": "lib.py"})
+                if on_chunk:
+                    on_chunk("Review done.")
+                return SupervisorResult(
+                    status="SUCCESS",
+                    response="Review done. <!-- GOAL_COMPLETE -->",
+                    conversation_id=self.conversation_id,
+                    num_turns=1,
+                    thoughts=["Analyzing diff"],
+                    tool_calls=[{"tool": "view_file", "args": {"path": "lib.py"}}],
+                )
+
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=MockSupervisor,
+            post_completion_comment=True,
+        )
+        manager.start()
+
+        submitted_task = manager.submit_task(
+            agent="code_reviewer",
+            prompt="Review this PR",
+            goal_prompt="Autonomous review",
+            use_goal=True,
+            repo_name="myrepo",
+            webhook_event_type="pull_request",
+            webhook_payload={"number": 5},
+        )
+        task_id = submitted_task.id
+
+        success = manager.wait_for_task(task_id, timeout=5.0)
+        self.assertTrue(success)
+        task = manager.get_task(task_id)
+        self.assertEqual(task.status, TaskStatus.COMPLETED)
+        self.assertEqual(task.conversation_id, "test-conv-99")
+        self.assertIn("Analyzing diff", task.thoughts)
+        self.assertEqual(len(task.tool_calls), 1)
+        self.assertEqual(task.tool_calls[0]["name"], "view_file")
+        self.assertIn("Review done.", task.logs)
+        self.assertIsNotNone(task.supervisor_result)
+        self.assertTrue(task.supervisor_result.is_goal_complete)
+
+        mock_reaction.assert_called_once_with("pull_request", {"number": 5}, reaction="rocket")
+        mock_comment.assert_called_once()
+
+        manager.stop(wait=False)
+
+    def test_task_manager_supervisor_failure(self):
+        from lib.supervisor import SupervisorResult
+
+        class FailingSupervisor:
+            def __init__(self, **kwargs):
+                pass
+            def start(self):
+                pass
+            def cleanup(self):
+                pass
+            def run_goal(self, goal, **kwargs):
+                return SupervisorResult(
+                    status="FAILED",
+                    response="Error occurred",
+                    error="Turn limit reached without goal completion",
+                    num_turns=10,
+                )
+
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=FailingSupervisor,
+        )
+        manager.start()
+
+        submitted_task = manager.submit_task(
+            agent="code_reviewer",
+            prompt="Failing task",
+            use_goal=True,
+        )
+        task_id = submitted_task.id
+
+        manager.wait_for_task(task_id, timeout=5.0)
+        task = manager.get_task(task_id)
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        self.assertIsNotNone(task.supervisor_result)
+        self.assertIn("Turn limit reached", task.supervisor_result.error)
+        manager.stop(wait=False)
+
+    def test_task_manager_supervisor_abort(self):
+        import time
+
+        created_supervisors = []
+
+        class HangingSupervisor:
+            def __init__(self, **kwargs):
+                self.aborted = False
+                created_supervisors.append(self)
+            def start(self):
+                pass
+            def cleanup(self):
+                pass
+            def run_goal(self, goal, **kwargs):
+                while not self.aborted:
+                    time.sleep(0.05)
+                raise RuntimeError("Supervisor aborted")
+            def abort(self):
+                self.aborted = True
+
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=HangingSupervisor,
+        )
+        manager.start()
+
+        submitted_task = manager.submit_task(
+            agent="code_reviewer",
+            prompt="Hanging task",
+            use_goal=True,
+        )
+        task_id = submitted_task.id
+
+        time.sleep(0.1)
+        aborted = manager.abort_task(task_id)
+        self.assertTrue(aborted)
+        manager.wait_for_task(task_id, timeout=3.0)
+        task = manager.get_task(task_id)
+        self.assertEqual(task.status, TaskStatus.ABORTED)
+        self.assertTrue(len(created_supervisors) > 0)
+        self.assertTrue(all(sup.aborted for sup in created_supervisors))
+        manager.stop(wait=True)
+
+    @patch("lib.tasks.subprocess.run")
+    def test_post_task_completion_comment(self, mock_run):
+        from lib.tasks import post_task_completion_comment
+        from lib.supervisor import SupervisorResult
+
+        task = Task(
+            id="task-c1",
+            agent="code_fixer",
+            prompt="Fix bug",
+            repo_full_name="owner/repo",
+            target_id="#42",
+        )
+        result = SupervisorResult(
+            status="SUCCESS",
+            response="All tests passing now. <!-- GOAL_COMPLETE -->",
+            num_turns=3,
+        )
+        mock_run.return_value = MagicMock(returncode=0)
+        post_task_completion_comment(task, result)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "gh")
+        self.assertEqual(cmd[1], "issue")
+        self.assertEqual(cmd[2], "comment")
+        self.assertEqual(cmd[3], "42")
+        body = cmd[7]
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:task_manager -->", body)
+
+        # Robustness: target_id formatted without '#'
+        mock_run.reset_mock()
+        task_unhashed = Task(
+            id="task-c2",
+            agent="code_fixer",
+            prompt="Fix bug",
+            repo_full_name="owner/repo",
+            target_id="42",
+        )
+        post_task_completion_comment(task_unhashed, result)
+        mock_run.assert_called_once()
+        cmd2 = mock_run.call_args[0][0]
+        self.assertEqual(cmd2[3], "42")
+
+    def test_task_to_dict_with_supervisor_result_serialization(self):
+        from lib.supervisor import SupervisorResult
+        import json
+
+        result = SupervisorResult(
+            status="SUCCESS",
+            response="Done!",
+            num_turns=2,
+            conversation_id="c-100",
+        )
+        task = Task(
+            id="task-ser",
+            agent="code_reviewer",
+            prompt="Review PR",
+            supervisor_result=result,
+        )
+        d = task.to_dict()
+        self.assertIsInstance(d["supervisor_result"], dict)
+        self.assertEqual(d["supervisor_result"]["status"], "SUCCESS")
+        self.assertEqual(d["supervisor_result"]["conversation_id"], "c-100")
+
+        # Must serialize cleanly to JSON without TypeError
+        serialized = json.dumps(d)
+        deserialized = json.loads(serialized)
+        self.assertEqual(deserialized["supervisor_result"]["status"], "SUCCESS")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 
