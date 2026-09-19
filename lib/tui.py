@@ -716,6 +716,45 @@ class TerminalDashboard:
                     break
         return res
 
+    @property
+    def selected_task(self) -> Optional[Any]:
+        """Return the currently focused or inspected task."""
+        if not self.task_manager:
+            return None
+        if self.active_screen == "task_logs":
+            if self.selected_task_id_for_logs:
+                return self.task_manager.get_task(self.selected_task_id_for_logs)
+            return None
+        active_tasks = self.task_manager.get_active_tasks()
+        queued_tasks = self.task_manager.get_queued_tasks()
+        self._rebalance_focus(active_tasks, queued_tasks)
+        if self.focused_panel == "active" and active_tasks:
+            idx = max(0, min(self.selected_active_index, len(active_tasks) - 1))
+            return active_tasks[idx]
+        if self.focused_panel == "queued" and queued_tasks:
+            idx = max(0, min(self.selected_queue_index, len(queued_tasks) - 1))
+            return queued_tasks[idx]
+        if active_tasks:
+            return active_tasks[0]
+        if queued_tasks:
+            return queued_tasks[0]
+        return None
+
+    def open_selected_task_remote_control(self) -> bool:
+        """Open remote control session URL for currently selected task in web browser."""
+        task = self.selected_task
+        if not task:
+            return False
+        url = getattr(task, "remote_control_url", None)
+        if not url:
+            return False
+        try:
+            import webbrowser
+            return bool(webbrowser.open(url))
+        except Exception as e:
+            logger.warning(f"Failed to open remote control URL '{url}': {e}")
+            return False
+
     def abort_selected_task(self) -> bool:
         """Abort the currently selected queued or active task, or the active task viewed on task_logs screen."""
         if not self.task_manager:
@@ -903,6 +942,8 @@ class TerminalDashboard:
         elif self.active_screen == "task_logs":
             if key in ("x", "X"):
                 self.abort_selected_task()
+            elif key in ("o", "O"):
+                self.open_selected_task_remote_control()
             elif key in ("\x1b", "esc", "ESC"):
                 self.active_screen = "main"
         elif self.active_screen == "gemini_models":
@@ -964,6 +1005,8 @@ class TerminalDashboard:
                 self._rebalance_focus(active_tasks, queued_tasks)
                 if self.focused_panel == "queued" and queued_tasks:
                     self.prioritize_selected_task()
+            elif key in ("o", "O"):
+                self.open_selected_task_remote_control()
             elif key in ("x", "X"):
                 self.abort_selected_task()
             elif key in ("g", "G"):

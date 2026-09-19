@@ -58,6 +58,9 @@ def post_task_completion_comment(
     cid = getattr(task, "conversation_id", None) or (getattr(result, "conversation_id", None) if result else None)
     if cid:
         body_parts.append(f"- **Conversation ID**: `{cid}`")
+    rc_url = getattr(task, "remote_control_url", None) or (getattr(result, "remote_control_url", None) if result else None)
+    if rc_url:
+        body_parts.append(f"- **Remote Control**: [{rc_url}]({rc_url})")
     elapsed = getattr(task, "elapsed_time", 0.0)
     if elapsed:
         body_parts.append(f"- **Elapsed Time**: {elapsed:.1f}s")
@@ -76,6 +79,41 @@ def post_task_completion_comment(
         return post_issue_comment(task.repo_full_name, issue_number, body, timeout=timeout)
     except Exception as e:
         logger.warning(f"Failed to post task completion comment: {e}")
+        return False
+
+
+def post_task_start_comment(
+    task: "Task",
+    timeout: float = 10.0,
+) -> bool:
+    """
+    Post an initial progress comment with live remote control link to GitHub PR or issue.
+    """
+    if not task.repo_full_name or not task.target_id:
+        return False
+    m = re.search(r"#?(\d+)$", str(task.target_id).strip())
+    if not m:
+        return False
+    try:
+        issue_number = int(m.group(1))
+    except (TypeError, ValueError):
+        return False
+
+    agent_name = task.agent or "agent"
+    body_parts = [f"🚀 **Antigravity Agent `{agent_name}` Started**"]
+    cid = getattr(task, "conversation_id", None)
+    if cid:
+        body_parts.append(f"- **Conversation ID**: `{cid}`")
+    rc_url = getattr(task, "remote_control_url", None)
+    if rc_url:
+        body_parts.append(f"- **Live Remote Control**: [{rc_url}]({rc_url})")
+    body_parts.append("\n<!-- antigravity-auto-reply -->\n<!-- graviton:task_manager:start -->")
+    body = "\n".join(body_parts)
+    try:
+        from lib.release import post_issue_comment
+        return post_issue_comment(task.repo_full_name, issue_number, body, timeout=timeout)
+    except Exception as e:
+        logger.warning(f"Failed to post task start comment: {e}")
         return False
 
 
@@ -118,6 +156,7 @@ class Task:
     goal_prompt: Optional[str] = None
     use_goal: bool = True
     conversation_id: Optional[str] = None
+    remote_control_url: Optional[str] = None
     thoughts: List[str] = field(default_factory=list)
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     supervisor_result: Optional[Any] = None
@@ -215,6 +254,7 @@ class Task:
             "goal_prompt": self.goal_prompt,
             "use_goal": self.use_goal,
             "conversation_id": self.conversation_id,
+            "remote_control_url": self.remote_control_url,
             "thoughts": list(self.thoughts),
             "tool_calls": list(self.tool_calls),
             "supervisor_result": sup_result,
@@ -466,6 +506,7 @@ class TaskManager:
         use_supervisor: Optional[bool] = None,
         supervisor_cls: Optional[Any] = None,
         post_completion_comment: bool = False,
+        post_start_comment: bool = False,
         idle_timeout: Optional[float] = 300.0,
         max_duration: Optional[float] = 1800.0,
         skills_dir: Optional[Union[str, Path]] = None,
@@ -484,6 +525,7 @@ class TaskManager:
         self.use_supervisor = use_supervisor
         self.supervisor_cls = supervisor_cls
         self.post_completion_comment = post_completion_comment
+        self.post_start_comment = post_start_comment
         self.idle_timeout = idle_timeout
         self.max_duration = max_duration
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
@@ -526,6 +568,12 @@ class TaskManager:
                     post_emoji_reaction_async("issues", dummy_payload, reaction="rocket")
         except Exception as e:
             logger.debug(f"Could not post init reaction for task '{task.id}': {e}")
+
+        try:
+            if getattr(self, "post_start_comment", False) and getattr(task, "remote_control_url", None):
+                post_task_start_comment(task)
+        except Exception as e:
+            logger.debug(f"Could not post init comment for task '{task.id}': {e}")
 
     def _trigger_completion_comment(self, task: Task, result: Optional[Any] = None) -> None:
         """Trigger completion comment on task result lifecycle event."""
@@ -947,6 +995,7 @@ class TaskManager:
                         goal_prompt=td.get("goal_prompt"),
                         use_goal=bool(td.get("use_goal", True)),
                         conversation_id=td.get("conversation_id"),
+                        remote_control_url=td.get("remote_control_url"),
                         thoughts=list(td.get("thoughts", [])),
                         tool_calls=list(td.get("tool_calls", [])),
                         supervisor_result=td.get("supervisor_result"),
@@ -1293,6 +1342,11 @@ class TaskManager:
                 "queue_status": queue_status,
                 "status": status_str,
                 "is_paused": self._paused,
+                "active_remote_control_urls": {
+                    t.id: t.remote_control_url
+                    for t in self._tasks.values()
+                    if t.status == TaskStatus.RUNNING and t.remote_control_url
+                },
             }
 
     def _worker_loop(self, worker_id: str):
@@ -1467,6 +1521,10 @@ class TaskManager:
                             if cid:
                                 task.conversation_id = cid
                                 logger.info(f"[{worker_id}] Task '{task.id}' initialized with conversation_id: {cid}")
+                            rc_url = event.get("remote_control_url") or getattr(supervisor, "remote_control_url", None)
+                            if rc_url:
+                                task.remote_control_url = rc_url
+                                logger.info(f"[{worker_id}] Task '{task.id}' remote control URL: {rc_url}")
                             self._trigger_init_reaction(task)
                             if self.on_task_init:
                                 try:
@@ -1523,6 +1581,8 @@ class TaskManager:
                             supervisor.start()
                         if getattr(supervisor, "session", None) and getattr(supervisor.session, "proc", None):
                             _on_process_created(supervisor.session.proc)
+                        if getattr(supervisor, "remote_control_url", None) and not task.remote_control_url:
+                            task.remote_control_url = supervisor.remote_control_url
 
                         if task.use_goal:
                             result = supervisor.run_goal(
@@ -1548,6 +1608,8 @@ class TaskManager:
                         task.supervisor_result = result
                         if result.conversation_id:
                             task.conversation_id = result.conversation_id
+                        if getattr(result, "remote_control_url", None):
+                            task.remote_control_url = result.remote_control_url
                         return_code = 0 if result.is_success else 1
                         stderr_output = result.error or ""
                         if result.response:

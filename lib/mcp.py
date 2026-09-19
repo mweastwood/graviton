@@ -253,6 +253,11 @@ class GravitonMCPServer:
                 f"- Gemini Remaining: {quota.get('gemini_remaining_percentage', 'N/A')}%",
                 f"- Third-Party Remaining: {quota.get('third_party_remaining_percentage', 'N/A')}%",
             ])
+        rc_links = data.get("active_remote_control_urls", {})
+        if rc_links:
+            lines.extend(["", "🌐 **Active Remote Control Links**:"])
+            for tid, url in rc_links.items():
+                lines.append(f"- **{tid}**: {url}")
         return "\n".join(lines), False
 
     def _tool_list_tasks(self, args: Dict[str, Any]) -> Tuple[str, bool]:
@@ -272,8 +277,9 @@ class GravitonMCPServer:
             lines.append("▶️ **Running Tasks:**")
             for t in active:
                 cid = f" (Conv: `{t.get('conversation_id')}`)" if t.get("conversation_id") else ""
+                rc_url = f" [Live: {t.get('remote_control_url')}]" if t.get("remote_control_url") else ""
                 prompt_snippet = (t.get("prompt") or "")[:60]
-                lines.append(f"- **{t.get('id', '')}** [{t.get('agent', '')}]: {t.get('target_id', '')} - {prompt_snippet}... ({t.get('elapsed_time', 0)}s elapsed){cid}")
+                lines.append(f"- **{t.get('id', '')}** [{t.get('agent', '')}]: {t.get('target_id', '')} - {prompt_snippet}... ({t.get('elapsed_time', 0)}s elapsed){cid}{rc_url}")
             lines.append("")
 
         if queued:
@@ -316,6 +322,8 @@ class GravitonMCPServer:
         ]
         if data.get("conversation_id"):
             lines.append(f"- **Conversation ID**: `{data.get('conversation_id')}`")
+        if data.get("remote_control_url"):
+            lines.append(f"- **Remote Control**: {data.get('remote_control_url')}")
 
         thoughts = data.get("thoughts", [])
         if thoughts:

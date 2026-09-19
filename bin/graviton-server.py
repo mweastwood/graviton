@@ -170,6 +170,13 @@ class GravitonHandler(BaseHTTPRequestHandler):
             sched = GravitonHandler.scheduler
             tasks_info = self.task_manager.get_stats() if self.task_manager else {}
             quota_info = self.quota_tracker.get_info().to_dict() if self.quota_tracker else {}
+            active_rc_urls = {}
+            if self.task_manager:
+                active_rc_urls = {
+                    t.id: t.remote_control_url
+                    for t in self.task_manager.get_active_tasks()
+                    if getattr(t, "remote_control_url", None)
+                }
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
@@ -181,6 +188,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
                 "tasks": tasks_info,
+                "active_remote_control_urls": active_rc_urls,
                 "quota": quota_info,
             })
         elif path_clean == "/tasks":
@@ -602,6 +610,12 @@ def main():
         default=os.getenv("GRAVITON_POST_COMPLETION_COMMENT", "").lower() in ("1", "true", "yes"),
         help="Post a completion comment to GitHub issue/PR upon supervisor task finish",
     )
+    parser.add_argument(
+        "--post-start-comment",
+        action="store_true",
+        default=os.getenv("GRAVITON_POST_START_COMMENT", "").lower() in ("1", "true", "yes"),
+        help="Post an initial progress comment with live remote control link to GitHub issue/PR upon supervisor task start",
+    )
     args = parser.parse_args()
 
     # Strip any console StreamHandler from root logger to prevent early startup logs from leaking to terminal during hot reload
@@ -660,6 +674,7 @@ def main():
             repos_dir=repos_dir,
             use_supervisor=args.use_supervisor,
             post_completion_comment=args.post_completion_comment,
+            post_start_comment=args.post_start_comment,
         )
         restored_count = task_manager.restore_queue_state()
         if restored_count > 0:
