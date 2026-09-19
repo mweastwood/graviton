@@ -20,6 +20,8 @@ from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
 from lib.security import is_valid_repo_name
+from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorError
+from lib.reactions import post_emoji_reaction_async
 
 logger = logging.getLogger("graviton.tasks")
 
@@ -27,6 +29,54 @@ AUTO_CONTINUE_PATTERN = re.compile(
     r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
     re.IGNORECASE,
 )
+
+
+def post_task_completion_comment(
+    task: "Task",
+    result: Optional[Any] = None,
+    timeout: float = 10.0,
+) -> bool:
+    """
+    Post a structured completion comment to the GitHub PR or issue.
+    """
+    if not task.repo_full_name or not task.target_id:
+        return False
+    m = re.search(r"#(\d+)$", task.target_id)
+    if not m:
+        return False
+    try:
+        issue_number = int(m.group(1))
+    except (TypeError, ValueError):
+        return False
+
+    is_success = (result and getattr(result, "is_success", False)) or task.status == "COMPLETED"
+    status_icon = "✅" if is_success else "❌"
+    agent_name = task.agent or "agent"
+    header = f"{status_icon} **Antigravity Agent `{agent_name}` Finished**"
+
+    body_parts = [header]
+    cid = getattr(task, "conversation_id", None) or (getattr(result, "conversation_id", None) if result else None)
+    if cid:
+        body_parts.append(f"- **Conversation ID**: `{cid}`")
+    elapsed = getattr(task, "elapsed_time", 0.0)
+    if elapsed:
+        body_parts.append(f"- **Elapsed Time**: {elapsed:.1f}s")
+    if result and getattr(result, "response", None):
+        resp_preview = str(result.response).strip()
+        resp_preview = resp_preview.replace("<!-- GOAL_COMPLETE -->", "").strip()
+        if resp_preview:
+            if len(resp_preview) > 3000:
+                resp_preview = resp_preview[:3000] + "\n\n*(output truncated)*"
+            body_parts.append(f"\n<details><summary>Agent Response Summary</summary>\n\n{resp_preview}\n\n</details>")
+
+    body = "\n".join(body_parts)
+    try:
+        from lib.release import post_issue_comment
+        return post_issue_comment(task.repo_full_name, issue_number, body, timeout=timeout)
+    except Exception as e:
+        logger.warning(f"Failed to post task completion comment: {e}")
+        return False
+
 
 
 class TaskStatus:
@@ -64,6 +114,14 @@ class Task:
     requeue_count: int = 0
     selected_pool: Optional[str] = None
     selected_model: Optional[str] = None
+    goal_prompt: Optional[str] = None
+    use_goal: bool = True
+    conversation_id: Optional[str] = None
+    thoughts: List[str] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    supervisor_result: Optional[Any] = None
+    webhook_event_type: Optional[str] = None
+    webhook_payload: Optional[Dict[str, Any]] = None
     logs: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
 
     @property
@@ -142,6 +200,14 @@ class Task:
             "requeue_count": self.requeue_count,
             "selected_pool": self.selected_pool,
             "selected_model": self.selected_model,
+            "goal_prompt": self.goal_prompt,
+            "use_goal": self.use_goal,
+            "conversation_id": self.conversation_id,
+            "thoughts": list(self.thoughts),
+            "tool_calls": list(self.tool_calls),
+            "supervisor_result": self.supervisor_result,
+            "webhook_event_type": self.webhook_event_type,
+            "webhook_payload": self.webhook_payload,
         }
 
 
@@ -349,7 +415,8 @@ def prune_abandoned_workspaces(
             if target.name.startswith("run-"):
                 run_id = target.name[len("run-"):]
                 container_name = f"graviton-agent-run-{run_id}"
-                if container_name in running_containers:
+                stream_container_name = f"graviton-stream-run-{run_id}"
+                if container_name in running_containers or stream_container_name in running_containers:
                     continue
             if clean_workspace_dir(target):
                 pruned_count += 1
@@ -384,6 +451,16 @@ class TaskManager:
         cwd: Optional[Path] = None,
         quota_tracker: Optional[QuotaTracker] = None,
         repos_dir: Optional[Path] = None,
+        use_supervisor: Optional[bool] = None,
+        supervisor_cls: Optional[Any] = None,
+        post_completion_comment: bool = False,
+        idle_timeout: Optional[float] = 300.0,
+        max_duration: Optional[float] = 1800.0,
+        skills_dir: Optional[Union[str, Path]] = None,
+        on_task_init: Optional[Any] = None,
+        on_task_result: Optional[Any] = None,
+        on_task_thought: Optional[Any] = None,
+        on_task_tool_call: Optional[Any] = None,
     ):
         self.max_workers = max_workers
         self.max_tasks = max_tasks
@@ -392,6 +469,16 @@ class TaskManager:
         self.cwd = cwd
         self.quota_tracker = quota_tracker
         self.repos_dir = Path(repos_dir).expanduser().resolve() if repos_dir else None
+        self.use_supervisor = use_supervisor
+        self.supervisor_cls = supervisor_cls
+        self.post_completion_comment = post_completion_comment
+        self.idle_timeout = idle_timeout
+        self.max_duration = max_duration
+        self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
+        self.on_task_init = on_task_init
+        self.on_task_result = on_task_result
+        self.on_task_thought = on_task_thought
+        self.on_task_tool_call = on_task_tool_call
 
         self._queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
@@ -400,12 +487,40 @@ class TaskManager:
         self._tasks: Dict[str, Task] = {}
         self._pruned_task_ids: collections.deque[str] = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
         self._active_processes: Dict[str, subprocess.Popen] = {}
+        self._active_supervisors: Dict[str, Any] = {}
         self._task_counter = 0
         self._workers: List[threading.Thread] = []
         self._running = False
         self._draining = False
         self._paused = False
         self._stopped = False
+
+    def _trigger_init_reaction(self, task: Task) -> None:
+        """Trigger rocket emoji reaction on task init lifecycle event."""
+        try:
+            if task.webhook_event_type and task.webhook_payload:
+                post_emoji_reaction_async(
+                    task.webhook_event_type,
+                    task.webhook_payload,
+                    reaction="rocket",
+                )
+            elif task.repo_full_name and task.target_id:
+                m = re.search(r"#(\d+)$", task.target_id)
+                if m:
+                    dummy_payload = {
+                        "repository": {"full_name": task.repo_full_name},
+                        "issue": {"number": int(m.group(1))},
+                    }
+                    post_emoji_reaction_async("issues", dummy_payload, reaction="rocket")
+        except Exception as e:
+            logger.debug(f"Could not post init reaction for task '{task.id}': {e}")
+
+    def _trigger_completion_comment(self, task: Task, result: Optional[Any] = None) -> None:
+        """Trigger completion comment on task result lifecycle event."""
+        try:
+            post_task_completion_comment(task, result)
+        except Exception as e:
+            logger.debug(f"Could not post completion comment for task '{task.id}': {e}")
 
     @property
     def is_paused(self) -> bool:
@@ -817,6 +932,14 @@ class TaskManager:
                         max_total_attempts=int(td.get("max_total_attempts", 6)),
                         attempts_per_batch=int(td.get("attempts_per_batch", 3)),
                         requeue_count=int(td.get("requeue_count", 0)),
+                        goal_prompt=td.get("goal_prompt"),
+                        use_goal=bool(td.get("use_goal", True)),
+                        conversation_id=td.get("conversation_id"),
+                        thoughts=list(td.get("thoughts", [])),
+                        tool_calls=list(td.get("tool_calls", [])),
+                        supervisor_result=td.get("supervisor_result"),
+                        webhook_event_type=td.get("webhook_event_type"),
+                        webhook_payload=td.get("webhook_payload"),
                     )
                     self._tasks[task.id] = task
                     restored_count += 1
@@ -892,6 +1015,11 @@ class TaskManager:
         repo_name: Optional[str] = None,
         clone_url: Optional[str] = None,
         repo_dir: Optional[Path] = None,
+        goal_prompt: Optional[str] = None,
+        use_goal: Optional[bool] = None,
+        webhook_event_type: Optional[str] = None,
+        webhook_payload: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Task:
         """Submit a new task to the queue."""
         with self._lock:
@@ -948,6 +1076,10 @@ class TaskManager:
                 max_attempts=initial_max_att,
                 max_total_attempts=tot_att,
                 attempts_per_batch=batch_att,
+                goal_prompt=goal_prompt,
+                use_goal=True if use_goal is None else bool(use_goal),
+                webhook_event_type=webhook_event_type,
+                webhook_payload=webhook_payload,
             )
             self._tasks[task_id] = task
             self._prune_tasks_locked()
@@ -1031,12 +1163,19 @@ class TaskManager:
                 task.finish_time = time.time()
                 task.error_message = "Aborted by user"
                 proc_to_kill = self._active_processes.get(task_id)
+                sup_to_kill = self._active_supervisors.get(task_id)
                 task_to_cleanup = task
                 self._task_state_cond.notify_all()
-                logger.info(f"Active task '{task_id}' marked ABORTED. Terminating subprocess...")
+                logger.info(f"Active task '{task_id}' marked ABORTED. Terminating subprocess/supervisor...")
 
             else:
                 return False
+
+        if sup_to_kill is not None:
+            try:
+                sup_to_kill.cleanup()
+            except Exception as e:
+                logger.warning(f"Error cleaning up supervisor for task '{task_id}': {e}")
 
         if proc_to_kill is not None:
             try:
@@ -1299,7 +1438,123 @@ class TaskManager:
                         else:
                             self._active_processes[task.id] = proc
 
-                if self.script_path and exec_cwd:
+                is_sup = self.use_supervisor if self.use_supervisor is not None else (self.script_path is None)
+                if is_sup and exec_cwd:
+                    sup_cls = self.supervisor_cls or ContainerSupervisor
+                    prompt_to_run = task.goal_prompt if (task.use_goal and task.goal_prompt) else task.prompt
+
+                    def _on_event(event: Dict[str, Any]):
+                        event_type = event.get("event")
+                        if event_type == "init":
+                            cid = event.get("conversation_id")
+                            if cid:
+                                task.conversation_id = cid
+                                logger.info(f"[{worker_id}] Task '{task.id}' initialized with conversation_id: {cid}")
+                            self._trigger_init_reaction(task)
+                            if self.on_task_init:
+                                try:
+                                    self.on_task_init(task, event)
+                                except Exception as cb_err:
+                                    logger.debug(f"on_task_init callback error: {cb_err}")
+
+                    def _on_thought(thought: str):
+                        task.thoughts.append(thought)
+                        task.append_log(f"[Thought] {thought.strip()}")
+                        if self.on_task_thought:
+                            try:
+                                self.on_task_thought(task, thought)
+                            except Exception:
+                                pass
+
+                    def _on_tool_call(tool_name: str, args: Dict[str, Any]):
+                        task.tool_calls.append({"name": tool_name, "args": args})
+                        args_str = json.dumps(args, ensure_ascii=False)[:200]
+                        task.append_log(f"[Tool] {tool_name}({args_str})")
+                        if self.on_task_tool_call:
+                            try:
+                                self.on_task_tool_call(task, tool_name, args)
+                            except Exception:
+                                pass
+
+                    def _on_chunk(chunk: str):
+                        for line in chunk.splitlines():
+                            if line.strip():
+                                task.append_log(line)
+
+                    supervisor = sup_cls(
+                        repo_dir=exec_cwd,
+                        agent_name=task.agent,
+                        model=task.selected_model,
+                        run_id=task.id,
+                        cache_dir=task.cached_workspace_dir,
+                        skills_dir=self.skills_dir,
+                        env={"ANTIGRAVITY_QUOTA_POOL": task.selected_pool} if task.selected_pool else None,
+                    )
+
+                    with self._lock:
+                        if task.status == TaskStatus.ABORTED:
+                            logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to supervisor execution.")
+                            if task.cached_workspace_dir:
+                                clean_workspace_dir(task.cached_workspace_dir)
+                            self._prune_tasks_locked()
+                            self._task_state_cond.notify_all()
+                            continue
+                        self._active_supervisors[task.id] = supervisor
+
+                    try:
+                        if hasattr(supervisor, "start"):
+                            supervisor.start()
+                        if getattr(supervisor, "session", None) and getattr(supervisor.session, "proc", None):
+                            _on_process_created(supervisor.session.proc)
+
+                        if task.use_goal:
+                            result = supervisor.run_goal(
+                                prompt_to_run,
+                                on_event=_on_event,
+                                on_thought=_on_thought,
+                                on_tool_call=_on_tool_call,
+                                on_chunk=_on_chunk,
+                                idle_timeout=self.idle_timeout,
+                                max_duration=self.max_duration,
+                            )
+                        else:
+                            result = supervisor.run_turn(
+                                prompt_to_run,
+                                on_event=_on_event,
+                                on_thought=_on_thought,
+                                on_tool_call=_on_tool_call,
+                                on_chunk=_on_chunk,
+                                idle_timeout=self.idle_timeout,
+                                max_duration=self.max_duration,
+                            )
+
+                        task.supervisor_result = result
+                        if result.conversation_id:
+                            task.conversation_id = result.conversation_id
+                        return_code = 0 if result.is_success else 1
+                        stderr_output = result.error or ""
+                        if result.response:
+                            task.append_log(result.response)
+
+                        if return_code == 0 and self.post_completion_comment:
+                            self._trigger_completion_comment(task, result)
+
+                        if self.on_task_result:
+                            try:
+                                self.on_task_result(task, result)
+                            except Exception as res_err:
+                                logger.debug(f"on_task_result callback error: {res_err}")
+
+                    finally:
+                        if hasattr(supervisor, "cleanup"):
+                            try:
+                                supervisor.cleanup()
+                            except Exception as c_err:
+                                logger.debug(f"Supervisor cleanup error: {c_err}")
+                        with self._lock:
+                            self._active_supervisors.pop(task.id, None)
+
+                elif self.script_path and exec_cwd:
                     res = run_agent_container(
                         task.agent,
                         task.prompt,

@@ -43,12 +43,14 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.default_drafter = "pr_drafter"
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
+        GravitonHandler.use_supervisor = False
 
     def tearDown(self):
         server_mod._is_shutting_down = False
         server_mod._shutdown_thread = None
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
+        GravitonHandler.use_supervisor = False
 
     def test_health_check_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
@@ -1628,9 +1630,74 @@ class TestGravitonHandler(unittest.TestCase):
         mock_unrecognized.assert_called_once()
 
 
+class TestGravitonServerSupervisorPipeline(unittest.TestCase):
+    """Unit tests for supervisor CLI flags and event routing in bin/graviton-server.py."""
+
+    def setUp(self):
+        GravitonHandler.use_supervisor = False
+        GravitonHandler.task_manager = None
+        GravitonHandler.scheduler = None
+
+    def tearDown(self):
+        GravitonHandler.use_supervisor = False
+        GravitonHandler.task_manager = None
+        GravitonHandler.scheduler = None
+
+    def test_do_post_with_task_manager_supervisor_mode(self):
+        mock_tm = MagicMock()
+        mock_tm.use_supervisor = True
+        payload_dict = {"action": "opened", "number": 19}
+        payload = json.dumps(payload_dict).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.default_fixer = "code_fixer"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+
+        mock_tm.submit_task.assert_called_once()
+        _, kwargs = mock_tm.submit_task.call_args
+        self.assertEqual(kwargs["agent"], "code_reviewer")
+        self.assertIn("goal_prompt", kwargs)
+        self.assertEqual(kwargs["webhook_event_type"], "pull_request")
+        self.assertEqual(kwargs["webhook_payload"], payload_dict)
+
+    @patch("lib.supervisor.run_container_goal")
+    @patch("threading.Thread")
+    def test_do_post_direct_execution_with_supervisor_active(self, mock_thread_cls, mock_run_goal):
+        payload = json.dumps({"action": "opened", "number": 23}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "pull_request",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.default_reviewer = "code_reviewer"
+        handler.default_fixer = "code_fixer"
+        handler.task_manager = None
+        handler.use_supervisor = True
+
+        mock_thread_instance = MagicMock()
+        mock_thread_cls.return_value = mock_thread_instance
+
+        GravitonHandler.do_POST(handler)
+
+        goal_calls = [c for c in mock_thread_cls.call_args_list if c[1].get("target") == mock_run_goal]
+        self.assertEqual(len(goal_calls), 1)
+        self.assertEqual(goal_calls[0][1]["kwargs"]["agent_name"], "code_reviewer")
+        self.assertEqual(mock_thread_instance.start.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
