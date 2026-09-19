@@ -137,15 +137,22 @@ class StreamSession:
 
     def get_stderr(self) -> str:
         """Return accumulated stderr lines from the subprocess."""
+        if self.proc and self.proc.poll() is not None and self._stderr_thread and self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=0.1)
+
         stderr_text = "".join(self._stderr_lines)
         if not stderr_text and self.proc and self.proc.stderr:
-            try:
-                if hasattr(self.proc.stderr, "read") and callable(self.proc.stderr.read):
-                    res = self.proc.stderr.read()
-                    if isinstance(res, str):
-                        stderr_text = res
-            except Exception:
-                pass
+            # Guard fallback read: only read directly if background drain thread is not running
+            # and process has terminated, to prevent racing or blocking indefinitely while alive.
+            thread_stopped = self._stderr_thread is None or not self._stderr_thread.is_alive()
+            if thread_stopped and self.proc.poll() is not None:
+                try:
+                    if hasattr(self.proc.stderr, "read") and callable(self.proc.stderr.read):
+                        res = self.proc.stderr.read()
+                        if isinstance(res, str):
+                            stderr_text = res
+                except Exception:
+                    pass
         return stderr_text
 
     def _start_reader_threads(self) -> None:
@@ -386,6 +393,7 @@ class StreamSession:
                     raise SupervisorTimeoutError(f"Turn execution exceeded timeout of {timeout}s.")
                 if self.proc.poll() is not None and self._stdout_queue.empty():
                     stderr_output = self.get_stderr()
+                    self.close()
                     raise SupervisorError(
                         f"agy process exited prematurely with code {self.proc.returncode}. stderr: {stderr_output.strip()}"
                     )
@@ -394,6 +402,7 @@ class StreamSession:
             if line is None:
                 self.proc.poll()
                 stderr_output = self.get_stderr()
+                self.close()
                 raise SupervisorError(
                     f"agy process exited prematurely with code {self.proc.returncode}. stderr: {stderr_output.strip()}"
                 )

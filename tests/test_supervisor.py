@@ -228,6 +228,68 @@ class TestStreamSession(unittest.TestCase):
         self.assertLess(elapsed, 0.5)
         block_event.set()
 
+    def test_receive_turn_premature_exit(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        self.mock_proc.returncode = 1
+        self.mock_proc.poll.side_effect = [None, 1, 1, 1]
+        self.mock_proc.stderr.readline.side_effect = ["Subprocess crashed mid-turn\n", ""]
+
+        block_event = threading.Event()
+
+        def blocking_readline():
+            block_event.wait(timeout=1.0)
+            return ""
+
+        self.mock_proc.stdout.readline.side_effect = blocking_readline
+
+        with self.assertRaises(SupervisorError) as ctx:
+            session.receive_turn(timeout=1.0)
+
+        block_event.set()
+        self.assertIn("exited prematurely with code 1", str(ctx.exception))
+        self.assertTrue(session._is_closed)
+        self.mock_proc.stdin.close.assert_called()
+        self.mock_proc.stdout.close.assert_called()
+        self.mock_proc.stderr.close.assert_called()
+
+    def test_receive_turn_premature_exit_on_line_none(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        self.mock_proc.returncode = 1
+        self.mock_proc.poll.side_effect = [None, 1, 1, 1]
+        self.mock_proc.stderr.readline.side_effect = ["Process closed stream\n", ""]
+        self.mock_proc.stdout.readline.side_effect = [""]
+
+        with self.assertRaises(SupervisorError) as ctx:
+            session.receive_turn(timeout=1.0)
+
+        self.assertIn("exited prematurely with code 1", str(ctx.exception))
+        self.assertTrue(session._is_closed)
+        self.mock_proc.stdin.close.assert_called()
+        self.mock_proc.stdout.close.assert_called()
+        self.mock_proc.stderr.close.assert_called()
+
+    def test_get_stderr_alive_process_does_not_call_proc_read(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        self.mock_proc.poll.return_value = None
+        session._stderr_lines.append("active warning\n")
+
+        stderr = session.get_stderr()
+        self.assertEqual(stderr, "active warning\n")
+        self.mock_proc.stderr.read.assert_not_called()
+
+    def test_get_stderr_stopped_process_falls_back_to_read(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        self.mock_proc.poll.return_value = 0
+        self.mock_proc.stderr.read.return_value = "fallback stderr"
+
+        stderr = session.get_stderr()
+        self.assertEqual(stderr, "fallback stderr")
+        self.mock_proc.stderr.read.assert_called_once()
+
     def test_receive_turn_null_metrics(self):
         session = StreamSession(agy_binary="agy")
         session.proc = self.mock_proc
