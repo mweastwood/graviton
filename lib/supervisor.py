@@ -115,7 +115,7 @@ def extract_remote_control_url(
 
     if remote_control_enabled:
         base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
-        inst = instance_name if instance_name is not None else os.environ.get("ANTIGRAVITY_INSTANCE_NAME")
+        inst = instance_name if instance_name is not None else get_remote_control_instance_name()
         query_suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
         if conversation_id:
             return f"{base_url}/c/{conversation_id}{query_suffix}"

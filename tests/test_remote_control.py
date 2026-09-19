@@ -65,6 +65,21 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
         )
         self.assertIsNone(url)
 
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("lib.supervisor.get_remote_control_instance_name")
+    def test_extract_url_invokes_and_respects_get_remote_control_instance_name(self, mock_get_name):
+        mock_get_name.return_value = "discovered-instance-99"
+        url = extract_remote_control_url(
+            None,
+            conversation_id="conv-discovered",
+            remote_control_enabled=True,
+        )
+        mock_get_name.assert_called_once()
+        self.assertEqual(
+            url,
+            "https://antigravity.google.com/c/conv-discovered?instance=discovered-instance-99",
+        )
+
     @patch.dict("os.environ", {"ANTIGRAVITY_INSTANCE_NAME": "env-instance"})
     def test_get_remote_control_instance_name_from_env(self):
         import lib.supervisor as s
