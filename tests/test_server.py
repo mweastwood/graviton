@@ -1722,8 +1722,133 @@ class TestGravitonServerSupervisorPipeline(unittest.TestCase):
         self.assertEqual(mock_thread_instance.start.call_count, 2)
 
 
+class TestGravitonServerTaskEndpoints(unittest.TestCase):
+    """Unit tests for /tasks REST query and control endpoints."""
+
+    def setUp(self):
+        GravitonHandler.use_supervisor = False
+        GravitonHandler.task_manager = None
+
+    def tearDown(self):
+        GravitonHandler.use_supervisor = False
+        GravitonHandler.task_manager = None
+
+    def test_do_get_tasks_list(self):
+        mock_tm = MagicMock()
+        mock_task = MagicMock()
+        mock_task.to_dict.return_value = {"id": "task-1", "status": "RUNNING"}
+        mock_tm.get_active_tasks.return_value = [mock_task]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+        mock_tm.get_stats.return_value = {"active_tasks": 1}
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_GET(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(len(data["active"]), 1)
+        self.assertEqual(data["active"][0]["id"], "task-1")
+
+    def test_do_get_task_by_id(self):
+        mock_tm = MagicMock()
+        mock_task = MagicMock()
+        mock_task.to_dict.return_value = {"id": "task-42", "status": "COMPLETED"}
+        mock_task.get_logs.return_value = ["Line 1", "Line 2"]
+        mock_tm.get_task.return_value = mock_task
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-42"
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_GET(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["id"], "task-42")
+        self.assertEqual(data["logs"], ["Line 1", "Line 2"])
+
+    def test_do_post_tasks_submit(self):
+        mock_tm = MagicMock()
+        submitted_task = MagicMock()
+        submitted_task.id = "task-100"
+        mock_tm.submit_task.return_value = submitted_task
+
+        payload = json.dumps({"prompt": "Fix bug in auth.py", "agent": "code_fixer"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/submit"
+        handler.headers = {"Content-Length": str(len(payload))}
+        handler.rfile = BytesIO(payload)
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["status"], "submitted")
+        self.assertEqual(data["task_id"], "task-100")
+
+    def test_do_post_tasks_abort(self):
+        mock_tm = MagicMock()
+        mock_tm.abort_task.return_value = True
+
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-100/abort"
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = BytesIO(b"")
+        handler.task_manager = mock_tm
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["status"], "aborted")
+        self.assertEqual(data["task_id"], "task-100")
+
+    def test_do_post_tasks_abort_missing_id_returns_400(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/abort"
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = BytesIO(b"")
+        handler.task_manager = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertEqual(data["error"], "Missing task ID in path")
+
+    def test_do_post_tasks_abort_without_task_manager_returns_503(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-100/abort"
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = BytesIO(b"")
+        handler.task_manager = None
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertEqual(data["error"], "TaskManager not enabled")
+
+    def test_do_get_task_without_task_manager_returns_503(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/tasks/task-100"
+        handler.task_manager = None
+
+        GravitonHandler.do_GET(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertEqual(data["error"], "TaskManager not enabled")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

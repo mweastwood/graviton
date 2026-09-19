@@ -163,8 +163,10 @@ class GravitonHandler(BaseHTTPRequestHandler):
         return is_supervisor_active(self)
 
     def do_GET(self):
-        """Health check endpoint."""
-        if self.path in ("/", "/health"):
+        """Health check and task query endpoints."""
+        raw_path = getattr(self, "path", "/") or "/"
+        path_clean = raw_path.split("?")[0].rstrip("/")
+        if path_clean in ("", "/health"):
             sched = GravitonHandler.scheduler
             tasks_info = self.task_manager.get_stats() if self.task_manager else {}
             quota_info = self.quota_tracker.get_info().to_dict() if self.quota_tracker else {}
@@ -181,13 +183,86 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "tasks": tasks_info,
                 "quota": quota_info,
             })
+        elif path_clean == "/tasks":
+            if not self.task_manager:
+                self._send_json(200, {"active": [], "queued": [], "history": [], "stats": {}})
+                return
+            active = [t.to_dict() for t in self.task_manager.get_active_tasks()]
+            queued = [t.to_dict() for t in self.task_manager.get_queued_tasks()]
+            history = [t.to_dict() for t in self.task_manager.get_task_history(limit=50)]
+            self._send_json(200, {
+                "stats": self.task_manager.get_stats(),
+                "active": active,
+                "queued": queued,
+                "history": history,
+            })
+        elif path_clean.startswith("/tasks/"):
+            task_id = path_clean[len("/tasks/"):]
+            if not self.task_manager:
+                self._send_json(503, {"error": "TaskManager not enabled"})
+                return
+            task = self.task_manager.get_task(task_id)
+            if not task:
+                self._send_json(404, {"error": f"Task '{task_id}' not found"})
+                return
+            task_dict = task.to_dict()
+            task_dict["logs"] = task.get_logs(limit=200)
+            self._send_json(200, task_dict)
         else:
             self._send_json(404, {"error": "Not Found"})
 
     def do_POST(self):
-        """Handle incoming GitHub Webhook POST request."""
+        """Handle incoming GitHub Webhook POST request or local task control."""
         content_length = int(self.headers.get("Content-Length", 0))
         payload_bytes = self.rfile.read(content_length)
+
+        raw_path = getattr(self, "path", "/") or "/"
+        path_clean = raw_path.split("?")[0].rstrip("/")
+        # Local control endpoints
+        if path_clean == "/tasks/submit":
+            try:
+                data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+            except Exception:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+            if not self.task_manager:
+                self._send_json(503, {"error": "TaskManager not enabled"})
+                return
+            agent = data.get("agent", self.default_reviewer)
+            prompt = data.get("prompt", "")
+            if not prompt:
+                self._send_json(400, {"error": "Missing required 'prompt' field"})
+                return
+            try:
+                task = self.task_manager.submit_task(
+                    agent=agent,
+                    prompt=prompt,
+                    goal_prompt=data.get("goal_prompt"),
+                    use_goal=data.get("use_goal", True),
+                    target_id=data.get("target_id"),
+                    repo_full_name=data.get("repo_full_name"),
+                    repo_name=data.get("repo_name"),
+                    clone_url=data.get("clone_url"),
+                )
+                self._send_json(200, {"status": "submitted", "task_id": task.id})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
+        if path_clean.startswith("/tasks/") and path_clean.endswith("/abort"):
+            task_id = path_clean[len("/tasks/"):-len("/abort")].rstrip("/")
+            if not task_id:
+                self._send_json(400, {"error": "Missing task ID in path"})
+                return
+            if not self.task_manager:
+                self._send_json(503, {"error": "TaskManager not enabled"})
+                return
+            success = self.task_manager.abort_task(task_id)
+            if success:
+                self._send_json(200, {"status": "aborted", "task_id": task_id})
+            else:
+                self._send_json(404, {"error": f"Task '{task_id}' could not be aborted"})
+            return
 
         # Verify HMAC signature if secret is configured
         if self.secret:

@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""
+CLI utility for managing the Graviton background sidecar service.
+
+Usage:
+    graviton-sidecar start [--host HOST] [--port PORT] [--smee-url URL]
+    graviton-sidecar stop
+    graviton-sidecar status [--json]
+    graviton-sidecar restart
+    graviton-sidecar ensure
+    graviton-sidecar logs [-n LINES] [-f]
+"""
+
+import argparse
+import json
+import sys
+import time
+from collections import deque
+from pathlib import Path
+
+# Add REPO_ROOT to sys.path
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from lib.sidecar import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_PID_FILE,
+    DEFAULT_LOG_FILE,
+    start_sidecar,
+    stop_sidecar,
+    get_sidecar_status,
+    ensure_sidecar_running,
+    read_sidecar_pid,
+)
+
+
+def cmd_start(args):
+    extra = []
+    if args.smee_url:
+        extra.extend(["--smee-url", args.smee_url])
+    if getattr(args, "no_supervisor", False):
+        extra.append("--no-supervisor")
+    if getattr(args, "post_completion_comment", False):
+        extra.append("--post-completion-comment")
+
+    success, msg = start_sidecar(
+        host=args.host,
+        port=args.port,
+        pid_file=Path(args.pid_file),
+        log_file=Path(args.log_file),
+        extra_args=extra,
+        startup_timeout=args.timeout,
+    )
+    print(msg)
+    sys.exit(0 if success else 1)
+
+
+def cmd_stop(args):
+    success, msg = stop_sidecar(
+        pid_file=Path(args.pid_file),
+        timeout=args.timeout,
+    )
+    print(msg)
+    sys.exit(0 if success else 1)
+
+
+def cmd_status(args):
+    status = get_sidecar_status(
+        host=args.host,
+        port=args.port,
+        pid_file=Path(args.pid_file),
+    )
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return
+
+    running = status["running"]
+    healthy = status["healthy"]
+    pid = status["pid"]
+    endpoint = status["endpoint"]
+
+    state_icon = "🟢" if (running and healthy) else ("🟡" if running else "🔴")
+    state_str = "RUNNING (HEALTHY)" if (running and healthy) else ("RUNNING (UNHEALTHY)" if running else "STOPPED")
+
+    print(f"\n{state_icon} Graviton Sidecar: {state_str}")
+    print(f"   Endpoint : {endpoint}")
+    print(f"   PID      : {pid or 'N/A'}")
+    print(f"   PID File : {args.pid_file}")
+    print(f"   Log File : {args.log_file}")
+
+    details = status.get("details", {})
+    if healthy and isinstance(details, dict):
+        tasks = details.get("tasks", {})
+        quota = details.get("quota", {})
+        active = tasks.get("active_tasks", 0)
+        queued = tasks.get("queued_tasks", 0)
+        pool = quota.get("current_pool", "unknown")
+        print(f"   Tasks    : {active} active, {queued} queued")
+        print(f"   Quota    : active pool '{pool}'")
+    print("")
+
+
+def cmd_restart(args):
+    stop_sidecar(pid_file=Path(args.pid_file), timeout=args.timeout)
+    cmd_start(args)
+
+
+def cmd_ensure(args):
+    extra = []
+    if args.smee_url:
+        extra.extend(["--smee-url", args.smee_url])
+    success, msg = ensure_sidecar_running(
+        host=args.host,
+        port=args.port,
+        pid_file=Path(args.pid_file),
+        log_file=Path(args.log_file),
+        extra_args=extra,
+    )
+    if not success:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"Error ensuring sidecar: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps({}))
+    elif not getattr(args, "quiet", False):
+        print(msg)
+    sys.exit(0)
+
+
+def cmd_logs(args):
+    log_path = Path(args.log_file)
+    if not log_path.exists():
+        print(f"Log file not found: {log_path}", file=sys.stderr)
+        sys.exit(1)
+
+    lines = args.lines
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            tail = deque(f, maxlen=lines)
+            for line in tail:
+                sys.stdout.write(line if line.endswith("\n") else line + "\n")
+            sys.stdout.flush()
+
+        if args.follow:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)  # seek to end
+                while True:
+                    line = f.readline()
+                    if line:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                    else:
+                        time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Graviton Sidecar Service Manager")
+    parser.add_argument("--host", default=DEFAULT_HOST, help=f"Server host (default: {DEFAULT_HOST})")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Server port (default: {DEFAULT_PORT})")
+    parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Path to PID file")
+    parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE), help="Path to log file")
+    parser.add_argument("--timeout", type=float, default=10.0, help="Operation timeout in seconds")
+
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    # start
+    p_start = subparsers.add_parser("start", help="Start Graviton sidecar in background")
+    p_start.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_start.add_argument("--no-supervisor", action="store_true", help="Run with legacy bash runner")
+    p_start.add_argument("--post-completion-comment", action="store_true", help="Post completion comment to PR")
+
+    # stop
+    subparsers.add_parser("stop", help="Stop Graviton sidecar")
+
+    # status
+    p_status = subparsers.add_parser("status", help="Get status of Graviton sidecar")
+    p_status.add_argument("--json", action="store_true", help="Output status as JSON")
+
+    # restart
+    p_restart = subparsers.add_parser("restart", help="Restart Graviton sidecar")
+    p_restart.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+
+    # ensure
+    p_ensure = subparsers.add_parser("ensure", help="Ensure sidecar is running (starts if down)")
+    p_ensure.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_ensure.add_argument("--json", action="store_true", help="Output JSON for hook runner")
+    p_ensure.add_argument("--quiet", "-q", action="store_true", help="Suppress output on success")
+
+    # logs
+    p_logs = subparsers.add_parser("logs", help="View sidecar logs")
+    p_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of trailing lines to view")
+    p_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
+
+    args = parser.parse_args()
+
+    dispatch = {
+        "start": cmd_start,
+        "stop": cmd_stop,
+        "status": cmd_status,
+        "restart": cmd_restart,
+        "ensure": cmd_ensure,
+        "logs": cmd_logs,
+    }
+    dispatch[args.subcommand](args)
+
+
+if __name__ == "__main__":
+    main()

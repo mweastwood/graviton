@@ -4,3 +4,4 @@ __pycache__/
 *.log
 graviton.log
 .graviton_*.json
+.graviton_*.pid
