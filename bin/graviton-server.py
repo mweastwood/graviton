@@ -374,11 +374,19 @@ class GravitonHandler(BaseHTTPRequestHandler):
                             "repo_name": repo_name,
                             "clone_url": clone_url,
                         }
-                        if getattr(self.task_manager, "use_supervisor", False) is True:
+                        tm_use_sup = getattr(self.task_manager, "use_supervisor", None)
+                        is_sup = (
+                            is_supervisor_active(self)
+                            or tm_use_sup is True
+                            or (tm_use_sup is None and getattr(self.task_manager, "script_path", "unset") is None)
+                        )
+                        if is_sup:
                             if goal_prompt:
                                 submit_kwargs["goal_prompt"] = goal_prompt
-                            submit_kwargs["webhook_event_type"] = event_type
-                            submit_kwargs["webhook_payload"] = payload
+                            if event_type:
+                                submit_kwargs["webhook_event_type"] = event_type
+                            if payload:
+                                submit_kwargs["webhook_payload"] = payload
 
                         self.task_manager.submit_task(**submit_kwargs)
                         post_emoji_reaction_async(event_type, payload)

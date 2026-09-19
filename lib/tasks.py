@@ -13,7 +13,7 @@ import stat
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
 
@@ -41,7 +41,7 @@ def post_task_completion_comment(
     """
     if not task.repo_full_name or not task.target_id:
         return False
-    m = re.search(r"#(\d+)$", task.target_id)
+    m = re.search(r"#?(\d+)$", str(task.target_id).strip())
     if not m:
         return False
     try:
@@ -69,6 +69,7 @@ def post_task_completion_comment(
                 resp_preview = resp_preview[:3000] + "\n\n*(output truncated)*"
             body_parts.append(f"\n<details><summary>Agent Response Summary</summary>\n\n{resp_preview}\n\n</details>")
 
+    body_parts.append("\n<!-- antigravity-auto-reply -->\n<!-- graviton:task_manager -->")
     body = "\n".join(body_parts)
     try:
         from lib.release import post_issue_comment
@@ -174,6 +175,17 @@ class Task:
             self.update_attempt_from_line(line)
 
     def to_dict(self) -> dict:
+        sup_result = None
+        if self.supervisor_result is not None:
+            if hasattr(self.supervisor_result, "to_dict") and callable(self.supervisor_result.to_dict):
+                sup_result = self.supervisor_result.to_dict()
+            elif hasattr(self.supervisor_result, "__dataclass_fields__"):
+                sup_result = asdict(self.supervisor_result)
+            elif isinstance(self.supervisor_result, dict):
+                sup_result = self.supervisor_result
+            else:
+                sup_result = str(self.supervisor_result)
+
         return {
             "id": self.id,
             "agent": self.agent,
@@ -205,7 +217,7 @@ class Task:
             "conversation_id": self.conversation_id,
             "thoughts": list(self.thoughts),
             "tool_calls": list(self.tool_calls),
-            "supervisor_result": self.supervisor_result,
+            "supervisor_result": sup_result,
             "webhook_event_type": self.webhook_event_type,
             "webhook_payload": self.webhook_payload,
         }
@@ -1172,6 +1184,11 @@ class TaskManager:
                 return False
 
         if sup_to_kill is not None:
+            if hasattr(sup_to_kill, "abort") and callable(sup_to_kill.abort):
+                try:
+                    sup_to_kill.abort()
+                except Exception as e:
+                    logger.warning(f"Error aborting supervisor for task '{task_id}': {e}")
             try:
                 sup_to_kill.cleanup()
             except Exception as e:

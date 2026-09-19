@@ -2635,9 +2635,12 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
     def test_task_manager_supervisor_abort(self):
         import time
 
+        created_supervisors = []
+
         class HangingSupervisor:
             def __init__(self, **kwargs):
                 self.aborted = False
+                created_supervisors.append(self)
             def start(self):
                 pass
             def cleanup(self):
@@ -2670,7 +2673,9 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         manager.wait_for_task(task_id, timeout=3.0)
         task = manager.get_task(task_id)
         self.assertEqual(task.status, TaskStatus.ABORTED)
-        manager.stop(wait=False)
+        self.assertTrue(len(created_supervisors) > 0)
+        self.assertTrue(all(sup.aborted for sup in created_supervisors))
+        manager.stop(wait=True)
 
     @patch("lib.tasks.subprocess.run")
     def test_post_task_completion_comment(self, mock_run):
@@ -2697,6 +2702,49 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         self.assertEqual(cmd[1], "issue")
         self.assertEqual(cmd[2], "comment")
         self.assertEqual(cmd[3], "42")
+        body = cmd[7]
+        self.assertIn("<!-- antigravity-auto-reply -->", body)
+        self.assertIn("<!-- graviton:task_manager -->", body)
+
+        # Robustness: target_id formatted without '#'
+        mock_run.reset_mock()
+        task_unhashed = Task(
+            id="task-c2",
+            agent="code_fixer",
+            prompt="Fix bug",
+            repo_full_name="owner/repo",
+            target_id="42",
+        )
+        post_task_completion_comment(task_unhashed, result)
+        mock_run.assert_called_once()
+        cmd2 = mock_run.call_args[0][0]
+        self.assertEqual(cmd2[3], "42")
+
+    def test_task_to_dict_with_supervisor_result_serialization(self):
+        from lib.supervisor import SupervisorResult
+        import json
+
+        result = SupervisorResult(
+            status="SUCCESS",
+            response="Done!",
+            num_turns=2,
+            conversation_id="c-100",
+        )
+        task = Task(
+            id="task-ser",
+            agent="code_reviewer",
+            prompt="Review PR",
+            supervisor_result=result,
+        )
+        d = task.to_dict()
+        self.assertIsInstance(d["supervisor_result"], dict)
+        self.assertEqual(d["supervisor_result"]["status"], "SUCCESS")
+        self.assertEqual(d["supervisor_result"]["conversation_id"], "c-100")
+
+        # Must serialize cleanly to JSON without TypeError
+        serialized = json.dumps(d)
+        deserialized = json.loads(serialized)
+        self.assertEqual(deserialized["supervisor_result"]["status"], "SUCCESS")
 
 
 if __name__ == "__main__":
