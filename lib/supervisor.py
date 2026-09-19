@@ -30,9 +30,13 @@ __all__ = [
     "SupervisorResult",
     "SupervisorTimeoutError",
     "clean_workspace_dir",
+    "run_container_goal",
     "run_container_turn",
+    "run_goal_turn",
     "run_stream_turn",
 ]
+
+_UNSET: Any = object()
 
 
 @dataclass
@@ -47,10 +51,21 @@ class SupervisorResult:
     usage: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     events: List[Dict[str, Any]] = field(default_factory=list)
+    thoughts: List[str] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def is_success(self) -> bool:
         return self.status == "SUCCESS" and not self.error
+
+    @property
+    def is_goal_complete(self) -> bool:
+        resp = self.response or ""
+        return (
+            "<!-- GOAL_COMPLETE -->" in resp
+            or (self.is_success and "GOAL_COMPLETE" in resp)
+            or self.is_success
+        )
 
 
 class SupervisorError(Exception):
@@ -338,6 +353,8 @@ class StreamSession:
         res_data: Dict[str, Any],
         elapsed: float,
         events: List[Dict[str, Any]],
+        thoughts: Optional[List[str]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> SupervisorResult:
         """Construct SupervisorResult with explicit fallbacks for null or missing metrics."""
         status = res_data.get("status")
@@ -369,20 +386,34 @@ class StreamSession:
             usage=usage,
             error=res_data.get("error"),
             events=events,
+            thoughts=list(thoughts) if thoughts else [],
+            tool_calls=list(tool_calls) if tool_calls else [],
         )
 
     def receive_turn(
         self,
         timeout: Optional[float] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Optional[float] = 1800.0,
     ) -> SupervisorResult:
         """
         Stream events from stdout until a 'result' event signals turn completion.
 
-        :param timeout: Optional maximum seconds to wait for turn completion.
+        :param timeout: Optional maximum seconds to wait for turn completion (overrides max_duration if smaller).
         :param on_event: Optional callback invoked for every parsed NDJSON event.
-        :return: SupervisorResult summarizing the turn.
-        :raises SupervisorTimeoutError: If timeout elapses before 'result'.
+        :param on_thought: Optional callback invoked when the model emits thinking/thought content.
+        :param on_tool_call: Optional callback invoked when a tool call occurs.
+        :param on_chunk: Optional callback invoked when streaming text tokens arrive.
+        :param on_step: Optional callback invoked for every step_update payload.
+        :param idle_timeout: Optional watchdog timeout triggering if no events arrive for X seconds.
+        :param max_duration: Maximum execution ceiling (default: 1800.0s / 30m) preventing indefinite loops.
+        :return: SupervisorResult summarizing the turn with captured thoughts and tool calls.
+        :raises SupervisorTimeoutError: If execution ceiling or idle watchdog expires before 'result'.
         :raises SupervisorError: If process terminates unexpectedly or emits malformed data.
         """
         if not self.is_alive() or self.proc is None or self.proc.stdout is None:
@@ -391,22 +422,49 @@ class StreamSession:
         self._start_reader_threads()
 
         events: List[Dict[str, Any]] = []
+        thoughts: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
+
         start_time = time.time()
+        last_event_time = time.time()
+
+        effective_limit = timeout
+        if effective_limit is None:
+            effective_limit = max_duration
+        elif max_duration is not None:
+            effective_limit = min(effective_limit, max_duration)
 
         while True:
-            if timeout is not None:
-                remaining = timeout - (time.time() - start_time)
+            now = time.time()
+            if effective_limit is not None and (now - start_time) > effective_limit:
+                raise SupervisorTimeoutError(f"Turn execution exceeded timeout ceiling of {effective_limit}s.")
+
+            if idle_timeout is not None and (now - last_event_time) > idle_timeout:
+                raise SupervisorTimeoutError(f"Watchdog timeout: agent idle for {idle_timeout}s without emitting events.")
+
+            wait_timeout = 0.1
+            if effective_limit is not None:
+                remaining = effective_limit - (now - start_time)
                 if remaining <= 0:
-                    raise SupervisorTimeoutError(f"Turn execution exceeded timeout of {timeout}s.")
-                wait_timeout = min(remaining, 0.1)
-            else:
-                wait_timeout = 0.1
+                    raise SupervisorTimeoutError(f"Turn execution exceeded timeout ceiling of {effective_limit}s.")
+                wait_timeout = min(wait_timeout, remaining)
+
+            if idle_timeout is not None:
+                idle_remaining = idle_timeout - (now - last_event_time)
+                if idle_remaining <= 0:
+                    raise SupervisorTimeoutError(f"Watchdog timeout: agent idle for {idle_timeout}s without emitting events.")
+                wait_timeout = min(wait_timeout, idle_remaining)
+
+            wait_timeout = max(0.0, wait_timeout)
 
             try:
                 line = self._stdout_queue.get(timeout=wait_timeout)
             except queue.Empty:
-                if timeout is not None and (time.time() - start_time) > timeout:
-                    raise SupervisorTimeoutError(f"Turn execution exceeded timeout of {timeout}s.")
+                now = time.time()
+                if effective_limit is not None and (now - start_time) > effective_limit:
+                    raise SupervisorTimeoutError(f"Turn execution exceeded timeout ceiling of {effective_limit}s.")
+                if idle_timeout is not None and (now - last_event_time) > idle_timeout:
+                    raise SupervisorTimeoutError(f"Watchdog timeout: agent idle for {idle_timeout}s without emitting events.")
                 if self.proc.poll() is not None and self._stdout_queue.empty():
                     stderr_output = self.get_stderr()
                     self.close()
@@ -427,6 +485,8 @@ class StreamSession:
             if not stripped:
                 continue
 
+            last_event_time = time.time()
+
             try:
                 event = json.loads(stripped)
             except json.JSONDecodeError as e:
@@ -440,16 +500,89 @@ class StreamSession:
                 except Exception as cb_err:
                     logger.warning(f"Error in on_event callback: {cb_err}")
 
+            if event.get("event") == "step_update":
+                su = event.get("step_update") or event.get("step") or {}
+                if on_step:
+                    try:
+                        on_step(su)
+                    except Exception as s_err:
+                        logger.warning(f"Error in on_step callback: {s_err}")
+
+                step_type = su.get("step_type")
+                if step_type == "tool":
+                    tool_id = su.get("tool_call_id") or su.get("call_id") or su.get("id")
+                    tool_name = su.get("tool_name") or ""
+                    tool_info = su.get("tool_info") or {}
+                    state = su.get("state")
+                    duration = su.get("duration_seconds")
+
+                    entry = {
+                        "name": tool_name,
+                        "info": tool_info,
+                        "state": state,
+                        "duration_seconds": duration,
+                    }
+                    if tool_id is not None:
+                        entry["id"] = tool_id
+
+                    existing = None
+                    if tool_id is not None:
+                        for item in tool_calls:
+                            if item.get("id") == tool_id:
+                                existing = item
+                                break
+
+                    if existing is not None:
+                        if tool_name:
+                            existing["name"] = tool_name
+                        if tool_info:
+                            existing["info"] = tool_info
+                        if state is not None:
+                            existing["state"] = state
+                        if duration is not None:
+                            existing["duration_seconds"] = duration
+                    else:
+                        tool_calls.append(entry)
+                    if on_tool_call:
+                        try:
+                            on_tool_call(tool_name, tool_info)
+                        except Exception as tc_err:
+                            logger.warning(f"Error in on_tool_call callback: {tc_err}")
+
+                elif step_type == "agent_response":
+                    text_delta = su.get("text_delta")
+                    if text_delta and on_chunk:
+                        try:
+                            on_chunk(text_delta)
+                        except Exception as c_err:
+                            logger.warning(f"Error in on_chunk callback: {c_err}")
+
+                    thought = su.get("thought") or su.get("thinking")
+                    if thought:
+                        thoughts.append(str(thought))
+                        if on_thought:
+                            try:
+                                on_thought(str(thought))
+                            except Exception as th_err:
+                                logger.warning(f"Error in on_thought callback: {th_err}")
+
             if event.get("event") == "result":
                 res_data = event.get("result") or {}
                 elapsed = time.time() - start_time
-                return self._build_result(res_data, elapsed, events)
+                return self._build_result(res_data, elapsed, events, thoughts=thoughts, tool_calls=tool_calls)
 
     def run_turn(
         self,
         prompt: str,
         timeout: Optional[float] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Any = _UNSET,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """
         High-level helper: starts session if not already running, sends prompt,
@@ -458,7 +591,56 @@ class StreamSession:
         if not self.is_alive():
             self.start()
         self.send_prompt(prompt)
-        return self.receive_turn(timeout=timeout, on_event=on_event)
+        extra = dict(kwargs)
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        if max_duration is not _UNSET:
+            extra["max_duration"] = max_duration
+        return self.receive_turn(timeout=timeout, on_event=on_event, **extra)
+
+    def run_goal(
+        self,
+        goal: str,
+        timeout: Optional[float] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Optional[float] = 1800.0,
+    ) -> SupervisorResult:
+        """
+        Execute an autonomous multi-turn goal. Automatically prepends '/goal ' if needed.
+        """
+        clean_goal = goal.strip()
+        prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
+        extra = {}
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        extra["max_duration"] = max_duration
+        return self.run_turn(
+            prompt,
+            timeout=timeout,
+            on_event=on_event,
+            **extra,
+        )
 
     def close(self, timeout: float = 5.0) -> None:
         """
@@ -524,9 +706,16 @@ def run_stream_turn(
     dangerously_skip_permissions: bool = True,
     timeout: Optional[float] = None,
     on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_thought: Optional[Callable[[str], None]] = None,
+    on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+    idle_timeout: Optional[float] = None,
+    max_duration: Any = _UNSET,
     extra_args: Optional[List[str]] = None,
     agy_binary: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute a single turn using StreamSession with full lifecycle management.
@@ -541,7 +730,72 @@ def run_stream_turn(
         agy_binary=agy_binary,
         env=env,
     ) as session:
-        return session.run_turn(prompt, timeout=timeout, on_event=on_event)
+        extra = dict(kwargs)
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        if max_duration is not _UNSET:
+            extra["max_duration"] = max_duration
+        return session.run_turn(prompt, timeout=timeout, on_event=on_event, **extra)
+
+
+def run_goal_turn(
+    goal: str,
+    agent_name: Optional[str] = None,
+    model: Optional[str] = None,
+    cwd: Optional[Union[str, Path]] = None,
+    remote_control: bool = False,
+    dangerously_skip_permissions: bool = True,
+    timeout: Optional[float] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_thought: Optional[Callable[[str], None]] = None,
+    on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+    idle_timeout: Optional[float] = None,
+    max_duration: Optional[float] = 1800.0,
+    extra_args: Optional[List[str]] = None,
+    agy_binary: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> SupervisorResult:
+    """
+    Convenience function to execute an autonomous /goal using StreamSession.
+    """
+    with StreamSession(
+        agent_name=agent_name,
+        model=model,
+        cwd=cwd,
+        remote_control=remote_control,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        extra_args=extra_args,
+        agy_binary=agy_binary,
+        env=env,
+    ) as session:
+        extra = {}
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        extra["max_duration"] = max_duration
+        return session.run_goal(
+            goal,
+            timeout=timeout,
+            on_event=on_event,
+            **extra,
+        )
 
 
 def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "docker") -> bool:
@@ -917,23 +1171,97 @@ class ContainerSupervisor:
         self,
         timeout: Optional[float] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Any = _UNSET,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """Receive a turn response from the container session."""
         if not self.is_alive() or self.session is None:
             raise SupervisorError("Cannot receive turn: ContainerSupervisor session is not running.")
-        return self.session.receive_turn(timeout=timeout, on_event=on_event)
+        extra = dict(kwargs)
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        if max_duration is not _UNSET:
+            extra["max_duration"] = max_duration
+        return self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
 
     def run_turn(
         self,
         prompt: str,
         timeout: Optional[float] = None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Any = _UNSET,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """Execute a turn, starting the container session if not already running."""
         if not self.is_alive():
             self.start()
         self.send_prompt(prompt)
-        return self.receive_turn(timeout=timeout, on_event=on_event)
+        extra = dict(kwargs)
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        if max_duration is not _UNSET:
+            extra["max_duration"] = max_duration
+        return self.receive_turn(timeout=timeout, on_event=on_event, **extra)
+
+    def run_goal(
+        self,
+        goal: str,
+        timeout: Optional[float] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_thought: Optional[Callable[[str], None]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+        idle_timeout: Optional[float] = None,
+        max_duration: Optional[float] = 1800.0,
+    ) -> SupervisorResult:
+        """Execute an autonomous /goal in the container session."""
+        clean_goal = goal.strip()
+        prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
+        extra = {}
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        extra["max_duration"] = max_duration
+        return self.run_turn(
+            prompt,
+            timeout=timeout,
+            on_event=on_event,
+            **extra,
+        )
 
     def cleanup(self) -> None:
         """Terminate the StreamSession, remove the docker container, and wipe the workspace."""
@@ -985,6 +1313,12 @@ def run_container_turn(
     timeout: Optional[float] = None,
     branch: Optional[str] = None,
     on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_thought: Optional[Callable[[str], None]] = None,
+    on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+    idle_timeout: Optional[float] = None,
+    max_duration: Any = _UNSET,
     extra_args: Optional[List[str]] = None,
     base_workspaces_dir: Union[str, Path] = "/tmp/graviton-workspaces",
     run_id: Optional[str] = None,
@@ -996,6 +1330,7 @@ def run_container_turn(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute a turn in an isolated container with full lifecycle management.
@@ -1020,5 +1355,90 @@ def run_container_turn(
         agy_binary=agy_binary,
         cache_dir=cache_dir,
     ) as supervisor:
-        return supervisor.run_turn(prompt, timeout=timeout, on_event=on_event)
+        extra = dict(kwargs)
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        if max_duration is not _UNSET:
+            extra["max_duration"] = max_duration
+        return supervisor.run_turn(prompt, timeout=timeout, on_event=on_event, **extra)
+
+
+def run_container_goal(
+    goal: str,
+    repo_dir: Union[str, Path],
+    agent_name: Optional[str] = "code_reviewer",
+    model: Optional[str] = None,
+    image_name: Optional[str] = None,
+    remote_control: bool = True,
+    dangerously_skip_permissions: bool = True,
+    timeout: Optional[float] = None,
+    branch: Optional[str] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_thought: Optional[Callable[[str], None]] = None,
+    on_tool_call: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    on_chunk: Optional[Callable[[str], None]] = None,
+    on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+    idle_timeout: Optional[float] = None,
+    max_duration: Optional[float] = 1800.0,
+    extra_args: Optional[List[str]] = None,
+    base_workspaces_dir: Union[str, Path] = "/tmp/graviton-workspaces",
+    run_id: Optional[str] = None,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
+    github_token: Optional[str] = None,
+    skills_dir: Optional[Union[str, Path]] = None,
+    env: Optional[Dict[str, str]] = None,
+    docker_binary: Optional[str] = None,
+    agy_binary: Optional[str] = None,
+    cache_dir: Optional[Union[str, Path]] = None,
+) -> SupervisorResult:
+    """
+    Convenience function to execute an autonomous /goal in an isolated container.
+    """
+    with ContainerSupervisor(
+        repo_dir=repo_dir,
+        agent_name=agent_name,
+        model=model,
+        image_name=image_name,
+        remote_control=remote_control,
+        dangerously_skip_permissions=dangerously_skip_permissions,
+        extra_args=extra_args,
+        base_workspaces_dir=base_workspaces_dir,
+        run_id=run_id,
+        default_branch=branch,
+        git_user_name=git_user_name,
+        git_user_email=git_user_email,
+        github_token=github_token,
+        skills_dir=skills_dir,
+        env=env,
+        docker_binary=docker_binary,
+        agy_binary=agy_binary,
+        cache_dir=cache_dir,
+    ) as supervisor:
+        extra = {}
+        if on_thought is not None:
+            extra["on_thought"] = on_thought
+        if on_tool_call is not None:
+            extra["on_tool_call"] = on_tool_call
+        if on_chunk is not None:
+            extra["on_chunk"] = on_chunk
+        if on_step is not None:
+            extra["on_step"] = on_step
+        if idle_timeout is not None:
+            extra["idle_timeout"] = idle_timeout
+        extra["max_duration"] = max_duration
+        return supervisor.run_goal(
+            goal,
+            timeout=timeout,
+            on_event=on_event,
+            **extra,
+        )
 

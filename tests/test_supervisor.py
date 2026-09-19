@@ -16,7 +16,9 @@ from lib.supervisor import (
     SupervisorResult,
     SupervisorTimeoutError,
     clean_workspace_dir,
+    run_container_goal,
     run_container_turn,
+    run_goal_turn,
     run_stream_turn,
 )
 
@@ -30,11 +32,15 @@ class TestSupervisorResult(unittest.TestCase):
             duration_seconds=1.5,
             num_turns=1,
             usage={"input_tokens": 10, "output_tokens": 20},
+            thoughts=["Let me check"],
+            tool_calls=[{"name": "run_command"}],
         )
         self.assertTrue(res.is_success)
         self.assertEqual(res.conversation_id, "conv-123")
         self.assertEqual(res.status, "SUCCESS")
         self.assertEqual(res.response, "All tests passed")
+        self.assertEqual(res.thoughts, ["Let me check"])
+        self.assertEqual(len(res.tool_calls), 1)
 
     def test_result_failure_status(self):
         res = SupervisorResult(status="ERROR", error="Model timed out")
@@ -43,6 +49,40 @@ class TestSupervisorResult(unittest.TestCase):
     def test_result_error_with_success_status(self):
         res = SupervisorResult(status="SUCCESS", error="Partial failure")
         self.assertFalse(res.is_success)
+
+    def test_result_goal_complete(self):
+        res1 = SupervisorResult(status="SUCCESS", response="Done! <!-- GOAL_COMPLETE -->")
+        self.assertTrue(res1.is_goal_complete)
+
+        res2 = SupervisorResult(status="SUCCESS", response="Finished task without marker")
+        self.assertTrue(res2.is_goal_complete)
+
+        res3 = SupervisorResult(status="ERROR", response="Something broke <!-- GOAL_COMPLETE -->")
+        self.assertTrue(res3.is_goal_complete)
+
+        res4 = SupervisorResult(status="ERROR", response="Failed task", error="Crash")
+        self.assertFalse(res4.is_goal_complete)
+
+    def test_result_goal_complete_none_response(self):
+        res_none_err = SupervisorResult(status="ERROR", response=None)
+        self.assertFalse(res_none_err.is_goal_complete)
+
+        res_none_ok = SupervisorResult(status="SUCCESS", response=None)
+        self.assertTrue(res_none_ok.is_goal_complete)
+
+    def test_result_goal_complete_error_with_bare_substring(self):
+        res = SupervisorResult(
+            status="ERROR",
+            response="Error: Agent failed without emitting GOAL_COMPLETE",
+            error="Process error",
+        )
+        self.assertFalse(res.is_goal_complete)
+
+        res2 = SupervisorResult(
+            status="ERROR",
+            response="Subprocess output mentioning GOAL_COMPLETE keyword",
+        )
+        self.assertFalse(res2.is_goal_complete)
 
 
 class TestStreamSession(unittest.TestCase):
@@ -233,6 +273,107 @@ class TestStreamSession(unittest.TestCase):
         self.assertEqual(result.conversation_id, "conv-abc")
         self.assertEqual(len(captured_events), 3)
 
+    def test_receive_turn_step_updates_and_callbacks(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-progress"
+
+        lines = [
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "thought": "I should read the file first.",
+                    "text_delta": "Thinking...",
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "tool_name": "view_file",
+                    "tool_info": {"path": "/workspace/main.py"},
+                    "state": "DONE",
+                    "duration_seconds": 0.05,
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "text_delta": "File looks good.",
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Done! <!-- GOAL_COMPLETE -->",
+                },
+            }) + "\n",
+            "",
+        ]
+        self.mock_proc.stdout.readline.side_effect = lines
+
+        captured_thoughts = []
+        captured_tools = []
+        captured_chunks = []
+        captured_steps = []
+
+        res = session.receive_turn(
+            on_thought=lambda th: captured_thoughts.append(th),
+            on_tool_call=lambda name, info: captured_tools.append((name, info)),
+            on_chunk=lambda chunk: captured_chunks.append(chunk),
+            on_step=lambda step: captured_steps.append(step),
+        )
+
+        self.assertTrue(res.is_success)
+        self.assertTrue(res.is_goal_complete)
+        self.assertEqual(res.thoughts, ["I should read the file first."])
+        self.assertEqual(captured_thoughts, ["I should read the file first."])
+        self.assertEqual(len(res.tool_calls), 1)
+        self.assertEqual(res.tool_calls[0]["name"], "view_file")
+        self.assertEqual(captured_tools, [("view_file", {"path": "/workspace/main.py"})])
+        self.assertIn("Thinking...", captured_chunks)
+        self.assertIn("File looks good.", captured_chunks)
+        self.assertEqual(len(captured_steps), 3)
+
+    def test_receive_turn_idle_watchdog(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+
+        block_event = threading.Event()
+
+        def blocking_readline():
+            block_event.wait(timeout=1.0)
+            return ""
+
+        self.mock_proc.stdout.readline.side_effect = blocking_readline
+
+        with self.assertRaises(SupervisorTimeoutError) as ctx:
+            session.receive_turn(idle_timeout=0.05)
+        block_event.set()
+        self.assertIn("idle", str(ctx.exception).lower())
+
+    def test_run_goal_formatting(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-goal"
+
+        with patch.object(session, "send_prompt") as mock_send, \
+             patch.object(session, "receive_turn") as mock_receive:
+            mock_receive.return_value = SupervisorResult(status="SUCCESS", response="<!-- GOAL_COMPLETE -->")
+
+            # Prepends /goal if missing
+            res1 = session.run_goal("Run all tests and fix errors")
+            mock_send.assert_called_with("/goal Run all tests and fix errors")
+            self.assertTrue(res1.is_goal_complete)
+
+            # Preserves /goal if already present
+            res2 = session.run_goal("/goal Already has goal")
+            mock_send.assert_called_with("/goal Already has goal")
+            self.assertTrue(res2.is_goal_complete)
+
     def test_receive_turn_timeout(self):
         session = StreamSession(agy_binary="agy")
         session.proc = self.mock_proc
@@ -252,6 +393,84 @@ class TestStreamSession(unittest.TestCase):
         elapsed = time.time() - start_time
         self.assertLess(elapsed, 0.5)
         block_event.set()
+
+    def test_receive_turn_max_duration_timeout(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+
+        block_event = threading.Event()
+
+        def blocking_readline():
+            block_event.wait(timeout=1.0)
+            return ""
+
+        self.mock_proc.stdout.readline.side_effect = blocking_readline
+
+        start_time = time.time()
+        with self.assertRaises(SupervisorTimeoutError) as ctx:
+            session.receive_turn(max_duration=0.05)
+        elapsed = time.time() - start_time
+        self.assertLess(elapsed, 0.5)
+        block_event.set()
+        self.assertIn("ceiling", str(ctx.exception).lower())
+
+    def test_run_turn_disabling_max_duration(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+
+        with patch.object(session, "send_prompt"), \
+             patch.object(session, "receive_turn") as mock_receive:
+            mock_receive.return_value = SupervisorResult(status="SUCCESS")
+            session.run_turn("test prompt", max_duration=None)
+            mock_receive.assert_called_once()
+            _, kwargs = mock_receive.call_args
+            self.assertIn("max_duration", kwargs)
+            self.assertIsNone(kwargs["max_duration"])
+
+    def test_receive_turn_tool_calls_deduplication(self):
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-dedup"
+
+        lines = [
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "id": "tool-call-1",
+                    "tool_name": "run_command",
+                    "tool_info": {"CommandLine": "pytest"},
+                    "state": "RUNNING",
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "id": "tool-call-1",
+                    "tool_name": "run_command",
+                    "state": "DONE",
+                    "duration_seconds": 1.2,
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Done! <!-- GOAL_COMPLETE -->",
+                },
+            }) + "\n",
+            "",
+        ]
+        self.mock_proc.stdout.readline.side_effect = lines
+
+        res = session.receive_turn()
+        self.assertEqual(len(res.tool_calls), 1)
+        self.assertEqual(res.tool_calls[0]["id"], "tool-call-1")
+        self.assertEqual(res.tool_calls[0]["name"], "run_command")
+        self.assertEqual(res.tool_calls[0]["info"], {"CommandLine": "pytest"})
+        self.assertEqual(res.tool_calls[0]["state"], "DONE")
+        self.assertEqual(res.tool_calls[0]["duration_seconds"], 1.2)
 
     def test_receive_turn_premature_exit(self):
         session = StreamSession(agy_binary="agy")
@@ -827,6 +1046,58 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertEqual(mock_cls.call_args[1]["model"], "gemini-1.5-pro")
             mock_inst.run_turn.assert_called_once_with("Fix bug", timeout=120.0, on_event=None)
             self.assertEqual(res, expected_res)
+
+    def test_container_supervisor_run_goal(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="goal_sup",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with patch.object(sup, "run_turn") as mock_run_turn:
+            expected = SupervisorResult(status="SUCCESS", response="Done <!-- GOAL_COMPLETE -->")
+            mock_run_turn.return_value = expected
+
+            res = sup.run_goal("Solve issue #5", timeout=30.0)
+            mock_run_turn.assert_called_once_with(
+                "/goal Solve issue #5",
+                timeout=30.0,
+                on_event=None,
+                max_duration=1800.0,
+            )
+            self.assertEqual(res, expected)
+
+    def test_run_goal_turn_and_run_container_goal_wrappers(self):
+        with patch("lib.supervisor.StreamSession") as mock_stream_cls:
+            mock_inst = MagicMock()
+            mock_stream_cls.return_value.__enter__.return_value = mock_inst
+            expected_res = SupervisorResult(status="SUCCESS", response="Done")
+            mock_inst.run_goal.return_value = expected_res
+
+            res1 = run_goal_turn("Fix tests", agent_name="fixer", timeout=60.0)
+            mock_stream_cls.assert_called_once()
+            mock_inst.run_goal.assert_called_once_with(
+                "Fix tests",
+                timeout=60.0,
+                on_event=None,
+                max_duration=1800.0,
+            )
+            self.assertEqual(res1, expected_res)
+
+        with patch("lib.supervisor.ContainerSupervisor") as mock_container_cls:
+            mock_inst = MagicMock()
+            mock_container_cls.return_value.__enter__.return_value = mock_inst
+            expected_res = SupervisorResult(status="SUCCESS", response="Done")
+            mock_inst.run_goal.return_value = expected_res
+
+            res2 = run_container_goal("Fix tests", repo_dir=self.repo_dir, timeout=60.0)
+            mock_container_cls.assert_called_once()
+            mock_inst.run_goal.assert_called_once_with(
+                "Fix tests",
+                timeout=60.0,
+                on_event=None,
+                max_duration=1800.0,
+            )
+            self.assertEqual(res2, expected_res)
 
 
 class TestSupervisorIntegration(unittest.TestCase):

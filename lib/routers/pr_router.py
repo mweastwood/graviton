@@ -18,11 +18,57 @@ from lib.routers.base import (
 from lib.security import extract_agent_marker
 
 
+def format_pr_review_goal(pr_number: Any, repo_full_name: Optional[str] = None) -> str:
+    """Format an autonomous /goal prompt for reviewing a pull request."""
+    if repo_full_name:
+        return (
+            f"/goal Review PR #{pr_number} in {repo_full_name}. "
+            f"Inspect all changed files, run tests locally, formulate fixes, and submit review using --request-changes for any findings or fixes."
+        )
+    return (
+        f"/goal Review PR #{pr_number}. "
+        f"Inspect all changed files, run tests locally, formulate fixes, and submit review using --request-changes for any findings or fixes."
+    )
+
+
+def format_pr_feedback_goal(pr_number: Any, review_body: str, repo_full_name: Optional[str] = None) -> str:
+    """Format an autonomous /goal prompt for resolving PR review feedback."""
+    if repo_full_name:
+        return (
+            f"/goal Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'. "
+            f"Formulate fixes, run tests locally to verify, and commit changes."
+        )
+    return (
+        f"/goal Resolve review feedback on PR #{pr_number}: '{review_body}'. "
+        f"Formulate fixes, run tests locally to verify, and commit changes."
+    )
+
+
+def format_pr_review_comment_goal(
+    pr_number: Any,
+    file_path: str,
+    line: Any,
+    comment_body: str,
+    repo_full_name: Optional[str] = None,
+) -> str:
+    """Format an autonomous /goal prompt for resolving inline PR review comments."""
+    if repo_full_name:
+        return (
+            f"/goal Resolve review comment on PR #{pr_number} in {repo_full_name} in file '{file_path}' (line {line}): '{comment_body}'. "
+            f"Formulate fixes, run tests locally to verify, and commit changes."
+        )
+    return (
+        f"/goal Resolve review comment on PR #{pr_number} in file '{file_path}' (line {line}): '{comment_body}'. "
+        f"Formulate fixes, run tests locally to verify, and commit changes."
+    )
+
+
 def handle_pull_request_event(
     payload: Dict[str, Any],
     default_reviewer: str = "code_reviewer",
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
+    use_goal: bool = False,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request' webhook event."""
     action = payload.get("action")
@@ -55,7 +101,10 @@ def handle_pull_request_event(
                     }
                 _pr_review_timestamps[pr_key] = now
 
-        if repo_full_name:
+        goal_prompt = format_pr_review_goal(pr_number, repo_full_name=repo_full_name)
+        if use_goal:
+            prompt = goal_prompt
+        elif repo_full_name:
             prompt = f"Review PR #{pr_number} in {repo_full_name}. Use --request-changes for any findings or code fixes."
         else:
             prompt = f"Review PR #{pr_number}. Use --request-changes for any findings or code fixes."
@@ -64,6 +113,7 @@ def handle_pull_request_event(
             action=action,
             agent=default_reviewer,
             prompt=prompt,
+            goal_prompt=goal_prompt,
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
@@ -81,6 +131,7 @@ def handle_pull_request_review_event(
     payload: Dict[str, Any],
     default_fixer: str = "code_fixer",
     pr_tracker: Optional[Any] = None,
+    use_goal: bool = False,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review' webhook event."""
     action = payload.get("action")
@@ -131,7 +182,10 @@ def handle_pull_request_review_event(
                 "status": "ignored",
                 "reason": f"Review state '{review_state}' with approval marker does not trigger fixer",
             }
-        if repo_full_name:
+        goal_prompt = format_pr_feedback_goal(pr_number, review_body, repo_full_name=repo_full_name)
+        if use_goal:
+            prompt = goal_prompt
+        elif repo_full_name:
             prompt = f"Resolve review feedback on PR #{pr_number} in {repo_full_name}: '{review_body}'"
         else:
             prompt = f"Resolve review feedback on PR #{pr_number}: '{review_body}'"
@@ -139,6 +193,7 @@ def handle_pull_request_review_event(
             action=action,
             agent=default_fixer,
             prompt=prompt,
+            goal_prompt=goal_prompt,
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
@@ -156,6 +211,7 @@ def handle_pull_request_review_event(
 def handle_pull_request_review_comment_event(
     payload: Dict[str, Any],
     default_fixer: str = "code_fixer",
+    use_goal: bool = False,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review_comment' webhook event (inline comments)."""
     action = payload.get("action")
@@ -190,7 +246,12 @@ def handle_pull_request_review_comment_event(
         }
 
     if action == "created":
-        if repo_full_name:
+        goal_prompt = format_pr_review_comment_goal(
+            pr_number, file_path, line, comment_body, repo_full_name=repo_full_name
+        )
+        if use_goal:
+            prompt = goal_prompt
+        elif repo_full_name:
             prompt = f"Resolve review comment on PR #{pr_number} in {repo_full_name} in file '{file_path}' (line {line}): '{comment_body}'"
         else:
             prompt = f"Resolve review comment on PR #{pr_number} in file '{file_path}' (line {line}): '{comment_body}'"
@@ -198,6 +259,7 @@ def handle_pull_request_review_comment_event(
             action=action,
             agent=default_fixer,
             prompt=prompt,
+            goal_prompt=goal_prompt,
             repo_full_name=repo_full_name,
             repo_name=repo_name,
             clone_url=clone_url,
