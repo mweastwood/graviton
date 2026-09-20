@@ -210,6 +210,8 @@ def start_sidecar(
         target_smee = smee_url if smee_url is not None else os.environ.get("SMEE_URL", DEFAULT_SMEE_URL)
         if target_smee:
             cmd.extend(["--smee-url", target_smee])
+        else:
+            cmd.append("--no-smee")
 
     if extra_args:
         cmd.extend(extra_args)
