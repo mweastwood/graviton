@@ -286,6 +286,49 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertIn("task-2", content)
         self.assertIn("task-3", content)
 
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_dashboard_without_artifact(self, mock_http):
+        mock_http.return_value = (
+            200,
+            {"markdown": "# 🌌 Graviton Live Dashboard\nContent here", "targets": []},
+        )
+        req = {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {"name": "graviton_dashboard", "arguments": {}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("# 🌌 Graviton Live Dashboard", content)
+
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_dashboard_with_artifact_registration(self, mock_http):
+        def fake_http(method, path, payload=None, timeout=5.0):
+            if path == "/dashboard/register":
+                return 200, {"status": "ok", "registered": payload.get("path")}
+            if path == "/dashboard/content":
+                return 200, {"markdown": "# 🌌 Graviton Live Dashboard", "targets": [payload]}
+            return 404, {}
+
+        mock_http.side_effect = fake_http
+        req = {
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "graviton_dashboard",
+                "arguments": {"artifact_path": "/fake/brain/graviton_dashboard.md"},
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("Live Updates Active", content)
+        self.assertIn("/fake/brain/graviton_dashboard.md", content)
+        self.assertIn("# 🌌 Graviton Live Dashboard", content)
+
     def test_non_dict_request_payload(self):
         # List payload
         resp = self.server.handle_request([1, 2, 3])

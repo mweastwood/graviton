@@ -205,6 +205,22 @@ class GravitonMCPServer:
             handler=self._tool_abort_task,
         )
 
+        # 7. graviton_dashboard
+        self._register_tool(
+            name="graviton_dashboard",
+            description="Retrieve the live Graviton status and task pipeline formatted as a markdown dashboard, and optionally register an Antigravity artifact file path for automatic continuous updates from the server.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_path": {
+                        "type": "string",
+                        "description": "Optional absolute path to an Antigravity artifact file (e.g., '<appDataDir>/brain/<conversation-id>/graviton_dashboard.md') to register for live server updates.",
+                    },
+                },
+            },
+            handler=self._tool_dashboard,
+        )
+
     def _register_tool(
         self,
         name: str,
@@ -412,6 +428,35 @@ class GravitonMCPServer:
             return f"Failed to abort task '{task_id}': {data.get('error', data)}", True
 
         return f"🛑 Successfully aborted task **{task_id}**.", False
+
+    def _tool_dashboard(self, args: Dict[str, Any]) -> Tuple[str, bool]:
+        artifact_path = args.get("artifact_path")
+        registration_notes = []
+        if artifact_path:
+            status_code, resp = self._http_request(
+                "POST",
+                "/dashboard/register",
+                payload={"path": str(artifact_path)},
+            )
+            if status_code == 200:
+                registration_notes.append(f"> [!TIP]\n> **Live Updates Active**: Registered `{artifact_path}` for automatic real-time server updates.")
+            else:
+                err_msg = resp.get("error", str(resp))
+                registration_notes.append(f"> [!WARNING]\n> Could not register artifact path with server: {err_msg}")
+
+        # Fetch formatted dashboard content from server
+        status_code, data = self._http_request("GET", "/dashboard/content")
+        if status_code == 200 and isinstance(data, dict) and "markdown" in data:
+            md = data["markdown"]
+            if registration_notes:
+                md = "\n\n".join(registration_notes) + "\n\n" + md
+            return md, False
+
+        # Fallback to local status query if /dashboard/content is not reachable
+        status_text, is_err = self._tool_status(args)
+        if registration_notes:
+            status_text = "\n\n".join(registration_notes) + "\n\n" + status_text
+        return status_text, is_err
 
     # ---------------- JSON-RPC Protocol Handling ----------------
 

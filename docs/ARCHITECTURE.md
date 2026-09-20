@@ -209,8 +209,9 @@ Every agent execution is registered with the **Antigravity Remote Control site**
 - **Surfacing**:
   - **GitHub Comments**: Initial start comments (🚀) and completion comments include clickable markdown links for immediate browser inspection.
   - **REST API**: The `/health` endpoint exposes `active_remote_control_urls` for active tasks.
-  - **MCP Tools**: `graviton_status`, `graviton_list_tasks`, and `graviton_get_task` display live URLs.
-  - **TUI Dashboard**: Pressing `o` on the main dashboard or task logs screen instantly opens the session in the user's web browser.
+  - **MCP Tools**: `graviton_dashboard`, `graviton_status`, `graviton_list_tasks`, and `graviton_get_task` display live URLs.
+  - **Live Artifact & Web Dashboard**: Formatted markdown in the Antigravity Auxiliary Pane and the web UI at `/dashboard` provide clickable links to live container sessions.
+  - **Legacy TUI Dashboard**: Pressing `o` on the main dashboard or task logs screen opens the session in the user's web browser.
 
 ---
 
@@ -218,15 +219,17 @@ Every agent execution is registered with the **Antigravity Remote Control site**
 
 Graviton is packaged as an Antigravity Plugin located at `.agents/plugins/graviton/`:
 - **`plugin.json`**: Plugin manifest describing capabilities, hooks, rules, and sidecars.
-- **`rules/AGENTS.md`**: Autonomous supervision guidelines instructing Antigravity assistants how to inspect Graviton via MCP tools.
-- **`sidecars/`**: Background daemon configuration allowing Antigravity to launch and healthcheck `graviton-server.py` automatically.
+- **`rules/AGENTS.md`**: Autonomous supervision guidelines instructing Antigravity assistants how to inspect Graviton via MCP tools and register live dashboard artifacts.
+- **`skills/graviton/`**: Slash command `/graviton` providing interactive commands to open the live dashboard, trigger reviews, or manage tasks.
+- **`sidecars/`**: Background daemon configuration allowing Antigravity to launch and healthcheck `graviton-server.py` headlessly.
 - **`mcp/`**: JSON-RPC Model Context Protocol server exposing:
+  - `graviton_dashboard`: Generates real-time dashboard markdown and registers artifact paths for automatic server updates.
   - `graviton_status`: Health and quota pacing metrics.
   - `graviton_list_tasks`: Active, queued, and completed tasks.
-  - `graviton_get_task`: Streaming thoughts, tool executions, and logs.
-  - `graviton_submit_review`: Autonomous containerized PR review.
-  - `graviton_submit_task`: Custom prompt execution in sandboxed agent.
-  - `graviton_abort_task`: Active or queued task cancellation.
+  - `graviton_get_task`: Streaming execution logs and thoughts.
+  - `graviton_submit_review`: PR review sandbox triggering.
+  - `graviton_submit_task`: Arbitrary task queuing.
+  - `graviton_abort_task`: Active task cancellation.
 
 ---
 
