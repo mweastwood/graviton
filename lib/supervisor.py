@@ -1331,7 +1331,7 @@ def sync_conversation_to_agyhub(
                     if ws_proto_bytes:
                         new_f17 += _encode_field(1, 2, ws_proto_bytes)
                     for s_num, s_type, s_val in sub_fields:
-                        if s_num == 1:
+                        if s_num == 1 and ws_proto_bytes:
                             continue  # Replaced with ws_proto_bytes above
                         elif s_num == 18 and target_pid:
                             new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
