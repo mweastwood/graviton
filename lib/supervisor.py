@@ -1508,7 +1508,8 @@ class ContainerSupervisor:
         if self._workspace_prepared and self.temp_workspace.exists():
             return self.temp_workspace
 
-        self.temp_workspace.mkdir(parents=True, exist_ok=True)
+        clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
+        self.temp_workspace.parent.mkdir(parents=True, exist_ok=True)
 
         if self.cache_dir and self.cache_dir.is_dir():
             shutil.copytree(self.cache_dir, self.temp_workspace, dirs_exist_ok=True)
@@ -1517,6 +1518,7 @@ class ContainerSupervisor:
             clone_cmd = ["git", "clone", "--local", str(self.repo_dir), str(self.temp_workspace)]
             res = subprocess.run(clone_cmd, capture_output=True, text=True, check=False)
             if res.returncode != 0:
+                clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
                 shutil.copytree(self.repo_dir, self.temp_workspace, dirs_exist_ok=True)
 
             # Restore original remote origin URL
@@ -1764,7 +1766,7 @@ class ContainerSupervisor:
 
         return cmd
 
-    def start(self, timeout: float = 60.0, branch: Optional[str] = None) -> str:
+    def start(self, timeout: float = 120.0, branch: Optional[str] = None) -> str:
         """
         Prepare the workspace, build the docker command, and start StreamSession.
         """
