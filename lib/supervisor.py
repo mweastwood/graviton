@@ -128,7 +128,7 @@ def extract_remote_control_url(
         base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
         inst = instance_name if instance_name is not None else get_remote_control_instance_name()
         query_suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
-        return f"{base_url}{query_suffix}"
+        return f"{base_url}/c/{conversation_id.strip()}{query_suffix}"
 
     return None
 
@@ -1060,23 +1060,22 @@ def find_project_for_repo(
             if explicit_pref and (explicit_pref == project_id or explicit_pref.lower() == project_name.lower()):
                 return (project_id, project_name)
 
-            if not explicit_pref and project_name.strip().lower() == DEFAULT_PROJECT_NAME.lower():
+            if project_name.strip().lower() == DEFAULT_PROJECT_NAME.lower():
                 match_default_worker = (project_id, project_name)
 
             resources = data.get("projectResources", {}).get("resources", [])
             for r in resources:
                 gf = r.get("gitFolder", {})
                 folder_uri = gf.get("folderUri", "")
-                if folder_uri and folder_uri.startswith("file://"):
-                    folder_path = Path(urllib.parse.unquote(folder_uri[7:])).resolve()
-                    if folder_path == repo_path or repo_path.is_relative_to(folder_path):
-                        if not match_by_repo:
-                            match_by_repo = (project_id, project_name)
+                if folder_uri:
+                    parsed_path = urllib.parse.unquote(urllib.parse.urlparse(folder_uri).path)
+                    if parsed_path:
+                        folder_path = Path(parsed_path).resolve()
+                        if folder_path == repo_path or repo_path.is_relative_to(folder_path):
+                            if not match_by_repo:
+                                match_by_repo = (project_id, project_name)
         except Exception:
             continue
-
-    if explicit_pref:
-        return match_by_repo
 
     if match_by_repo:
         return match_by_repo
@@ -1188,15 +1187,21 @@ def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
             val, pos = _decode_varint(data, pos)
             fields.append((field_num, wire_type, val))
         elif wire_type == 1:
+            if pos + 8 > length:
+                break
             val = data[pos:pos+8]
             pos += 8
             fields.append((field_num, wire_type, val))
         elif wire_type == 2:
             f_len, pos = _decode_varint(data, pos)
+            if pos + f_len > length:
+                break
             val = data[pos:pos+f_len]
             pos += f_len
             fields.append((field_num, wire_type, val))
         elif wire_type == 5:
+            if pos + 4 > length:
+                break
             val = data[pos:pos+4]
             pos += 4
             fields.append((field_num, wire_type, val))

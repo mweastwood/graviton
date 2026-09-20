@@ -45,7 +45,7 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
         )
         self.assertEqual(
             url,
-            "https://antigravity.google.com?instance=my-cloud-workstation",
+            "https://antigravity.google.com/c/conv-456?instance=my-cloud-workstation",
         )
 
     def test_fallback_url_synthesis_without_instance(self):
@@ -55,7 +55,7 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
             remote_control_enabled=True,
             instance_name="",
         )
-        self.assertEqual(url, "https://antigravity.google.com")
+        self.assertEqual(url, "https://antigravity.google.com/c/conv-789")
 
     def test_fallback_url_synthesis_requires_non_empty_conversation_id(self):
         self.assertIsNone(
@@ -100,7 +100,7 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
         mock_get_name.assert_called_once()
         self.assertEqual(
             url,
-            "https://antigravity.google.com?instance=discovered-instance-99",
+            "https://antigravity.google.com/c/conv-discovered?instance=discovered-instance-99",
         )
 
     @patch.dict("os.environ", {"ANTIGRAVITY_INSTANCE_NAME": "env-instance"})
