@@ -24,6 +24,7 @@ from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorErro
 from lib.reactions import post_emoji_reaction_async
 
 logger = logging.getLogger("graviton.tasks")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 AUTO_CONTINUE_PATTERN = re.compile(
     r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
@@ -510,6 +511,7 @@ class TaskManager:
         idle_timeout: Optional[float] = 300.0,
         max_duration: Optional[float] = 1800.0,
         skills_dir: Optional[Union[str, Path]] = None,
+        agents_dir: Optional[Union[str, Path]] = None,
         on_task_init: Optional[Any] = None,
         on_task_result: Optional[Any] = None,
         on_task_thought: Optional[Any] = None,
@@ -529,6 +531,11 @@ class TaskManager:
         self.idle_timeout = idle_timeout
         self.max_duration = max_duration
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
+        if agents_dir:
+            self.agents_dir = Path(agents_dir).resolve()
+        else:
+            default_agents = REPO_ROOT / "plugin" / "agents"
+            self.agents_dir = default_agents.resolve() if default_agents.is_dir() else None
         self.on_task_init = on_task_init
         self.on_task_result = on_task_result
         self.on_task_thought = on_task_thought
@@ -1566,6 +1573,7 @@ class TaskManager:
                         run_id=task.id,
                         cache_dir=task.cached_workspace_dir,
                         skills_dir=self.skills_dir,
+                        agents_dir=getattr(self, "agents_dir", None),
                         env={"ANTIGRAVITY_QUOTA_POOL": task.selected_pool} if task.selected_pool else None,
                     )
 

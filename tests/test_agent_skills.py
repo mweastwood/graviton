@@ -197,6 +197,7 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn('SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/skills:/root/.gemini/config/skills:ro")', content)
         self.assertIn('AGENTS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/agents:/root/.gemini/config/agents:ro")', content)
         self.assertNotIn("${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro", content)
+        self.assertNotIn("${TEMP_WORKSPACE}/agents:/root/.gemini/config/agents:ro", content)
 
     def test_codebase_auditor_guidelines_includes_flaky_and_low_quality_test_checks(self):
         skill_path = SKILLS_DIR / "codebase-auditor-guidelines" / "SKILL.md"
