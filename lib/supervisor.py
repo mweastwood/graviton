@@ -963,8 +963,8 @@ class ContainerSupervisor:
     Enforces strict security isolation:
     - Ephemeral workspace cloned locally under /tmp/graviton-workspaces/run-*
     - Container runs with --security-opt=no-new-privileges
-    - Host ~/.gemini/antigravity-cli mounted with --tmpfs and read-only credential files
-      to prevent accidental exposure or corruption of host conversations/brain cache
+    - Host ~/.gemini/antigravity-cli mounted to persist conversations and trajectories,
+      with strict read-only overlays for host binaries, built-in skills, and credentials
     - Host SSH and GitHub CLI configs mounted read-only (:ro)
     - Automatically cleans up container and ephemeral directory on exit
     """
@@ -1126,6 +1126,9 @@ class ContainerSupervisor:
         if host_agy and Path(host_agy).exists():
             cmd.extend(["-v", f"{Path(host_agy).resolve()}:/usr/local/bin/agy:ro"])
 
+        # Config directory tmpfs overlay
+        cmd.extend(["--tmpfs", "/root/.gemini/config:rw,exec"])
+
         # Skills directory mount
         skills_path = self.skills_dir
         if not skills_path:
@@ -1163,25 +1166,29 @@ class ContainerSupervisor:
             cmd.extend(["-v", f"{gh_config.resolve()}:/root/.config/gh:ro"])
 
         # Mount Antigravity CLI directory to persist conversations, summaries, and brain
-        # while keeping credential files read-only
+        # while keeping credential files, binaries, and builtins read-only, and scratch isolated
         cli_dir = Path.home() / ".gemini" / "antigravity-cli"
         if cli_dir.is_dir():
             cmd.extend([
                 "-v", f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli",
-                "--tmpfs", "/root/.gemini/config:rw,exec",
+                "--tmpfs", "/root/.gemini/antigravity-cli/scratch:rw,exec",
             ])
+            for ro_sub in ["bin", "builtin", "updater"]:
+                sub_target = cli_dir / ro_sub
+                if sub_target.is_dir():
+                    cmd.extend(["-v", f"{sub_target.resolve()}:/root/.gemini/antigravity-cli/{ro_sub}:ro"])
             for cred_file in [
                 "antigravity-oauth-token",
+                "token.json",
                 "settings.json",
                 "antigravity_state.pbtxt",
                 "jetski_state.pbtxt",
                 "installation_id",
+                "jetbox_summaries_proto.pb",
             ]:
                 target = cli_dir / cred_file
                 if target.is_file():
                     cmd.extend(["-v", f"{target.resolve()}:/root/.gemini/antigravity-cli/{cred_file}:ro"])
-        else:
-            cmd.extend(["--tmpfs", "/root/.gemini/config:rw,exec"])
 
         # Mount host config.json for Antigravity Remote Control identification
         gemini_config_file = Path.home() / ".gemini" / "config" / "config.json"
