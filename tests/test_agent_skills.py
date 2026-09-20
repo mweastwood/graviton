@@ -37,6 +37,11 @@ class TestAgentSkillsMapping(unittest.TestCase):
             self.assertIn("name", data)
             self.assertIn("description", data)
             self.assertIn("system_prompt", data)
+            self.assertEqual(
+                data.get("enable_write_tools"),
+                "true",
+                f"Agent '{data.get('name')}' must specify enable_write_tools: true to permit bash/git/gh execution",
+            )
 
     def test_every_agent_has_dedicated_skill(self):
         agent_files = list(AGENTS_DIR.glob("*/agent.md"))

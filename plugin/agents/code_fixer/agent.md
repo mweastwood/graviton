@@ -1,6 +1,7 @@
 ---
 name: code_fixer
 description: Automated PR code fixer and review responder powered by Antigravity.
+enable_write_tools: true
 ---
 
 # Code Fixer

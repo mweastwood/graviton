@@ -1478,14 +1478,16 @@ class ContainerSupervisor:
         self.agy_binary = agy_binary
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
 
-        self.project_id = (
+        raw_project_id = (
             project_id
             or os.environ.get("ANTIGRAVITY_PROJECT")
             or os.environ.get("GRAVITON_PROJECT_ID")
         )
-        resolved = find_project_for_repo(self.repo_dir, preferred_name_or_id=self.project_id)
+        resolved = find_project_for_repo(self.repo_dir, preferred_name_or_id=raw_project_id)
         if resolved:
             self.project_id = resolved[0]
+        else:
+            self.project_id = raw_project_id or DEFAULT_PROJECT_NAME
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
@@ -1776,6 +1778,16 @@ class ContainerSupervisor:
         if not self._workspace_prepared:
             self.prepare_workspace(branch=branch or self.default_branch)
 
+        # Remove any existing container sharing the name to avoid conflict errors
+        try:
+            subprocess.run(
+                [self.docker_binary, "rm", "-f", self.container_name],
+                capture_output=True,
+                check=False,
+            )
+        except Exception:
+            pass
+
         docker_cmd = self.build_docker_command()
         self.session = StreamSession(
             custom_command=docker_cmd,
@@ -1839,7 +1851,20 @@ class ContainerSupervisor:
         if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
 
-        res = self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
+        has_synced_stream = False
+
+        def _intercept_event(evt: Dict[str, Any]) -> None:
+            nonlocal has_synced_stream
+            if not has_synced_stream and evt.get("event") == "step_update":
+                has_synced_stream = True
+                try:
+                    self.sync_agyhub()
+                except Exception as sync_err:
+                    logger.debug(f"Failed initial streaming agyhub sync: {sync_err}")
+            if on_event:
+                on_event(evt)
+
+        res = self.session.receive_turn(timeout=timeout, on_event=_intercept_event, **extra)
         if not getattr(res, "remote_control_url", None) and self.remote_control_url:
             res.remote_control_url = self.remote_control_url
         if self.conversation_id:
