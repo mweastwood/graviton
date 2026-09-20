@@ -1028,7 +1028,11 @@ class TestContainerSupervisor(unittest.TestCase):
 
         cb = MagicMock()
         res = sup.receive_turn(timeout=30.0, on_event=cb)
-        mock_session.receive_turn.assert_called_once_with(timeout=30.0, on_event=cb)
+        mock_session.receive_turn.assert_called_once()
+        call_kwargs = mock_session.receive_turn.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout"], 30.0)
+        call_kwargs["on_event"]({"event": "step_update", "step_update": {"step_index": 0}})
+        cb.assert_called_once_with({"event": "step_update", "step_update": {"step_index": 0}})
         self.assertEqual(res, expected_result)
 
     def test_send_prompt_raises_when_not_alive(self):
@@ -1412,6 +1416,31 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0][0], cid)
         self.assertEqual(entries[0][1], updated_summary)
+
+    def test_container_supervisor_defaults_to_graviton_workers_project(self):
+        from lib.supervisor import ContainerSupervisor, DEFAULT_PROJECT_NAME, ensure_default_project
+        gw_pid, _ = ensure_default_project(self.projects_dir, self.repo_dir, DEFAULT_PROJECT_NAME)
+        with patch("lib.supervisor.find_project_for_repo") as mock_find:
+            mock_find.return_value = (gw_pid, DEFAULT_PROJECT_NAME)
+            sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
+            self.assertEqual(sup.project_id, gw_pid)
+
+    def test_receive_turn_syncs_agyhub_on_first_step_event(self):
+        from lib.supervisor import ContainerSupervisor, SupervisorResult
+        sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
+        sup.session = MagicMock()
+        sup.conversation_id = "test-conv-stream-123"
+
+        def fake_receive_turn(timeout=None, on_event=None, **kwargs):
+            if on_event:
+                on_event({"event": "step_update", "step_update": {"step_index": 0}})
+            return SupervisorResult(status="SUCCESS", conversation_id=sup.conversation_id)
+
+        sup.session.receive_turn.side_effect = fake_receive_turn
+        with patch.object(sup, "sync_agyhub", return_value=True) as mock_sync:
+            res = sup.receive_turn(timeout=10.0)
+            self.assertEqual(res.conversation_id, "test-conv-stream-123")
+            self.assertGreaterEqual(mock_sync.call_count, 2)
 
 
 class TestSupervisorIntegration(unittest.TestCase):

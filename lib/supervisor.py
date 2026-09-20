@@ -1482,6 +1482,7 @@ class ContainerSupervisor:
             project_id
             or os.environ.get("ANTIGRAVITY_PROJECT")
             or os.environ.get("GRAVITON_PROJECT_ID")
+            or DEFAULT_PROJECT_NAME
         )
         resolved = find_project_for_repo(self.repo_dir, preferred_name_or_id=self.project_id)
         if resolved:
@@ -1839,7 +1840,17 @@ class ContainerSupervisor:
         if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
 
-        res = self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
+        has_synced_stream = False
+
+        def _intercept_event(evt: Dict[str, Any]) -> None:
+            nonlocal has_synced_stream
+            if not has_synced_stream and evt.get("event") == "step_update":
+                if self.sync_agyhub():
+                    has_synced_stream = True
+            if on_event:
+                on_event(evt)
+
+        res = self.session.receive_turn(timeout=timeout, on_event=_intercept_event, **extra)
         if not getattr(res, "remote_control_url", None) and self.remote_control_url:
             res.remote_control_url = self.remote_control_url
         if self.conversation_id:
