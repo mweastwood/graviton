@@ -21,6 +21,8 @@ else
   PROMPT="$1"
 fi
 
+echo "[DEPRECATED] bin/run_agent_container.sh is deprecated. Use lib.supervisor.ContainerSupervisor via Stream-JSON protocol instead." >&2
+
 IMAGE_NAME="${ANTIGRAVITY_IMAGE:-antigravity-agent:latest}"
 WORKSPACE_DIR="$(pwd)"
 

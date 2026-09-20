@@ -163,4 +163,73 @@ stateDiagram-v2
    - **Frequency**: Every 12 hours (43,200s) by default (Enabled: `false`).
    - **Action**: Scans open automated pull requests for merge conflicts or failing presubmit CI checks, alerting or queuing remediation.
 
+---
 
+## 6. ContainerSupervisor & Antigravity Stream-JSON Architecture
+
+Rather than spawning one-shot CLI commands with fragile output scraping (`agy --prompt`), Graviton communicates with `agy` over a bidirectional NDJSON stream (`--input-format stream-json --output-format stream-json`):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TaskManager as TaskManager (Host)
+    participant Supervisor as ContainerSupervisor
+    participant Container as Docker Agent Container
+    participant AGY as agy (Stream-JSON)
+    participant Remote as Remote Control Site
+
+    TaskManager->>Supervisor: run_goal(prompt, timeout)
+    Supervisor->>Container: docker run -i ... agy --input-format stream-json --output-format stream-json --remote-control
+    Container->>AGY: Spawn agent process
+    AGY-->>Remote: Register session
+    AGY->>Supervisor: {"event": "init", "conversation_id": "...", "init": {...}}
+    Supervisor->>TaskManager: on_init(conversation_id, remote_control_url)
+    Supervisor->>AGY: {"event": "user", "message": {"content": [{"type": "text", "text": "/goal ..."}]}}
+    loop Turn Stream
+        AGY->>Supervisor: {"event": "model", ...}
+        Supervisor->>TaskManager: on_thought / on_tool_call
+    end
+    AGY->>Supervisor: {"event": "turn_complete", ...}
+    Supervisor->>TaskManager: SupervisorResult(status, response, remote_control_url)
+```
+
+### Core Advantages:
+1. **Multi-Turn Goal Resilience**: Solves timeout and step-limit constraints by keeping the session alive and streaming until the goal is fully satisfied.
+2. **Real-time Observability**: Streams thoughts, model decisions, and tool calls directly to server logs and the TUI dashboard as they occur.
+3. **Container Isolation**: Mounts an isolated ephemeral clone of the repository into `/workspace` with host user UID/GID mapping and read-only auth volume mounts.
+4. **Watchdog Timers**: Enforces both per-turn idle timeouts and maximum task wall-clock timeouts, gracefully terminating hanging containers.
+
+---
+
+## 7. Antigravity Remote Control & Live Session Tracking
+
+Every agent execution is registered with the **Antigravity Remote Control site**:
+- **URL Format**: `https://antigravity.google.com/c/<conversation_id>?instance=<instance_name>`
+- **Capture Mechanism**: Extracted from NDJSON handshake `init` events, stderr stream banners, or canonical fallback synthesis.
+- **Surfacing**:
+  - **GitHub Comments**: Initial start comments (🚀) and completion comments include clickable markdown links for immediate browser inspection.
+  - **REST API**: The `/health` endpoint exposes `active_remote_control_urls` for active tasks.
+  - **MCP Tools**: `graviton_status`, `graviton_list_tasks`, and `graviton_get_task` display live URLs.
+  - **TUI Dashboard**: Pressing `o` on the main dashboard or task logs screen instantly opens the session in the user's web browser.
+
+---
+
+## 8. Antigravity Plugin & Model Context Protocol (MCP) Integration
+
+Graviton is packaged as an Antigravity Plugin located at `.agents/plugins/graviton/`:
+- **`plugin.json`**: Plugin manifest describing capabilities, hooks, rules, and sidecars.
+- **`rules/AGENTS.md`**: Autonomous supervision guidelines instructing Antigravity assistants how to inspect Graviton via MCP tools.
+- **`sidecars/`**: Background daemon configuration allowing Antigravity to launch and healthcheck `graviton-server.py` automatically.
+- **`mcp/`**: JSON-RPC Model Context Protocol server exposing:
+  - `graviton_status`: Health and quota pacing metrics.
+  - `graviton_list_tasks`: Active, queued, and completed tasks.
+  - `graviton_get_task`: Streaming thoughts, tool executions, and logs.
+  - `graviton_submit_review`: Autonomous containerized PR review.
+  - `graviton_submit_task`: Custom prompt execution in sandboxed agent.
+  - `graviton_abort_task`: Active or queued task cancellation.
+
+---
+
+## 9. Legacy Deprecation
+
+The legacy bash container runner (`bin/run_agent_container.sh`) and one-shot transcript file scraper in `lib/runner.py` are deprecated in favor of `ContainerSupervisor` (`lib/supervisor.py`). They are maintained solely for backward compatibility with older test harnesses and CLI environments.

@@ -271,6 +271,13 @@ def run_agent_container(
     :param on_process_created: Optional callback function invoked immediately upon subprocess launch.
     :return: subprocess.CompletedProcess instance.
     """
+    import warnings
+    warnings.warn(
+        "run_agent_container is deprecated; use lib.supervisor.ContainerSupervisor instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     cmd = [str(script_path), agent_name, prompt]
     logger.info(f"Triggering agent '{agent_name}' with prompt: '{prompt}'")
 
@@ -361,6 +368,13 @@ def run_agent_async(
     :param on_process_created: Optional callback function invoked immediately upon subprocess launch.
     :return: Started daemon Thread instance.
     """
+    import warnings
+    warnings.warn(
+        "run_agent_async is deprecated; use lib.supervisor.ContainerSupervisor instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     def worker():
         try:
             kwargs = {

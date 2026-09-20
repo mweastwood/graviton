@@ -602,7 +602,7 @@ def main():
         "--no-supervisor",
         dest="use_supervisor",
         action="store_false",
-        help="Use legacy bash container runner (bin/run_agent_container.sh)",
+        help="[DEPRECATED] Use legacy bash container runner (bin/run_agent_container.sh)",
     )
     parser.add_argument(
         "--post-completion-comment",
@@ -632,14 +632,16 @@ def main():
     GravitonHandler.default_drafter = args.drafter
     GravitonHandler.repos_dir = repos_dir
 
+    if not args.use_supervisor:
+        logger.warning("[DEPRECATED] --no-supervisor is deprecated. ContainerSupervisor is the standard execution runtime.")
+        if not RUN_CONTAINER_SCRIPT.exists():
+            logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
+            sys.exit(1)
+
     if not args.secret:
         logger.warning("No WEBHOOK_SECRET specified. HMAC signature verification is DISABLED.")
     else:
         logger.info("HMAC signature verification ENABLED.")
-
-    if not RUN_CONTAINER_SCRIPT.exists():
-        logger.error(f"Run agent container script not found at: {RUN_CONTAINER_SCRIPT}")
-        sys.exit(1)
 
     listener_proc = start_smee_listener(args.smee_url, args.port) if args.smee_url else None
     GravitonHandler.listener_proc = listener_proc

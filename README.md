@@ -1,20 +1,26 @@
 # Graviton 🚀
 
-**Graviton** is an autonomous PR code reviewer, self-healing code fixer, and GitHub webhook event router powered by [Google Antigravity](https://antigravity.google).
+**Graviton** is an autonomous PR code reviewer, self-healing code fixer, and GitHub webhook supervisor powered by [Google Antigravity](https://antigravity.google).
 
-It orchestrates sandboxed Docker container agents to automatically review pull requests, resolve review comments, execute local test suites, commit fixes, and push updates back to your repository.
+Packaged as a first-class **Antigravity Plugin**, Graviton orchestrates sandboxed Docker container agents to automatically review pull requests, resolve review comments, execute test suites, commit fixes, and push updates back to your repository. It connects directly to the **Antigravity Remote Control site** (`https://antigravity.google.com`) for live streaming turn visibility and interactive oversight.
 
 ---
 
 ## 🌟 Key Features
 
-- **Automated PR Code Review**: Triggers `code_reviewer` on `pull_request` (`opened` / `synchronize`) events to analyze code quality and post structured GitHub Reviews (`APPROVE` or `CHANGES_REQUESTED`).
-- **Self-Healing Code Remediation**: Triggers `code_fixer` on `pull_request_review` or inline `pull_request_review_comment` events to automatically parse review comments, modify code, run test suites, and push commits.
-- **Periodic Codebase Sweeps & Maintenance**: Runs `TaskScheduler` background daemon to trigger `codebase_auditor` sweeps for bug detection, performance optimizations, readability improvements, and refactoring needs.
-- **Infinite Loop Protection**: All agent comments include a signature tag (`<!-- antigravity-auto-reply -->`). Graviton filters out these tags so agents never reply to themselves.
+- **Programmatic Stream-JSON Supervisor**: Eliminates one-shot print timeouts and transcript file scraping. Drives `agy` inside isolated Docker containers via `--input-format stream-json --output-format stream-json` with multi-turn `/goal` instructions and watchdog timers.
+- **Antigravity Remote Control Integration**: Every running task automatically captures or synthesizes its Remote Control session URL (`https://antigravity.google.com/c/<conversation_id>`). Live links are surfaced in GitHub PR comments, the REST API, MCP tools, and the TUI dashboard.
+- **Antigravity Plugin & Sidecar Daemon**: Packaged as an installable plugin (`.agents/plugins/graviton/`) with native slash command (`/graviton`), Model Context Protocol (MCP) server, and automated background sidecar execution.
+- **Dual-Pool Quota & Adaptive Pacing**: Real-time tracking of both Gemini and Claude/GPT quota windows (5-hour and 1-week). Automatically balances models, enforces pacing delay windows, and pauses tasks before quota exhaustion.
+- **Automated PR Code Review & Fix Cycles**:
+  - `code_reviewer`: Analyzes diffs, checks test suites, and posts GitHub Reviews (`APPROVE` or `CHANGES_REQUESTED`).
+  - `code_fixer`: Automatically addresses review comments, repairs failing tests in an ephemeral workspace, commits, and pushes updates.
+  - `issue_triager`: Automatically engages on new issues, clarifies requirements, and marks issues `ready-for-pr`.
+  - `pr_drafter`: Automatically implements features on dedicated branches and opens pull requests.
+- **Interactive Terminal Dashboard (TUI)**: Beautiful split-pane terminal UI featuring real-time task queues, active workers, dual-pool quota gauges, and live container logs. Press `o` to immediately launch the active agent session in your browser.
+- **Model Context Protocol (MCP)**: Exposes programmatic supervisor tools (`graviton_status`, `graviton_list_tasks`, `graviton_get_task`, `graviton_submit_review`, `graviton_submit_task`, `graviton_abort_task`) to any MCP-enabled assistant.
 - **GitHub Mobile Release Controller**: Triggers release tagging scripts (e.g. `bin/tag.sh patch|minor|major`) via comments on a dedicated GitHub issue, configured per-repo via `.graviton.json`.
-- **Human Comment Support**: Responds directly to human review comments and explicit mention commands (`@antigravity` or `/fix`).
-- **Zero External Dependencies**: `bin/graviton-server.py` relies exclusively on Python's standard library (`http.server`, `hmac`, `threading`, `subprocess`, `sched`).
+- **Zero External Dependencies**: Core server and supervisor rely exclusively on Python's standard library.
 
 ---
 
@@ -22,51 +28,46 @@ It orchestrates sandboxed Docker container agents to automatically review pull r
 
 ```text
 graviton/
-├── README.md                   # Setup guide & documentation
-├── LICENSE
-├── Dockerfile                  # Sandboxed agent container image definition
-├── .github/
-│   └── workflows/
-│       └── test.yml            # CI workflow for unit tests
+├── .agents/
+│   └── plugins/
+│       └── graviton/           # Antigravity Plugin packaging
+│           ├── plugin.json     # Plugin manifest & metadata
+│           ├── rules/          # Autonomous supervisor rules (AGENTS.md)
+│           ├── skills/         # /graviton slash command skill
+│           ├── sidecars/       # Graviton background sidecar daemon
+│           └── mcp/            # MCP server configuration
 ├── bin/
 │   ├── build_agent_container.sh# Script to build Docker container image
 │   ├── graviton-server.py      # Webhook server & event router entrypoint
-│   ├── run_agent_container.sh  # Docker container launcher with auth volume mounts
+│   ├── run_agent_container.sh  # [DEPRECATED] Legacy bash container runner
 │   └── run_listener.sh         # Smee.io local proxy runner
 ├── config/
 │   └── schedules.json          # Periodic task schedule definitions
 ├── lib/                        # Core library components
-│   ├── __init__.py
+│   ├── supervisor.py           # Stream-JSON ContainerSupervisor & Remote Control engine
+│   ├── tasks.py                # Asynchronous TaskManager, worker pool & PR comments
+│   ├── skills.py               # Dynamic agent skill generator & workspace bind-mounts
+│   ├── quota.py                # Dual-pool quota tracking & adaptive pacing engine
+│   ├── mcp.py                  # Model Context Protocol (MCP) server
+│   ├── tui.py                  # Terminal UI dashboard & hotkey controller
+│   ├── tui_panels.py           # Modular TUI panel rendering utilities
+│   ├── router.py               # GitHub webhook event routing state machine
 │   ├── release.py              # Repository release controller & script runner
-│   ├── router.py               # GitHub event parsing & routing logic
-│   ├── runner.py               # Subprocess agent container executor
-│   ├── scheduler.py            # Periodic background task scheduler engine
-│   ├── security.py             # HMAC signature & bot tag verification
-│   └── updater.py              # Git sync & hot reload process manager
-├── tests/                      # Unit test suite (49+ tests)
-│   ├── test_agent_skills.py
-│   ├── test_router.py
-│   ├── test_runner.py
-│   ├── test_scheduler.py
-│   ├── test_security.py
-│   ├── test_server.py
-│   └── test_updater.py
-├── agents/                     # Agent role specifications
-│   ├── codebase_auditor.json   # Periodic Codebase Audit & Sweep spec
-│   ├── issue_triager.json      # Issue Triage & Design Specifier spec
-│   ├── code_reviewer.json      # PR Code Reviewer spec
-│   └── code_fixer.json         # PR Code Fixer & Thread Responder spec
-├── skills/                     # Project agent skills
-│   ├── codebase-auditor-guidelines/# Dedicated skill for codebase_auditor
-│   │   └── SKILL.md
-│   ├── code-review-guidelines/ # Dedicated skill for code_reviewer
-│   │   └── SKILL.md
-│   ├── code-fixer-guidelines/  # Dedicated skill for code_fixer
-│   │   └── SKILL.md
-│   └── issue-triager-guidelines/# Dedicated skill for issue_triager
-│       └── SKILL.md
+│   ├── security.py             # HMAC SHA-256 signature verification & bot tags
+│   ├── updater.py              # Hot-reload process manager & git sync
+│   └── runner.py               # [DEPRECATED] Legacy one-shot container executor
+├── tests/                      # Comprehensive unit test suite (927+ tests)
+│   ├── test_supervisor.py
+│   ├── test_remote_control.py
+│   ├── test_skills.py
+│   ├── test_tasks.py
+│   ├── test_quota.py
+│   ├── test_mcp.py
+│   ├── test_tui.py
+│   └── test_server.py
+├── agents/                     # Agent persona specifications
 └── docs/
-    └── ARCHITECTURE.md         # Event state machine & webhook routing specs
+    └── ARCHITECTURE.md         # Event state machine & supervisor specifications
 ```
 
 ---
@@ -86,20 +87,76 @@ python3 bin/graviton-server.py --port 8000
 - `--port` / `-p`: Port to bind (default: `8000`).
 - `--secret` / `-s`: Optional GitHub Webhook secret for HMAC SHA-256 signature verification.
 - `--smee-url`: Smee.io channel URL to automatically launch background webhook proxy listener (env: `SMEE_URL`).
-- `--reviewer`: Custom reviewer agent name (default: `code_reviewer`).
-- `--fixer`: Custom fixer agent name (default: `code_fixer`).
-- `--triager`: Custom triager agent name (default: `issue_triager`).
-- `--schedules-config`: Path to custom schedule JSON configuration file (default: `config/schedules.json`).
+- `--post-start-comment`: Post an initial comment with live Remote Control link upon agent start (env: `GRAVITON_POST_START_COMMENT`).
+- `--post-completion-comment`: Post structured completion comment with session replay link upon agent finish (env: `GRAVITON_POST_COMPLETION_COMMENT`).
+- `--max-workers`: Maximum concurrent active task workers (default: `2`).
+- `--quota-pool`: Quota pool preference (`gemini`, `claude_gpt`, `auto`, or `equal`).
 
 ### 3. Connect Webhook via Smee.io (Local Development)
-Optionally pass `--smee-url` (or set `SMEE_URL` environment variable) when starting `graviton-server.py` to automatically spawn the Smee webhook proxy listener in a single command:
+Pass `--smee-url` when starting `graviton-server.py` to automatically spawn the Smee webhook proxy listener:
 ```bash
 python3 bin/graviton-server.py --port 8000 --smee-url https://smee.io/your-channel-id
 ```
-Alternatively, run the listener separately:
+
+---
+
+## 🔌 Antigravity Plugin & MCP Server
+
+Graviton is packaged as an official Antigravity plugin in `.agents/plugins/graviton`.
+
+### Installing the Plugin
 ```bash
-./bin/run_listener.sh https://smee.io/your-channel-id 8000
+agy plugin enable graviton
 ```
+
+### Native Slash Command
+Type `/graviton` in the Antigravity chat to query status, inspect tasks, or submit reviews directly:
+```text
+/graviton status
+/graviton review owner/repo#42
+/graviton tasks
+```
+
+### MCP Tools
+When running as an MCP server, Graviton exposes the following tools:
+- `graviton_status`: Check health, worker count, queue depth, and model quota pacing.
+- `graviton_list_tasks`: List active, queued, and completed tasks with live Remote Control URLs.
+- `graviton_get_task`: Retrieve real-time streaming thoughts, tool calls, and logs for a specific task.
+- `graviton_submit_review`: Request container-isolated autonomous PR review (`repo_full_name`, `pr_number`).
+- `graviton_submit_task`: Enqueue an arbitrary task prompt to be executed by a containerized agent persona.
+- `graviton_abort_task`: Cancel an active or queued task.
+
+---
+
+## 🖥️ Terminal Dashboard (TUI)
+
+Graviton includes an interactive split-pane dashboard:
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ⚡ GRAVITON SERVER DASHBOARD ⚡                         [ HOT-RELOAD: IDLE ] │
+│ Host: 0.0.0.0:8000 │ Branch: main │ Commit: 6b07eaa │ Uptime: 01:23:45       │
+│ Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [x] Abort ... │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Hotkeys:
+- **`o` / `O`**: Open the selected task's **Antigravity Remote Control** live session in your browser.
+- **`Enter`**: Open dedicated task log viewer panel.
+- **`x` / `X`**: Abort the focused active or queued task.
+- **`p` / `P`**: Prioritize the selected queued task.
+- **`g` / `c`**: Switch active quota pool between Gemini and Claude/GPT.
+- **`j`**: Toggle Scheduled Jobs view.
+- **`e`**: Toggle Server Logs view.
+- **`q`**: Quit dashboard (draining active workers gracefully).
+
+---
+
+## ⚠️ Deprecation Notice
+
+- **`bin/run_agent_container.sh`** and the legacy one-shot runner in `lib/runner.py` are deprecated.
+- All container executions default to the programmatic `lib.supervisor.ContainerSupervisor` using the NDJSON stream protocol (`--input-format stream-json --output-format stream-json`).
+- If you must temporarily run without supervisor, pass `--no-supervisor` (deprecated).
 
 ---
 
@@ -108,8 +165,6 @@ Alternatively, run the listener separately:
 Graviton allows you to trigger release tagging scripts (e.g. `bin/tag.sh`) across your app repositories right from the GitHub Mobile app.
 
 ### 1. Configure `.graviton.json` in Your App Repository
-
-Create a `.graviton.json` file in the root of your app repository:
 
 ```json
 {
@@ -129,45 +184,13 @@ Create a `.graviton.json` file in the root of your app repository:
 }
 ```
 
-### 2. Open a Dedicated Release Issue
+### 2. Tag Releases on GitHub Mobile
 
-1. Create a pinned issue in your repository titled **`🚀 Release Controller`**.
-2. Graviton will automatically detect it and post the available release commands.
-
-### 3. Tag Releases on GitHub Mobile
-
-Open the pinned issue in the GitHub Mobile app and comment:
+Open the pinned **`🚀 Release Controller`** issue on GitHub Mobile and comment:
 - `patch` or `/tag patch`
 - `minor` or `/release minor`
 - `major` or `/tag major`
 - `help`
-
-Graviton will:
-1. Instantly react with 🚀 on your comment.
-2. Fast-forward the target branch (`git pull --ff-only origin main`).
-3. Run the configured command in the repository in a background thread.
-4. Reply with a completion comment containing logs, triggering a native push notification on your phone.
-
----
-
-## ⚙️ GitHub Webhook Configuration
-
-In any of your GitHub repositories:
-1. Go to **Settings > Webhooks > Add webhook**.
-2. Set **Payload URL**: `https://smee.io/your-channel-id` (or your public server URL).
-3. Set **Content type**: `application/json`.
-4. Select events:
-   - ✅ Pull requests
-   - ✅ Pull request reviews
-   - ✅ Pull request review comments
-   - ✅ Issues
-   - ✅ Issue comments
-
----
-
-## 📖 Architecture & State Machine
-
-For full details on event routing, loop prevention, and circuit breakers, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
