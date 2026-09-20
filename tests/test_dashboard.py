@@ -15,6 +15,8 @@ from lib.dashboard import (
     DashboardUpdater,
     format_dashboard_markdown,
     format_duration,
+    get_quota_color,
+    parse_dashboard_markdown,
     render_dashboard_html,
 )
 from lib.quota import QuotaTracker
@@ -164,6 +166,218 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("Graviton Live Dashboard", html_out)
         self.assertIn("# Sample Markdown", html_out)
         self.assertIn("/dashboard/content", html_out)
+
+    def test_get_quota_color_thresholds(self):
+        # > 50%: Green (#3fb950)
+        self.assertEqual(get_quota_color(100.0), "#3fb950")
+        self.assertEqual(get_quota_color(50.1), "#3fb950")
+        # 20% - 50%: Amber (#d29922)
+        self.assertEqual(get_quota_color(50.0), "#d29922")
+        self.assertEqual(get_quota_color(20.0), "#d29922")
+        # < 20%: Red (#f85149)
+        self.assertEqual(get_quota_color(19.9), "#f85149")
+        self.assertEqual(get_quota_color(0.0), "#f85149")
+        # None / N/A: Accent (#58a6ff)
+        self.assertEqual(get_quota_color(None), "#58a6ff")
+
+    def test_parse_dashboard_markdown_empty_and_busy(self):
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 2, "max_workers": 4, "active_tasks": 1,
+            "queued_tasks": 3, "completed_tasks": 8, "failed_tasks": 2,
+        }
+        mock_tm.get_active_tasks.return_value = [
+            Task(id="task-1", agent="code_reviewer", prompt="Review", target_id="#1", status=TaskStatus.RUNNING, start_time=time.time() - 20)
+        ]
+        mock_tm.get_queued_tasks.return_value = [
+            Task(id="task-2", agent="code_fixer", prompt="Fix", target_id="#2", priority=1, status=TaskStatus.QUEUED, enqueue_time=time.time() - 10)
+        ]
+        mock_tm.get_task_history.return_value = [
+            Task(id="task-0", agent="code_reviewer", prompt="Prev", target_id="#0", status=TaskStatus.COMPLETED, start_time=time.time() - 100, finish_time=time.time() - 50)
+        ]
+        mock_tm._draining = False
+        mock_tm._paused = False
+
+        md = format_dashboard_markdown(task_manager=mock_tm, host="127.0.0.1", port=9000)
+        parsed = parse_dashboard_markdown(md, default_host="localhost", default_port=8000)
+
+        self.assertEqual(parsed["host"], "127.0.0.1")
+        self.assertEqual(parsed["port"], 9000)
+        self.assertEqual(parsed["status_text"], "BUSY")
+        self.assertEqual(parsed["status_class"], "busy")
+        self.assertEqual(parsed["active_workers"], 2)
+        self.assertEqual(parsed["max_workers"], 4)
+        self.assertEqual(parsed["running_tasks"], 1)
+        self.assertEqual(parsed["queued_tasks"], 3)
+        self.assertEqual(parsed["completed_tasks"], 8)
+        self.assertEqual(parsed["failed_tasks"], 2)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-0")
+
+    def test_render_dashboard_html_rich_elements_and_kpi(self):
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1, "max_workers": 2, "active_tasks": 1,
+            "queued_tasks": 0, "completed_tasks": 12, "failed_tasks": 0,
+        }
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+        mock_tm._draining = False
+        mock_tm._paused = False
+
+        md = format_dashboard_markdown(task_manager=mock_tm, host="localhost", port=8000)
+        html_out = render_dashboard_html(md, host="localhost", port=8000, task_manager=mock_tm)
+
+        self.assertIn("<!DOCTYPE html>", html_out)
+        self.assertIn("<title>Graviton Live Dashboard</title>", html_out)
+        self.assertIn("class=\"container\"", html_out)
+        self.assertIn("🌌 Graviton Live Dashboard", html_out)
+        self.assertIn("badge-busy", html_out)
+        self.assertIn("Auto-refreshing (3s)", html_out)
+        self.assertIn("Active Workers", html_out)
+        self.assertIn("1 / 2", html_out)
+        self.assertIn("Running Tasks", html_out)
+        self.assertIn("Queued Tasks", html_out)
+        self.assertIn("Completed Tasks", html_out)
+        self.assertIn("Failed Tasks", html_out)
+        self.assertIn("Model Quota &amp; Pacing", html_out)
+        self.assertIn("Gemini API Capacity", html_out)
+        self.assertIn("Third-Party (Claude) Capacity", html_out)
+        self.assertIn("class=\"markdown-view\"", html_out)
+        self.assertIn("setInterval(refreshDashboard, 3000)", html_out)
+
+    def test_render_dashboard_html_with_active_tasks_and_remote_control(self):
+        active_task = Task(
+            id="task-live-1",
+            agent="code_reviewer",
+            prompt="Review PR #99",
+            target_id="#99",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 45.0,
+            remote_control_url="https://antigravity.google.com/c/live-sess-1",
+        )
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 1, "max_workers": 2, "active_tasks": 1}
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertIn("task-live-1", html_out)
+        self.assertIn("code_reviewer", html_out)
+        self.assertIn("#99", html_out)
+        self.assertIn("https://antigravity.google.com/c/live-sess-1", html_out)
+        self.assertIn("🌐 Remote Control", html_out)
+        self.assertIn("target=\"_blank\"", html_out)
+        self.assertIn("rel=\"noopener\"", html_out)
+
+    def test_render_dashboard_html_with_queued_tasks_priority_badge(self):
+        queued_task = Task(
+            id="task-queue-9",
+            agent="code_fixer",
+            prompt="Fix test",
+            target_id="repo#10",
+            status=TaskStatus.QUEUED,
+            priority=1,
+            enqueue_time=time.time() - 15.0,
+        )
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 0, "max_workers": 2, "active_tasks": 0, "queued_tasks": 1}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = [queued_task]
+        mock_tm.get_task_history.return_value = []
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertIn("task-queue-9", html_out)
+        self.assertIn("code_fixer", html_out)
+        self.assertIn("repo#10", html_out)
+        self.assertIn("priority-badge", html_out)
+        self.assertIn("P1", html_out)
+
+    def test_render_dashboard_html_with_history_tasks_and_details(self):
+        completed_task = Task(
+            id="task-hist-1",
+            agent="pr_drafter",
+            prompt="Draft PR",
+            target_id="#55",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 60.0,
+            finish_time=time.time() - 10.0,
+            remote_control_url="https://antigravity.google.com/c/sess-hist",
+        )
+        failed_task = Task(
+            id="task-hist-2",
+            agent="code_fixer",
+            prompt="Failing fix",
+            target_id="#56",
+            status=TaskStatus.FAILED,
+            start_time=time.time() - 30.0,
+            finish_time=time.time() - 5.0,
+            error_message="Compilation failed on line 42",
+        )
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 0, "max_workers": 2, "completed_tasks": 1, "failed_tasks": 1}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = [completed_task, failed_task]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertIn("task-hist-1", html_out)
+        self.assertIn("status-completed", html_out)
+        self.assertIn("https://antigravity.google.com/c/sess-hist", html_out)
+        self.assertIn("task-hist-2", html_out)
+        self.assertIn("status-failed", html_out)
+        self.assertIn("Compilation failed on line 42", html_out)
+
+    def test_render_dashboard_html_empty_states(self):
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertIn("No container tasks currently running.", html_out)
+        self.assertIn("Queue is empty.", html_out)
+        self.assertIn("No completed tasks in history yet.", html_out)
+
+    def test_render_dashboard_html_xss_sanitization(self):
+        xss_task = Task(
+            id="<script>alert(1)</script>",
+            agent="<img src=x onerror=alert(2)>",
+            prompt="Prompt",
+            target_id="<b>bold</b>",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 10.0,
+        )
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 1, "max_workers": 1, "active_tasks": 1}
+        mock_tm.get_active_tasks.return_value = [xss_task]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertNotIn("<script>alert(1)</script>", html_out)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html_out)
+        self.assertNotIn("<img src=x onerror=alert(2)>", html_out)
+        self.assertIn("&lt;img src=x onerror=alert(2)&gt;", html_out)
+        self.assertNotIn("<b>bold</b>", html_out)
+        self.assertIn("&lt;b&gt;bold&lt;/b&gt;", html_out)
 
 
 class TestDashboardUpdater(unittest.TestCase):
