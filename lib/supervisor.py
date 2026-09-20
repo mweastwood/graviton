@@ -1244,7 +1244,7 @@ class ContainerSupervisor:
         if quota_pool:
             cmd.extend(["-e", f"ANTIGRAVITY_QUOTA_POOL={quota_pool}"])
 
-        instance_name = os.environ.get("ANTIGRAVITY_INSTANCE_NAME")
+        instance_name = os.environ.get("ANTIGRAVITY_INSTANCE_NAME") or get_remote_control_instance_name()
         if instance_name:
             cmd.extend(["-e", f"ANTIGRAVITY_INSTANCE_NAME={instance_name}"])
 

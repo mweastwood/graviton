@@ -898,6 +898,19 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("claude-3-sonnet", cmd)
             self.assertIn("--verbose", cmd)
 
+    def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
+        """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("lib.supervisor.get_remote_control_instance_name", return_value="fallback-instance"):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                agent_name="tester",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertIn("ANTIGRAVITY_INSTANCE_NAME=fallback-instance", cmd)
+
     def test_build_docker_command_with_custom_agy_args(self):
         sup = ContainerSupervisor(
             repo_dir=self.repo_dir,

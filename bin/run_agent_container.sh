@@ -219,6 +219,8 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       "${SSH_MOUNT[@]}" \
       "${GH_CONFIG_MOUNT[@]}" \
       "${CLI_DIR_MOUNT[@]}" \
+      "${CONFIG_JSON_MOUNT[@]}" \
+      "${INSTANCE_NAME_ARG[@]}" \
       -v "${TEMP_WORKSPACE}:/workspace" \
       -w /workspace \
       -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \

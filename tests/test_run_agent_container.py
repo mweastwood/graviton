@@ -757,6 +757,34 @@ sys.exit(0)
             self.assertIn("--agent", run_rm_calls[0]["args"])
             self.assertIn("code_reviewer", run_rm_calls[0]["args"])
 
+    def test_docker_run_fallback_mounts_config_and_instance_name(self):
+        """Verify fallback docker run --rm includes config.json mount and ANTIGRAVITY_INSTANCE_NAME."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            ctx["env"]["MOCK_DOCKER_RUN_FAIL"] = "1"
+            ctx["env"]["ANTIGRAVITY_INSTANCE_NAME"] = "Fallback-Instance-01"
+
+            config_dir = Path(ctx["env"]["HOME"]) / ".gemini" / "config"
+            config_dir.mkdir(parents=True)
+            config_file = config_dir / "config.json"
+            config_file.write_text('{"cliRemoteControlHostname": "fallback-remote-host"}')
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Fallback mount test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(ctx["fake_cwd"]),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_rm_calls = [c for c in calls if c["args"] and c["args"][:2] == ["run", "--rm"] and "agy" in c["args"]]
+            self.assertEqual(len(run_rm_calls), 1)
+            expected_mount = f"{config_file.resolve()}:/root/.gemini/config/config.json:ro"
+            self.assertIn(expected_mount, run_rm_calls[0]["args"])
+            self.assertIn("ANTIGRAVITY_INSTANCE_NAME=Fallback-Instance-01", run_rm_calls[0]["args"])
+
     def test_git_identity_and_token_forwarding(self):
         """Verify GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, and GITHUB_TOKEN forward into the container."""
         with tempfile.TemporaryDirectory() as tmp_dir:
