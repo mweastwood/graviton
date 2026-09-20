@@ -375,8 +375,17 @@ class GravitonMCPServer:
 
         repo_name = args.get("repo_name") or repo_full.split("/")[-1]
 
-        prompt = f"Review PR #{pr_num}. Inspect all changed files, run tests locally, formulate fixes, and submit review using --request-changes for any findings or fixes."
-        goal_prompt = f"/goal Review PR #{pr_num} on repository {repo_full} thoroughly."
+        prompt = (
+            f"Review PR #{pr_num}. Inspect all changed files, run tests locally, formulate fixes, and post review to GitHub: "
+            f"submit `gh pr review {pr_num} --request-changes` for external PRs (or `gh pr comment {pr_num}` with `/fix` for own PRs). "
+            f"Always append `<!-- antigravity-auto-reply -->` and `<!-- graviton:code_reviewer -->`."
+        )
+        goal_prompt = (
+            f"/goal Review PR #{pr_num} on repository {repo_full} thoroughly. "
+            f"Inspect all changed files, run tests locally, formulate fixes, and submit the review to GitHub using "
+            f"`gh pr review {pr_num} --request-changes` for external PRs or `gh pr comment {pr_num}` with `/fix` for own PRs. "
+            f"You MUST execute the `gh` command via run_command to post your review before completing your goal."
+        )
 
         payload = {
             "agent": "code_reviewer",

@@ -4,9 +4,11 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,10 +19,12 @@ from lib.supervisor import (
     SupervisorResult,
     SupervisorTimeoutError,
     clean_workspace_dir,
+    find_project_for_repo,
     run_container_goal,
     run_container_turn,
     run_goal_turn,
     run_stream_turn,
+    sync_conversation_to_agyhub,
 )
 
 
@@ -823,6 +827,15 @@ class TestContainerSupervisor(unittest.TestCase):
         gemini_config_dir.mkdir(parents=True)
         config_file = gemini_config_dir / "config.json"
         config_file.write_text('{"cliRemoteControlHostname": "test-remote-host"}')
+        projects_dir = gemini_config_dir / "projects"
+        projects_dir.mkdir(parents=True)
+        (projects_dir / "p1.json").write_text(json.dumps({
+            "id": "project-xyz-123",
+            "name": "test-project",
+            "projectResources": {
+                "resources": [{"gitFolder": {"folderUri": f"file://{self.repo_dir.resolve()}"}}]
+            }
+        }))
 
         skills_dir = Path(self.tmp_dir.name) / "skills"
         skills_dir.mkdir()
@@ -832,6 +845,7 @@ class TestContainerSupervisor(unittest.TestCase):
             sup = ContainerSupervisor(
                 repo_dir=self.repo_dir,
                 agent_name="tester",
+                project_id="project-xyz-123",
                 model="claude-3-sonnet",
                 image_name="test-agent-image:custom",
                 remote_control=True,
@@ -875,8 +889,10 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
             self.assertIn(f"{(cli_dir / 'token.json').resolve()}:/root/.gemini/antigravity-cli/token.json:ro", cmd)
             self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
-            self.assertIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
+            # jetbox_summaries_proto.pb is writable so containerized agy can persist summary updates
+            self.assertNotIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
             self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
+            self.assertIn(f"{projects_dir.resolve()}:/root/.gemini/config/projects:ro", cmd)
 
             # Skills mount and tmpfs mount order
             self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
@@ -906,6 +922,8 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("tester", cmd)
             self.assertIn("--model", cmd)
             self.assertIn("claude-3-sonnet", cmd)
+            self.assertIn("--project", cmd)
+            self.assertIn("project-xyz-123", cmd)
             self.assertIn("--verbose", cmd)
 
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
@@ -1160,6 +1178,240 @@ class TestContainerSupervisor(unittest.TestCase):
                 max_duration=1800.0,
             )
             self.assertEqual(res2, expected_res)
+
+
+class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp_dir.name)
+        self.config_dir = self.base / "config"
+        self.projects_dir = self.config_dir / "projects"
+        self.projects_dir.mkdir(parents=True)
+
+        self.cli_dir = self.base / "antigravity-cli"
+        self.conv_dir = self.cli_dir / "conversations"
+        self.conv_dir.mkdir(parents=True)
+
+        self.repo_dir = self.base / "repo"
+        self.repo_dir.mkdir()
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_find_project_for_repo(self):
+        proj_file = self.projects_dir / "proj1.json"
+        proj_file.write_text(json.dumps({
+            "id": "project-alpha",
+            "name": "Project Alpha",
+            "projectResources": {
+                "resources": [
+                    {"gitFolder": {"folderUri": f"file://{self.repo_dir.resolve()}"}}
+                ]
+            }
+        }))
+
+        res = find_project_for_repo(self.repo_dir, config_dir=self.projects_dir)
+        self.assertEqual(res, ("project-alpha", "Project Alpha"))
+
+        # Test sub-directory of repo
+        sub = self.repo_dir / "subdir"
+        sub.mkdir()
+        self.assertEqual(find_project_for_repo(sub, config_dir=self.projects_dir), ("project-alpha", "Project Alpha"))
+
+        # Test unrelated repo
+        other = self.base / "other"
+        other.mkdir()
+        self.assertIsNone(find_project_for_repo(other, config_dir=self.projects_dir))
+
+        # Test ignored files
+        ignored = self.projects_dir / "default-cli-project.json"
+        ignored.write_text(json.dumps({
+            "id": "default-cli-project",
+            "projectResources": {"resources": [{"gitFolder": {"folderUri": f"file://{other.resolve()}"}}]}
+        }))
+        self.assertIsNone(find_project_for_repo(other, config_dir=self.projects_dir))
+
+        # Test preferred_name_or_id matching
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir, preferred_name_or_id="project-alpha"),
+            ("project-alpha", "Project Alpha"),
+        )
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir, preferred_name_or_id="Project Alpha"),
+            ("project-alpha", "Project Alpha"),
+        )
+
+        # Test ANTIGRAVITY_PROJECT environment variable matching
+        with patch.dict(os.environ, {"ANTIGRAVITY_PROJECT": "project-alpha"}):
+            self.assertEqual(
+                find_project_for_repo(other, config_dir=self.projects_dir),
+                ("project-alpha", "Project Alpha"),
+            )
+
+        # Test percent-encoded folder URI (e.g. folder with spaces)
+        spaced_dir = self.base / "my spaced repo"
+        spaced_dir.mkdir()
+        proj_file2 = self.projects_dir / "proj2.json"
+        proj_file2.write_text(json.dumps({
+            "id": "project-beta",
+            "name": "Project Beta",
+            "projectResources": {
+                "resources": [
+                    {"gitFolder": {"folderUri": f"file://{urllib.parse.quote(str(spaced_dir.resolve()))}"}}
+                ]
+            }
+        }))
+        self.assertEqual(
+            find_project_for_repo(spaced_dir, config_dir=self.projects_dir),
+            ("project-beta", "Project Beta"),
+        )
+
+        # Test DEFAULT_PROJECT_NAME ("Graviton Workers") priority
+        from lib.supervisor import DEFAULT_PROJECT_NAME, ensure_default_project
+        self.assertEqual(DEFAULT_PROJECT_NAME, "Graviton Workers")
+
+        gw_pid, gw_pname = ensure_default_project(self.projects_dir, self.repo_dir, DEFAULT_PROJECT_NAME)
+        self.assertEqual(gw_pname, "Graviton Workers")
+        self.assertTrue((self.projects_dir / f"{gw_pid}.json").exists())
+
+        # Repo-specific match is preferred over generic default worker project
+        self.assertEqual(
+            find_project_for_repo(self.repo_dir, config_dir=self.projects_dir),
+            ("project-alpha", "Project Alpha"),
+        )
+        # Specifying preferred_name_or_id="Graviton Workers" matches Graviton Workers
+        self.assertEqual(
+            find_project_for_repo(self.repo_dir, config_dir=self.projects_dir, preferred_name_or_id=DEFAULT_PROJECT_NAME),
+            (gw_pid, "Graviton Workers"),
+        )
+        # Unmapped repos fall back to Graviton Workers
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir),
+            (gw_pid, "Graviton Workers"),
+        )
+
+    def test_varint_and_fields(self):
+        from lib.supervisor import _encode_varint, _decode_varint, _parse_fields, _encode_field, _read_agyhub_entries
+
+        # Test positive varint roundtrip
+        pos_val = 123456789
+        enc = _encode_varint(pos_val)
+        dec, pos = _decode_varint(enc, 0)
+        self.assertEqual(dec, pos_val)
+        self.assertEqual(pos, len(enc))
+
+        # Test negative varint (64-bit mask)
+        neg_val = -42
+        enc_neg = _encode_varint(neg_val)
+        dec_neg, _ = _decode_varint(enc_neg, 0)
+        self.assertEqual(dec_neg, neg_val & 0xffffffffffffffff)
+
+        # Test _parse_fields and wire types
+        f_int = _encode_field(1, 0, 100)
+        f_bytes = _encode_field(2, 2, b"hello")
+        parsed = _parse_fields(f_int + f_bytes)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0], (1, 0, 100))
+        self.assertEqual(parsed[1], (2, 2, b"hello"))
+
+        # Test _read_agyhub_entries with unknown wire type / unexpected tag
+        corrupt_data = b"\xff\xff"
+        entries = _read_agyhub_entries(corrupt_data)
+        self.assertEqual(entries, [])
+
+    def test_sync_conversation_to_agyhub(self):
+        import sqlite3
+        from lib.supervisor import (
+            sync_conversation_to_agyhub,
+            _encode_field,
+            _read_agyhub_entries,
+            _parse_fields,
+        )
+
+        cid = "test-conv-12345"
+
+        # Initialize conversation_summaries.db
+        db_path = self.cli_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                project_id TEXT,
+                workspace_uris TEXT,
+                raw_summary BLOB
+            )
+        """)
+        # Synthetic raw_summary with title (field 1) and metadata (field 17) WITHOUT field 18 or field 7
+        initial_f17 = _encode_field(6, 2, cid.encode("utf-8"))
+        raw_summary = _encode_field(1, 2, b"Initial Conversation Title") + _encode_field(17, 2, initial_f17)
+        cur.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+            (cid, "Initial Conversation Title", "default-cli-project", "", raw_summary),
+        )
+        conn.commit()
+        conn.close()
+
+        # Initialize conversation DB
+        conv_db_path = self.conv_dir / f"{cid}.db"
+        c_conn = sqlite3.connect(str(conv_db_path))
+        c_cur = c_conn.cursor()
+        c_cur.execute("CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)")
+        c_cur.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (initial_f17,))
+        c_conn.commit()
+        c_conn.close()
+
+        # Sync to agyhub with resolved project
+        ok = sync_conversation_to_agyhub(
+            conversation_id=cid,
+            repo_dir=self.repo_dir,
+            branch="feature-test",
+            project_id="my-target-project",
+            workspace_uri="file:///custom/workspace",
+            cli_dir=self.cli_dir,
+            config_dir=self.config_dir,
+        )
+        self.assertTrue(ok)
+
+        # Verify conversation_summaries.db updated
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("SELECT project_id, workspace_uris, raw_summary FROM conversation_summaries WHERE conversation_id = ?", (cid,))
+        row = cur.fetchone()
+        self.assertEqual(row[0], "my-target-project")
+        self.assertIn("file:///custom/workspace", row[1])
+        updated_summary = row[2]
+        conn.close()
+
+        # Check injected subfields in field 17 (field 18 target_pid and field 7 workspace_uri)
+        outer_fields = _parse_fields(updated_summary)
+        f17_val = next(v for fn, wt, v in outer_fields if fn == 17)
+        f17_subfields = _parse_fields(f17_val)
+        sub_pids = [v.decode("utf-8") for fn, wt, v in f17_subfields if fn == 18]
+        self.assertIn("my-target-project", sub_pids)
+        sub_uris = [v.decode("utf-8") for fn, wt, v in f17_subfields if fn == 7]
+        self.assertIn("file:///custom/workspace", sub_uris)
+
+        # Check field 9 injected at outer level
+        f9_val = next((v for fn, wt, v in outer_fields if fn == 9), None)
+        self.assertIsNotNone(f9_val)
+
+        # Verify conversation DB updated
+        c_conn = sqlite3.connect(str(conv_db_path))
+        c_cur = c_conn.cursor()
+        c_cur.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+        meta_row = c_cur.fetchone()
+        self.assertIn(b"my-target-project", meta_row[0])
+        c_conn.close()
+
+        # Verify agyhub_summaries_proto.pb created and contains the entry
+        hub_pb = self.cli_dir / "agyhub_summaries_proto.pb"
+        self.assertTrue(hub_pb.exists())
+        entries = _read_agyhub_entries(hub_pb.read_bytes())
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][0], cid)
+        self.assertEqual(entries[0][1], updated_summary)
 
 
 class TestSupervisorIntegration(unittest.TestCase):
