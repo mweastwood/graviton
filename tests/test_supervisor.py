@@ -1229,6 +1229,23 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         }))
         self.assertIsNone(find_project_for_repo(other, config_dir=self.projects_dir))
 
+        # Test preferred_name_or_id matching
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir, preferred_name_or_id="project-alpha"),
+            ("project-alpha", "Project Alpha"),
+        )
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir, preferred_name_or_id="Project Alpha"),
+            ("project-alpha", "Project Alpha"),
+        )
+
+        # Test ANTIGRAVITY_PROJECT environment variable matching
+        with patch.dict(os.environ, {"ANTIGRAVITY_PROJECT": "project-alpha"}):
+            self.assertEqual(
+                find_project_for_repo(other, config_dir=self.projects_dir),
+                ("project-alpha", "Project Alpha"),
+            )
+
     def test_sync_conversation_to_agyhub(self):
         import sqlite3
         from lib.supervisor import (

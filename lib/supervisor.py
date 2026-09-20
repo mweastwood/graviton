@@ -962,23 +962,38 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
 def find_project_for_repo(
     repo_dir: Union[str, Path],
     config_dir: Optional[Union[str, Path]] = None,
+    preferred_name_or_id: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Looks in ~/.gemini/config/projects/ to find a project JSON file whose
-    resources contain a folderUri matching repo_dir.
+    resources contain a folderUri matching repo_dir, or matches preferred_name_or_id.
     Returns (project_id, project_name) or None.
     """
     repo_path = Path(repo_dir).resolve()
     projects_dir = Path(config_dir) if config_dir else (Path.home() / ".gemini" / "config" / "projects")
     if not projects_dir.is_dir():
         return None
+
+    preferred = (
+        preferred_name_or_id
+        or os.environ.get("ANTIGRAVITY_PROJECT")
+        or os.environ.get("GRAVITON_PROJECT_ID")
+    )
+    if preferred:
+        preferred = preferred.strip()
+
+    match_by_repo = None
     for p in projects_dir.glob("*.json"):
         if p.name in ("outside-of-project.json", "default-cli-project.json"):
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            project_id = data.get("id") or p.stem
-            project_name = data.get("name") or project_id
+            project_id = str(data.get("id") or p.stem)
+            project_name = str(data.get("name") or project_id)
+
+            if preferred and (preferred == project_id or preferred.lower() == project_name.lower()):
+                return (project_id, project_name)
+
             resources = data.get("projectResources", {}).get("resources", [])
             for r in resources:
                 gf = r.get("gitFolder", {})
@@ -986,10 +1001,11 @@ def find_project_for_repo(
                 if folder_uri and folder_uri.startswith("file://"):
                     folder_path = Path(folder_uri[7:]).resolve()
                     if folder_path == repo_path or repo_path.is_relative_to(folder_path):
-                        return (str(project_id), str(project_name))
+                        if not match_by_repo:
+                            match_by_repo = (project_id, project_name)
         except Exception:
             continue
-    return None
+    return match_by_repo
 
 
 def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1367,11 +1383,14 @@ class ContainerSupervisor:
         self.agy_binary = agy_binary
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
 
-        self.project_id = project_id
-        if not self.project_id:
-            resolved = find_project_for_repo(self.repo_dir)
-            if resolved:
-                self.project_id = resolved[0]
+        self.project_id = (
+            project_id
+            or os.environ.get("ANTIGRAVITY_PROJECT")
+            or os.environ.get("GRAVITON_PROJECT_ID")
+        )
+        resolved = find_project_for_repo(self.repo_dir, preferred_name_or_id=self.project_id)
+        if resolved:
+            self.project_id = resolved[0]
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
