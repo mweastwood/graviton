@@ -40,13 +40,13 @@ __all__ = [
 ]
 
 _UNSET: Any = object()
-_CACHED_INSTANCE_NAME: Optional[str] = None
+_CACHED_INSTANCE_NAME: Any = _UNSET
 
 
 def get_remote_control_instance_name() -> Optional[str]:
     """Retrieve and cache the Antigravity instance name if available."""
     global _CACHED_INSTANCE_NAME
-    if _CACHED_INSTANCE_NAME is not None:
+    if _CACHED_INSTANCE_NAME is not _UNSET:
         return _CACHED_INSTANCE_NAME
     env_instance = os.environ.get("ANTIGRAVITY_INSTANCE_NAME")
     if env_instance:
@@ -67,6 +67,7 @@ def get_remote_control_instance_name() -> Optional[str]:
                 return _CACHED_INSTANCE_NAME
     except Exception:
         pass
+    _CACHED_INSTANCE_NAME = None
     return None
 
 
@@ -113,13 +114,11 @@ def extract_remote_control_url(
             if match:
                 return match.group(0).rstrip(".,;")
 
-    if remote_control_enabled:
+    if remote_control_enabled and conversation_id and conversation_id.strip():
         base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
         inst = instance_name if instance_name is not None else get_remote_control_instance_name()
         query_suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
-        if conversation_id:
-            return f"{base_url}/c/{conversation_id}{query_suffix}"
-        return f"{base_url}{query_suffix}"
+        return f"{base_url}/c/{conversation_id.strip()}{query_suffix}"
 
     return None
 

@@ -24,7 +24,7 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
     def setUp(self):
         # Reset cached instance name
         import lib.supervisor as s
-        s._CACHED_INSTANCE_NAME = None
+        s._CACHED_INSTANCE_NAME = s._UNSET
 
     def test_extract_url_from_event_dict(self):
         event = {"remote_control_url": "https://antigravity.google.com/c/direct-url"}
@@ -57,6 +57,29 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
         )
         self.assertEqual(url, "https://antigravity.google.com/c/conv-789")
 
+    def test_fallback_url_synthesis_requires_non_empty_conversation_id(self):
+        self.assertIsNone(
+            extract_remote_control_url(
+                None,
+                conversation_id=None,
+                remote_control_enabled=True,
+            )
+        )
+        self.assertIsNone(
+            extract_remote_control_url(
+                None,
+                conversation_id="",
+                remote_control_enabled=True,
+            )
+        )
+        self.assertIsNone(
+            extract_remote_control_url(
+                None,
+                conversation_id="   ",
+                remote_control_enabled=True,
+            )
+        )
+
     def test_no_url_when_remote_control_disabled(self):
         url = extract_remote_control_url(
             None,
@@ -83,20 +106,35 @@ class TestRemoteControlUrlExtraction(unittest.TestCase):
     @patch.dict("os.environ", {"ANTIGRAVITY_INSTANCE_NAME": "env-instance"})
     def test_get_remote_control_instance_name_from_env(self):
         import lib.supervisor as s
-        s._CACHED_INSTANCE_NAME = None
+        s._CACHED_INSTANCE_NAME = s._UNSET
         self.assertEqual(get_remote_control_instance_name(), "env-instance")
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("lib.supervisor.subprocess.run")
     def test_get_remote_control_instance_name_from_cli(self, mock_run):
         import lib.supervisor as s
-        s._CACHED_INSTANCE_NAME = None
+        s._CACHED_INSTANCE_NAME = s._UNSET
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="Status: ACTIVE\nInstance Name: cli-instance-alpha\nPort: 443\n",
         )
         name = get_remote_control_instance_name()
         self.assertEqual(name, "cli-instance-alpha")
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("lib.supervisor.subprocess.run")
+    def test_get_remote_control_instance_name_negative_caching(self, mock_run):
+        import lib.supervisor as s
+        s._CACHED_INSTANCE_NAME = s._UNSET
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        name1 = get_remote_control_instance_name()
+        self.assertIsNone(name1)
+        self.assertEqual(mock_run.call_count, 1)
+
+        name2 = get_remote_control_instance_name()
+        self.assertIsNone(name2)
+        # Verify negative caching prevents second subprocess invocation
+        self.assertEqual(mock_run.call_count, 1)
 
 
 class TestRemoteControlPRComments(unittest.TestCase):
@@ -190,6 +228,76 @@ class TestTaskManagerRemoteControl(unittest.TestCase):
             {"t-active": "https://antigravity.google.com/c/conv-active"},
         )
         tm.stop()
+
+    def test_worker_triggers_init_reaction_after_supervisor_start(self):
+        class MockSupervisor:
+            def __init__(self, **kwargs):
+                self.conversation_id = "conv-sup-init-456"
+                self.remote_control_url = "https://antigravity.google.com/c/conv-sup-init-456"
+
+            def start(self, timeout=30.0):
+                return self.conversation_id
+
+            def run_turn(self, prompt, **kwargs):
+                from lib.supervisor import SupervisorResult
+                return SupervisorResult(
+                    status="SUCCESS",
+                    response="Turn finished",
+                    conversation_id=self.conversation_id,
+                    remote_control_url=self.remote_control_url,
+                )
+
+            run_goal = run_turn
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tm = TaskManager(
+                max_workers=1,
+                cwd=Path(tmpdir),
+                use_supervisor=True,
+                supervisor_cls=MockSupervisor,
+                post_start_comment=True,
+            )
+            with patch.object(tm, "_trigger_init_reaction", wraps=tm._trigger_init_reaction) as mock_trigger:
+                with patch("lib.tasks.post_emoji_reaction_async") as mock_emoji, \
+                     patch("lib.tasks.post_task_start_comment") as mock_comment:
+                    tm.start()
+                    task = tm.submit_task(
+                        agent="code_reviewer",
+                        prompt="Review",
+                        target_id="#42",
+                        repo_full_name="mweastwood/graviton",
+                    )
+                    tm.wait_for_task(task.id, timeout=5.0)
+                    tm.stop()
+
+                    self.assertEqual(mock_trigger.call_count, 1)
+                    mock_emoji.assert_called_once()
+                    mock_comment.assert_called_once()
+                    finished_task = tm.get_task(task.id)
+                    self.assertEqual(finished_task.conversation_id, "conv-sup-init-456")
+                    self.assertEqual(finished_task.remote_control_url, "https://antigravity.google.com/c/conv-sup-init-456")
+
+    def test_trigger_init_reaction_idempotent(self):
+        tm = TaskManager(max_workers=0)
+        task = Task(
+            id="t-idempotent",
+            agent="code_reviewer",
+            prompt="Review",
+            target_id="#42",
+            repo_full_name="mweastwood/graviton",
+            remote_control_url="https://antigravity.google.com/c/idempotent-conv",
+        )
+        tm.post_start_comment = True
+        with patch("lib.tasks.post_emoji_reaction_async") as mock_emoji, \
+             patch("lib.tasks.post_task_start_comment") as mock_comment:
+            tm._trigger_init_reaction(task)
+            self.assertEqual(mock_emoji.call_count, 1)
+            self.assertEqual(mock_comment.call_count, 1)
+
+            # Second call should be no-op due to idempotency guard
+            tm._trigger_init_reaction(task)
+            self.assertEqual(mock_emoji.call_count, 1)
+            self.assertEqual(mock_comment.call_count, 1)
 
 
 class TestMCPRemoteControlTools(unittest.TestCase):

@@ -527,13 +527,16 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     elif active_screen == "task_logs":
-        nav_hint = "Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit"
+        nav_hint = "Nav: [x] Abort Task │ [o] Remote Control │ [Esc] Main Screen │ [q] Quit"
     elif active_screen == "gemini_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     elif active_screen == "third_party_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
-        nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
+        if inner_w >= 146:
+            nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [o] Remote Control │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
+        else:
+            nav_hint = "Nav: [↑/↓] Select │ [p] Prioritize │ [o] Remote Control │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
 
     lines = [
         line1_raw,

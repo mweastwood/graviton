@@ -1061,12 +1061,14 @@ class TestTUIPanels(unittest.TestCase):
         )
         self.assertTrue(any("[Enter] Logs" in l for l in lines_main))
         self.assertTrue(any("[x] Abort Task" in l for l in lines_main))
+        self.assertTrue(any("[o] Remote Control" in l for l in lines_main))
 
         lines_task_logs = render_header_panel(
             width=130, host="0.0.0.0", port=8000, commit="sha", branch="main", reload_state="IDLE", uptime="00:01:00", active_screen="task_logs"
         )
         self.assertTrue(any("[x] Abort Task" in l for l in lines_task_logs))
-        self.assertTrue(any("Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
+        self.assertTrue(any("[o] Remote Control" in l for l in lines_task_logs))
+        self.assertTrue(any("Nav: [x] Abort Task │ [o] Remote Control │ [Esc] Main Screen │ [q] Quit" in l for l in lines_task_logs))
 
     def test_display_width_and_truncation_fast_paths(self):
         # 1. get_display_width tests

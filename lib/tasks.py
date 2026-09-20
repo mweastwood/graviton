@@ -551,6 +551,9 @@ class TaskManager:
 
     def _trigger_init_reaction(self, task: Task) -> None:
         """Trigger rocket emoji reaction on task init lifecycle event."""
+        if getattr(task, "_init_reaction_triggered", False):
+            return
+        task._init_reaction_triggered = True
         try:
             if task.webhook_event_type and task.webhook_payload:
                 post_emoji_reaction_async(
@@ -1581,8 +1584,10 @@ class TaskManager:
                             supervisor.start()
                         if getattr(supervisor, "session", None) and getattr(supervisor.session, "proc", None):
                             _on_process_created(supervisor.session.proc)
+                        task.conversation_id = getattr(supervisor, "conversation_id", None)
                         if getattr(supervisor, "remote_control_url", None) and not task.remote_control_url:
                             task.remote_control_url = supervisor.remote_control_url
+                        self._trigger_init_reaction(task)
 
                         if task.use_goal:
                             result = supervisor.run_goal(
