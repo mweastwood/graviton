@@ -795,7 +795,12 @@ def main():
     else:
         logger.info("HMAC signature verification ENABLED.")
 
-    listener_proc = start_smee_listener(args.smee_url, args.port) if args.smee_url else None
+    smee_url = (args.smee_url or "").strip()
+    if not smee_url:
+        logger.error("Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server.")
+        sys.exit(1)
+
+    listener_proc = start_smee_listener(smee_url, args.port)
     GravitonHandler.listener_proc = listener_proc
 
     scheduler = None

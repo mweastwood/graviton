@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import deque
@@ -38,8 +39,9 @@ from lib.sidecar import (
 
 def cmd_start(args):
     extra = []
-    if args.smee_url:
-        extra.extend(["--smee-url", args.smee_url])
+    smee = args.smee_url or os.environ.get("SMEE_URL")
+    if smee:
+        extra.extend(["--smee-url", smee])
     if getattr(args, "no_supervisor", False):
         extra.append("--no-supervisor")
     if getattr(args, "post_completion_comment", False):
@@ -172,7 +174,7 @@ def main():
 
     # start
     p_start = subparsers.add_parser("start", help="Start Graviton sidecar in background")
-    p_start.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_start.add_argument("--smee-url", default=os.getenv("SMEE_URL"), help="GitHub Smee channel webhook proxy URL (default: env SMEE_URL)")
     p_start.add_argument("--no-supervisor", action="store_true", help="Run with legacy bash runner")
     p_start.add_argument("--post-completion-comment", action="store_true", help="Post completion comment to PR")
 

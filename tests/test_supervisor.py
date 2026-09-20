@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import subprocess
 import threading
 import time
@@ -815,10 +816,16 @@ class TestContainerSupervisor(unittest.TestCase):
         (cli_dir / "antigravity-oauth-token").write_text("fake-token")
         (cli_dir / "settings.json").write_text("{}")
 
+        gemini_config_dir = home_mock / ".gemini" / "config"
+        gemini_config_dir.mkdir(parents=True)
+        config_file = gemini_config_dir / "config.json"
+        config_file.write_text('{"cliRemoteControlHostname": "test-remote-host"}')
+
         skills_dir = Path(self.tmp_dir.name) / "skills"
         skills_dir.mkdir()
 
-        with patch("pathlib.Path.home", return_value=home_mock):
+        with patch("pathlib.Path.home", return_value=home_mock), \
+             patch.dict(os.environ, {"ANTIGRAVITY_INSTANCE_NAME": "test-instance"}):
             sup = ContainerSupervisor(
                 repo_dir=self.repo_dir,
                 agent_name="tester",
@@ -862,6 +869,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("/root/.gemini/config:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
             self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
+            self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
 
             # Skills mount
             self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
@@ -871,6 +879,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("GIT_AUTHOR_NAME=Test User", cmd)
             self.assertIn("GIT_AUTHOR_EMAIL=test@example.com", cmd)
             self.assertIn("ANTIGRAVITY_MODEL=claude-3-sonnet", cmd)
+            self.assertIn("ANTIGRAVITY_INSTANCE_NAME=test-instance", cmd)
             self.assertIn("MY_CUSTOM_VAR=hello", cmd)
 
             # Image

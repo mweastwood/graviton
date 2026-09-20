@@ -5,3 +5,4 @@ __pycache__/
 graviton.log
 .graviton_*.json
 .graviton_*.pid
+DASHBOARD.md

@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import logging
+import os
 import signal
 import socket
 import subprocess
@@ -35,6 +36,15 @@ GravitonHandler = server_mod.GravitonHandler
 class TestGravitonHandler(unittest.TestCase):
 
     def setUp(self):
+        self._orig_smee_url = os.environ.get("SMEE_URL")
+        os.environ["SMEE_URL"] = "https://smee.io/test-channel"
+        self._popen_patcher = patch("subprocess.Popen")
+        self.mock_popen = self._popen_patcher.start()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.wait.return_value = 0
+        self.mock_popen.return_value = mock_proc
+
         server_mod._is_shutting_down = False
         server_mod._shutdown_thread = None
         GravitonHandler.secret = ""
@@ -50,6 +60,12 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.server_port = 8000
 
     def tearDown(self):
+        self._popen_patcher.stop()
+        if self._orig_smee_url is None:
+            os.environ.pop("SMEE_URL", None)
+        else:
+            os.environ["SMEE_URL"] = self._orig_smee_url
+
         server_mod._is_shutting_down = False
         server_mod._shutdown_thread = None
         GravitonHandler.scheduler = None
@@ -1115,6 +1131,18 @@ class TestGravitonHandler(unittest.TestCase):
                 server_mod.main()
 
         mock_start_listener.assert_called_once_with("https://smee.io/env-channel", 8000)
+
+    @patch("graviton_server.logger")
+    def test_main_missing_smee_url_raises_error(self, mock_logger):
+        """Verify that running graviton-server.py without --smee-url (or SMEE_URL env var) exits with 1."""
+        with patch.dict(os.environ, {"SMEE_URL": ""}, clear=False):
+            with patch("sys.argv", ["graviton-server.py", "--smee-url", ""]):
+                with self.assertRaises(SystemExit) as ctx:
+                    server_mod.main()
+                self.assertEqual(ctx.exception.code, 1)
+        mock_logger.error.assert_called_with(
+            "Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server."
+        )
 
     @patch("graviton_server.start_smee_listener")
     @patch("graviton_server.TerminalDashboard")

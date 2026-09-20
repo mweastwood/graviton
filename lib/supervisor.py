@@ -1183,6 +1183,11 @@ class ContainerSupervisor:
         else:
             cmd.extend(["--tmpfs", "/root/.gemini/config:rw,exec"])
 
+        # Mount host config.json for Antigravity Remote Control identification
+        gemini_config_file = Path.home() / ".gemini" / "config" / "config.json"
+        if gemini_config_file.is_file():
+            cmd.extend(["-v", f"{gemini_config_file.resolve()}:/root/.gemini/config/config.json:ro"])
+
         # Environment variables
         github_token = self.github_token or os.environ.get("GITHUB_TOKEN")
         if not github_token:
@@ -1238,6 +1243,10 @@ class ContainerSupervisor:
         quota_pool = os.environ.get("ANTIGRAVITY_QUOTA_POOL")
         if quota_pool:
             cmd.extend(["-e", f"ANTIGRAVITY_QUOTA_POOL={quota_pool}"])
+
+        instance_name = os.environ.get("ANTIGRAVITY_INSTANCE_NAME")
+        if instance_name:
+            cmd.extend(["-e", f"ANTIGRAVITY_INSTANCE_NAME={instance_name}"])
 
         for k, v in self.env.items():
             cmd.extend(["-e", f"{k}={v}"])
