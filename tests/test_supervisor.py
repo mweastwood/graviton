@@ -900,6 +900,23 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("custom_binary", cmd)
         self.assertIn("--custom-arg", cmd)
 
+    def test_build_docker_command_mounts_plugin_skills_and_agents_by_default(self):
+        fake_repo = Path(self.tmp_dir.name) / "fake_repo"
+        fake_repo.mkdir(parents=True)
+        (fake_repo / "README.md").write_text("Hello")
+        (fake_repo / "plugin" / "skills").mkdir(parents=True)
+        (fake_repo / "plugin" / "agents").mkdir(parents=True)
+
+        sup = ContainerSupervisor(
+            repo_dir=fake_repo,
+            run_id="default_plugin_mounts",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn(f"{(fake_repo / 'plugin' / 'skills').resolve()}:/root/.gemini/config/skills:ro", cmd)
+        self.assertIn(f"{(fake_repo / 'plugin' / 'agents').resolve()}:/root/.gemini/config/agents:ro", cmd)
+
     def test_start_and_lifecycle(self):
         sup = ContainerSupervisor(
             repo_dir=self.repo_dir,

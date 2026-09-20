@@ -10,7 +10,7 @@ Packaged as a first-class **Antigravity Plugin**, Graviton orchestrates sandboxe
 
 - **Programmatic Stream-JSON Supervisor**: Eliminates one-shot print timeouts and transcript file scraping. Drives `agy` inside isolated Docker containers via `--input-format stream-json --output-format stream-json` with multi-turn `/goal` instructions and watchdog timers.
 - **Antigravity Remote Control Integration**: Every running task automatically captures or synthesizes its Remote Control session URL (`https://antigravity.google.com/c/<conversation_id>`). Live links are surfaced in GitHub PR comments, the REST API, MCP tools, and the TUI dashboard.
-- **Antigravity Plugin & Sidecar Daemon**: Packaged as an installable plugin (`.agents/plugins/graviton/`) with native slash command (`/graviton`), Model Context Protocol (MCP) server, and automated background sidecar execution.
+- **Antigravity Plugin & Sidecar Daemon**: Packaged as an installable plugin (`plugin/`, symlinked to `.agents/plugins/graviton`) with native slash command (`/graviton`), Model Context Protocol (MCP) server, first-class sub-agents, and automated background sidecar execution.
 - **Dual-Pool Quota & Adaptive Pacing**: Real-time tracking of both Gemini and Claude/GPT quota windows (5-hour and 1-week). Automatically balances models, enforces pacing delay windows, and pauses tasks before quota exhaustion.
 - **Automated PR Code Review & Fix Cycles**:
   - `code_reviewer`: Analyzes diffs, checks test suites, and posts GitHub Reviews (`APPROVE` or `CHANGES_REQUESTED`).
@@ -28,46 +28,35 @@ Packaged as a first-class **Antigravity Plugin**, Graviton orchestrates sandboxe
 
 ```text
 graviton/
-├── .agents/
-│   └── plugins/
-│       └── graviton/           # Antigravity Plugin packaging
-│           ├── plugin.json     # Plugin manifest & metadata
-│           ├── rules/          # Autonomous supervisor rules (AGENTS.md)
-│           ├── skills/         # /graviton slash command skill
-│           ├── sidecars/       # Graviton background sidecar daemon
-│           └── mcp/            # MCP server configuration
-├── bin/
-│   ├── build_agent_container.sh# Script to build Docker container image
-│   ├── graviton-server.py      # Webhook server & event router entrypoint
-│   ├── run_agent_container.sh  # [DEPRECATED] Legacy bash container runner
-│   └── run_listener.sh         # Smee.io local proxy runner
-├── config/
-│   └── schedules.json          # Periodic task schedule definitions
-├── lib/                        # Core library components
-│   ├── supervisor.py           # Stream-JSON ContainerSupervisor & Remote Control engine
-│   ├── tasks.py                # Asynchronous TaskManager, worker pool & PR comments
-│   ├── skills.py               # Dynamic agent skill generator & workspace bind-mounts
-│   ├── quota.py                # Dual-pool quota tracking & adaptive pacing engine
-│   ├── mcp.py                  # Model Context Protocol (MCP) server
-│   ├── tui.py                  # Terminal UI dashboard & hotkey controller
-│   ├── tui_panels.py           # Modular TUI panel rendering utilities
-│   ├── router.py               # GitHub webhook event routing state machine
-│   ├── release.py              # Repository release controller & script runner
-│   ├── security.py             # HMAC SHA-256 signature verification & bot tags
-│   ├── updater.py              # Hot-reload process manager & git sync
-│   └── runner.py               # [DEPRECATED] Legacy one-shot container executor
-├── tests/                      # Comprehensive unit test suite (927+ tests)
-│   ├── test_supervisor.py
-│   ├── test_remote_control.py
-│   ├── test_skills.py
-│   ├── test_tasks.py
-│   ├── test_quota.py
-│   ├── test_mcp.py
-│   ├── test_tui.py
-│   └── test_server.py
-├── agents/                     # Agent persona specifications
+├── bin/                          # Server entrypoints (graviton-server.py, etc.)
+├── config/                       # Schedules & repo config
+├── lib/                          # Core Python server & supervisor libraries
+├── tests/                        # Comprehensive unit test suite
+│
+├── plugin/                       # Single top-level directory for all plugin assets
+│   ├── plugin.json               # Plugin manifest & metadata
+│   ├── mcp_config.json           # MCP tool definitions
+│   ├── hooks.json                # Agent lifecycle hooks
+│   ├── bin/                      # Plugin executables (graviton-sidecar & graviton-mcp)
+│   ├── rules/
+│   │   └── AGENTS.md             # Supervisor rules
+│   ├── agents/                   # First-class sub-agents exposed to users:
+│   │   ├── code_reviewer/agent.md
+│   │   ├── code_fixer/agent.md
+│   │   ├── issue_triager/agent.md
+│   │   ├── pr_drafter/agent.md
+│   │   └── codebase_auditor/agent.md
+│   └── skills/                   # Unified skills & runbooks:
+│       ├── graviton/SKILL.md     # Supervisor management skill (/graviton)
+│       ├── code-review-guidelines/SKILL.md
+│       ├── code-fixer-guidelines/SKILL.md
+│       ├── issue-triager-guidelines/SKILL.md
+│       ├── pr-drafter-guidelines/SKILL.md
+│       └── codebase-auditor-guidelines/SKILL.md
+│
+├── .agents/plugins/graviton      # Symlink bridge -> ../../plugin
 └── docs/
-    └── ARCHITECTURE.md         # Event state machine & supervisor specifications
+    └── ARCHITECTURE.md           # Event state machine & supervisor specifications
 ```
 
 ---
@@ -102,12 +91,22 @@ python3 bin/graviton-server.py --port 8000 --smee-url https://smee.io/your-chann
 
 ## 🔌 Antigravity Plugin & MCP Server
 
-Graviton is packaged as an official Antigravity plugin in `.agents/plugins/graviton`.
+Graviton is packaged as an official Antigravity plugin located in the top-level `plugin/` directory (with `.agents/plugins/graviton` symlink bridge).
 
 ### Installing the Plugin
 ```bash
-agy plugin enable graviton
+agy plugin install plugin
+# or via the installer script:
+bin/graviton-plugin-install --workspace
 ```
+
+### First-Class Sub-Agents
+Users can directly invoke Graviton's specialized sub-agents in interactive chat sessions:
+- `@code_reviewer`: Automated PR code reviewer for external and internal pull requests.
+- `@code_fixer`: Automated PR code fixer and review responder.
+- `@issue_triager`: Autonomous GitHub issue triager and design specifier.
+- `@pr_drafter`: Automated initial PR drafter from triaged issues.
+- `@codebase_auditor`: Autonomous codebase auditor for bug detection, performance sweeps, and refactoring.
 
 ### Native Slash Command
 Type `/graviton` in the Antigravity chat to query status, inspect tasks, or submit reviews directly:

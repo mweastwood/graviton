@@ -985,6 +985,7 @@ class ContainerSupervisor:
         git_user_email: Optional[str] = None,
         github_token: Optional[str] = None,
         skills_dir: Optional[Union[str, Path]] = None,
+        agents_dir: Optional[Union[str, Path]] = None,
         env: Optional[Dict[str, str]] = None,
         docker_binary: Optional[str] = None,
         agy_binary: Optional[str] = None,
@@ -1006,6 +1007,7 @@ class ContainerSupervisor:
         self.git_user_email = git_user_email
         self.github_token = github_token
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
+        self.agents_dir = Path(agents_dir).resolve() if agents_dir else None
         self.env = dict(env) if env is not None else {}
         self.docker_binary = docker_binary or shutil.which("docker") or "docker"
         self.agy_binary = agy_binary
@@ -1127,11 +1129,28 @@ class ContainerSupervisor:
         # Skills directory mount
         skills_path = self.skills_dir
         if not skills_path:
-            repo_skills = self.repo_dir / "skills"
-            if repo_skills.is_dir():
-                skills_path = repo_skills
+            plugin_skills = self.repo_dir / "plugin" / "skills"
+            if plugin_skills.is_dir():
+                skills_path = plugin_skills
+            else:
+                repo_skills = self.repo_dir / "skills"
+                if repo_skills.is_dir():
+                    skills_path = repo_skills
         if skills_path and skills_path.is_dir():
             cmd.extend(["-v", f"{skills_path.resolve()}:/root/.gemini/config/skills:ro"])
+
+        # Agents directory mount
+        agents_path = self.agents_dir
+        if not agents_path:
+            plugin_agents = self.repo_dir / "plugin" / "agents"
+            if plugin_agents.is_dir():
+                agents_path = plugin_agents
+            else:
+                repo_agents = self.repo_dir / "agents"
+                if repo_agents.is_dir():
+                    agents_path = repo_agents
+        if agents_path and agents_path.is_dir():
+            cmd.extend(["-v", f"{agents_path.resolve()}:/root/.gemini/config/agents:ro"])
 
         # SSH credentials mount
         ssh_dir = Path.home() / ".ssh"
@@ -1443,6 +1462,7 @@ def run_container_turn(
     git_user_email: Optional[str] = None,
     github_token: Optional[str] = None,
     skills_dir: Optional[Union[str, Path]] = None,
+    agents_dir: Optional[Union[str, Path]] = None,
     env: Optional[Dict[str, str]] = None,
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
@@ -1467,6 +1487,7 @@ def run_container_turn(
         git_user_email=git_user_email,
         github_token=github_token,
         skills_dir=skills_dir,
+        agents_dir=agents_dir,
         env=env,
         docker_binary=docker_binary,
         agy_binary=agy_binary,
@@ -1512,6 +1533,7 @@ def run_container_goal(
     git_user_email: Optional[str] = None,
     github_token: Optional[str] = None,
     skills_dir: Optional[Union[str, Path]] = None,
+    agents_dir: Optional[Union[str, Path]] = None,
     env: Optional[Dict[str, str]] = None,
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
@@ -1535,6 +1557,7 @@ def run_container_goal(
         git_user_email=git_user_email,
         github_token=github_token,
         skills_dir=skills_dir,
+        agents_dir=agents_dir,
         env=env,
         docker_binary=docker_binary,
         agy_binary=agy_binary,
