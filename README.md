@@ -70,12 +70,13 @@ graviton/
 
 ### 2. Start the Graviton Webhook Server
 ```bash
-python3 bin/graviton-server.py --port 8000
+python3 bin/graviton-server.py --port 8000 --smee-url https://smee.io/your-channel-id
 ```
 *Options:*
 - `--port` / `-p`: Port to bind (default: `8000`).
 - `--secret` / `-s`: Optional GitHub Webhook secret for HMAC SHA-256 signature verification.
-- `--smee-url`: Smee.io channel URL to automatically launch background webhook proxy listener (env: `SMEE_URL`).
+- `--smee-url`: Smee.io channel URL (**required** unless `--no-smee` is set, or set `SMEE_URL` environment variable) to automatically spawn background webhook proxy listener.
+- `--no-smee`: Disable Smee.io webhook proxy listener for direct webhook ingestion setups (env: `GRAVITON_NO_SMEE`).
 - `--post-start-comment`: Post an initial comment with live Remote Control link upon agent start (env: `GRAVITON_POST_START_COMMENT`).
 - `--post-completion-comment`: Post structured completion comment with session replay link upon agent finish (env: `GRAVITON_POST_COMPLETION_COMMENT`).
 - `--max-workers`: Maximum concurrent active task workers (default: `2`).

@@ -204,6 +204,31 @@ class TestRunListener(unittest.TestCase):
             output = res.stdout
             self.assertIn("--port 8000", output)
 
+    def test_broken_node_in_path_prioritizes_usr_bin(self):
+        """Verify that a broken node earlier in PATH prioritizes /usr/bin/node if valid."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            broken_bin = tmp_path / "broken_bin"
+            self._create_mock_binary(broken_bin, "node", body="#!/usr/bin/env bash\nexit 1\n")
+            mock_smee_bin = tmp_path / "smee_bin"
+            self._create_mock_binary(mock_smee_bin, "smee")
+            min_bin = self._setup_minimal_bin(tmp_path)
+
+            env = os.environ.copy()
+            env["HOME"] = str(fake_home)
+            env["PATH"] = f"{broken_bin}:{mock_smee_bin}:{min_bin}:/usr/bin"
+
+            res = subprocess.run(
+                [str(RUN_LISTENER_PATH), "https://smee.io/channel"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("--url https://smee.io/channel", res.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

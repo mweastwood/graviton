@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import deque
@@ -38,8 +39,12 @@ from lib.sidecar import (
 
 def cmd_start(args):
     extra = []
-    if args.smee_url:
-        extra.extend(["--smee-url", args.smee_url])
+    if getattr(args, "no_smee", False):
+        extra.append("--no-smee")
+    else:
+        smee = args.smee_url or os.environ.get("SMEE_URL")
+        if smee:
+            extra.extend(["--smee-url", smee])
     if getattr(args, "no_supervisor", False):
         extra.append("--no-supervisor")
     if getattr(args, "post_completion_comment", False):
@@ -109,7 +114,9 @@ def cmd_restart(args):
 
 def cmd_ensure(args):
     extra = []
-    if args.smee_url:
+    if getattr(args, "no_smee", False):
+        extra.append("--no-smee")
+    elif args.smee_url:
         extra.extend(["--smee-url", args.smee_url])
     success, msg = ensure_sidecar_running(
         host=args.host,
@@ -117,6 +124,7 @@ def cmd_ensure(args):
         pid_file=Path(args.pid_file),
         log_file=Path(args.log_file),
         extra_args=extra,
+        smee_url=None if getattr(args, "no_smee", False) else args.smee_url,
     )
     if not success:
         if getattr(args, "json", False):
@@ -172,7 +180,8 @@ def main():
 
     # start
     p_start = subparsers.add_parser("start", help="Start Graviton sidecar in background")
-    p_start.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_start.add_argument("--smee-url", default=os.getenv("SMEE_URL"), help="GitHub Smee channel webhook proxy URL (default: env SMEE_URL)")
+    p_start.add_argument("--no-smee", action="store_true", help="Disable Smee channel listener for direct webhook delivery")
     p_start.add_argument("--no-supervisor", action="store_true", help="Run with legacy bash runner")
     p_start.add_argument("--post-completion-comment", action="store_true", help="Post completion comment to PR")
 
@@ -185,11 +194,13 @@ def main():
 
     # restart
     p_restart = subparsers.add_parser("restart", help="Restart Graviton sidecar")
-    p_restart.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_restart.add_argument("--smee-url", default=os.getenv("SMEE_URL"), help="GitHub Smee channel webhook proxy URL (default: env SMEE_URL)")
+    p_restart.add_argument("--no-smee", action="store_true", help="Disable Smee channel listener for direct webhook delivery")
 
     # ensure
     p_ensure = subparsers.add_parser("ensure", help="Ensure sidecar is running (starts if down)")
-    p_ensure.add_argument("--smee-url", help="GitHub Smee channel webhook proxy URL")
+    p_ensure.add_argument("--smee-url", default=os.getenv("SMEE_URL"), help="GitHub Smee channel webhook proxy URL (default: env SMEE_URL)")
+    p_ensure.add_argument("--no-smee", action="store_true", help="Disable Smee channel listener for direct webhook delivery")
     p_ensure.add_argument("--json", action="store_true", help="Output JSON for hook runner")
     p_ensure.add_argument("--quiet", "-q", action="store_true", help="Suppress output on success")
 

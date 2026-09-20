@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import logging
+import os
 import signal
 import socket
 import subprocess
@@ -30,11 +31,17 @@ sys.modules["graviton_server"] = server_mod
 spec.loader.exec_module(server_mod)
 
 GravitonHandler = server_mod.GravitonHandler
+_orig_start_smee_listener = server_mod.start_smee_listener
 
 
 class TestGravitonHandler(unittest.TestCase):
 
     def setUp(self):
+        self._orig_smee_url = os.environ.get("SMEE_URL")
+        os.environ["SMEE_URL"] = "https://smee.io/test-channel"
+        self._listener_patcher = patch("graviton_server.start_smee_listener", return_value=MagicMock())
+        self.mock_start_listener = self._listener_patcher.start()
+
         server_mod._is_shutting_down = False
         server_mod._shutdown_thread = None
         GravitonHandler.secret = ""
@@ -50,6 +57,12 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.server_port = 8000
 
     def tearDown(self):
+        self._listener_patcher.stop()
+        if self._orig_smee_url is None:
+            os.environ.pop("SMEE_URL", None)
+        else:
+            os.environ["SMEE_URL"] = self._orig_smee_url
+
         server_mod._is_shutting_down = False
         server_mod._shutdown_thread = None
         GravitonHandler.scheduler = None
@@ -1038,7 +1051,7 @@ class TestGravitonHandler(unittest.TestCase):
     def test_start_smee_listener_valid_url(self, mock_popen):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
-        res = server_mod.start_smee_listener("https://smee.io/test-channel", 8000)
+        res = _orig_start_smee_listener("https://smee.io/test-channel", 8000)
         self.assertEqual(res, mock_proc)
         mock_popen.assert_called_once_with(
             [
@@ -1051,12 +1064,12 @@ class TestGravitonHandler(unittest.TestCase):
         )
 
     def test_start_smee_listener_empty_url(self):
-        res = server_mod.start_smee_listener("", 8000)
+        res = _orig_start_smee_listener("", 8000)
         self.assertIsNone(res)
 
     @patch("os.access", return_value=False)
     def test_start_smee_listener_non_executable_script(self, mock_access):
-        res = server_mod.start_smee_listener("https://smee.io/test-channel", 8000)
+        res = _orig_start_smee_listener("https://smee.io/test-channel", 8000)
         self.assertIsNone(res)
 
     @patch("graviton_server.start_smee_listener")
@@ -1115,6 +1128,42 @@ class TestGravitonHandler(unittest.TestCase):
                 server_mod.main()
 
         mock_start_listener.assert_called_once_with("https://smee.io/env-channel", 8000)
+
+    @patch("graviton_server.logger")
+    def test_main_missing_smee_url_raises_error(self, mock_logger):
+        """Verify that running graviton-server.py without --smee-url (or SMEE_URL env var) exits with 1."""
+        with patch.dict(os.environ, {"SMEE_URL": ""}, clear=False):
+            with patch("sys.argv", ["graviton-server.py", "--smee-url", ""]):
+                with self.assertRaises(SystemExit) as ctx:
+                    server_mod.main()
+                self.assertEqual(ctx.exception.code, 1)
+        mock_logger.error.assert_called_with(
+            "Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server, or specify --no-smee for direct webhook setups."
+        )
+
+    @patch("graviton_server.start_smee_listener")
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_no_smee_flag_skips_listener(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False):
+            with patch("sys.argv", ["graviton-server.py", "--no-smee"]):
+                server_mod.main()
+
+        mock_start_listener.assert_not_called()
 
     @patch("graviton_server.start_smee_listener")
     @patch("graviton_server.TerminalDashboard")

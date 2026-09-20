@@ -224,6 +224,79 @@ class TestSidecarManager(unittest.TestCase):
         self.assertTrue(success)
         mock_start.assert_called_once()
 
+    @patch("lib.sidecar.start_sidecar")
+    @patch("lib.sidecar.check_health")
+    def test_ensure_sidecar_running_forwards_smee_url(self, mock_health, mock_start):
+        mock_health.return_value = (False, {})
+        mock_start.return_value = (True, "started")
+        success, msg = ensure_sidecar_running(
+            pid_file=self.pid_file,
+            smee_url="https://smee.io/forwarded-channel",
+        )
+        self.assertTrue(success)
+        mock_start.assert_called_once_with(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=None,
+            extra_args=None,
+            startup_timeout=8.0,
+            smee_url="https://smee.io/forwarded-channel",
+        )
+
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.subprocess.Popen")
+    @patch("lib.sidecar.check_health", side_effect=[(False, {}), (True, {"status": "ok"})])
+    def test_start_sidecar_with_custom_smee_url(self, mock_health, mock_popen, mock_alive):
+        mock_proc = MagicMock()
+        mock_proc.pid = 9999
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        fake_script = self.tmp_path / "server.py"
+        fake_script.write_text("#!/usr/bin/env python3\n")
+
+        success, _ = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+            server_script=fake_script,
+            smee_url="https://smee.io/custom-test-channel",
+        )
+        self.assertTrue(success)
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
+        self.assertIn("--smee-url", cmd)
+        self.assertIn("https://smee.io/custom-test-channel", cmd)
+
+    @patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False)
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.subprocess.Popen")
+    @patch("lib.sidecar.check_health", side_effect=[(False, {}), (True, {"status": "ok"})])
+    def test_start_sidecar_with_no_smee_flag(self, mock_health, mock_popen, mock_alive):
+        mock_proc = MagicMock()
+        mock_proc.pid = 9999
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        fake_script = self.tmp_path / "server.py"
+        fake_script.write_text("#!/usr/bin/env python3\n")
+
+        success, _ = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+            server_script=fake_script,
+            extra_args=["--no-smee"],
+        )
+        self.assertTrue(success)
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
+        self.assertNotIn("--smee-url", cmd)
+        self.assertIn("--no-smee", cmd)
+
 
 from importlib.machinery import SourceFileLoader
 import io
@@ -347,6 +420,60 @@ class TestGravitonSidecarCLI(unittest.TestCase):
             _, kwargs = mock_start.call_args
             self.assertIn("--smee-url", kwargs["extra_args"])
             self.assertIn("--no-supervisor", kwargs["extra_args"])
+
+    @patch.object(sidecar_cli, "start_sidecar")
+    def test_cli_start_no_smee(self, mock_start):
+        mock_start.return_value = (True, "Graviton sidecar started (PID 9999)")
+        with patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False):
+            with patch("sys.argv", [
+                "graviton-sidecar",
+                "--pid-file", str(self.pid_file),
+                "--log-file", str(self.log_file),
+                "start",
+                "--no-smee",
+            ]), patch("sys.stdout", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as cm:
+                    sidecar_cli.main()
+                self.assertEqual(cm.exception.code, 0)
+                mock_start.assert_called_once()
+                _, kwargs = mock_start.call_args
+                self.assertIn("--no-smee", kwargs["extra_args"])
+                self.assertNotIn("--smee-url", kwargs["extra_args"])
+
+    @patch.object(sidecar_cli, "ensure_sidecar_running")
+    def test_cli_ensure_no_smee(self, mock_ensure):
+        mock_ensure.return_value = (True, "Graviton sidecar running (PID 1234)")
+        with patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False):
+            with patch("sys.argv", [
+                "graviton-sidecar",
+                "--pid-file", str(self.pid_file),
+                "ensure",
+                "--no-smee",
+            ]), patch("sys.stdout", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as cm:
+                    sidecar_cli.main()
+                self.assertEqual(cm.exception.code, 0)
+                mock_ensure.assert_called_once()
+                _, kwargs = mock_ensure.call_args
+                self.assertIn("--no-smee", kwargs["extra_args"])
+                self.assertIsNone(kwargs["smee_url"])
+
+    @patch.object(sidecar_cli, "cmd_start")
+    @patch.object(sidecar_cli, "stop_sidecar")
+    def test_cli_restart_no_smee(self, mock_stop, mock_start):
+        mock_stop.return_value = (True, "Graviton sidecar stopped")
+        with patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False):
+            with patch("sys.argv", [
+                "graviton-sidecar",
+                "--pid-file", str(self.pid_file),
+                "restart",
+                "--no-smee",
+            ]):
+                sidecar_cli.main()
+                mock_stop.assert_called_once()
+                mock_start.assert_called_once()
+                args = mock_start.call_args[0][0]
+                self.assertTrue(args.no_smee)
 
     @patch.object(sidecar_cli, "stop_sidecar")
     def test_cli_stop(self, mock_stop):
