@@ -119,7 +119,7 @@ class TestStreamSession(unittest.TestCase):
             conv_id = session.start()
             self.assertEqual(conv_id, "test-conv-id")
 
-            cmd = mock_popen.call_args[0][0]
+            cmd = mock_popen.call_args_list[0][0][0]
             self.assertIn("/usr/bin/agy", cmd)
             self.assertIn("--input-format", cmd)
             self.assertIn("stream-json", cmd)

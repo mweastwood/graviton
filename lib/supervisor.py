@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -19,7 +20,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 logger = logging.getLogger("graviton.supervisor")
 
@@ -30,6 +31,8 @@ __all__ = [
     "SupervisorResult",
     "SupervisorTimeoutError",
     "clean_workspace_dir",
+    "extract_remote_control_url",
+    "get_remote_control_instance_name",
     "run_container_goal",
     "run_container_turn",
     "run_goal_turn",
@@ -37,6 +40,87 @@ __all__ = [
 ]
 
 _UNSET: Any = object()
+_CACHED_INSTANCE_NAME: Any = _UNSET
+
+
+def get_remote_control_instance_name() -> Optional[str]:
+    """Retrieve and cache the Antigravity instance name if available."""
+    global _CACHED_INSTANCE_NAME
+    if _CACHED_INSTANCE_NAME is not _UNSET:
+        return _CACHED_INSTANCE_NAME
+    env_instance = os.environ.get("ANTIGRAVITY_INSTANCE_NAME")
+    if env_instance:
+        _CACHED_INSTANCE_NAME = env_instance.strip()
+        return _CACHED_INSTANCE_NAME
+    agy_bin = shutil.which("agy") or "agy"
+    try:
+        res = subprocess.run(
+            [agy_bin, "remote-control", "status"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if res.returncode == 0 and res.stdout:
+            m = re.search(r"Instance name:\s*([^\s(]+)", res.stdout, re.IGNORECASE)
+            if m:
+                _CACHED_INSTANCE_NAME = m.group(1).strip()
+                return _CACHED_INSTANCE_NAME
+    except Exception:
+        pass
+    _CACHED_INSTANCE_NAME = None
+    return None
+
+
+def extract_remote_control_url(
+    event: Optional[Dict[str, Any]] = None,
+    stderr_lines: Optional[Union[str, Iterable[str]]] = None,
+    conversation_id: Optional[str] = None,
+    remote_control_enabled: bool = True,
+    instance_name: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Extract or synthesize a clickable Antigravity Remote Control URL.
+
+    Checks:
+    1. Direct fields in event dict (e.g. 'remote_control_url', 'remote_control.url', 'init.remote_control_url').
+    2. URL patterns in stderr or captured terminal output.
+    3. Canonical conversation URL fallback (https://antigravity.google.com/c/<conversation_id>) if remote control is enabled.
+    """
+    if event and isinstance(event, dict):
+        if event.get("remote_control_url"):
+            return str(event["remote_control_url"]).strip()
+        rc_obj = event.get("remote_control")
+        if isinstance(rc_obj, dict) and rc_obj.get("url"):
+            return str(rc_obj["url"]).strip()
+        init_obj = event.get("init")
+        if isinstance(init_obj, dict):
+            if init_obj.get("remote_control_url"):
+                return str(init_obj["remote_control_url"]).strip()
+            if init_obj.get("url"):
+                return str(init_obj["url"]).strip()
+            if init_obj.get("session_url"):
+                return str(init_obj["session_url"]).strip()
+
+    if stderr_lines:
+        if isinstance(stderr_lines, str):
+            lines = stderr_lines.splitlines()
+        else:
+            lines = stderr_lines
+        url_regex = re.compile(r"https://antigravity\.google\.com/[a-zA-Z0-9_\-/?&=#]+")
+        for line in lines:
+            if not line:
+                continue
+            match = url_regex.search(line)
+            if match:
+                return match.group(0).rstrip(".,;")
+
+    if remote_control_enabled and conversation_id and conversation_id.strip():
+        base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
+        inst = instance_name if instance_name is not None else get_remote_control_instance_name()
+        query_suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
+        return f"{base_url}/c/{conversation_id.strip()}{query_suffix}"
+
+    return None
 
 
 @dataclass
@@ -44,6 +128,7 @@ class SupervisorResult:
     """Represents the structured result of an agent turn."""
 
     conversation_id: Optional[str] = None
+    remote_control_url: Optional[str] = None
     status: str = "UNKNOWN"
     response: str = ""
     duration_seconds: float = 0.0
@@ -111,6 +196,7 @@ class StreamSession:
 
         self.proc: Optional[subprocess.Popen] = None
         self.conversation_id: Optional[str] = None
+        self.remote_control_url: Optional[str] = None
         self.init_data: Dict[str, Any] = {}
         self._is_closed = False
         self._stdout_queue: queue.Queue = queue.Queue(maxsize=0)
@@ -322,7 +408,18 @@ class StreamSession:
 
         self.conversation_id = event.get("conversation_id")
         self.init_data = event.get("init", {})
-        logger.info(f"StreamSession established successfully (conversation_id={self.conversation_id})")
+        self.remote_control_url = extract_remote_control_url(
+            event=event,
+            stderr_lines=self._stderr_lines,
+            conversation_id=self.conversation_id,
+            remote_control_enabled=self.remote_control,
+        )
+        if self.remote_control_url:
+            logger.info(
+                f"StreamSession established successfully (conversation_id={self.conversation_id}, remote_control_url={self.remote_control_url})"
+            )
+        else:
+            logger.info(f"StreamSession established successfully (conversation_id={self.conversation_id})")
         return self.conversation_id or ""
 
     def send_prompt(self, prompt: str) -> None:
@@ -383,6 +480,7 @@ class StreamSession:
 
         return SupervisorResult(
             conversation_id=self.conversation_id,
+            remote_control_url=self.remote_control_url,
             status=status,
             response=response,
             duration_seconds=float(duration),
@@ -496,6 +594,10 @@ class StreamSession:
             except json.JSONDecodeError as e:
                 logger.warning(f"Unparseable stream-json output line: {stripped} ({e})")
                 continue
+
+            if event.get("event") == "init":
+                if self.remote_control_url and not event.get("remote_control_url"):
+                    event["remote_control_url"] = self.remote_control_url
 
             events.append(event)
             if on_event:
@@ -911,6 +1013,7 @@ class ContainerSupervisor:
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
+        self.remote_control_url: Optional[str] = None
         self._workspace_prepared = False
         self._is_cleaned_up = False
 
@@ -1161,8 +1264,10 @@ class ContainerSupervisor:
             custom_command=docker_cmd,
             cwd=self.temp_workspace,
             env=dict(os.environ),
+            remote_control=self.remote_control,
         )
         self.conversation_id = self.session.start(timeout=timeout)
+        self.remote_control_url = getattr(self.session, "remote_control_url", None)
         return self.conversation_id or ""
 
     def send_prompt(self, prompt: str) -> None:
@@ -1199,7 +1304,11 @@ class ContainerSupervisor:
             extra["idle_timeout"] = idle_timeout
         if max_duration is not _UNSET:
             extra["max_duration"] = max_duration
-        return self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
+
+        res = self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
+        if not getattr(res, "remote_control_url", None) and self.remote_control_url:
+            res.remote_control_url = self.remote_control_url
+        return res
 
     def run_turn(
         self,

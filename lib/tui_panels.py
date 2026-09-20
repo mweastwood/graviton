@@ -527,13 +527,16 @@ def render_header_panel(
     elif active_screen == "logs":
         nav_hint = "Nav: [Esc] Main Screen"
     elif active_screen == "task_logs":
-        nav_hint = "Nav: [x] Abort Task │ [Esc] Main Screen │ [q] Quit"
+        nav_hint = "Nav: [x] Abort Task │ [o] Remote Control │ [Esc] Main Screen │ [q] Quit"
     elif active_screen == "gemini_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     elif active_screen == "third_party_models":
         nav_hint = "Nav: [↑/↓] Navigate │ [Space/Enter] Select Model │ [Esc] Main Screen"
     else:
-        nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
+        if inner_w >= 146:
+            nav_hint = "Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [o] Remote Control │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
+        else:
+            nav_hint = "Nav: [↑/↓] Select │ [p] Prioritize │ [o] Remote Control │ [x] Abort Task │ [Enter] Logs │ [j] Jobs │ [e] Logs │ [q] Quit"
 
     lines = [
         line1_raw,
@@ -1116,9 +1119,14 @@ def render_task_logs_panel(
     )
     prompt_str = getattr(task, "prompt", "")
     prompt_line = f"\033[2mPrompt: {prompt_str}\033[0m"
+    rc_url = getattr(task, "remote_control_url", None)
+    rc_line = f"Remote: \033[94m{rc_url}\033[0m" if rc_url else None
     sep_line = "\033[90m" + ("─" * inner_w) + "\033[0m"
 
-    content = [meta_line_1, meta_line_2, prompt_line, sep_line]
+    content = [meta_line_1, meta_line_2, prompt_line]
+    if rc_line:
+        content.append(rc_line)
+    content.append(sep_line)
 
     log_lines_to_show = list(logs) if logs else []
     if height is not None and height > 0:
