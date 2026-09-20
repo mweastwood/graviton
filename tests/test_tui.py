@@ -751,7 +751,12 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "main")
 
     def test_gemini_and_third_party_model_selection_screens(self):
-        quota = QuotaTracker()
+        quota = QuotaTracker(
+            available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium"],
+            available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+            active_gemini_model="gemini-3.6-flash-high",
+            active_third_party_model="claude-sonnet-4-6",
+        )
         manager = TaskManager(max_workers=2, quota_tracker=quota)
         dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
 

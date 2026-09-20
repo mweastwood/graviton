@@ -878,26 +878,31 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("/workspace", cmd)
 
             # SSH and gh mounts
-            self.assertIn(f"{ssh_dir.resolve()}:/root/.ssh:ro", cmd)
-            self.assertIn(f"{gh_dir.resolve()}:/root/.config/gh:ro", cmd)
+            container_home = sup.container_home
+            if sup.user:
+                self.assertIn("--user", cmd)
+                self.assertIn(sup.user, cmd)
+            self.assertIn(f"HOME={container_home}", cmd)
+            self.assertIn(f"{ssh_dir.resolve()}:{container_home}/.ssh:ro", cmd)
+            self.assertIn(f"{gh_dir.resolve()}:{container_home}/.config/gh:ro", cmd)
 
             # Antigravity CLI mount: directory mount and ro credentials/binaries
-            self.assertIn(f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli", cmd)
-            self.assertIn("/root/.gemini/antigravity-cli/scratch:rw,exec", cmd)
-            self.assertIn(f"{(cli_dir / 'bin').resolve()}:/root/.gemini/antigravity-cli/bin:ro", cmd)
-            self.assertIn("/root/.gemini/config:rw,exec", cmd)
-            self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
-            self.assertIn(f"{(cli_dir / 'token.json').resolve()}:/root/.gemini/antigravity-cli/token.json:ro", cmd)
-            self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
+            self.assertIn(f"{cli_dir.resolve()}:{container_home}/.gemini/antigravity-cli", cmd)
+            self.assertIn(f"{container_home}/.gemini/antigravity-cli/scratch:rw,exec", cmd)
+            self.assertIn(f"{(cli_dir / 'bin').resolve()}:{container_home}/.gemini/antigravity-cli/bin:ro", cmd)
+            self.assertIn(f"{container_home}/.gemini/config:rw,exec", cmd)
+            self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:{container_home}/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'token.json').resolve()}:{container_home}/.gemini/antigravity-cli/token.json:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:{container_home}/.gemini/antigravity-cli/settings.json:ro", cmd)
             # jetbox_summaries_proto.pb is writable so containerized agy can persist summary updates
-            self.assertNotIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
-            self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
-            self.assertIn(f"{projects_dir.resolve()}:/root/.gemini/config/projects:ro", cmd)
+            self.assertNotIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:{container_home}/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
+            self.assertIn(f"{config_file.resolve()}:{container_home}/.gemini/config/config.json:ro", cmd)
+            self.assertIn(f"{projects_dir.resolve()}:{container_home}/.gemini/config/projects:ro", cmd)
 
             # Skills mount and tmpfs mount order
-            self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
-            config_tmpfs_idx = cmd.index("/root/.gemini/config:rw,exec")
-            skills_mount_idx = cmd.index(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro")
+            self.assertIn(f"{skills_dir.resolve()}:{container_home}/.gemini/config/skills:ro", cmd)
+            config_tmpfs_idx = cmd.index(f"{container_home}/.gemini/config:rw,exec")
+            skills_mount_idx = cmd.index(f"{skills_dir.resolve()}:{container_home}/.gemini/config/skills:ro")
             self.assertLess(config_tmpfs_idx, skills_mount_idx)
 
             # Environment variables
@@ -964,8 +969,8 @@ class TestContainerSupervisor(unittest.TestCase):
         )
         sup.prepare_workspace()
         cmd = sup.build_docker_command()
-        self.assertIn(f"{(fake_repo / 'plugin' / 'skills').resolve()}:/root/.gemini/config/skills:ro", cmd)
-        self.assertIn(f"{(fake_repo / 'plugin' / 'agents').resolve()}:/root/.gemini/config/agents:ro", cmd)
+        self.assertIn(f"{(fake_repo / 'plugin' / 'skills').resolve()}:{sup.container_home}/.gemini/config/skills:ro", cmd)
+        self.assertIn(f"{(fake_repo / 'plugin' / 'agents').resolve()}:{sup.container_home}/.gemini/config/agents:ro", cmd)
 
     def test_build_docker_command_mounts_explicit_agents_dir(self):
         fake_agents = Path(self.tmp_dir.name) / "custom_agents"
@@ -978,7 +983,7 @@ class TestContainerSupervisor(unittest.TestCase):
         )
         sup.prepare_workspace()
         cmd = sup.build_docker_command()
-        self.assertIn(f"{fake_agents.resolve()}:/root/.gemini/config/agents:ro", cmd)
+        self.assertIn(f"{fake_agents.resolve()}:{sup.container_home}/.gemini/config/agents:ro", cmd)
 
     def test_start_and_lifecycle(self):
         sup = ContainerSupervisor(
