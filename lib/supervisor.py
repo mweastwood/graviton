@@ -1290,7 +1290,7 @@ def sync_conversation_to_agyhub(
         return False
 
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with sqlite3.connect(str(db_path), timeout=30.0) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT raw_summary, project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
@@ -1364,7 +1364,7 @@ def sync_conversation_to_agyhub(
         conv_db_path = c_dir / "conversations" / f"{cid}.db"
         if conv_db_path.exists():
             try:
-                with sqlite3.connect(str(conv_db_path)) as c_conn:
+                with sqlite3.connect(str(conv_db_path), timeout=30.0) as c_conn:
                     c_cur = c_conn.cursor()
                     c_cur.execute(
                         "UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'",
@@ -1387,7 +1387,7 @@ def sync_conversation_to_agyhub(
         updated_entries = [(cid, new_summary_bytes)] + filtered
         encoded_hub_data = _write_agyhub_entries(updated_entries)
 
-        tmp_path = hub_pb_path.with_name(f".{hub_pb_path.name}.tmp_{os.getpid()}")
+        tmp_path = hub_pb_path.with_name(f".{hub_pb_path.name}.tmp_{uuid.uuid4().hex}")
         tmp_path.write_bytes(encoded_hub_data)
         try:
             tmp_path.chmod(0o600)
