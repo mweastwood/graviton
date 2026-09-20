@@ -864,8 +864,8 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn(f"{ssh_dir.resolve()}:/root/.ssh:ro", cmd)
             self.assertIn(f"{gh_dir.resolve()}:/root/.config/gh:ro", cmd)
 
-            # Antigravity CLI isolation: tmpfs and ro credentials
-            self.assertIn("/root/.gemini/antigravity-cli:rw,exec", cmd)
+            # Antigravity CLI mount: directory mount and ro credentials
+            self.assertIn(f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli", cmd)
             self.assertIn("/root/.gemini/config:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
             self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
