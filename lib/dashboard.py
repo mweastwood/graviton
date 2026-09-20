@@ -126,15 +126,57 @@ def format_dashboard_markdown(
         "| :--- | :--- | :--- |",
     ])
 
-    pool = quota_info.get("current_pool", "default")
-    model = quota_info.get("selected_model") or (quota_tracker.get_selected_model() if quota_tracker else "default")
-    gemini_rem = quota_info.get("gemini_remaining_percentage", "N/A")
-    tp_rem = quota_info.get("third_party_remaining_percentage", "N/A")
+    pool = (
+        quota_info.get("quota_pool")
+        or quota_info.get("current_pool")
+        or (getattr(quota_tracker, "quota_pool", None) if quota_tracker else None)
+        or "default"
+    )
+
+    model = quota_info.get("selected_model") or quota_info.get("active_model")
+    if not model and quota_tracker:
+        if hasattr(quota_tracker, "get_active_model"):
+            try:
+                model = quota_tracker.get_active_model(pool)
+            except Exception:
+                try:
+                    model = quota_tracker.get_active_model()
+                except Exception:
+                    pass
+        elif hasattr(quota_tracker, "get_selected_model"):
+            try:
+                model = quota_tracker.get_selected_model()
+            except Exception:
+                pass
+    if not model:
+        model = "default"
+
+    gemini_rem = quota_info.get("gemini_remaining_percentage")
+    if gemini_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
+        try:
+            gemini_rem = quota_tracker.get_pool_remaining_percentage("gemini")
+        except Exception:
+            pass
+    if gemini_rem is None:
+        gemini_rem = quota_info.get("remaining_percentage", "N/A")
+
+    tp_rem = quota_info.get("third_party_remaining_percentage")
+    if tp_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
+        try:
+            tp_rem = quota_tracker.get_pool_remaining_percentage("claude")
+        except Exception:
+            pass
+    if tp_rem is None:
+        tp_rem = "N/A"
+
+    gemini_disp = f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem)
+    tp_disp = f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem)
+
     lines.extend([
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
         f"| **Active Model** | `{model}` | Active Gemini / LLM persona |",
-        f"| **Gemini Remaining** | `{gemini_rem}%` | Live Gemini API capacity |",
-        f"| **Third-Party Remaining** | `{tp_rem}%` | Fallback model capacity |",
+        f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |",
+        f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |",
         "",
         "---",
         "",

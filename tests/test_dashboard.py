@@ -17,11 +17,21 @@ from lib.dashboard import (
     format_duration,
     render_dashboard_html,
 )
+from lib.quota import QuotaTracker
 from lib.tasks import Task, TaskStatus
 
 
 class TestDashboardFormatting(unittest.TestCase):
     """Test duration and markdown formatting functions."""
+
+    def setUp(self):
+        super().setUp()
+        self._models_patcher = patch(
+            "lib.quota.fetch_cli_models",
+            return_value=(["gemini-3.6-flash-high"], ["claude-sonnet-4-6"]),
+        )
+        self._models_patcher.start()
+        self.addCleanup(self._models_patcher.stop)
 
     def test_format_duration(self):
         self.assertEqual(format_duration(None), "0s")
@@ -70,6 +80,24 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("*Queue is empty.*", md)
         self.assertIn("| **Active Pool** | `gemini` |", md)
         self.assertIn("| **Gemini Remaining** | `95%` |", md)
+
+    def test_format_dashboard_markdown_with_real_quota_tracker(self):
+        tracker = QuotaTracker()
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertIn("| **Active Pool** | `gemini` |", md)
+        self.assertIn("| **Active Model** | `gemini-3.6-flash-high` |", md)
+        self.assertIn("| **Gemini Remaining** | `100.0%` |", md)
+        self.assertIn("| **Third-Party Remaining** | `100.0%` |", md)
+
+        # Test active model override and pool switching
+        tracker.set_active_model("gemini", "gemini-2.5-pro")
+        md2 = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertIn("| **Active Model** | `gemini-2.5-pro` |", md2)
+
+        tracker.quota_pool = "claude"
+        md3 = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertIn("| **Active Pool** | `claude` |", md3)
+        self.assertIn("| **Active Model** | `claude-sonnet-4-6` |", md3)
 
     def test_format_dashboard_markdown_with_tasks_and_remote_control(self):
         mock_tm = MagicMock()
