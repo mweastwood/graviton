@@ -119,6 +119,7 @@ Type `/graviton` in the Antigravity chat to query status, inspect tasks, or subm
 
 ### MCP Tools
 When running as an MCP server, Graviton exposes the following tools:
+- `graviton_dashboard`: Generate live formatted markdown dashboard and register an Antigravity artifact path for continuous real-time server updates.
 - `graviton_status`: Check health, worker count, queue depth, and model quota pacing.
 - `graviton_list_tasks`: List active, queued, and completed tasks with live Remote Control URLs.
 - `graviton_get_task`: Retrieve real-time streaming thoughts, tool calls, and logs for a specific task.
@@ -128,33 +129,35 @@ When running as an MCP server, Graviton exposes the following tools:
 
 ---
 
-## 🖥️ Terminal Dashboard (TUI)
+## 🌌 Live Dashboard (Antigravity Side Panel & Web)
 
-Graviton includes an interactive split-pane dashboard:
+Graviton provides an autonomous live dashboard that is automatically kept up to date by the server on disk:
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ GRAVITON SERVER DASHBOARD ⚡                         [ HOT-RELOAD: IDLE ] │
-│ Host: 0.0.0.0:8000 │ Branch: main │ Commit: 6b07eaa │ Uptime: 01:23:45       │
-│ Nav: [g] Gemini │ [c] Claude │ [↑/↓] Select │ [p] Prioritize │ [x] Abort ... │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+1. **Antigravity Side Panel (Auxiliary Pane)**:
+   - Run `/graviton dashboard` or call `graviton_dashboard(artifact_path="<artifact_path>")`.
+   - The Graviton server registers the artifact file on disk and automatically re-writes it in real-time as tasks progress, step, or finish.
+   - Antigravity's file-watcher instantly live-refreshes the side panel with zero manual reloading required!
+2. **Standalone Web Dashboard**:
+   - Access `http://localhost:8000/dashboard` in any web browser for a responsive, dark-mode real-time view with auto-refreshing task metrics and model pacing.
 
-### Hotkeys:
-- **`o` / `O`**: Open the selected task's **Antigravity Remote Control** live session in your browser.
-- **`Enter`**: Open dedicated task log viewer panel.
-- **`x` / `X`**: Abort the focused active or queued task.
-- **`p` / `P`**: Prioritize the selected queued task.
-- **`g` / `c`**: Switch active quota pool between Gemini and Claude/GPT.
-- **`j`**: Toggle Scheduled Jobs view.
-- **`e`**: Toggle Server Logs view.
-- **`q`**: Quit dashboard (draining active workers gracefully).
+---
+
+## 🖥️ Legacy Terminal Dashboard (TUI) & Headless Server
+
+`bin/graviton-server.py` now runs in **headless daemon mode by default**, making it ideal for background sidecars and containerized deployment.
+
+The curses-based Terminal Dashboard is deprecated:
+- To run the legacy console UI, pass the `--tui` flag:
+  ```bash
+  python3 bin/graviton-server.py --tui
+  ```
 
 ---
 
 ## ⚠️ Deprecation Notice
 
 - **`bin/run_agent_container.sh`** and the legacy one-shot runner in `lib/runner.py` are deprecated.
+- **Terminal UI (`--tui`)** is deprecated in favor of the Graviton Antigravity plugin, live side panel artifact, and web dashboard.
 - All container executions default to the programmatic `lib.supervisor.ContainerSupervisor` using the NDJSON stream protocol (`--input-format stream-json --output-format stream-json`).
 - If you must temporarily run without supervisor, pass `--no-supervisor` (deprecated).
 

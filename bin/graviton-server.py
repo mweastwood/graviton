@@ -45,6 +45,7 @@ from lib.release import (
     post_release_unrecognized_async,
     resolve_repo_dir,
 )
+from lib.dashboard import DashboardUpdater, format_dashboard_markdown, render_dashboard_html
 
 
 _is_shutting_down = False
@@ -155,6 +156,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     task_manager: Optional[TaskManager] = None
     pr_tracker: Optional[PRTracker] = None
     quota_tracker: Optional[QuotaTracker] = None
+    dashboard_updater: Optional[DashboardUpdater] = None
     listener_proc: Optional[subprocess.Popen] = None
     use_supervisor: bool = False
 
@@ -216,6 +218,22 @@ class GravitonHandler(BaseHTTPRequestHandler):
             task_dict = task.to_dict()
             task_dict["logs"] = task.get_logs(limit=200)
             self._send_json(200, task_dict)
+        elif path_clean == "/dashboard":
+            markdown_content = self.dashboard_updater.update_now() if self.dashboard_updater else format_dashboard_markdown(
+                task_manager=self.task_manager,
+                quota_tracker=self.quota_tracker,
+                scheduler=self.scheduler,
+            )
+            html_page = render_dashboard_html(markdown_content)
+            self._send_html(200, html_page)
+        elif path_clean in ("/dashboard/content", "/dashboard/markdown"):
+            markdown_content = self.dashboard_updater.update_now() if self.dashboard_updater else format_dashboard_markdown(
+                task_manager=self.task_manager,
+                quota_tracker=self.quota_tracker,
+                scheduler=self.scheduler,
+            )
+            targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
+            self._send_json(200, {"markdown": markdown_content, "targets": targets})
         else:
             self._send_json(404, {"error": "Not Found"})
 
@@ -252,6 +270,8 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     repo_name=data.get("repo_name"),
                     clone_url=data.get("clone_url"),
                 )
+                if self.dashboard_updater:
+                    self.dashboard_updater.trigger_update()
                 self._send_json(200, {"status": "submitted", "task_id": task.id})
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
@@ -267,9 +287,53 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 return
             success = self.task_manager.abort_task(task_id)
             if success:
+                if self.dashboard_updater:
+                    self.dashboard_updater.trigger_update()
                 self._send_json(200, {"status": "aborted", "task_id": task_id})
             else:
                 self._send_json(404, {"error": f"Task '{task_id}' could not be aborted"})
+            return
+
+        if path_clean == "/dashboard/register":
+            try:
+                data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+            except Exception:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+            target_path = data.get("path")
+            if not target_path:
+                self._send_json(400, {"error": "Missing required 'path' field"})
+                return
+            if not self.dashboard_updater:
+                self._send_json(503, {"error": "DashboardUpdater not initialized"})
+                return
+            self.dashboard_updater.register_target(target_path)
+            self._send_json(200, {
+                "status": "ok",
+                "registered": str(Path(target_path).resolve()),
+                "targets": self.dashboard_updater.get_targets(),
+            })
+            return
+
+        if path_clean == "/dashboard/unregister":
+            try:
+                data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+            except Exception:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+            target_path = data.get("path")
+            if not target_path:
+                self._send_json(400, {"error": "Missing required 'path' field"})
+                return
+            if not self.dashboard_updater:
+                self._send_json(503, {"error": "DashboardUpdater not initialized"})
+                return
+            self.dashboard_updater.unregister_target(target_path)
+            self._send_json(200, {
+                "status": "ok",
+                "unregistered": str(Path(target_path).resolve()),
+                "targets": self.dashboard_updater.get_targets(),
+            })
             return
 
         # Verify HMAC signature if secret is configured
@@ -558,6 +622,12 @@ class GravitonHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2).encode("utf-8"))
 
+    def _send_html(self, status_code: int, html_content: str):
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html_content.encode("utf-8"))
+
     def log_message(self, format, *args):
         """Suppress default HTTP log formatting to use our logger."""
         logger.debug("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
@@ -616,13 +686,26 @@ def main():
         default=os.getenv("GRAVITON_POST_START_COMMENT", "").lower() in ("1", "true", "yes"),
         help="Post an initial progress comment with live remote control link to GitHub issue/PR upon supervisor task start",
     )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        default=os.getenv("GRAVITON_ENABLE_TUI", "false").lower() in ("1", "true", "yes"),
+        help="[DEPRECATED] Run interactive curses Terminal UI dashboard (default: False, env: GRAVITON_ENABLE_TUI)",
+    )
+    parser.add_argument(
+        "--dashboard-target",
+        action="append",
+        default=[],
+        help="Optional file path to continuously update with live dashboard markdown (can specify multiple times)",
+    )
     args = parser.parse_args()
 
-    # Strip any console StreamHandler from root logger to prevent early startup logs from leaking to terminal during hot reload
-    _root = logging.getLogger()
-    for _h in list(_root.handlers):
-        if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
-            _root.removeHandler(_h)
+    # Strip console StreamHandler ONLY if running interactive curses TUI
+    if getattr(args, "tui", False):
+        _root = logging.getLogger()
+        for _h in list(_root.handlers):
+            if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
+                _root.removeHandler(_h)
 
     repos_dir = Path(args.repos_dir).expanduser().resolve()
     GravitonHandler.secret = args.secret
@@ -648,6 +731,7 @@ def main():
 
     scheduler = None
     dashboard = None
+    dashboard_updater = None
     task_manager = None
     httpd = None
     shutdown_thread: Optional[threading.Thread] = None
@@ -727,28 +811,89 @@ def main():
             except (ValueError, TypeError, AttributeError):
                 pass
 
-        # Right before dashboard.start(), strip root StreamHandler
-        _root = logging.getLogger()
-        for _h in list(_root.handlers):
-            if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
-                _root.removeHandler(_h)
-
-        dashboard = TerminalDashboard(
+        # Always initialize and start the background DashboardUpdater for live artifacts/web
+        dashboard_updater = DashboardUpdater(
             task_manager=task_manager,
+            quota_tracker=quota_tracker,
+            scheduler=scheduler,
             host=args.host,
             port=args.port,
-            repo_root=REPO_ROOT,
-            scheduler=scheduler,
-            pr_tracker=pr_tracker,
-            quota_tracker=quota_tracker,
-            quit_grace_period=args.quit_grace_period,
-            httpd=httpd,
         )
-        dashboard.start()
+        for target_path in args.dashboard_target:
+            dashboard_updater.register_target(target_path)
+        dashboard_updater.start()
+        GravitonHandler.dashboard_updater = dashboard_updater
+
+        # Hook task lifecycle events into dashboard_updater
+        orig_on_init = getattr(task_manager, "on_task_init", None)
+        orig_on_result = getattr(task_manager, "on_task_result", None)
+        orig_on_thought = getattr(task_manager, "on_task_thought", None)
+        orig_on_tool = getattr(task_manager, "on_task_tool_call", None)
+
+        def _hook_init(task):
+            if orig_on_init:
+                try:
+                    orig_on_init(task)
+                except Exception:
+                    pass
+            dashboard_updater.trigger_update()
+
+        def _hook_result(task):
+            if orig_on_result:
+                try:
+                    orig_on_result(task)
+                except Exception:
+                    pass
+            dashboard_updater.trigger_update()
+
+        def _hook_thought(task, thought):
+            if orig_on_thought:
+                try:
+                    orig_on_thought(task, thought)
+                except Exception:
+                    pass
+            dashboard_updater.trigger_update()
+
+        def _hook_tool(task, tool):
+            if orig_on_tool:
+                try:
+                    orig_on_tool(task, tool)
+                except Exception:
+                    pass
+            dashboard_updater.trigger_update()
+
+        task_manager.on_task_init = _hook_init
+        task_manager.on_task_result = _hook_result
+        task_manager.on_task_thought = _hook_thought
+        task_manager.on_task_tool_call = _hook_tool
+
+        if args.tui:
+            logger.warning("[DEPRECATED] Terminal UI (--tui) is deprecated. Use the Graviton Antigravity plugin and live dashboard.")
+            # Right before dashboard.start(), strip root StreamHandler
+            _root = logging.getLogger()
+            for _h in list(_root.handlers):
+                if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
+                    _root.removeHandler(_h)
+
+            dashboard = TerminalDashboard(
+                task_manager=task_manager,
+                host=args.host,
+                port=args.port,
+                repo_root=REPO_ROOT,
+                scheduler=scheduler,
+                pr_tracker=pr_tracker,
+                quota_tracker=quota_tracker,
+                quit_grace_period=args.quit_grace_period,
+                httpd=httpd,
+            )
+            dashboard.start()
+            logger.info("Live Terminal UI Dashboard ENABLED.")
+        else:
+            dashboard = None
+            logger.info("Graviton Webhook Server running in headless daemon mode.")
 
         logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
         logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
-        logger.info("Live Terminal UI Dashboard ENABLED.")
 
         try:
             httpd.serve_forever()
@@ -756,6 +901,11 @@ def main():
             logger.info("Stopping Graviton Webhook Server...")
     finally:
         stop_smee_listener(listener_proc)
+        if dashboard_updater:
+            try:
+                dashboard_updater.stop()
+            except Exception:
+                pass
         st = shutdown_thread or (getattr(dashboard, "_shutdown_thread", None) if dashboard else None) or _shutdown_thread
         if st and st.is_alive() and st != threading.current_thread():
             st.join()

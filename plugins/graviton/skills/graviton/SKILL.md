@@ -9,22 +9,28 @@ This skill allows you to monitor and control Graviton—an autonomous GitHub web
 
 ## Common Operations
 
-### 1. Check Status
-Check server health, worker status, and quota pacing:
+### 1. Open Live Dashboard in Side Panel
+Open the live dashboard in Antigravity's Auxiliary Pane with automatic server-driven updates:
+- Call `graviton_dashboard(artifact_path="<artifact_directory>/graviton_dashboard.md")`
+- Use `write_to_file` to write the initial content to `<artifact_directory>/graviton_dashboard.md` with `UserFacing=True`
+- The Graviton server will continuously update this artifact file on disk whenever tasks start, step, or finish.
+
+### 2. Check Quick Status
+Check server health, worker status, and quota pacing directly in chat:
 - Call `graviton_status()`
 
-### 2. View Active and Queued Tasks
+### 3. View Active and Queued Tasks
 List running, pending, and recently completed tasks:
 - Call `graviton_list_tasks(limit=20)`
 
-### 3. Inspect a Specific Task
+### 4. Inspect a Specific Task
 Examine model thoughts, tool calls, and output logs for a task ID:
 - Call `graviton_get_task(task_id="task-1")`
 
-### 4. Trigger a PR Review
+### 5. Trigger a PR Review
 Submit a pull request to be reviewed autonomously inside an isolated Docker container:
 - Call `graviton_submit_review(repo_full_name="owner/repo", pr_number=123)`
 
-### 5. Abort a Task
+### 6. Abort a Task
 Cancel a running or queued task:
 - Call `graviton_abort_task(task_id="task-1")`

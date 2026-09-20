@@ -3,6 +3,7 @@
 When the Graviton plugin is active, you have direct programmatic control over the Graviton autonomous webhook server and ContainerSupervisor runtime via MCP tools.
 
 ## Available MCP Tools
+- `graviton_dashboard`: Retrieve live formatted markdown dashboard and register an Antigravity artifact path for continuous real-time server updates.
 - `graviton_status`: Check server health, active worker count, pending queue items, and model quota pacing.
 - `graviton_list_tasks`: List currently running tasks, queued tasks, and recent task execution history.
 - `graviton_get_task`: Retrieve real-time streaming thoughts, tool calls, status, and trailing logs for a specific task.
@@ -11,5 +12,5 @@ When the Graviton plugin is active, you have direct programmatic control over th
 - `graviton_abort_task`: Cancel an active or queued task.
 
 ## Usage Guidelines
-- When the user asks about the background reviewer, task queue, or server health, prefer calling `graviton_status` or `graviton_list_tasks`.
+- When the user asks for "dashboard", "status", "overview", or asks to monitor Graviton, call `graviton_dashboard(artifact_path="<artifactDir>/graviton_dashboard.md")` and create the artifact with `write_to_file`. The Graviton server will automatically keep it updated on disk in real time.
 - When investigating a specific failure or review run, use `graviton_get_task` with the relevant task ID to inspect its thinking steps and tool executions.
