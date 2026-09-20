@@ -15,6 +15,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import threading
 import time
@@ -1077,6 +1078,9 @@ def find_project_for_repo(
     if explicit_pref:
         return match_by_repo
 
+    if match_by_repo:
+        return match_by_repo
+
     if match_default_worker:
         return match_default_worker
 
@@ -1084,9 +1088,6 @@ def find_project_for_repo(
     default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
     if projects_dir.resolve() == default_sys_dir:
         return ensure_default_project(projects_dir, repo_path, DEFAULT_PROJECT_NAME)
-
-    if match_by_repo:
-        return match_by_repo
 
     return None
 
@@ -1157,8 +1158,17 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) 
     elif wire_type == 2:
         b_data = data.encode("utf-8") if isinstance(data, str) else data
         return _encode_varint(tag) + _encode_varint(len(b_data)) + b_data
-    elif wire_type in (1, 5):
-        b_data = data.encode("utf-8") if isinstance(data, str) else data
+    elif wire_type == 1:
+        if isinstance(data, int):
+            b_data = struct.pack("<q", data)
+        else:
+            b_data = data.encode("utf-8") if isinstance(data, str) else data
+        return _encode_varint(tag) + b_data
+    elif wire_type == 5:
+        if isinstance(data, int):
+            b_data = struct.pack("<i", data)
+        else:
+            b_data = data.encode("utf-8") if isinstance(data, str) else data
         return _encode_varint(tag) + b_data
     raise ValueError(f"Unsupported wire type {wire_type}")
 
@@ -1738,7 +1748,7 @@ class ContainerSupervisor:
                 inner_cmd.extend(["--agent", self.agent_name])
             if target_model:
                 inner_cmd.extend(["--model", target_model])
-            if self.project_id and "--project" not in (self.extra_args or []):
+            if self.project_id and not any(arg == "--project" or arg.startswith("--project=") for arg in (self.extra_args or [])):
                 inner_cmd.extend(["--project", self.project_id])
             if self.extra_args:
                 inner_cmd.extend(self.extra_args)

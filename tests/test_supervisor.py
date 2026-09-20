@@ -1274,9 +1274,19 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         self.assertEqual(gw_pname, "Graviton Workers")
         self.assertTrue((self.projects_dir / f"{gw_pid}.json").exists())
 
-        # Now find_project_for_repo should prefer Graviton Workers even if repo is matched
+        # Repo-specific match is preferred over generic default worker project
         self.assertEqual(
             find_project_for_repo(self.repo_dir, config_dir=self.projects_dir),
+            ("project-alpha", "Project Alpha"),
+        )
+        # Specifying preferred_name_or_id="Graviton Workers" matches Graviton Workers
+        self.assertEqual(
+            find_project_for_repo(self.repo_dir, config_dir=self.projects_dir, preferred_name_or_id=DEFAULT_PROJECT_NAME),
+            (gw_pid, "Graviton Workers"),
+        )
+        # Unmapped repos fall back to Graviton Workers
+        self.assertEqual(
+            find_project_for_repo(other, config_dir=self.projects_dir),
             (gw_pid, "Graviton Workers"),
         )
 
