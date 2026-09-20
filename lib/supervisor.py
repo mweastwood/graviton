@@ -989,6 +989,24 @@ def ensure_default_project(
             p_name = str(data.get("name") or "")
             p_id = str(data.get("id") or p.stem)
             if p_name.strip().lower() == name.lower() or p_id == name:
+                if repo_path:
+                    res_list = data.setdefault("projectResources", {}).setdefault("resources", [])
+                    target_uri = f"file://{repo_path.resolve()}"
+                    has_uri = any(
+                        r.get("folderUri") == target_uri or r.get("gitFolder", {}).get("folderUri") == target_uri
+                        for r in res_list
+                    )
+                    if not has_uri:
+                        res_list.append({
+                            "gitFolder": {
+                                "folderUri": target_uri,
+                                "defaultBranch": "main",
+                            }
+                        })
+                        try:
+                            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                        except Exception:
+                            pass
                 return (p_id, p_name)
         except Exception:
             continue
@@ -1856,9 +1874,9 @@ class ContainerSupervisor:
         def _intercept_event(evt: Dict[str, Any]) -> None:
             nonlocal has_synced_stream
             if not has_synced_stream and evt.get("event") == "step_update":
-                has_synced_stream = True
                 try:
-                    self.sync_agyhub()
+                    if self.sync_agyhub():
+                        has_synced_stream = True
                 except Exception as sync_err:
                     logger.debug(f"Failed initial streaming agyhub sync: {sync_err}")
             if on_event:
