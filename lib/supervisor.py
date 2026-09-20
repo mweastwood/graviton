@@ -1162,12 +1162,12 @@ class ContainerSupervisor:
         if gh_config.is_dir():
             cmd.extend(["-v", f"{gh_config.resolve()}:/root/.config/gh:ro"])
 
-        # Secure Antigravity CLI mount: tmpfs overlay for cache/conversations/brain/db
-        # and read-only mounts for credentials
+        # Mount Antigravity CLI directory to persist conversations, summaries, and brain
+        # while keeping credential files read-only
         cli_dir = Path.home() / ".gemini" / "antigravity-cli"
         if cli_dir.is_dir():
             cmd.extend([
-                "--tmpfs", "/root/.gemini/antigravity-cli:rw,exec",
+                "-v", f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli",
                 "--tmpfs", "/root/.gemini/config:rw,exec",
             ])
             for cred_file in [
