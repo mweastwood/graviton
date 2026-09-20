@@ -2798,6 +2798,56 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         if expected_agents.is_dir():
             self.assertEqual(manager.agents_dir, expected_agents)
 
+    def test_task_manager_passes_skills_dir_to_supervisor(self):
+        created_supervisors = []
+
+        class RecordingSupervisor:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.conversation_id = "test-conv-skills"
+                created_supervisors.append(self)
+
+            def start(self):
+                pass
+
+            def cleanup(self):
+                pass
+
+            def run_goal(self, goal, **kwargs):
+                from lib.supervisor import SupervisorResult
+                return SupervisorResult(status="SUCCESS", response="Done", conversation_id=self.conversation_id)
+
+        custom_skills = self.tmp_path / "custom_skills"
+        custom_skills.mkdir()
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=RecordingSupervisor,
+            skills_dir=custom_skills,
+        )
+        manager.start()
+        submitted_task = manager.submit_task(
+            agent="code_reviewer",
+            prompt="Review PR #1",
+            target="1",
+            goal_prompt="Review PR #1",
+        )
+        manager.wait_for_task(submitted_task.id, timeout=5.0)
+        manager.stop(wait=False)
+
+        self.assertEqual(len(created_supervisors), 1)
+        self.assertEqual(created_supervisors[0].kwargs.get("skills_dir"), custom_skills.resolve())
+
+    def test_task_manager_default_skills_dir_resolution(self):
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+        )
+        expected_skills = (REPO_ROOT / "plugin" / "skills").resolve()
+        if expected_skills.is_dir():
+            self.assertEqual(manager.skills_dir, expected_skills)
+
 
 if __name__ == "__main__":
     unittest.main()

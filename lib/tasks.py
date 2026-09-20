@@ -530,7 +530,11 @@ class TaskManager:
         self.post_start_comment = post_start_comment
         self.idle_timeout = idle_timeout
         self.max_duration = max_duration
-        self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
+        if skills_dir:
+            self.skills_dir = Path(skills_dir).resolve()
+        else:
+            default_skills = REPO_ROOT / "plugin" / "skills"
+            self.skills_dir = default_skills.resolve() if default_skills.is_dir() else None
         if agents_dir:
             self.agents_dir = Path(agents_dir).resolve()
         else:

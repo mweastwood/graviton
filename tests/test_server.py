@@ -1373,6 +1373,28 @@ class TestGravitonHandler(unittest.TestCase):
         _, kwargs = mock_tm.call_args
         self.assertEqual(kwargs.get("agents_dir"), custom_agents)
 
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_accepts_skills_dir_cli_arg(
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        custom_skills = "/tmp/custom_skills"
+        with patch("sys.argv", ["graviton-server.py", "--skills-dir", custom_skills]):
+            server_mod.main()
+
+        _, kwargs = mock_tm.call_args
+        self.assertEqual(kwargs.get("skills_dir"), custom_skills)
+
     def test_graceful_shutdown_persists_model_selection_state(self):
         mock_tm = MagicMock()
         mock_sched = MagicMock()
