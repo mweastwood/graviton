@@ -817,7 +817,12 @@ class TestContainerSupervisor(unittest.TestCase):
         (cli_dir / "token.json").write_text("fake-json-token")
         (cli_dir / "settings.json").write_text("{}")
         (cli_dir / "jetbox_summaries_proto.pb").write_text("fake-proto")
+        (cli_dir / "installation_id").write_text("fake-id")
+        (cli_dir / "antigravity_state.pbtxt").write_text("fake-state")
+        (cli_dir / "jetski_state.pbtxt").write_text("fake-jetski")
         (cli_dir / "bin").mkdir(parents=True, exist_ok=True)
+        (cli_dir / "builtin").mkdir(parents=True, exist_ok=True)
+        (cli_dir / "updater").mkdir(parents=True, exist_ok=True)
 
         gemini_config_dir = home_mock / ".gemini" / "config"
         gemini_config_dir.mkdir(parents=True)
@@ -871,11 +876,16 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn(f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli", cmd)
             self.assertIn("/root/.gemini/antigravity-cli/scratch:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'bin').resolve()}:/root/.gemini/antigravity-cli/bin:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'builtin').resolve()}:/root/.gemini/antigravity-cli/builtin:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'updater').resolve()}:/root/.gemini/antigravity-cli/updater:ro", cmd)
             self.assertIn("/root/.gemini/config:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
             self.assertIn(f"{(cli_dir / 'token.json').resolve()}:/root/.gemini/antigravity-cli/token.json:ro", cmd)
             self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
             self.assertIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'installation_id').resolve()}:/root/.gemini/antigravity-cli/installation_id:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'antigravity_state.pbtxt').resolve()}:/root/.gemini/antigravity-cli/antigravity_state.pbtxt:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'jetski_state.pbtxt').resolve()}:/root/.gemini/antigravity-cli/jetski_state.pbtxt:ro", cmd)
             self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
 
             # Skills mount and tmpfs mount order
@@ -907,6 +917,27 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("--model", cmd)
             self.assertIn("claude-3-sonnet", cmd)
             self.assertIn("--verbose", cmd)
+
+    def test_build_docker_command_antigravity_cli_absent(self):
+        """Verify build_docker_command omits antigravity-cli mounts when directory is absent."""
+        home_mock = Path(self.tmp_dir.name) / "empty_home"
+        home_mock.mkdir(parents=True)
+
+        with patch("pathlib.Path.home", return_value=home_mock):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                agent_name="tester",
+                run_id="cmd_test_absent",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+
+            # Config tmpfs must still be present
+            self.assertIn("/root/.gemini/config:rw,exec", cmd)
+            # antigravity-cli directory and scratch tmpfs should NOT be present
+            cli_mounts = [arg for arg in cmd if "/root/.gemini/antigravity-cli" in arg]
+            self.assertEqual(cli_mounts, [])
 
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
         """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""
