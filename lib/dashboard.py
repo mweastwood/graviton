@@ -431,15 +431,19 @@ class DashboardUpdater:
             self._thread.join(timeout=3.0)
         logger.info("Graviton DashboardUpdater stopped.")
 
-    def update_now(self) -> Optional[str]:
-        """Generate current markdown content and write to all registered targets."""
-        content = format_dashboard_markdown(
+    def get_markdown(self) -> str:
+        """Generate and return current markdown content without writing to targets."""
+        return format_dashboard_markdown(
             task_manager=self.task_manager,
             quota_tracker=self.quota_tracker,
             scheduler=self.scheduler,
             host=self.host,
             port=self.port,
         )
+
+    def update_now(self) -> Optional[str]:
+        """Generate current markdown content and write to all registered targets."""
+        content = self.get_markdown()
 
         with self._lock:
             targets = list(self._targets)
@@ -452,14 +456,21 @@ class DashboardUpdater:
 
     def _write_to_target(self, target: Path, content: str) -> bool:
         """Atomically write markdown content to a target file path."""
+        tmp_path: Optional[Path] = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = target.with_suffix(f"{target.suffix}.tmp.{os.getpid()}")
+            tmp_path = target.with_suffix(f"{target.suffix}.tmp.{os.getpid()}.{threading.get_ident()}")
             tmp_path.write_text(content, encoding="utf-8")
             tmp_path.replace(target)
             return True
         except Exception as e:
             logger.warning(f"Failed writing live dashboard to {target}: {e}")
+            if tmp_path is not None:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
             return False
 
     def _run_loop(self) -> None:

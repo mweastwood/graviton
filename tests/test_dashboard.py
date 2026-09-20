@@ -3,7 +3,9 @@
 Unit tests for Graviton Live Dashboard Generator and Auto-Updater (lib/dashboard.py).
 """
 
+import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -208,6 +210,55 @@ class TestDashboardUpdater(unittest.TestCase):
         self.assertFalse(updater._running)
         self.assertTrue(target.exists())
         self.assertIn("# 🌌 Graviton Live Dashboard", target.read_text(encoding="utf-8"))
+
+    def test_get_markdown_does_not_write_to_targets(self):
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 0, "max_workers": 1}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+
+        updater = DashboardUpdater(task_manager=mock_tm, host="127.0.0.1", port=8000)
+        target = self.dir_path / "read_only_dashboard.md"
+        updater.register_target(target)
+
+        content = updater.get_markdown()
+        self.assertIsNotNone(content)
+        self.assertIn("# 🌌 Graviton Live Dashboard", content)
+        # Verify read-only get_markdown did NOT write to target file on disk
+        self.assertFalse(target.exists())
+
+    def test_write_to_target_temp_file_cleanup_on_failure(self):
+        updater = DashboardUpdater(host="127.0.0.1", port=8000)
+        target = self.dir_path / "fail_dashboard.md"
+
+        with patch.object(Path, "replace", side_effect=OSError("Disk full or permission denied")):
+            result = updater._write_to_target(target, "# Failed Write Content")
+            self.assertFalse(result)
+
+        # Target should not exist
+        self.assertFalse(target.exists())
+        # Any temporary files matching the pattern should have been unlinked/cleaned up
+        tmp_files = list(self.dir_path.glob("fail_dashboard.md.tmp.*"))
+        self.assertEqual(tmp_files, [])
+
+    def test_write_to_target_includes_pid_and_thread_id(self):
+        updater = DashboardUpdater(host="127.0.0.1", port=8000)
+        target = self.dir_path / "ident_dashboard.md"
+
+        captured_tmp = []
+
+        def mock_replace(src_path, dest_path):
+            captured_tmp.append(str(src_path))
+            return dest_path
+
+        with patch.object(Path, "replace", autospec=True, side_effect=mock_replace):
+            result = updater._write_to_target(target, "# Ident Content")
+            self.assertTrue(result)
+
+        self.assertEqual(len(captured_tmp), 1)
+        expected_suffix = f".tmp.{os.getpid()}.{threading.get_ident()}"
+        self.assertTrue(captured_tmp[0].endswith(expected_suffix))
 
 
 if __name__ == "__main__":

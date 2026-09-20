@@ -45,6 +45,9 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
         GravitonHandler.use_supervisor = False
+        GravitonHandler.dashboard_updater = None
+        GravitonHandler.server_host = "localhost"
+        GravitonHandler.server_port = 8000
 
     def tearDown(self):
         server_mod._is_shutting_down = False
@@ -52,6 +55,9 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.scheduler = None
         GravitonHandler.task_manager = None
         GravitonHandler.use_supervisor = False
+        GravitonHandler.dashboard_updater = None
+        GravitonHandler.server_host = "localhost"
+        GravitonHandler.server_port = 8000
 
     def test_health_check_endpoint(self):
         handler = MagicMock(spec=GravitonHandler)
@@ -1931,6 +1937,88 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         status_code, data = handler._send_json.call_args[0]
         self.assertEqual(status_code, 400)
         self.assertIn("Missing required 'path'", data["error"])
+
+    def test_do_post_dashboard_unregister_missing_path(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard/unregister"
+        handler.headers = {"Content-Length": "2"}
+        handler.rfile = io.BytesIO(b"{}")
+        handler.dashboard_updater = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Missing required 'path'", data["error"])
+
+    def test_do_post_dashboard_register_uninitialized(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard/register"
+        handler.headers = {"Content-Length": "35"}
+        handler.rfile = io.BytesIO(b'{"path": "/tmp/test_dashboard.md"}')
+        handler.dashboard_updater = None
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertIn("DashboardUpdater not initialized", data["error"])
+
+    def test_do_post_dashboard_unregister_uninitialized(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard/unregister"
+        handler.headers = {"Content-Length": "35"}
+        handler.rfile = io.BytesIO(b'{"path": "/tmp/test_dashboard.md"}')
+        handler.dashboard_updater = None
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertIn("DashboardUpdater not initialized", data["error"])
+
+    def test_do_get_dashboard_html_with_updater(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard"
+        handler.task_manager = None
+        handler.quota_tracker = None
+        handler.scheduler = None
+        mock_updater = MagicMock()
+        mock_updater.host = "10.0.0.5"
+        mock_updater.port = 9090
+        mock_updater.get_markdown.return_value = "# Custom Live Dashboard"
+        handler.dashboard_updater = mock_updater
+
+        GravitonHandler.do_GET(handler)
+        mock_updater.get_markdown.assert_called_once()
+        mock_updater.update_now.assert_not_called()
+        handler._send_html.assert_called_once()
+        status_code, html_content = handler._send_html.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertIn("# Custom Live Dashboard", html_content)
+        self.assertIn("10.0.0.5:9090", html_content)
+
+    def test_do_get_dashboard_content_with_updater(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard/content"
+        handler.task_manager = None
+        handler.quota_tracker = None
+        handler.scheduler = None
+        mock_updater = MagicMock()
+        mock_updater.host = "10.0.0.5"
+        mock_updater.port = 9090
+        mock_updater.get_markdown.return_value = "# Markdown Content"
+        mock_updater.get_targets.return_value = ["/path/to/target.md"]
+        handler.dashboard_updater = mock_updater
+
+        GravitonHandler.do_GET(handler)
+        mock_updater.get_markdown.assert_called_once()
+        mock_updater.update_now.assert_not_called()
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["markdown"], "# Markdown Content")
+        self.assertEqual(data["targets"], ["/path/to/target.md"])
 
 
 if __name__ == "__main__":

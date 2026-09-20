@@ -145,6 +145,45 @@ def is_supervisor_active(handler: Any) -> bool:
     return getattr(GravitonHandler, "use_supervisor", False) is True
 
 
+def resolve_server_host_and_port(handler: Any) -> tuple[str, int]:
+    """Resolve the effective server host and port safely."""
+    updater = getattr(handler, "dashboard_updater", None)
+    if updater and not isinstance(updater, (type, type(None))):
+        h = getattr(updater, "host", None)
+        p = getattr(updater, "port", None)
+        if isinstance(h, str) and isinstance(p, int):
+            return h, p
+        if isinstance(h, str):
+            try:
+                return h, int(p)
+            except (ValueError, TypeError):
+                return h, 8000
+
+    server = getattr(handler, "server", None)
+    if server and not isinstance(server, (type, type(None))):
+        s_addr = getattr(server, "server_address", None)
+        if isinstance(s_addr, tuple) and len(s_addr) == 2:
+            h, p = s_addr[0], s_addr[1]
+            if isinstance(h, str) and isinstance(p, int):
+                return h, p
+
+    h = getattr(handler, "server_host", None)
+    if not isinstance(h, str):
+        h = getattr(GravitonHandler, "server_host", "localhost")
+        if not isinstance(h, str):
+            h = "localhost"
+
+    p = getattr(handler, "server_port", None)
+    if not isinstance(p, int):
+        p = getattr(GravitonHandler, "server_port", 8000)
+        try:
+            p = int(p)
+        except (ValueError, TypeError):
+            p = 8000
+
+    return h, p
+
+
 class GravitonHandler(BaseHTTPRequestHandler):
     secret: str = ""
     default_reviewer: str = "code_reviewer"
@@ -159,10 +198,16 @@ class GravitonHandler(BaseHTTPRequestHandler):
     dashboard_updater: Optional[DashboardUpdater] = None
     listener_proc: Optional[subprocess.Popen] = None
     use_supervisor: bool = False
+    server_host: str = "localhost"
+    server_port: int = 8000
 
     @property
     def is_supervisor_active(self) -> bool:
         return is_supervisor_active(self)
+
+    def _get_host_and_port(self) -> tuple[str, int]:
+        """Resolve the effective server host and port."""
+        return resolve_server_host_and_port(self)
 
     def do_GET(self):
         """Health check and task query endpoints."""
@@ -219,18 +264,32 @@ class GravitonHandler(BaseHTTPRequestHandler):
             task_dict["logs"] = task.get_logs(limit=200)
             self._send_json(200, task_dict)
         elif path_clean == "/dashboard":
-            markdown_content = self.dashboard_updater.update_now() if self.dashboard_updater else format_dashboard_markdown(
-                task_manager=self.task_manager,
-                quota_tracker=self.quota_tracker,
-                scheduler=self.scheduler,
+            host, port = resolve_server_host_and_port(self)
+            markdown_content = (
+                self.dashboard_updater.get_markdown()
+                if self.dashboard_updater
+                else format_dashboard_markdown(
+                    task_manager=self.task_manager,
+                    quota_tracker=self.quota_tracker,
+                    scheduler=self.scheduler,
+                    host=host,
+                    port=port,
+                )
             )
-            html_page = render_dashboard_html(markdown_content)
+            html_page = render_dashboard_html(markdown_content, host=host, port=port)
             self._send_html(200, html_page)
         elif path_clean in ("/dashboard/content", "/dashboard/markdown"):
-            markdown_content = self.dashboard_updater.update_now() if self.dashboard_updater else format_dashboard_markdown(
-                task_manager=self.task_manager,
-                quota_tracker=self.quota_tracker,
-                scheduler=self.scheduler,
+            host, port = resolve_server_host_and_port(self)
+            markdown_content = (
+                self.dashboard_updater.get_markdown()
+                if self.dashboard_updater
+                else format_dashboard_markdown(
+                    task_manager=self.task_manager,
+                    quota_tracker=self.quota_tracker,
+                    scheduler=self.scheduler,
+                    host=host,
+                    port=port,
+                )
             )
             targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
             self._send_json(200, {"markdown": markdown_content, "targets": targets})
@@ -790,6 +849,8 @@ def main():
         GravitonHandler.use_supervisor = args.use_supervisor
 
         server_address = (args.host, args.port)
+        GravitonHandler.server_host = args.host
+        GravitonHandler.server_port = args.port
         httpd = HTTPServer(server_address, GravitonHandler)
         httpd.use_supervisor = args.use_supervisor
 
