@@ -757,6 +757,16 @@ def main():
         default=[],
         help="Optional file path to continuously update with live dashboard markdown (can specify multiple times)",
     )
+    parser.add_argument(
+        "--skills-dir",
+        default=os.getenv("SKILLS_DIR", str(REPO_ROOT / "plugin" / "skills")),
+        help="Path to skills directory (default: REPO_ROOT/plugin/skills, env: SKILLS_DIR)",
+    )
+    parser.add_argument(
+        "--agents-dir",
+        default=os.getenv("AGENTS_DIR", str(REPO_ROOT / "plugin" / "agents")),
+        help="Path to agent personas directory (default: REPO_ROOT/plugin/agents, env: AGENTS_DIR)",
+    )
     args = parser.parse_args()
 
     # Strip console StreamHandler ONLY if running interactive curses TUI
@@ -820,6 +830,8 @@ def main():
             use_supervisor=args.use_supervisor,
             post_completion_comment=args.post_completion_comment,
             post_start_comment=args.post_start_comment,
+            skills_dir=args.skills_dir,
+            agents_dir=args.agents_dir,
         )
         restored_count = task_manager.restore_queue_state()
         if restored_count > 0:

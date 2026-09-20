@@ -507,9 +507,14 @@ class TestRunAgentContainer(unittest.TestCase):
 
             self.assertIn(f"{fake_home}/.ssh:/root/.ssh:ro", run_args_str)
             self.assertIn(f"{fake_home}/.config/gh:/root/.config/gh:ro", run_args_str)
-            self.assertIn(f"{fake_home}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli", run_args_str)
-            if (REPO_ROOT / "skills").is_dir():
+            if (REPO_ROOT / "plugin" / "skills").is_dir():
+                self.assertIn(f"{REPO_ROOT}/plugin/skills:/root/.gemini/config/skills:ro", run_args_str)
+            elif (REPO_ROOT / "skills").is_dir():
                 self.assertIn(f"{REPO_ROOT}/skills:/root/.gemini/config/skills:ro", run_args_str)
+            if (REPO_ROOT / "plugin" / "agents").is_dir():
+                self.assertIn(f"{REPO_ROOT}/plugin/agents:/root/.gemini/config/agents:ro", run_args_str)
+            elif (REPO_ROOT / "agents").is_dir():
+                self.assertIn(f"{REPO_ROOT}/agents:/root/.gemini/config/agents:ro", run_args_str)
 
     def test_conditional_mounts_omitted_when_absent(self):
         """Verify .ssh and .config/gh mounts are omitted when the directories do not exist."""

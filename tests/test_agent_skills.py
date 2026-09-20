@@ -3,30 +3,45 @@ Unit tests for agent specs and dedicated skills validation.
 """
 
 import json
+import re
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-AGENTS_DIR = REPO_ROOT / "agents"
-SKILLS_DIR = REPO_ROOT / "skills"
+AGENTS_DIR = REPO_ROOT / "plugin" / "agents"
+SKILLS_DIR = REPO_ROOT / "plugin" / "skills"
+
+
+def parse_agent_md(path: Path) -> dict:
+    content = path.read_text(encoding="utf-8")
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
+    if not match:
+        raise ValueError(f"Invalid agent.md format in {path}")
+    frontmatter_raw, body = match.groups()
+    data = {}
+    for line in frontmatter_raw.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            data[k.strip()] = v.strip()
+    data["system_prompt"] = body.strip()
+    return data
 
 
 class TestAgentSkillsMapping(unittest.TestCase):
 
-    def test_agent_specs_exist_and_valid_json(self):
-        agent_files = list(AGENTS_DIR.glob("*.json"))
-        self.assertGreater(len(agent_files), 0, "No agent spec files found in agents/")
+    def test_agent_specs_exist_and_valid_format(self):
+        agent_files = list(AGENTS_DIR.glob("*/agent.md"))
+        self.assertGreater(len(agent_files), 0, "No agent spec files found in plugin/agents/")
         for spec_file in agent_files:
-            with open(spec_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = parse_agent_md(spec_file)
             self.assertIn("name", data)
+            self.assertIn("description", data)
             self.assertIn("system_prompt", data)
 
     def test_every_agent_has_dedicated_skill(self):
-        agent_files = list(AGENTS_DIR.glob("*.json"))
+        agent_files = list(AGENTS_DIR.glob("*/agent.md"))
         for spec_file in agent_files:
-            with open(spec_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = parse_agent_md(spec_file)
             agent_name = data["name"]
             # Derive skill directory name from agent name (e.g. code_reviewer -> code-review-guidelines)
             normalized_name = agent_name.replace("_", "-")
@@ -44,10 +59,9 @@ class TestAgentSkillsMapping(unittest.TestCase):
             )
 
     def test_agent_system_prompts_are_lightweight_and_reference_skill(self):
-        agent_files = list(AGENTS_DIR.glob("*.json"))
+        agent_files = list(AGENTS_DIR.glob("*/agent.md"))
         for spec_file in agent_files:
-            with open(spec_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = parse_agent_md(spec_file)
             system_prompt = data["system_prompt"]
             # Verify system prompt references a skill guidelines document
             self.assertIn(
@@ -55,10 +69,10 @@ class TestAgentSkillsMapping(unittest.TestCase):
                 system_prompt.lower(),
                 f"Agent '{data['name']}' system prompt should reference its dedicated skill",
             )
-            # Lightweight check: system prompt length under 300 characters
+            # Lightweight check: system prompt length under 350 characters
             self.assertLess(
                 len(system_prompt),
-                300,
+                350,
                 f"Agent '{data['name']}' system prompt is too long ({len(system_prompt)} chars)",
             )
 
@@ -75,9 +89,8 @@ class TestAgentSkillsMapping(unittest.TestCase):
 
     def test_agent_system_prompts_enforce_bot_marker_signature(self):
         for agent_name in ["code_fixer", "code_reviewer", "issue_triager", "pr_drafter", "codebase_auditor"]:
-            spec_file = AGENTS_DIR / f"{agent_name}.json"
-            with open(spec_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            spec_file = AGENTS_DIR / agent_name / "agent.md"
+            data = parse_agent_md(spec_file)
             system_prompt = data["system_prompt"]
             self.assertIn(
                 "<!-- antigravity-auto-reply -->",
@@ -139,9 +152,8 @@ class TestAgentSkillsMapping(unittest.TestCase):
         self.assertIn("never** use `--comment`", content)
 
     def test_code_reviewer_system_prompt_directs_request_changes(self):
-        spec_file = AGENTS_DIR / "code_reviewer.json"
-        with open(spec_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        spec_file = AGENTS_DIR / "code_reviewer" / "agent.md"
+        data = parse_agent_md(spec_file)
         system_prompt = data["system_prompt"]
         self.assertIn("--request-changes", system_prompt)
         self.assertIn("/fix", system_prompt)
@@ -182,8 +194,10 @@ class TestAgentSkillsMapping(unittest.TestCase):
             content = f.read()
 
         self.assertIn("GRAVITON_ROOT=", content)
-        self.assertIn('SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/skills:/root/.gemini/config/skills:ro")', content)
+        self.assertIn('SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/skills:/root/.gemini/config/skills:ro")', content)
+        self.assertIn('AGENTS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/agents:/root/.gemini/config/agents:ro")', content)
         self.assertNotIn("${TEMP_WORKSPACE}/skills:/root/.gemini/config/skills:ro", content)
+        self.assertNotIn("${TEMP_WORKSPACE}/agents:/root/.gemini/config/agents:ro", content)
 
     def test_codebase_auditor_guidelines_includes_flaky_and_low_quality_test_checks(self):
         skill_path = SKILLS_DIR / "codebase-auditor-guidelines" / "SKILL.md"

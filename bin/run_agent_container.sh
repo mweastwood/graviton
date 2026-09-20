@@ -105,8 +105,18 @@ fi
 
 # Mount server-level skills directory into container global config
 SKILLS_MOUNT=()
-if [ -d "${GRAVITON_ROOT}/skills" ]; then
+if [ -d "${GRAVITON_ROOT}/plugin/skills" ]; then
+  SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/skills:/root/.gemini/config/skills:ro")
+elif [ -d "${GRAVITON_ROOT}/skills" ]; then
   SKILLS_MOUNT=(-v "${GRAVITON_ROOT}/skills:/root/.gemini/config/skills:ro")
+fi
+
+# Mount server-level agents directory into container global config
+AGENTS_MOUNT=()
+if [ -d "${GRAVITON_ROOT}/plugin/agents" ]; then
+  AGENTS_MOUNT=(-v "${GRAVITON_ROOT}/plugin/agents:/root/.gemini/config/agents:ro")
+elif [ -d "${GRAVITON_ROOT}/agents" ]; then
+  AGENTS_MOUNT=(-v "${GRAVITON_ROOT}/agents:/root/.gemini/config/agents:ro")
 fi
 
 # Pass user SSH keys, gh configuration, and antigravity-cli directory if present
@@ -140,6 +150,7 @@ set +e
 if docker run -d --name "${CONTAINER_NAME}" \
     "${AGY_BIN_MOUNT[@]}" \
     "${SKILLS_MOUNT[@]}" \
+    "${AGENTS_MOUNT[@]}" \
     "${SSH_MOUNT[@]}" \
     "${GH_CONFIG_MOUNT[@]}" \
     "${CLI_DIR_MOUNT[@]}" \
@@ -192,6 +203,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     docker run --rm \
       "${AGY_BIN_MOUNT[@]}" \
       "${SKILLS_MOUNT[@]}" \
+      "${AGENTS_MOUNT[@]}" \
       "${SSH_MOUNT[@]}" \
       "${GH_CONFIG_MOUNT[@]}" \
       "${CLI_DIR_MOUNT[@]}" \

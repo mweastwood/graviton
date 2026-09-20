@@ -217,12 +217,26 @@ Every agent execution is registered with the **Antigravity Remote Control site**
 
 ## 8. Antigravity Plugin & Model Context Protocol (MCP) Integration
 
-Graviton is packaged as an Antigravity Plugin located at `.agents/plugins/graviton/`:
-- **`plugin.json`**: Plugin manifest describing capabilities, hooks, rules, and sidecars.
+Graviton is packaged as a consolidated top-level Antigravity Plugin located at `plugin/` (symlinked via `.agents/plugins/graviton`):
+- **`plugin.json`**: Plugin manifest describing capabilities and metadata.
+- **`mcp_config.json`**: MCP server configuration launching `bin/graviton-mcp`.
+- **`hooks.json`**: Lifecycle hooks ensuring background sidecar readiness.
+- **`bin/`**: Plugin executables (`graviton-sidecar` and `graviton-mcp`).
 - **`rules/AGENTS.md`**: Autonomous supervision guidelines instructing Antigravity assistants how to inspect Graviton via MCP tools and register live dashboard artifacts.
-- **`skills/graviton/`**: Slash command `/graviton` providing interactive commands to open the live dashboard, trigger reviews, or manage tasks.
-- **`sidecars/`**: Background daemon configuration allowing Antigravity to launch and healthcheck `graviton-server.py` headlessly.
-- **`mcp/`**: JSON-RPC Model Context Protocol server exposing:
+- **`agents/`**: First-class Antigravity sub-agents exposed to users:
+  - `code_reviewer`: Automated PR code reviewer.
+  - `code_fixer`: Automated PR code fixer and review responder.
+  - `issue_triager`: Autonomous GitHub issue triager and design specifier.
+  - `pr_drafter`: Automated initial PR drafter.
+  - `codebase_auditor`: Autonomous codebase auditor for bug detection, performance sweeps, and refactoring.
+- **`skills/`**: Unified skills and runbooks mounted into worker containers:
+  - `graviton/`: Slash command `/graviton` providing interactive commands to open the live dashboard, trigger reviews, or manage tasks.
+  - `code-review-guidelines/`: Guidelines and review templates for code reviewers.
+  - `code-fixer-guidelines/`: Guidelines for resolving review comments and pushing fixes.
+  - `issue-triager-guidelines/`: Guidelines for issue triage and requirements clarification.
+  - `pr-drafter-guidelines/`: Guidelines for initial PR drafting from ready issues.
+  - `codebase-auditor-guidelines/`: Guidelines for periodic codebase audits.
+- **MCP Tools**: JSON-RPC Model Context Protocol server exposing:
   - `graviton_dashboard`: Generates real-time dashboard markdown and registers artifact paths for automatic server updates.
   - `graviton_status`: Health and quota pacing metrics.
   - `graviton_list_tasks`: Active, queued, and completed tasks.
