@@ -814,7 +814,10 @@ class TestContainerSupervisor(unittest.TestCase):
         cli_dir = home_mock / ".gemini" / "antigravity-cli"
         cli_dir.mkdir(parents=True)
         (cli_dir / "antigravity-oauth-token").write_text("fake-token")
+        (cli_dir / "token.json").write_text("fake-json-token")
         (cli_dir / "settings.json").write_text("{}")
+        (cli_dir / "jetbox_summaries_proto.pb").write_text("fake-proto")
+        (cli_dir / "bin").mkdir(parents=True, exist_ok=True)
 
         gemini_config_dir = home_mock / ".gemini" / "config"
         gemini_config_dir.mkdir(parents=True)
@@ -864,15 +867,22 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn(f"{ssh_dir.resolve()}:/root/.ssh:ro", cmd)
             self.assertIn(f"{gh_dir.resolve()}:/root/.config/gh:ro", cmd)
 
-            # Antigravity CLI isolation: tmpfs and ro credentials
-            self.assertIn("/root/.gemini/antigravity-cli:rw,exec", cmd)
+            # Antigravity CLI mount: directory mount and ro credentials/binaries
+            self.assertIn(f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli", cmd)
+            self.assertIn("/root/.gemini/antigravity-cli/scratch:rw,exec", cmd)
+            self.assertIn(f"{(cli_dir / 'bin').resolve()}:/root/.gemini/antigravity-cli/bin:ro", cmd)
             self.assertIn("/root/.gemini/config:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'token.json').resolve()}:/root/.gemini/antigravity-cli/token.json:ro", cmd)
             self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
             self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
 
-            # Skills mount
+            # Skills mount and tmpfs mount order
             self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
+            config_tmpfs_idx = cmd.index("/root/.gemini/config:rw,exec")
+            skills_mount_idx = cmd.index(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro")
+            self.assertLess(config_tmpfs_idx, skills_mount_idx)
 
             # Environment variables
             self.assertIn("GITHUB_TOKEN=gh_secret_123", cmd)
