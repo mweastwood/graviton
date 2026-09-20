@@ -1972,6 +1972,30 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         status_code, html_content = handler._send_html.call_args[0]
         self.assertEqual(status_code, 200)
         self.assertIn("Graviton Live Dashboard", html_content)
+        self.assertIn("kpi-grid", html_content)
+        self.assertIn("Active Workers", html_content)
+        self.assertIn("Model Quota &amp; Pacing", html_content)
+        self.assertIn("refreshDashboard", html_content)
+
+    def test_do_get_dashboard_html_with_task_manager(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/dashboard"
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 2, "max_workers": 4, "active_tasks": 1}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+        handler.task_manager = mock_tm
+        handler.quota_tracker = None
+        handler.scheduler = None
+        handler.dashboard_updater = None
+
+        GravitonHandler.do_GET(handler)
+        handler._send_html.assert_called_once()
+        status_code, html_content = handler._send_html.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertIn("2 / 4", html_content)
+        self.assertIn("badge-busy", html_content)
 
     def test_do_get_dashboard_content(self):
         handler = MagicMock(spec=GravitonHandler)

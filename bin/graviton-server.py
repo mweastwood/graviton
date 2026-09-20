@@ -276,7 +276,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     port=port,
                 )
             )
-            html_page = render_dashboard_html(markdown_content, host=host, port=port)
+            html_page = render_dashboard_html(
+                markdown_content,
+                host=host,
+                port=port,
+                task_manager=self.task_manager,
+                quota_tracker=self.quota_tracker,
+                scheduler=self.scheduler,
+            )
             self._send_html(200, html_page)
         elif path_clean in ("/dashboard/content", "/dashboard/markdown"):
             host, port = resolve_server_host_and_port(self)
