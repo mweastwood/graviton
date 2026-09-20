@@ -237,6 +237,14 @@ def format_dashboard_markdown(
     return "\n".join(lines)
 
 
+def is_safe_url(url: Optional[str]) -> bool:
+    """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
+    if not url:
+        return False
+    clean = url.strip().lower()
+    return clean.startswith("http://") or clean.startswith("https://")
+
+
 def get_quota_color(pct: Optional[float]) -> str:
     """Return adaptive status color for quota percentage thresholds."""
     if pct is None:
@@ -267,19 +275,21 @@ def parse_dashboard_markdown(
     status_text = "ONLINE"
     status_icon = "🟢"
     status_class = "online"
-    if "🟡 **BUSY**" in markdown_content or "**BUSY**" in markdown_content:
+    status_m = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", markdown_content)
+    status_line = status_m.group(1) if status_m else markdown_content[:500]
+    if "BUSY" in status_line:
         status_text = "BUSY"
         status_icon = "🟡"
         status_class = "busy"
-    elif "⏳ **DRAINING**" in markdown_content or "**DRAINING**" in markdown_content:
+    elif "DRAINING" in status_line:
         status_text = "DRAINING"
         status_icon = "⏳"
         status_class = "draining"
-    elif "⏸️ **PAUSED**" in markdown_content or "**PAUSED**" in markdown_content:
+    elif "PAUSED" in status_line:
         status_text = "PAUSED"
         status_icon = "⏸️"
         status_class = "paused"
-    elif "🟢 **ONLINE**" in markdown_content or "**ONLINE**" in markdown_content:
+    elif "ONLINE" in status_line:
         status_text = "ONLINE"
         status_icon = "🟢"
         status_class = "online"
@@ -342,11 +352,9 @@ def parse_dashboard_markdown(
         table_rows = []
         for line in sec_lines:
             sline = line.strip()
-            if sline.startswith("|") and not sline.startswith("| :---") and not sline.startswith("| Metric"):
-                if "Task ID" in sline:
-                    continue
+            if sline.startswith("|") and not sline.startswith("| Metric") and "Task ID" not in sline:
                 cells = [c.strip() for c in sline.split("|")[1:-1]]
-                if cells:
+                if cells and not all(c.replace(":", "").replace("-", "") == "" for c in cells):
                     table_rows.append(cells)
 
         if "Active Container Tasks" in title_line:
@@ -361,7 +369,9 @@ def parse_dashboard_markdown(
                     rc_url = None
                     url_m = re.search(r"\[.*?\]\((.*?)\)", rc_cell)
                     if url_m:
-                        rc_url = url_m.group(1)
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
                     active_tasks.append({
                         "id": tid,
                         "agent": agent,
@@ -399,8 +409,12 @@ def parse_dashboard_markdown(
                     rc_url = None
                     url_m = re.search(r"\[.*?\]\((.*?)\)", detail_cell)
                     if url_m:
-                        rc_url = url_m.group(1)
-                        detail = "Remote Control"
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                            detail = "Remote Control"
+                        else:
+                            detail = detail_cell.strip("`").strip()
                     else:
                         detail = detail_cell.strip("`").strip()
                     history_tasks.append({
@@ -450,7 +464,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
         elapsed = html.escape(str(t.get("elapsed", "")))
         status = html.escape(str(t.get("status", "")))
         rc_url = t.get("remote_control_url")
-        if rc_url:
+        if rc_url and is_safe_url(rc_url):
             rc_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>'
         else:
             rc_html = '<span class="text-muted">Pending...</span>'
@@ -512,7 +526,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         status_disp = html.escape(str(t.get("status", "")))
         rc_url = t.get("remote_control_url")
         detail = str(t.get("details", ""))
-        if rc_url:
+        if rc_url and is_safe_url(rc_url):
             detail_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>'
         elif detail and detail != "Finished":
             trunc = detail[:40] + "..." if len(detail) > 40 else detail
@@ -1364,6 +1378,12 @@ def render_dashboard_html(
                 .replace(/'/g, '&#039;');
         }}
 
+        function isSafeUrl(url) {{
+            if (!url) return false;
+            const clean = String(url).trim().toLowerCase();
+            return clean.startsWith('http://') || clean.startsWith('https://');
+        }}
+
         function getQuotaColor(pct) {{
             if (pct === null) return '#58a6ff';
             if (pct > 50) return '#3fb950';
@@ -1378,19 +1398,21 @@ def render_dashboard_html(
             let statusText = 'ONLINE';
             let statusIcon = '🟢';
             let statusClass = 'online';
-            if (md.includes('🟡 **BUSY**') || md.includes('**BUSY**')) {{
+            const statusMatch = md.match(/\\*\\*Status\\*\\*:\\s*([^\\n|&]+)/);
+            const statusLine = statusMatch ? statusMatch[1] : md.substring(0, 500);
+            if (statusLine.includes('BUSY')) {{
                 statusText = 'BUSY';
                 statusIcon = '🟡';
                 statusClass = 'busy';
-            }} else if (md.includes('⏳ **DRAINING**') || md.includes('**DRAINING**')) {{
+            }} else if (statusLine.includes('DRAINING')) {{
                 statusText = 'DRAINING';
                 statusIcon = '⏳';
                 statusClass = 'draining';
-            }} else if (md.includes('⏸️ **PAUSED**') || md.includes('**PAUSED**')) {{
+            }} else if (statusLine.includes('PAUSED')) {{
                 statusText = 'PAUSED';
                 statusIcon = '⏸️';
                 statusClass = 'paused';
-            }} else if (md.includes('🟢 **ONLINE**') || md.includes('**ONLINE**')) {{
+            }} else if (statusLine.includes('ONLINE')) {{
                 statusText = 'ONLINE';
                 statusIcon = '🟢';
                 statusClass = 'online';
@@ -1511,9 +1533,11 @@ def render_dashboard_html(
                 const lines = sec.split('\\n').map(l => l.trim());
                 const rows = [];
                 for (const line of lines) {{
-                    if (line.startsWith('|') && !line.startsWith('| :---') && !line.startsWith('| Metric') && !line.includes('Task ID')) {{
+                    if (line.startsWith('|') && !line.startsWith('| Metric') && !line.includes('Task ID')) {{
                         const parts = line.split('|').slice(1, -1).map(c => c.trim());
-                        if (parts.length > 0) rows.push(parts);
+                        if (parts.length > 0 && !parts.every(p => /^:?-+:?$/.test(p))) {{
+                            rows.push(parts);
+                        }}
                     }}
                 }}
                 return rows;
@@ -1521,15 +1545,16 @@ def render_dashboard_html(
 
             // Active Tasks Table
             const activeRows = parseTableRows(activeSec);
+            const validActiveRows = activeRows.filter(r => r.length >= 6);
             const activeCount = document.getElementById('active-tasks-count');
-            if (activeCount) activeCount.textContent = `${{activeRows.length}} Active`;
+            if (activeCount) activeCount.textContent = `${{validActiveRows.length}} Active`;
             const activeContainer = document.getElementById('active-tasks-container');
             if (activeContainer) {{
-                if (activeRows.length === 0) {{
+                if (validActiveRows.length === 0) {{
                     activeContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">💤</span><p class="empty-text">No container tasks currently running.</p></div>';
                 }} else {{
                     let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead><tbody>';
-                    for (const r of activeRows) {{
+                    for (const r of validActiveRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
                         const target = escapeHtml(r[2].replace(/`/g, ''));
@@ -1537,8 +1562,8 @@ def render_dashboard_html(
                         const status = escapeHtml(r[4].replace(/[🔄`]/g, '').trim());
                         let rcHtml = '<span class="text-muted">Pending...</span>';
                         const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
-                        if (urlMatch) {{
-                            rcHtml = `<a href="${{escapeHtml(urlMatch[2])}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>`;
+                        if (urlMatch && isSafeUrl(urlMatch[2])) {{
+                            rcHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>`;
                         }}
                         htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td><td>${{rcHtml}}</td></tr>`;
                     }}
@@ -1549,15 +1574,16 @@ def render_dashboard_html(
 
             // Queued Tasks Table
             const queuedRows = parseTableRows(queuedSec);
+            const validQueuedRows = queuedRows.filter(r => r.length >= 5);
             const queuedCount = document.getElementById('queued-tasks-count');
-            if (queuedCount) queuedCount.textContent = `${{queuedRows.length}} Queued`;
+            if (queuedCount) queuedCount.textContent = `${{validQueuedRows.length}} Queued`;
             const queuedContainer = document.getElementById('queued-tasks-container');
             if (queuedContainer) {{
-                if (queuedRows.length === 0) {{
+                if (validQueuedRows.length === 0) {{
                     queuedContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📭</span><p class="empty-text">Queue is empty.</p></div>';
                 }} else {{
                     let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Priority</th><th>Wait Time</th></tr></thead><tbody>';
-                    for (const r of queuedRows) {{
+                    for (const r of validQueuedRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
                         const target = escapeHtml(r[2].replace(/`/g, ''));
@@ -1573,15 +1599,16 @@ def render_dashboard_html(
 
             // History Tasks Table
             const historyRows = parseTableRows(historySec);
+            const validHistoryRows = historyRows.filter(r => r.length >= 6);
             const historyCount = document.getElementById('history-tasks-count');
-            if (historyCount) historyCount.textContent = `${{historyRows.length}} Recorded`;
+            if (historyCount) historyCount.textContent = `${{validHistoryRows.length}} Recorded`;
             const historyContainer = document.getElementById('history-tasks-container');
             if (historyContainer) {{
-                if (historyRows.length === 0) {{
+                if (validHistoryRows.length === 0) {{
                     historyContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📜</span><p class="empty-text">No completed tasks in history yet.</p></div>';
                 }} else {{
                     let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead><tbody>';
-                    for (const r of historyRows) {{
+                    for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
                         const target = escapeHtml(r[2].replace(/`/g, ''));
@@ -1592,8 +1619,8 @@ def render_dashboard_html(
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
                         let detailHtml = '<span class="text-muted">Finished</span>';
                         const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
-                        if (urlMatch) {{
-                            detailHtml = `<a href="${{escapeHtml(urlMatch[2])}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
+                        if (urlMatch && isSafeUrl(urlMatch[2])) {{
+                            detailHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
                         }} else if (r[5].trim() && r[5].trim() !== 'Finished') {{
                             const cleanDetail = escapeHtml(r[5].replace(/`/g, '').trim());
                             const trunc = cleanDetail.length > 40 ? cleanDetail.substring(0, 40) + '...' : cleanDetail;

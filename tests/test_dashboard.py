@@ -13,9 +13,12 @@ from unittest.mock import MagicMock, patch
 
 from lib.dashboard import (
     DashboardUpdater,
+    _render_active_tasks_table,
+    _render_history_tasks_table,
     format_dashboard_markdown,
     format_duration,
     get_quota_color,
+    is_safe_url,
     parse_dashboard_markdown,
     render_dashboard_html,
 )
@@ -378,6 +381,112 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("&lt;img src=x onerror=alert(2)&gt;", html_out)
         self.assertNotIn("<b>bold</b>", html_out)
         self.assertIn("&lt;b&gt;bold&lt;/b&gt;", html_out)
+
+    def test_is_safe_url(self):
+        self.assertFalse(is_safe_url(None))
+        self.assertFalse(is_safe_url(""))
+        self.assertFalse(is_safe_url("   "))
+        self.assertFalse(is_safe_url("javascript:alert(1)"))
+        self.assertFalse(is_safe_url("JAVASCRIPT:alert(1)"))
+        self.assertFalse(is_safe_url("data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="))
+        self.assertFalse(is_safe_url("vbscript:msgbox(1)"))
+        self.assertTrue(is_safe_url("http://localhost:8000/session/1"))
+        self.assertTrue(is_safe_url("https://antigravity.google.com/c/123"))
+
+    def test_render_dashboard_html_javascript_url_not_rendered(self):
+        malicious_active = Task(
+            id="task-xss-1",
+            agent="code_reviewer",
+            prompt="Malicious task",
+            target_id="#99",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 30.0,
+            remote_control_url="javascript:alert(document.cookie)",
+        )
+        malicious_history = Task(
+            id="task-xss-2",
+            agent="code_fixer",
+            prompt="Malicious history",
+            target_id="#100",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 60.0,
+            finish_time=time.time() - 10.0,
+            remote_control_url="javascript:alert('pwned')",
+        )
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {"active_workers": 1, "max_workers": 1, "active_tasks": 1, "completed_tasks": 1}
+        mock_tm.get_active_tasks.return_value = [malicious_active]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = [malicious_history]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        html_out = render_dashboard_html(md, task_manager=mock_tm)
+
+        self.assertNotIn('href="javascript:', html_out)
+        self.assertNotIn("href='javascript:", html_out)
+        self.assertNotIn('<a href="javascript', html_out)
+        self.assertIn("Pending...", html_out)
+        self.assertIn('class="error-snippet"', html_out)
+
+        # Direct table rendering verification
+        active_rendered = _render_active_tasks_table([{
+            "id": "t1", "agent": "a", "target": "b", "elapsed": "1s", "status": "RUNNING",
+            "remote_control_url": "javascript:alert(1)"
+        }])
+        self.assertNotIn("<a ", active_rendered)
+        self.assertIn("Pending...", active_rendered)
+
+        history_rendered = _render_history_tasks_table([{
+            "id": "t2", "agent": "a", "target": "b", "duration": "1s", "status": "COMPLETED",
+            "remote_control_url": "javascript:alert(1)", "details": "Remote Control"
+        }])
+        self.assertNotIn("<a ", history_rendered)
+
+    def test_parse_dashboard_markdown_status_false_positives(self):
+        # Markdown where status header is ONLINE, but prompt, target, or error mentions BUSY / PAUSED / DRAINING
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-busy` | `code_fixer` | `Fix BUSY loop in worker` | 10s | 🔄 RUNNING | [Remote Control 🌐](http://localhost:8000/c/1) |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-paused` | `code_fixer` | `Repo` | 5s | ❌ FAILED | Worker was PAUSED unexpectedly |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(parsed["status_text"], "ONLINE")
+        self.assertEqual(parsed["status_class"], "online")
+        self.assertEqual(parsed["status_icon"], "🟢")
+
+    def test_parse_dashboard_markdown_table_separator_styles(self):
+        # Various separator line dash and colon combinations
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |\n"
+            "|:---|:---|:---|:---|:---|:---|\n"
+            "| `task-1` | `agent-1` | `target-1` | 12s | 🔄 RUNNING | [Remote Control 🌐](https://example.com/rc) |\n\n"
+            "## ⏳ Queued Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Priority | Wait Time |\n"
+            "| :---: | :---: | :---: | :---: | :---: |\n"
+            "| `task-2` | `agent-2` | `target-2` | P1 | 30s |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| `task-3` | `agent-3` | `target-3` | 45s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed["active_tasks"][0]["remote_control_url"], "https://example.com/rc")
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-3")
 
 
 class TestDashboardUpdater(unittest.TestCase):
