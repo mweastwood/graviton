@@ -933,7 +933,7 @@ class TestQuotaTracker(unittest.TestCase):
         )
 
         # Initial active models
-        self.assertEqual(tracker.get_active_model("gemini"), "gemini-3.6-flash-high")
+        self.assertEqual(tracker.get_active_model("gemini"), "gemini-3.8-flash-medium")
         self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-sonnet-4-6")
 
         # Set active model

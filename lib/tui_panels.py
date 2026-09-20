@@ -617,7 +617,7 @@ def render_gemini_models_panel(
     width: int,
     models: List[str],
     selected_index: int = 0,
-    active_model: str = "gemini-3.6-flash-high",
+    active_model: str = "gemini-3.8-flash-medium",
 ) -> List[str]:
     """Render Gemini (1st party) model selection panel."""
     header_bar = render_panel_header(width, "GEMINI MODEL SELECTION (1ST PARTY)", "\033[96m\033[1m")

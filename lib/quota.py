@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 logger = logging.getLogger("graviton.quota")
 
 DEFAULT_GEMINI_MODELS: List[str] = [
+    "gemini-3.8-flash-medium",
     "gemini-3.6-flash-high",
     "gemini-3.6-flash-medium",
     "gemini-3.6-flash-low",
@@ -1051,7 +1052,7 @@ class QuotaTracker:
         window_5h: Optional[QuotaWindow] = None,
         window_1w: Optional[QuotaWindow] = None,
         quota_pool: Optional[str] = None,
-        active_gemini_model: str = "gemini-3.6-flash-high",
+        active_gemini_model: Optional[str] = None,
         active_third_party_model: str = "claude-sonnet-4-6",
         available_gemini_models: Optional[List[str]] = None,
         available_third_party_models: Optional[List[str]] = None,
@@ -1067,7 +1068,7 @@ class QuotaTracker:
         self._requests_remaining: Optional[int] = None
         self._tokens_remaining: Optional[int] = None
 
-        self.active_gemini_model = active_gemini_model
+        self.active_gemini_model = active_gemini_model if active_gemini_model is not None else DEFAULT_GEMINI_MODELS[0]
         self.active_third_party_model = active_third_party_model
 
         if available_gemini_models is not None:
