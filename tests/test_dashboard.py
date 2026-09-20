@@ -33,7 +33,7 @@ class TestDashboardFormatting(unittest.TestCase):
         super().setUp()
         self._models_patcher = patch(
             "lib.quota.fetch_cli_models",
-            return_value=(["gemini-3.6-flash-high"], ["claude-sonnet-4-6"]),
+            return_value=(["gemini-3.8-flash-medium"], ["claude-sonnet-4-6"]),
         )
         self._models_patcher.start()
         self.addCleanup(self._models_patcher.stop)
@@ -90,7 +90,7 @@ class TestDashboardFormatting(unittest.TestCase):
         tracker = QuotaTracker()
         md = format_dashboard_markdown(quota_tracker=tracker)
         self.assertIn("| **Active Pool** | `gemini` |", md)
-        self.assertIn("| **Active Model** | `gemini-3.6-flash-high` |", md)
+        self.assertIn("| **Active Model** | `gemini-3.8-flash-medium` |", md)
         self.assertIn("| **Gemini Remaining** | `100.0%` |", md)
         self.assertIn("| **Third-Party Remaining** | `100.0%` |", md)
 

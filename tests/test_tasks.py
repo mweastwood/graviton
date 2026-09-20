@@ -159,7 +159,7 @@ class TestTaskManager(unittest.TestCase):
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
             quota_pool="gemini",
-            model="gemini-3.6-flash-high",
+            model=DEFAULT_GEMINI_MODELS[0],
             on_process_created=unittest.mock.ANY,
         )
 
@@ -239,7 +239,7 @@ class TestTaskManager(unittest.TestCase):
             cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
             initial_attempt=1,
             quota_pool="gemini",
-            model="gemini-3.6-flash-high",
+            model=DEFAULT_GEMINI_MODELS[0],
             on_process_created=unittest.mock.ANY,
         )
 
@@ -892,7 +892,7 @@ class TestTaskManager(unittest.TestCase):
                 cached_workspace_dir=Path("/tmp/graviton-workspaces/cache/task-1"),
                 initial_attempt=1,
                 quota_pool="gemini",
-                model="gemini-3.6-flash-high",
+                model=DEFAULT_GEMINI_MODELS[0],
                 on_process_created=unittest.mock.ANY,
             )
 
@@ -2257,7 +2257,7 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
             0.0 if p == "gemini" else 80.0
         )
         mock_tracker.get_active_model.side_effect = lambda p: (
-            "gemini-3.6-flash-high" if p == "gemini" else "claude-sonnet-4-6"
+            DEFAULT_GEMINI_MODELS[0] if p == "gemini" else "claude-sonnet-4-6"
         )
 
         pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
@@ -2314,7 +2314,7 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
             40.0 if p == "gemini" else 85.0
         )
         mock_tracker.get_active_model.side_effect = lambda p: (
-            "gemini-3.6-flash-high" if p == "gemini" else "claude-sonnet-4-6"
+            DEFAULT_GEMINI_MODELS[0] if p == "gemini" else "claude-sonnet-4-6"
         )
         pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
         self.assertEqual(pool, "claude_gpt")
@@ -2327,7 +2327,7 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
         )
         pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
         self.assertEqual(pool, "gemini")
-        self.assertEqual(model, "gemini-3.6-flash-high")
+        self.assertEqual(model, DEFAULT_GEMINI_MODELS[0])
         self.assertFalse(exhausted)
 
         # Tied percentage with Claude preference
@@ -2342,7 +2342,7 @@ class TestResolveTaskPoolAndModel(unittest.TestCase):
         mock_tracker.quota_pool = "gemini"
         pool, model, exhausted = resolve_task_pool_and_model(mock_tracker)
         self.assertEqual(pool, "gemini")
-        self.assertEqual(model, "gemini-3.6-flash-high")
+        self.assertEqual(model, DEFAULT_GEMINI_MODELS[0])
         self.assertFalse(exhausted)
 
     def test_fallback_attributes(self):
