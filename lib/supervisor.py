@@ -14,13 +14,14 @@ import os
 import queue
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.supervisor")
 
@@ -32,11 +33,13 @@ __all__ = [
     "SupervisorTimeoutError",
     "clean_workspace_dir",
     "extract_remote_control_url",
+    "find_project_for_repo",
     "get_remote_control_instance_name",
     "run_container_goal",
     "run_container_turn",
     "run_goal_turn",
     "run_stream_turn",
+    "sync_conversation_to_agyhub",
 ]
 
 _UNSET: Any = object()
@@ -118,7 +121,7 @@ def extract_remote_control_url(
         base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
         inst = instance_name if instance_name is not None else get_remote_control_instance_name()
         query_suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
-        return f"{base_url}/c/{conversation_id.strip()}{query_suffix}"
+        return f"{base_url}{query_suffix}"
 
     return None
 
@@ -956,6 +959,356 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     return not p.exists()
 
 
+def find_project_for_repo(
+    repo_dir: Union[str, Path],
+    config_dir: Optional[Union[str, Path]] = None,
+) -> Optional[Tuple[str, str]]:
+    """
+    Looks in ~/.gemini/config/projects/ to find a project JSON file whose
+    resources contain a folderUri matching repo_dir.
+    Returns (project_id, project_name) or None.
+    """
+    repo_path = Path(repo_dir).resolve()
+    projects_dir = Path(config_dir) if config_dir else (Path.home() / ".gemini" / "config" / "projects")
+    if not projects_dir.is_dir():
+        return None
+    for p in projects_dir.glob("*.json"):
+        if p.name in ("outside-of-project.json", "default-cli-project.json"):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            project_id = data.get("id") or p.stem
+            project_name = data.get("name") or project_id
+            resources = data.get("projectResources", {}).get("resources", [])
+            for r in resources:
+                gf = r.get("gitFolder", {})
+                folder_uri = gf.get("folderUri", "")
+                if folder_uri and folder_uri.startswith("file://"):
+                    folder_path = Path(folder_uri[7:]).resolve()
+                    if folder_path == repo_path or repo_path.is_relative_to(folder_path):
+                        return (str(project_id), str(project_name))
+        except Exception:
+            continue
+    return None
+
+
+def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Returns (repo_name, git_url, current_branch) for a git repository directory.
+    """
+    repo_name, git_url, branch = None, None, None
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            git_url = res.stdout.strip()
+            m = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", git_url)
+            if m:
+                repo_name = m.group(1)
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "--show-current"],
+            capture_output=True, text=True, check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            branch = res.stdout.strip()
+    except Exception:
+        pass
+
+    return repo_name, git_url, branch
+
+
+def _encode_varint(val: int) -> bytes:
+    out = []
+    while True:
+        b = val & 0x7f
+        val >>= 7
+        if val:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
+    res = 0
+    shift = 0
+    while True:
+        b = data[pos]
+        pos += 1
+        res |= (b & 0x7f) << shift
+        if not (b & 0x80):
+            break
+        shift += 7
+    return res, pos
+
+
+def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) -> bytes:
+    tag = (field_num << 3) | wire_type
+    if wire_type == 0:
+        return _encode_varint(tag) + _encode_varint(int(data))
+    elif wire_type == 2:
+        b_data = data.encode("utf-8") if isinstance(data, str) else data
+        return _encode_varint(tag) + _encode_varint(len(b_data)) + b_data
+    elif wire_type in (1, 5):
+        b_data = data.encode("utf-8") if isinstance(data, str) else data
+        return _encode_varint(tag) + b_data
+    raise ValueError(f"Unsupported wire type {wire_type}")
+
+
+def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
+    fields = []
+    pos = 0
+    length = len(data)
+    while pos < length:
+        try:
+            tag, pos = _decode_varint(data, pos)
+        except IndexError:
+            break
+        field_num = tag >> 3
+        wire_type = tag & 7
+        if wire_type == 0:
+            val, pos = _decode_varint(data, pos)
+            fields.append((field_num, wire_type, val))
+        elif wire_type == 1:
+            val = data[pos:pos+8]
+            pos += 8
+            fields.append((field_num, wire_type, val))
+        elif wire_type == 2:
+            f_len, pos = _decode_varint(data, pos)
+            val = data[pos:pos+f_len]
+            pos += f_len
+            fields.append((field_num, wire_type, val))
+        elif wire_type == 5:
+            val = data[pos:pos+4]
+            pos += 4
+            fields.append((field_num, wire_type, val))
+        else:
+            break
+    return fields
+
+
+def _build_workspace_proto(
+    workspace_uri: str,
+    repo_name: Optional[str] = None,
+    git_url: Optional[str] = None,
+    branch: Optional[str] = "main",
+) -> bytes:
+    out = _encode_field(1, 2, workspace_uri.encode("utf-8"))
+    out += _encode_field(2, 2, workspace_uri.encode("utf-8"))
+    if repo_name or git_url:
+        git_info = b""
+        if repo_name:
+            git_info += _encode_field(1, 2, repo_name.encode("utf-8"))
+        if git_url:
+            git_info += _encode_field(2, 2, git_url.encode("utf-8"))
+        out += _encode_field(3, 2, git_info)
+    if branch:
+        out += _encode_field(4, 2, branch.encode("utf-8"))
+    return out
+
+
+def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
+    entries = []
+    pos = 0
+    while pos < len(pb_data):
+        try:
+            tag, pos = _decode_varint(pb_data, pos)
+        except IndexError:
+            break
+        field_num = tag >> 3
+        wire_type = tag & 7
+        if field_num != 1 or wire_type != 2:
+            break
+        length, pos = _decode_varint(pb_data, pos)
+        entry_bytes = pb_data[pos:pos+length]
+        pos += length
+
+        sub_pos = 0
+        conv_id = None
+        raw_summary = None
+        while sub_pos < len(entry_bytes):
+            try:
+                sub_tag, sub_pos = _decode_varint(entry_bytes, sub_pos)
+            except IndexError:
+                break
+            s_num = sub_tag >> 3
+            s_len, sub_pos = _decode_varint(entry_bytes, sub_pos)
+            s_data = entry_bytes[sub_pos:sub_pos+s_len]
+            sub_pos += s_len
+            if s_num == 1:
+                conv_id = s_data.decode("utf-8", errors="ignore")
+            elif s_num == 2:
+                raw_summary = s_data
+        if conv_id and raw_summary:
+            entries.append((conv_id, raw_summary))
+    return entries
+
+
+def _write_agyhub_entries(entries: List[Tuple[str, bytes]]) -> bytes:
+    out = b""
+    for cid, summary in entries:
+        inner = _encode_field(1, 2, cid.encode("utf-8")) + _encode_field(2, 2, summary)
+        out += _encode_field(1, 2, inner)
+    return out
+
+
+def sync_conversation_to_agyhub(
+    conversation_id: str,
+    repo_dir: Optional[Union[str, Path]] = None,
+    branch: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_uri: Optional[str] = None,
+    cli_dir: Optional[Union[str, Path]] = None,
+    config_dir: Optional[Union[str, Path]] = None,
+) -> bool:
+    """
+    Ensures a conversation is registered under the proper project in conversation_summaries.db
+    and indexed in agyhub_summaries_proto.pb so that it appears in Antigravity Remote Control.
+    """
+    if not conversation_id or not conversation_id.strip():
+        return False
+
+    cid = conversation_id.strip()
+    c_dir = Path(cli_dir) if cli_dir else (Path.home() / ".gemini" / "antigravity-cli")
+    cfg_dir = Path(config_dir) if config_dir else (Path.home() / ".gemini" / "config")
+
+    repo_path = Path(repo_dir).resolve() if repo_dir else None
+    if repo_path and not workspace_uri:
+        workspace_uri = f"file://{repo_path}"
+
+    if repo_path and not project_id:
+        resolved = find_project_for_repo(repo_path, config_dir=cfg_dir / "projects" if cfg_dir else None)
+        if resolved:
+            project_id = resolved[0]
+
+    repo_name, git_url, curr_branch = _parse_git_repo_info(repo_path) if repo_path else (None, None, branch or "main")
+    branch = branch or curr_branch or "main"
+
+    ws_proto_bytes = _build_workspace_proto(workspace_uri, repo_name, git_url, branch) if workspace_uri else None
+
+    db_path = c_dir / "conversation_summaries.db"
+    if not db_path.exists():
+        return False
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT raw_summary, project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
+            (cid,),
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            conn.close()
+            return False
+
+        raw_summary = row[0]
+        curr_pid = row[1]
+        curr_ws = row[2]
+
+        target_pid = project_id or curr_pid
+        target_ws = json.dumps([workspace_uri]) if workspace_uri else (curr_ws or json.dumps([]))
+
+        # Parse and modify raw_summary proto
+        fields = _parse_fields(raw_summary)
+        new_f17 = b""
+        for f_num, w_type, val in fields:
+            if f_num == 17 and isinstance(val, bytes):
+                sub_fields = _parse_fields(val)
+                if ws_proto_bytes:
+                    new_f17 += _encode_field(1, 2, ws_proto_bytes)
+                for s_num, s_type, s_val in sub_fields:
+                    if s_num == 1:
+                        continue  # Replaced with ws_proto_bytes above
+                    elif s_num == 18 and target_pid:
+                        new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
+                    elif s_num == 7 and workspace_uri:
+                        new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
+                    else:
+                        new_f17 += _encode_field(s_num, s_type, s_val)
+                if workspace_uri and not any(s_num == 7 for s_num, _, _ in sub_fields) and not (7 in [s[0] for s in _parse_fields(new_f17)]):
+                    new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
+                break
+
+        if not new_f17:
+            if ws_proto_bytes:
+                new_f17 += _encode_field(1, 2, ws_proto_bytes)
+            new_f17 += _encode_field(6, 2, cid.encode("utf-8"))
+            if workspace_uri:
+                new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
+            if target_pid:
+                new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
+
+        new_summary_bytes = b""
+        for f_num, w_type, val in fields:
+            if f_num == 17:
+                new_summary_bytes += _encode_field(17, 2, new_f17)
+            elif f_num == 9 and ws_proto_bytes:
+                new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
+            else:
+                new_summary_bytes += _encode_field(f_num, w_type, val)
+            if f_num == 7 and ws_proto_bytes and not any(f[0] == 9 for f in fields):
+                new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
+
+        if not any(f[0] == 17 for f in fields):
+            new_summary_bytes += _encode_field(17, 2, new_f17)
+
+        cursor.execute(
+            "UPDATE conversation_summaries SET project_id = ?, workspace_uris = ?, raw_summary = ? WHERE conversation_id = ?",
+            (target_pid, target_ws, new_summary_bytes, cid),
+        )
+        conn.commit()
+        conn.close()
+
+        # Update conversation db trajectory_metadata_blob if present
+        conv_db_path = c_dir / "conversations" / f"{cid}.db"
+        if conv_db_path.exists():
+            try:
+                c_conn = sqlite3.connect(str(conv_db_path))
+                c_cur = c_conn.cursor()
+                c_cur.execute(
+                    "UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'",
+                    (new_f17,),
+                )
+                c_conn.commit()
+                c_conn.close()
+            except Exception as e:
+                logger.debug(f"Failed to update trajectory_metadata_blob for {cid}: {e}")
+
+        # Update agyhub_summaries_proto.pb
+        hub_pb_path = c_dir / "agyhub_summaries_proto.pb"
+        existing_entries = []
+        if hub_pb_path.exists():
+            try:
+                existing_entries = _read_agyhub_entries(hub_pb_path.read_bytes())
+            except Exception as e:
+                logger.debug(f"Failed to read existing agyhub_summaries_proto.pb: {e}")
+
+        filtered = [(entry_id, entry_sum) for entry_id, entry_sum in existing_entries if entry_id != cid]
+        updated_entries = [(cid, new_summary_bytes)] + filtered
+        encoded_hub_data = _write_agyhub_entries(updated_entries)
+
+        tmp_path = hub_pb_path.with_name(f".{hub_pb_path.name}.tmp_{os.getpid()}")
+        tmp_path.write_bytes(encoded_hub_data)
+        try:
+            tmp_path.chmod(0o600)
+        except Exception:
+            pass
+        tmp_path.replace(hub_pb_path)
+        logger.debug(f"Successfully synced conversation {cid} to agyhub.")
+        return True
+    except Exception as e:
+        logger.warning(f"Error during sync_conversation_to_agyhub({cid}): {e}")
+        return False
+
+
 class ContainerSupervisor:
     """
     Executes Antigravity StreamSession inside an isolated Docker container.
@@ -990,6 +1343,7 @@ class ContainerSupervisor:
         docker_binary: Optional[str] = None,
         agy_binary: Optional[str] = None,
         cache_dir: Optional[Union[str, Path]] = None,
+        project_id: Optional[str] = None,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
@@ -1012,6 +1366,12 @@ class ContainerSupervisor:
         self.docker_binary = docker_binary or shutil.which("docker") or "docker"
         self.agy_binary = agy_binary
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
+
+        self.project_id = project_id
+        if not self.project_id:
+            resolved = find_project_for_repo(self.repo_dir)
+            if resolved:
+                self.project_id = resolved[0]
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
@@ -1184,7 +1544,6 @@ class ContainerSupervisor:
                 "antigravity_state.pbtxt",
                 "jetski_state.pbtxt",
                 "installation_id",
-                "jetbox_summaries_proto.pb",
             ]:
                 target = cli_dir / cred_file
                 if target.is_file():
@@ -1194,6 +1553,11 @@ class ContainerSupervisor:
         gemini_config_file = Path.home() / ".gemini" / "config" / "config.json"
         if gemini_config_file.is_file():
             cmd.extend(["-v", f"{gemini_config_file.resolve()}:/root/.gemini/config/config.json:ro"])
+
+        # Mount host projects directory for project definitions and workspace scoping
+        gemini_projects_dir = Path.home() / ".gemini" / "config" / "projects"
+        if gemini_projects_dir.is_dir():
+            cmd.extend(["-v", f"{gemini_projects_dir.resolve()}:/root/.gemini/config/projects:ro"])
 
         # Environment variables
         github_token = self.github_token or os.environ.get("GITHUB_TOKEN")
@@ -1278,6 +1642,8 @@ class ContainerSupervisor:
                 inner_cmd.extend(["--agent", self.agent_name])
             if target_model:
                 inner_cmd.extend(["--model", target_model])
+            if self.project_id and "--project" not in (self.extra_args or []):
+                inner_cmd.extend(["--project", self.project_id])
             if self.extra_args:
                 inner_cmd.extend(self.extra_args)
             cmd.extend(inner_cmd)
@@ -1303,7 +1669,24 @@ class ContainerSupervisor:
         )
         self.conversation_id = self.session.start(timeout=timeout)
         self.remote_control_url = getattr(self.session, "remote_control_url", None)
+        if self.conversation_id:
+            self.sync_agyhub()
         return self.conversation_id or ""
+
+    def sync_agyhub(self) -> bool:
+        """Syncs active conversation to agyhub_summaries_proto.pb and conversation_summaries.db."""
+        if not self.conversation_id:
+            return False
+        try:
+            return sync_conversation_to_agyhub(
+                conversation_id=self.conversation_id,
+                repo_dir=self.repo_dir,
+                branch=self.default_branch,
+                project_id=self.project_id,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to sync conversation to agyhub: {e}")
+            return False
 
     def send_prompt(self, prompt: str) -> None:
         """Send prompt to the container session."""
@@ -1343,6 +1726,8 @@ class ContainerSupervisor:
         res = self.session.receive_turn(timeout=timeout, on_event=on_event, **extra)
         if not getattr(res, "remote_control_url", None) and self.remote_control_url:
             res.remote_control_url = self.remote_control_url
+        if self.conversation_id:
+            self.sync_agyhub()
         return res
 
     def run_turn(
@@ -1416,6 +1801,9 @@ class ContainerSupervisor:
         if self._is_cleaned_up:
             return
         self._is_cleaned_up = True
+
+        if self.conversation_id:
+            self.sync_agyhub()
 
         if self.session is not None:
             try:
