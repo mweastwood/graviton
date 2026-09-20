@@ -125,6 +125,11 @@ if [ -d "${HOME}/.gemini/antigravity-cli" ]; then
   CLI_DIR_MOUNT=(-v "${HOME}/.gemini/antigravity-cli:/root/.gemini/antigravity-cli")
 fi
 
+CONFIG_JSON_MOUNT=()
+if [ -f "${HOME}/.gemini/config/config.json" ]; then
+  CONFIG_JSON_MOUNT=(-v "${HOME}/.gemini/config/config.json:/root/.gemini/config/config.json:ro")
+fi
+
 # Extract host git identity or environment overrides to inherit commit author details
 GIT_USER_NAME="$(git config user.name 2>/dev/null || echo "${GIT_AUTHOR_NAME:-Graviton Bot}")"
 GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "${GIT_AUTHOR_EMAIL:-graviton-bot@users.noreply.github.com}")"
@@ -143,6 +148,7 @@ if docker run -d --name "${CONTAINER_NAME}" \
     "${SSH_MOUNT[@]}" \
     "${GH_CONFIG_MOUNT[@]}" \
     "${CLI_DIR_MOUNT[@]}" \
+    "${CONFIG_JSON_MOUNT[@]}" \
     -v "${TEMP_WORKSPACE}:/workspace" \
     -w /workspace \
     -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
@@ -153,6 +159,7 @@ if docker run -d --name "${CONTAINER_NAME}" \
     -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
     -e MODEL_NAME="${TARGET_MODEL:-}" \
     -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
+    ${ANTIGRAVITY_INSTANCE_NAME:+-e ANTIGRAVITY_INSTANCE_NAME="${ANTIGRAVITY_INSTANCE_NAME}"} \
     --security-opt=no-new-privileges \
     "${IMAGE_NAME}" \
     sleep infinity &>/dev/null; then

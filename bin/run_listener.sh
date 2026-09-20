@@ -4,6 +4,13 @@ set -euo pipefail
 # Helper script to launch smee.io webhook proxy listener for local Graviton debugging.
 # Usage: ./bin/run_listener.sh <SMEE_URL> [TARGET_PORT]
 
+# Prioritize working system node if an earlier entry in PATH has a broken node runtime
+if [[ ":$PATH:" == *":/usr/bin:"* ]]; then
+  if { ! command -v node &>/dev/null || ! node -v &>/dev/null; } && [ -x "/usr/bin/node" ] && /usr/bin/node -v &>/dev/null; then
+    export PATH="/usr/bin:${PATH}"
+  fi
+fi
+
 SMEE_URL="${1:-}"
 PORT="${2:-8000}"
 
