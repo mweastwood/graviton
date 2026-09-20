@@ -1417,15 +1417,19 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         self.assertEqual(entries[0][0], cid)
         self.assertEqual(entries[0][1], updated_summary)
 
-    def test_container_supervisor_defaults_to_graviton_workers_project(self):
-        from lib.supervisor import ContainerSupervisor, DEFAULT_PROJECT_NAME, ensure_default_project
-        gw_pid, _ = ensure_default_project(self.projects_dir, self.repo_dir, DEFAULT_PROJECT_NAME)
-        with patch("lib.supervisor.find_project_for_repo") as mock_find:
-            mock_find.return_value = (gw_pid, DEFAULT_PROJECT_NAME)
+    def test_container_supervisor_defaults_to_graviton_workers_project_when_unmatched(self):
+        from lib.supervisor import ContainerSupervisor, DEFAULT_PROJECT_NAME
+        with patch("lib.supervisor.find_project_for_repo", return_value=None):
             sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
-            self.assertEqual(sup.project_id, gw_pid)
+            self.assertEqual(sup.project_id, DEFAULT_PROJECT_NAME)
 
-    def test_receive_turn_syncs_agyhub_on_first_step_event(self):
+    def test_container_supervisor_preserves_custom_repo_project(self):
+        from lib.supervisor import ContainerSupervisor
+        with patch("lib.supervisor.find_project_for_repo", return_value=("proj-custom-999", "Custom Project")):
+            sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
+            self.assertEqual(sup.project_id, "proj-custom-999")
+
+    def test_receive_turn_syncs_agyhub_on_first_step_event_only(self):
         from lib.supervisor import ContainerSupervisor, SupervisorResult
         sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
         sup.session = MagicMock()
@@ -1434,13 +1438,31 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         def fake_receive_turn(timeout=None, on_event=None, **kwargs):
             if on_event:
                 on_event({"event": "step_update", "step_update": {"step_index": 0}})
+                on_event({"event": "step_update", "step_update": {"step_index": 1}})
+                on_event({"event": "step_update", "step_update": {"step_index": 2}})
             return SupervisorResult(status="SUCCESS", conversation_id=sup.conversation_id)
 
         sup.session.receive_turn.side_effect = fake_receive_turn
         with patch.object(sup, "sync_agyhub", return_value=True) as mock_sync:
             res = sup.receive_turn(timeout=10.0)
             self.assertEqual(res.conversation_id, "test-conv-stream-123")
-            self.assertGreaterEqual(mock_sync.call_count, 2)
+            self.assertEqual(mock_sync.call_count, 2)
+
+    def test_start_removes_stale_container_before_launch(self):
+        from lib.supervisor import ContainerSupervisor
+        sup = ContainerSupervisor(repo_dir=self.repo_dir, base_workspaces_dir=self.tmp_dir.name)
+        sup.prepare_workspace = MagicMock()
+        sup._workspace_prepared = True
+        with patch("subprocess.run") as mock_subproc, patch("lib.supervisor.StreamSession") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.start.return_value = "cid-123"
+            mock_session_cls.return_value = mock_session
+            sup.start(timeout=5.0)
+            mock_subproc.assert_any_call(
+                [sup.docker_binary, "rm", "-f", sup.container_name],
+                capture_output=True,
+                check=False,
+            )
 
 
 class TestSupervisorIntegration(unittest.TestCase):

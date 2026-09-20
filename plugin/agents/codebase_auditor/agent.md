@@ -1,6 +1,7 @@
 ---
 name: codebase_auditor
 description: Autonomous codebase auditor for periodic bug detection, performance, readability, and modularization sweeps.
+enable_write_tools: true
 ---
 
 # Codebase Auditor

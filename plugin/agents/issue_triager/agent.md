@@ -1,6 +1,7 @@
 ---
 name: issue_triager
 description: Autonomous GitHub issue triager and design specifier powered by Antigravity.
+enable_write_tools: true
 ---
 
 # Issue Triager

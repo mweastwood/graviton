@@ -1,6 +1,7 @@
 ---
 name: code_reviewer
 description: Automated PR code reviewer powered by Antigravity.
+enable_write_tools: true
 ---
 
 # Code Reviewer

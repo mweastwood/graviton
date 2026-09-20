@@ -1,6 +1,7 @@
 ---
 name: pr_drafter
 description: Automated initial PR drafter powered by Antigravity.
+enable_write_tools: true
 ---
 
 # PR Drafter
