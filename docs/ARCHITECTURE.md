@@ -204,7 +204,7 @@ sequenceDiagram
 ## 7. Antigravity Remote Control & Live Session Tracking
 
 Every agent execution is registered with the **Antigravity Remote Control site**:
-- **URL Format**: `https://antigravity.google.com/c/<conversation_id>?instance=<instance_name>`
+- **URL Format**: `https://antigravity.google.com?instance=<instance_name>`
 - **Capture Mechanism**: Extracted from NDJSON handshake `init` events, stderr stream banners, or canonical fallback synthesis.
 - **Surfacing**:
   - **GitHub Comments**: Initial start comments (🚀) and completion comments include clickable markdown links for immediate browser inspection.

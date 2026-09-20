@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,7 +88,7 @@ def extract_remote_control_url(
     Checks:
     1. Direct fields in event dict (e.g. 'remote_control_url', 'remote_control.url', 'init.remote_control_url').
     2. URL patterns in stderr or captured terminal output.
-    3. Canonical conversation URL fallback (https://antigravity.google.com/c/<conversation_id>) if remote control is enabled.
+    3. Canonical conversation URL fallback (https://antigravity.google.com?instance=<instance>) if remote control is enabled.
     """
     if event and isinstance(event, dict):
         if event.get("remote_control_url"):
@@ -999,7 +1000,7 @@ def find_project_for_repo(
                 gf = r.get("gitFolder", {})
                 folder_uri = gf.get("folderUri", "")
                 if folder_uri and folder_uri.startswith("file://"):
-                    folder_path = Path(folder_uri[7:]).resolve()
+                    folder_path = Path(urllib.parse.unquote(folder_uri[7:])).resolve()
                     if folder_path == repo_path or repo_path.is_relative_to(folder_path):
                         if not match_by_repo:
                             match_by_repo = (project_id, project_name)
@@ -1040,6 +1041,8 @@ def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str],
 
 
 def _encode_varint(val: int) -> bytes:
+    if val < 0:
+        val &= 0xffffffffffffffff
     out = []
     while True:
         b = val & 0x7f
@@ -1146,22 +1149,13 @@ def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
         entry_bytes = pb_data[pos:pos+length]
         pos += length
 
-        sub_pos = 0
         conv_id = None
         raw_summary = None
-        while sub_pos < len(entry_bytes):
-            try:
-                sub_tag, sub_pos = _decode_varint(entry_bytes, sub_pos)
-            except IndexError:
-                break
-            s_num = sub_tag >> 3
-            s_len, sub_pos = _decode_varint(entry_bytes, sub_pos)
-            s_data = entry_bytes[sub_pos:sub_pos+s_len]
-            sub_pos += s_len
-            if s_num == 1:
-                conv_id = s_data.decode("utf-8", errors="ignore")
-            elif s_num == 2:
-                raw_summary = s_data
+        for s_num, s_type, s_val in _parse_fields(entry_bytes):
+            if s_num == 1 and isinstance(s_val, bytes):
+                conv_id = s_val.decode("utf-8", errors="ignore")
+            elif s_num == 2 and isinstance(s_val, bytes):
+                raw_summary = s_val
         if conv_id and raw_summary:
             entries.append((conv_id, raw_summary))
     return entries
@@ -1214,87 +1208,87 @@ def sync_conversation_to_agyhub(
         return False
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT raw_summary, project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
-            (cid,),
-        )
-        row = cursor.fetchone()
-        if not row or not row[0]:
-            conn.close()
-            return False
+        with sqlite3.connect(str(db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT raw_summary, project_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
+                (cid,),
+            )
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return False
 
-        raw_summary = row[0]
-        curr_pid = row[1]
-        curr_ws = row[2]
+            raw_summary = row[0]
+            curr_pid = row[1]
+            curr_ws = row[2]
 
-        target_pid = project_id or curr_pid
-        target_ws = json.dumps([workspace_uri]) if workspace_uri else (curr_ws or json.dumps([]))
+            target_pid = project_id or curr_pid
+            target_ws = json.dumps([workspace_uri]) if workspace_uri else (curr_ws or json.dumps([]))
 
-        # Parse and modify raw_summary proto
-        fields = _parse_fields(raw_summary)
-        new_f17 = b""
-        for f_num, w_type, val in fields:
-            if f_num == 17 and isinstance(val, bytes):
-                sub_fields = _parse_fields(val)
+            # Parse and modify raw_summary proto
+            fields = _parse_fields(raw_summary)
+            new_f17 = b""
+            for f_num, w_type, val in fields:
+                if f_num == 17 and isinstance(val, bytes):
+                    sub_fields = _parse_fields(val)
+                    if ws_proto_bytes:
+                        new_f17 += _encode_field(1, 2, ws_proto_bytes)
+                    for s_num, s_type, s_val in sub_fields:
+                        if s_num == 1:
+                            continue  # Replaced with ws_proto_bytes above
+                        elif s_num == 18 and target_pid:
+                            new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
+                        elif s_num == 7 and workspace_uri:
+                            new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
+                        else:
+                            new_f17 += _encode_field(s_num, s_type, s_val)
+                    if target_pid and not any(s_num == 18 for s_num, _, _ in sub_fields) and not (18 in [s[0] for s in _parse_fields(new_f17)]):
+                        new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
+                    if workspace_uri and not any(s_num == 7 for s_num, _, _ in sub_fields) and not (7 in [s[0] for s in _parse_fields(new_f17)]):
+                        new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
+                    break
+
+            if not new_f17:
                 if ws_proto_bytes:
                     new_f17 += _encode_field(1, 2, ws_proto_bytes)
-                for s_num, s_type, s_val in sub_fields:
-                    if s_num == 1:
-                        continue  # Replaced with ws_proto_bytes above
-                    elif s_num == 18 and target_pid:
-                        new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
-                    elif s_num == 7 and workspace_uri:
-                        new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
-                    else:
-                        new_f17 += _encode_field(s_num, s_type, s_val)
-                if workspace_uri and not any(s_num == 7 for s_num, _, _ in sub_fields) and not (7 in [s[0] for s in _parse_fields(new_f17)]):
+                new_f17 += _encode_field(6, 2, cid.encode("utf-8"))
+                if workspace_uri:
                     new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
-                break
+                if target_pid:
+                    new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
 
-        if not new_f17:
-            if ws_proto_bytes:
-                new_f17 += _encode_field(1, 2, ws_proto_bytes)
-            new_f17 += _encode_field(6, 2, cid.encode("utf-8"))
-            if workspace_uri:
-                new_f17 += _encode_field(7, 2, workspace_uri.encode("utf-8"))
-            if target_pid:
-                new_f17 += _encode_field(18, 2, target_pid.encode("utf-8"))
+            new_summary_bytes = b""
+            for f_num, w_type, val in fields:
+                if f_num == 17:
+                    new_summary_bytes += _encode_field(17, 2, new_f17)
+                elif f_num == 9 and ws_proto_bytes:
+                    new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
+                else:
+                    new_summary_bytes += _encode_field(f_num, w_type, val)
 
-        new_summary_bytes = b""
-        for f_num, w_type, val in fields:
-            if f_num == 17:
+            if ws_proto_bytes and not any(f[0] == 9 for f in fields):
+                new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
+
+            if not any(f[0] == 17 for f in fields):
                 new_summary_bytes += _encode_field(17, 2, new_f17)
-            elif f_num == 9 and ws_proto_bytes:
-                new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
-            else:
-                new_summary_bytes += _encode_field(f_num, w_type, val)
-            if f_num == 7 and ws_proto_bytes and not any(f[0] == 9 for f in fields):
-                new_summary_bytes += _encode_field(9, 2, ws_proto_bytes)
 
-        if not any(f[0] == 17 for f in fields):
-            new_summary_bytes += _encode_field(17, 2, new_f17)
-
-        cursor.execute(
-            "UPDATE conversation_summaries SET project_id = ?, workspace_uris = ?, raw_summary = ? WHERE conversation_id = ?",
-            (target_pid, target_ws, new_summary_bytes, cid),
-        )
-        conn.commit()
-        conn.close()
+            cursor.execute(
+                "UPDATE conversation_summaries SET project_id = ?, workspace_uris = ?, raw_summary = ? WHERE conversation_id = ?",
+                (target_pid, target_ws, new_summary_bytes, cid),
+            )
+            conn.commit()
 
         # Update conversation db trajectory_metadata_blob if present
         conv_db_path = c_dir / "conversations" / f"{cid}.db"
         if conv_db_path.exists():
             try:
-                c_conn = sqlite3.connect(str(conv_db_path))
-                c_cur = c_conn.cursor()
-                c_cur.execute(
-                    "UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'",
-                    (new_f17,),
-                )
-                c_conn.commit()
-                c_conn.close()
+                with sqlite3.connect(str(conv_db_path)) as c_conn:
+                    c_cur = c_conn.cursor()
+                    c_cur.execute(
+                        "UPDATE trajectory_metadata_blob SET data = ? WHERE id = 'main'",
+                        (new_f17,),
+                    )
+                    c_conn.commit()
             except Exception as e:
                 logger.debug(f"Failed to update trajectory_metadata_blob for {cid}: {e}")
 
@@ -1323,6 +1317,7 @@ def sync_conversation_to_agyhub(
     except Exception as e:
         logger.warning(f"Error during sync_conversation_to_agyhub({cid}): {e}")
         return False
+
 
 
 class ContainerSupervisor:

@@ -9,7 +9,7 @@ Packaged as a first-class **Antigravity Plugin**, Graviton orchestrates sandboxe
 ## 🌟 Key Features
 
 - **Programmatic Stream-JSON Supervisor**: Eliminates one-shot print timeouts and transcript file scraping. Drives `agy` inside isolated Docker containers via `--input-format stream-json --output-format stream-json` with multi-turn `/goal` instructions and watchdog timers.
-- **Antigravity Remote Control Integration**: Every running task automatically captures or synthesizes its Remote Control session URL (`https://antigravity.google.com/c/<conversation_id>`). Live links are surfaced in GitHub PR comments, the REST API, MCP tools, and the TUI dashboard.
+- **Antigravity Remote Control Integration**: Every running task automatically captures or synthesizes its Remote Control session URL (`https://antigravity.google.com?instance=<instance>`). Live links are surfaced in GitHub PR comments, the REST API, MCP tools, and the TUI dashboard.
 - **Antigravity Plugin & Sidecar Daemon**: Packaged as an installable plugin (`plugin/`, symlinked to `.agents/plugins/graviton`) with native slash command (`/graviton`), Model Context Protocol (MCP) server, first-class sub-agents, and automated background sidecar execution.
 - **Dual-Pool Quota & Adaptive Pacing**: Real-time tracking of both Gemini and Claude/GPT quota windows (5-hour and 1-week). Automatically balances models, enforces pacing delay windows, and pauses tasks before quota exhaustion.
 - **Automated PR Code Review & Fix Cycles**:

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1246,12 +1247,60 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
                 ("project-alpha", "Project Alpha"),
             )
 
+        # Test percent-encoded folder URI (e.g. folder with spaces)
+        spaced_dir = self.base / "my spaced repo"
+        spaced_dir.mkdir()
+        proj_file2 = self.projects_dir / "proj2.json"
+        proj_file2.write_text(json.dumps({
+            "id": "project-beta",
+            "name": "Project Beta",
+            "projectResources": {
+                "resources": [
+                    {"gitFolder": {"folderUri": f"file://{urllib.parse.quote(str(spaced_dir.resolve()))}"}}
+                ]
+            }
+        }))
+        self.assertEqual(
+            find_project_for_repo(spaced_dir, config_dir=self.projects_dir),
+            ("project-beta", "Project Beta"),
+        )
+
+    def test_varint_and_fields(self):
+        from lib.supervisor import _encode_varint, _decode_varint, _parse_fields, _encode_field, _read_agyhub_entries
+
+        # Test positive varint roundtrip
+        pos_val = 123456789
+        enc = _encode_varint(pos_val)
+        dec, pos = _decode_varint(enc, 0)
+        self.assertEqual(dec, pos_val)
+        self.assertEqual(pos, len(enc))
+
+        # Test negative varint (64-bit mask)
+        neg_val = -42
+        enc_neg = _encode_varint(neg_val)
+        dec_neg, _ = _decode_varint(enc_neg, 0)
+        self.assertEqual(dec_neg, neg_val & 0xffffffffffffffff)
+
+        # Test _parse_fields and wire types
+        f_int = _encode_field(1, 0, 100)
+        f_bytes = _encode_field(2, 2, b"hello")
+        parsed = _parse_fields(f_int + f_bytes)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0], (1, 0, 100))
+        self.assertEqual(parsed[1], (2, 2, b"hello"))
+
+        # Test _read_agyhub_entries with unknown wire type / unexpected tag
+        corrupt_data = b"\xff\xff"
+        entries = _read_agyhub_entries(corrupt_data)
+        self.assertEqual(entries, [])
+
     def test_sync_conversation_to_agyhub(self):
         import sqlite3
         from lib.supervisor import (
             sync_conversation_to_agyhub,
             _encode_field,
             _read_agyhub_entries,
+            _parse_fields,
         )
 
         cid = "test-conv-12345"
@@ -1269,8 +1318,8 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
                 raw_summary BLOB
             )
         """)
-        # Synthetic raw_summary with title (field 1) and metadata (field 17)
-        initial_f17 = _encode_field(6, 2, cid.encode("utf-8")) + _encode_field(18, 2, b"default-cli-project")
+        # Synthetic raw_summary with title (field 1) and metadata (field 17) WITHOUT field 18 or field 7
+        initial_f17 = _encode_field(6, 2, cid.encode("utf-8"))
         raw_summary = _encode_field(1, 2, b"Initial Conversation Title") + _encode_field(17, 2, initial_f17)
         cur.execute(
             "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
@@ -1309,6 +1358,19 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         self.assertIn("file:///custom/workspace", row[1])
         updated_summary = row[2]
         conn.close()
+
+        # Check injected subfields in field 17 (field 18 target_pid and field 7 workspace_uri)
+        outer_fields = _parse_fields(updated_summary)
+        f17_val = next(v for fn, wt, v in outer_fields if fn == 17)
+        f17_subfields = _parse_fields(f17_val)
+        sub_pids = [v.decode("utf-8") for fn, wt, v in f17_subfields if fn == 18]
+        self.assertIn("my-target-project", sub_pids)
+        sub_uris = [v.decode("utf-8") for fn, wt, v in f17_subfields if fn == 7]
+        self.assertIn("file:///custom/workspace", sub_uris)
+
+        # Check field 9 injected at outer level
+        f9_val = next((v for fn, wt, v in outer_fields if fn == 9), None)
+        self.assertIsNotNone(f9_val)
 
         # Verify conversation DB updated
         c_conn = sqlite3.connect(str(conv_db_path))
