@@ -204,8 +204,9 @@ def start_sidecar(
         str(port),
     ]
 
+    has_no_smee = extra_args and any(arg == "--no-smee" for arg in extra_args)
     has_smee = extra_args and any(arg == "--smee-url" or arg.startswith("--smee-url=") for arg in extra_args)
-    if not has_smee:
+    if not has_smee and not has_no_smee:
         target_smee = smee_url if smee_url is not None else os.environ.get("SMEE_URL", DEFAULT_SMEE_URL)
         if target_smee:
             cmd.extend(["--smee-url", target_smee])

@@ -1159,7 +1159,7 @@ class TestGravitonHandler(unittest.TestCase):
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
 
-        with patch.dict(os.environ, {"SMEE_URL": ""}, clear=False):
+        with patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False):
             with patch("sys.argv", ["graviton-server.py", "--no-smee"]):
                 server_mod.main()
 

@@ -869,6 +869,30 @@ sys.exit(0)
             self.assertIn("-e", run_call["args"])
             self.assertIn("ANTIGRAVITY_INSTANCE_NAME=Workstation 1 With Spaces", run_call["args"])
 
+    def test_config_json_mount(self):
+        """Verify that ~/.gemini/config/config.json is mounted into /root/.gemini/config/config.json:ro."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            config_dir = Path(ctx["env"]["HOME"]) / ".gemini" / "config"
+            config_dir.mkdir(parents=True)
+            config_file = config_dir / "config.json"
+            config_file.write_text('{"cliRemoteControlHostname": "test-remote-host"}')
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Config mount test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(ctx["fake_cwd"]),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_call = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]][0]
+            self.assertIn("-v", run_call["args"])
+            expected_mount = f"{config_file.resolve()}:/root/.gemini/config/config.json:ro"
+            self.assertIn(expected_mount, run_call["args"])
+
 
 if __name__ == "__main__":
     unittest.main()

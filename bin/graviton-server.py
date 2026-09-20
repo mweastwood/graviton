@@ -806,7 +806,7 @@ def main():
         logger.error("Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server, or specify --no-smee for direct webhook setups.")
         sys.exit(1)
 
-    listener_proc = start_smee_listener(smee_url, args.port) if smee_url else None
+    listener_proc = start_smee_listener(smee_url, args.port) if (smee_url and not args.no_smee) else None
     GravitonHandler.listener_proc = listener_proc
 
     scheduler = None
