@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,13 +27,17 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.supervisor")
 
+DEFAULT_PROJECT_NAME = "Graviton Workers"
+
 __all__ = [
     "ContainerSupervisor",
+    "DEFAULT_PROJECT_NAME",
     "StreamSession",
     "SupervisorError",
     "SupervisorResult",
     "SupervisorTimeoutError",
     "clean_workspace_dir",
+    "ensure_default_project",
     "extract_remote_control_url",
     "find_project_for_repo",
     "get_remote_control_instance_name",
@@ -960,14 +965,71 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     return not p.exists()
 
 
+def ensure_default_project(
+    projects_dir: Path,
+    repo_path: Optional[Path] = None,
+    name: str = DEFAULT_PROJECT_NAME,
+) -> Tuple[str, str]:
+    """
+    Ensures a project definition exists for the given name in projects_dir,
+    creating it if not present. Returns (project_id, project_name).
+    """
+    if not projects_dir.exists():
+        try:
+            projects_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+    for p in projects_dir.glob("*.json"):
+        if p.name in ("outside-of-project.json", "default-cli-project.json"):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            p_name = str(data.get("name") or "")
+            p_id = str(data.get("id") or p.stem)
+            if p_name.strip().lower() == name.lower() or p_id == name:
+                return (p_id, p_name)
+        except Exception:
+            continue
+
+    # Deterministic UUID for the project
+    proj_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"graviton-{name.lower().replace(' ', '-')}"))
+    proj_file = projects_dir / f"{proj_id}.json"
+    resources = []
+    if repo_path:
+        resources.append({
+            "gitFolder": {
+                "folderUri": f"file://{repo_path.resolve()}",
+                "defaultBranch": "main",
+            }
+        })
+    proj_data = {
+        "id": proj_id,
+        "name": name,
+        "projectResources": {"resources": resources},
+        "settings": {},
+        "isWorkspaceOnly": False,
+    }
+    try:
+        proj_file.write_text(json.dumps(proj_data, indent=2), encoding="utf-8")
+        logger.info(f"Auto-created default project '{name}' ({proj_id}) at {proj_file}")
+    except Exception as e:
+        logger.debug(f"Could not auto-create project file {proj_file}: {e}")
+    return (proj_id, name)
+
+
 def find_project_for_repo(
     repo_dir: Union[str, Path],
     config_dir: Optional[Union[str, Path]] = None,
     preferred_name_or_id: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     """
-    Looks in ~/.gemini/config/projects/ to find a project JSON file whose
-    resources contain a folderUri matching repo_dir, or matches preferred_name_or_id.
+    Looks in ~/.gemini/config/projects/ to find a project JSON file.
+    Prefers:
+    1. Explicit preferred_name_or_id if provided.
+    2. ANTIGRAVITY_PROJECT or GRAVITON_PROJECT_ID environment variable if set.
+    3. Project named DEFAULT_PROJECT_NAME ("Graviton Workers") if it exists, or auto-created.
+    4. Project matching repo_dir.
     Returns (project_id, project_name) or None.
     """
     repo_path = Path(repo_dir).resolve()
@@ -975,15 +1037,17 @@ def find_project_for_repo(
     if not projects_dir.is_dir():
         return None
 
-    preferred = (
+    explicit_pref = (
         preferred_name_or_id
         or os.environ.get("ANTIGRAVITY_PROJECT")
         or os.environ.get("GRAVITON_PROJECT_ID")
     )
-    if preferred:
-        preferred = preferred.strip()
+    if explicit_pref:
+        explicit_pref = explicit_pref.strip()
 
     match_by_repo = None
+    match_default_worker = None
+
     for p in projects_dir.glob("*.json"):
         if p.name in ("outside-of-project.json", "default-cli-project.json"):
             continue
@@ -992,8 +1056,11 @@ def find_project_for_repo(
             project_id = str(data.get("id") or p.stem)
             project_name = str(data.get("name") or project_id)
 
-            if preferred and (preferred == project_id or preferred.lower() == project_name.lower()):
+            if explicit_pref and (explicit_pref == project_id or explicit_pref.lower() == project_name.lower()):
                 return (project_id, project_name)
+
+            if not explicit_pref and project_name.strip().lower() == DEFAULT_PROJECT_NAME.lower():
+                match_default_worker = (project_id, project_name)
 
             resources = data.get("projectResources", {}).get("resources", [])
             for r in resources:
@@ -1006,7 +1073,22 @@ def find_project_for_repo(
                             match_by_repo = (project_id, project_name)
         except Exception:
             continue
-    return match_by_repo
+
+    if explicit_pref:
+        return match_by_repo
+
+    if match_default_worker:
+        return match_default_worker
+
+    # If config_dir is not custom (i.e. default system config dir), auto-ensure DEFAULT_PROJECT_NAME
+    default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
+    if projects_dir.resolve() == default_sys_dir:
+        return ensure_default_project(projects_dir, repo_path, DEFAULT_PROJECT_NAME)
+
+    if match_by_repo:
+        return match_by_repo
+
+    return None
 
 
 def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:

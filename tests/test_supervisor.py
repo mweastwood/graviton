@@ -845,6 +845,7 @@ class TestContainerSupervisor(unittest.TestCase):
             sup = ContainerSupervisor(
                 repo_dir=self.repo_dir,
                 agent_name="tester",
+                project_id="project-xyz-123",
                 model="claude-3-sonnet",
                 image_name="test-agent-image:custom",
                 remote_control=True,
@@ -1263,6 +1264,20 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         self.assertEqual(
             find_project_for_repo(spaced_dir, config_dir=self.projects_dir),
             ("project-beta", "Project Beta"),
+        )
+
+        # Test DEFAULT_PROJECT_NAME ("Graviton Workers") priority
+        from lib.supervisor import DEFAULT_PROJECT_NAME, ensure_default_project
+        self.assertEqual(DEFAULT_PROJECT_NAME, "Graviton Workers")
+
+        gw_pid, gw_pname = ensure_default_project(self.projects_dir, self.repo_dir, DEFAULT_PROJECT_NAME)
+        self.assertEqual(gw_pname, "Graviton Workers")
+        self.assertTrue((self.projects_dir / f"{gw_pid}.json").exists())
+
+        # Now find_project_for_repo should prefer Graviton Workers even if repo is matched
+        self.assertEqual(
+            find_project_for_repo(self.repo_dir, config_dir=self.projects_dir),
+            (gw_pid, "Graviton Workers"),
         )
 
     def test_varint_and_fields(self):
