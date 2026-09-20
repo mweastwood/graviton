@@ -224,6 +224,52 @@ class TestSidecarManager(unittest.TestCase):
         self.assertTrue(success)
         mock_start.assert_called_once()
 
+    @patch("lib.sidecar.start_sidecar")
+    @patch("lib.sidecar.check_health")
+    def test_ensure_sidecar_running_forwards_smee_url(self, mock_health, mock_start):
+        mock_health.return_value = (False, {})
+        mock_start.return_value = (True, "started")
+        success, msg = ensure_sidecar_running(
+            pid_file=self.pid_file,
+            smee_url="https://smee.io/forwarded-channel",
+        )
+        self.assertTrue(success)
+        mock_start.assert_called_once_with(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=None,
+            extra_args=None,
+            startup_timeout=8.0,
+            smee_url="https://smee.io/forwarded-channel",
+        )
+
+    @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.subprocess.Popen")
+    @patch("lib.sidecar.check_health", side_effect=[(False, {}), (True, {"status": "ok"})])
+    def test_start_sidecar_with_custom_smee_url(self, mock_health, mock_popen, mock_alive):
+        mock_proc = MagicMock()
+        mock_proc.pid = 9999
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        fake_script = self.tmp_path / "server.py"
+        fake_script.write_text("#!/usr/bin/env python3\n")
+
+        success, _ = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+            server_script=fake_script,
+            smee_url="https://smee.io/custom-test-channel",
+        )
+        self.assertTrue(success)
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
+        self.assertIn("--smee-url", cmd)
+        self.assertIn("https://smee.io/custom-test-channel", cmd)
+
 
 from importlib.machinery import SourceFileLoader
 import io

@@ -119,6 +119,7 @@ def cmd_ensure(args):
         pid_file=Path(args.pid_file),
         log_file=Path(args.log_file),
         extra_args=extra,
+        smee_url=args.smee_url,
     )
     if not success:
         if getattr(args, "json", False):

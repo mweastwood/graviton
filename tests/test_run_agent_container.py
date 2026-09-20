@@ -849,6 +849,26 @@ sys.exit(0)
             self.assertEqual(res.returncode, 0)
             self.assertIn("Agent 'code_reviewer' completed successfully.", res.stdout)
 
+    def test_antigravity_instance_name_with_spaces(self):
+        """Verify that ANTIGRAVITY_INSTANCE_NAME with whitespace is preserved without word-splitting."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            ctx["env"]["ANTIGRAVITY_INSTANCE_NAME"] = "Workstation 1 With Spaces"
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Instance name test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(ctx["fake_cwd"]),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_call = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]][0]
+            self.assertIn("-e", run_call["args"])
+            self.assertIn("ANTIGRAVITY_INSTANCE_NAME=Workstation 1 With Spaces", run_call["args"])
+
 
 if __name__ == "__main__":
     unittest.main()

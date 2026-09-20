@@ -705,6 +705,12 @@ def main():
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
     parser.add_argument("--smee-url", default=os.getenv("SMEE_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL)")
+    parser.add_argument(
+        "--no-smee",
+        action="store_true",
+        default=os.getenv("GRAVITON_NO_SMEE", "false").lower() in ("1", "true", "yes"),
+        help="Disable Smee.io webhook proxy listener (for direct webhook ingestion)",
+    )
     parser.add_argument("--max-workers", "-w", type=int, default=int(os.getenv("MAX_WORKERS", "2")), help="Max concurrent agent worker threads (default: 2)")
     parser.add_argument("--max-tasks", type=int, default=int(os.getenv("MAX_TASKS", "1000")), help="Max tasks retained in memory (default: 1000)")
     parser.add_argument("--quota-pool", default=os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini"), help="Target quota pool to track (e.g., gemini, claude_gpt) (default: gemini)")
@@ -796,11 +802,11 @@ def main():
         logger.info("HMAC signature verification ENABLED.")
 
     smee_url = (args.smee_url or "").strip()
-    if not smee_url:
-        logger.error("Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server.")
+    if not smee_url and not args.no_smee:
+        logger.error("Error: --smee-url (or SMEE_URL environment variable) is required to run the Graviton server, or specify --no-smee for direct webhook setups.")
         sys.exit(1)
 
-    listener_proc = start_smee_listener(smee_url, args.port)
+    listener_proc = start_smee_listener(smee_url, args.port) if smee_url else None
     GravitonHandler.listener_proc = listener_proc
 
     scheduler = None

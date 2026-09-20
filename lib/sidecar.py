@@ -25,7 +25,7 @@ logger = logging.getLogger("graviton.sidecar")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
-DEFAULT_SMEE_URL = os.environ.get("SMEE_URL", "https://smee.io/AiQqVvQ1tYZYo0T")
+DEFAULT_SMEE_URL = os.environ.get("SMEE_URL", "")
 DEFAULT_PID_FILE = REPO_ROOT / ".graviton_sidecar.pid"
 DEFAULT_LOG_FILE = REPO_ROOT / ".graviton_sidecar.log"
 SERVER_SCRIPT = REPO_ROOT / "bin" / "graviton-server.py"
@@ -340,6 +340,7 @@ def ensure_sidecar_running(
     log_file: Optional[Path] = None,
     extra_args: Optional[List[str]] = None,
     startup_timeout: float = 8.0,
+    smee_url: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """
     Guarantees the Graviton sidecar is running and healthy.
@@ -358,4 +359,5 @@ def ensure_sidecar_running(
         log_file=log_file,
         extra_args=extra_args,
         startup_timeout=startup_timeout,
+        smee_url=smee_url,
     )
