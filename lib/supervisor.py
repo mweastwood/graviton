@@ -1035,7 +1035,10 @@ def find_project_for_repo(
     """
     repo_path = Path(repo_dir).resolve()
     projects_dir = Path(config_dir) if config_dir else (Path.home() / ".gemini" / "config" / "projects")
+    default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
     if not projects_dir.is_dir():
+        if projects_dir.resolve() == default_sys_dir:
+            return ensure_default_project(projects_dir, repo_path, DEFAULT_PROJECT_NAME)
         return None
 
     explicit_pref = (
