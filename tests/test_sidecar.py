@@ -23,6 +23,7 @@ from lib.sidecar import (
     stop_sidecar,
     get_sidecar_status,
     ensure_sidecar_running,
+    ensure_shell_environment,
 )
 
 
@@ -506,6 +507,31 @@ class TestGravitonSidecarCLI(unittest.TestCase):
                 sidecar_cli.main()
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("Log file not found", mock_err.getvalue())
+
+
+class TestEnsureShellEnvironment(unittest.TestCase):
+
+    def test_ensure_shell_environment_imports_vars(self):
+        fake_stdout = "SMEE_URL=https://smee.io/test-channel-99\nEXTRA_VAR=graviton_value\nPATH=/fake/bin:/usr/bin\n"
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=fake_stdout)
+            ensure_shell_environment()
+            self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/test-channel-99")
+            self.assertEqual(os.environ.get("EXTRA_VAR"), "graviton_value")
+            self.assertIn("/fake/bin", os.environ.get("PATH", ""))
+
+    def test_ensure_shell_environment_webhook_proxy_fallback(self):
+        with patch.dict(os.environ, {"WEBHOOK_PROXY_URL": "https://smee.io/proxy-alias"}, clear=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            ensure_shell_environment()
+            self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/proxy-alias")
+
+    def test_ensure_shell_environment_subprocess_error(self):
+        with patch("subprocess.run", side_effect=OSError("shell not found")):
+            # Should not raise exception
+            ensure_shell_environment()
 
 
 if __name__ == "__main__":

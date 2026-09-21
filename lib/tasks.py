@@ -30,6 +30,7 @@ AUTO_CONTINUE_PATTERN = re.compile(
     r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
     re.IGNORECASE,
 )
+PR_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", re.IGNORECASE)
 
 
 def post_task_completion_comment(
@@ -1634,16 +1635,19 @@ class TaskManager:
 
                         # Deliverable validation for pr_drafter: must have produced a GitHub PR URL
                         if return_code == 0 and task.agent == "pr_drafter":
-                            pr_url_pattern = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", re.IGNORECASE)
-                            has_pr = bool(pr_url_pattern.search(result.response or ""))
+                            has_pr = bool(PR_URL_PATTERN.search(result.response or ""))
                             if not has_pr:
                                 for log_line in task.logs:
-                                    if pr_url_pattern.search(str(log_line)):
+                                    if PR_URL_PATTERN.search(str(log_line)):
                                         has_pr = True
                                         break
                             if not has_pr:
                                 return_code = 1
                                 stderr_output = "pr_drafter finished without opening a GitHub pull request"
+                                if hasattr(result, "status"):
+                                    result.status = "FAILED"
+                                if hasattr(result, "error"):
+                                    result.error = stderr_output
                                 logger.warning(f"[{worker_id}] Task '{task.id}' (pr_drafter) completed turn without producing a GitHub PR URL.")
 
                         if return_code == 0 and self.post_completion_comment:

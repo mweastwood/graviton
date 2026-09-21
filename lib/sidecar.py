@@ -25,10 +25,55 @@ logger = logging.getLogger("graviton.sidecar")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
-DEFAULT_SMEE_URL = os.environ.get("SMEE_URL", "")
+DEFAULT_SMEE_URL = os.environ.get("SMEE_URL") or os.environ.get("WEBHOOK_PROXY_URL", "")
 DEFAULT_PID_FILE = REPO_ROOT / ".graviton_sidecar.pid"
 DEFAULT_LOG_FILE = REPO_ROOT / ".graviton_sidecar.log"
 SERVER_SCRIPT = REPO_ROOT / "bin" / "graviton-server.py"
+
+
+def ensure_shell_environment(timeout: float = 2.0) -> None:
+    """
+    Ensure environment variables from the user's interactive login shell
+    are loaded into os.environ.
+
+    When spawned from GUI applications, IDEs, or non-interactive subshells,
+    processes often inherit an environment lacking user-configured variables
+    (e.g., SMEE_URL, WEBHOOK_PROXY_URL, GITHUB_TOKEN, custom PATH entries).
+
+    This executes the user's configured $SHELL with interactive flags to resolve
+    and import the real shell environment cleanly without ad-hoc file parsing.
+    """
+    if os.environ.get("SMEE_URL") or os.environ.get("WEBHOOK_PROXY_URL"):
+        if not os.environ.get("SMEE_URL") and os.environ.get("WEBHOOK_PROXY_URL"):
+            os.environ["SMEE_URL"] = os.environ["WEBHOOK_PROXY_URL"]
+        return
+
+    shell = os.environ.get("SHELL") or "/bin/bash"
+    try:
+        res = subprocess.run(
+            [shell, "-i", "-c", "env"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    if key not in os.environ or not os.environ[key]:
+                        os.environ[key] = val
+                    elif key == "PATH":
+                        existing_paths = set(os.environ["PATH"].split(":"))
+                        for p in val.split(":"):
+                            if p and p not in existing_paths:
+                                os.environ["PATH"] = f"{p}:{os.environ['PATH']}"
+                                existing_paths.add(p)
+    except Exception as e:
+        logger.debug(f"Could not load shell environment from {shell}: {e}")
+
+    # Fallback/alias: if SMEE_URL is not set but WEBHOOK_PROXY_URL is set, alias it
+    if not os.environ.get("SMEE_URL") and os.environ.get("WEBHOOK_PROXY_URL"):
+        os.environ["SMEE_URL"] = os.environ["WEBHOOK_PROXY_URL"]
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -195,6 +240,9 @@ def start_sidecar(
         return False, err
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    if smee_url is None:
+        ensure_shell_environment()
+
     cmd = [
         sys.executable,
         str(script),
@@ -207,7 +255,7 @@ def start_sidecar(
     has_no_smee = extra_args and any(arg == "--no-smee" for arg in extra_args)
     has_smee = extra_args and any(arg == "--smee-url" or arg.startswith("--smee-url=") for arg in extra_args)
     if not has_smee and not has_no_smee:
-        target_smee = smee_url if smee_url is not None else os.environ.get("SMEE_URL", DEFAULT_SMEE_URL)
+        target_smee = smee_url if smee_url is not None else (os.environ.get("SMEE_URL") or os.environ.get("WEBHOOK_PROXY_URL", DEFAULT_SMEE_URL))
         if target_smee:
             cmd.extend(["--smee-url", target_smee])
         else:
@@ -229,6 +277,7 @@ def start_sidecar(
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,  # detach process group
                 cwd=str(REPO_ROOT),
+                env=os.environ.copy(),
             )
 
         write_sidecar_pid(proc.pid, pid_path)

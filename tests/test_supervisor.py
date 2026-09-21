@@ -25,6 +25,7 @@ from lib.supervisor import (
     run_goal_turn,
     run_stream_turn,
     sync_conversation_to_agyhub,
+    ensure_workspace_trusted,
 )
 
 
@@ -1468,6 +1469,40 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+
+
+class TestEnsureWorkspaceTrusted(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cli_dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_creates_settings_json_when_missing(self):
+        settings_path = self.cli_dir / "settings.json"
+        self.assertFalse(settings_path.exists())
+        ensure_workspace_trusted(self.cli_dir)
+        self.assertTrue(settings_path.exists())
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_updates_existing_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps({"existingKey": 123, "trustedWorkspaces": ["/home/test"]}))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("existingKey"), 123)
+        self.assertIn("/home/test", data.get("trustedWorkspaces", []))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_corrupt_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text("{not valid json")
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
 
 
 class TestSupervisorIntegration(unittest.TestCase):

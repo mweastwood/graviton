@@ -2848,6 +2848,71 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         if expected_skills.is_dir():
             self.assertEqual(manager.skills_dir, expected_skills)
 
+    def test_pr_drafter_deliverable_validation_failure(self):
+        class MockSupervisorNoPR:
+            def __init__(self, **kwargs):
+                self.conversation_id = "test-conv-no-pr"
+            def start(self): pass
+            def cleanup(self): pass
+            def run_goal(self, goal, **kwargs):
+                from lib.supervisor import SupervisorResult
+                return SupervisorResult(status="SUCCESS", response="I have drafted the plan in text but opened no PR.", conversation_id=self.conversation_id)
+
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=MockSupervisorNoPR,
+        )
+        manager.start()
+        task = manager.submit_task(
+            agent="pr_drafter",
+            prompt="Draft PR for issue 123",
+            target="123",
+            goal_prompt="Draft PR",
+        )
+        manager.wait_for_task(task.id, timeout=5.0)
+        manager.stop(wait=False)
+
+        finished_task = manager.get_task(task.id)
+        self.assertEqual(finished_task.status, "FAILED")
+        self.assertEqual(finished_task.return_code, 1)
+        self.assertIn("without opening a GitHub pull request", finished_task.error_message)
+
+    def test_pr_drafter_deliverable_validation_success(self):
+        class MockSupervisorWithPR:
+            def __init__(self, **kwargs):
+                self.conversation_id = "test-conv-pr"
+            def start(self): pass
+            def cleanup(self): pass
+            def run_goal(self, goal, **kwargs):
+                from lib.supervisor import SupervisorResult
+                return SupervisorResult(
+                    status="SUCCESS",
+                    response="Created PR: https://github.com/mweastwood/graviton/pull/123 <!-- GOAL_COMPLETE -->",
+                    conversation_id=self.conversation_id,
+                )
+
+        manager = TaskManager(
+            max_workers=1,
+            cwd=self.tmp_path,
+            use_supervisor=True,
+            supervisor_cls=MockSupervisorWithPR,
+        )
+        manager.start()
+        task = manager.submit_task(
+            agent="pr_drafter",
+            prompt="Draft PR for issue 123",
+            target="123",
+            goal_prompt="Draft PR",
+        )
+        manager.wait_for_task(task.id, timeout=5.0)
+        manager.stop(wait=False)
+
+        finished_task = manager.get_task(task.id)
+        self.assertEqual(finished_task.status, "COMPLETED")
+        self.assertEqual(finished_task.return_code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

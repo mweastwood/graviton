@@ -1067,17 +1067,24 @@ def ensure_default_project(
 
 
 def ensure_workspace_trusted(cli_dir: Optional[Union[str, Path]] = None) -> None:
-    """Ensure /workspace is explicitly in trustedWorkspaces in settings.json."""
+    """Ensure /workspace is explicitly in trustedWorkspaces in settings.json atomically."""
     base = Path(cli_dir) if cli_dir else (Path.home() / ".gemini" / "antigravity-cli")
     settings_file = base / "settings.json"
-    if not settings_file.is_file():
-        return
     try:
-        data = json.loads(settings_file.read_text(encoding="utf-8"))
+        base.mkdir(parents=True, exist_ok=True)
+        if settings_file.is_file():
+            try:
+                data = json.loads(settings_file.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        else:
+            data = {}
         tw = data.setdefault("trustedWorkspaces", [])
         if "/workspace" not in tw:
             tw.append("/workspace")
-            settings_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_file = settings_file.with_name(f".{settings_file.name}.tmp_{uuid.uuid4().hex}")
+            tmp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_file.replace(settings_file)
     except Exception as e:
         logger.debug(f"Failed to ensure /workspace in settings.json: {e}")
 
@@ -1144,10 +1151,10 @@ def find_project_for_repo(
             continue
 
     if match_by_repo:
-        return match_by_repo
+        return ensure_default_project(projects_dir, repo_path, match_by_repo[1])
 
     if match_default_worker:
-        return match_default_worker
+        return ensure_default_project(projects_dir, repo_path, match_default_worker[1])
 
     # If config_dir is not custom (i.e. default system config dir), auto-ensure DEFAULT_PROJECT_NAME
     default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
@@ -1525,6 +1532,7 @@ class ContainerSupervisor:
         project_id: Optional[str] = None,
         user: Optional[str] = None,
         container_home: Optional[str] = None,
+        cli_dir: Optional[Union[str, Path]] = None,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
@@ -1574,7 +1582,8 @@ class ContainerSupervisor:
         else:
             self.project_id = raw_project_id or DEFAULT_PROJECT_NAME
 
-        ensure_workspace_trusted()
+        self.cli_dir = Path(cli_dir).resolve() if cli_dir else None
+        ensure_workspace_trusted(self.cli_dir)
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
