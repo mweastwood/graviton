@@ -60,10 +60,9 @@ def ensure_shell_environment(timeout: float = 2.0) -> None:
                             os.environ[key] = val
                         elif key == "PATH":
                             existing_paths = set(os.environ["PATH"].split(":"))
-                            for p in val.split(":"):
-                                if p and p not in existing_paths:
-                                    os.environ["PATH"] = f"{p}:{os.environ['PATH']}"
-                                    existing_paths.add(p)
+                            new_paths = [p for p in val.split(":") if p and p not in existing_paths]
+                            if new_paths:
+                                os.environ["PATH"] = f"{':'.join(new_paths)}:{os.environ['PATH']}"
     except Exception as e:
         logger.debug(f"Could not load shell environment from {shell}: {e}")
 

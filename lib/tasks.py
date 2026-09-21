@@ -20,7 +20,7 @@ from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
 from lib.security import is_valid_repo_name
-from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorError
+from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorError, clean_workspace_dir
 from lib.reactions import post_emoji_reaction_async
 
 logger = logging.getLogger("graviton.tasks")
@@ -355,51 +355,6 @@ def resolve_task_pool_and_model(quota_tracker: Optional[Any] = None) -> Tuple[st
     return (selected_pool, selected_model, all_exhausted)
 
 
-def clean_workspace_dir(path: Optional[Union[Path, str]]) -> bool:
-    """
-    Robustly removes a workspace directory, handling root-owned files or permission errors
-    by adjusting file permissions and falling back to a docker rm helper if needed.
-    """
-    if path is None:
-        return True
-    p = Path(path)
-    if not p.exists():
-        return True
-
-    def _handle_remove_readonly(func, target_path, exc_info):
-        try:
-            os.chmod(target_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-            func(target_path)
-        except Exception:
-            pass
-
-    try:
-        shutil.rmtree(p, onerror=_handle_remove_readonly)
-    except Exception:
-        pass
-
-    if not p.exists():
-        return True
-
-    # If directory still exists on host (e.g. root-owned files), fallback to helper container
-    try:
-        subprocess.run(
-            ["docker", "run", "--rm", "-v", f"{p.resolve()}:/target", "alpine", "sh", "-c", "rm -rf /target/* /target/.[!.]* 2>/dev/null || rm -rf /target/* /target/.* 2>/dev/null || true"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15,
-        )
-        try:
-            shutil.rmtree(p, ignore_errors=True)
-            if p.exists():
-                p.rmdir()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug(f"Docker fallback cleanup failed for {p}: {e}")
-
-    return not p.exists()
 
 
 def prune_abandoned_workspaces(
@@ -1688,6 +1643,18 @@ class TaskManager:
                         task.update_attempt_from_output(res.stdout)
                     if res.stderr:
                         task.update_attempt_from_output(res.stderr)
+
+                    # Deliverable validation parity for pr_drafter in non-supervisor mode
+                    if return_code == 0 and task.agent == "pr_drafter":
+                        has_pr = False
+                        for text_src in [res.stdout or "", res.stderr or ""] + [str(l) for l in task.logs]:
+                            if PR_URL_PATTERN.search(text_src):
+                                has_pr = True
+                                break
+                        if not has_pr:
+                            return_code = 1
+                            stderr_output = "pr_drafter finished without opening a GitHub pull request"
+                            logger.warning(f"[{worker_id}] Task '{task.id}' (pr_drafter) completed turn without producing a GitHub PR URL.")
                 else:
                     return_code = 0
                     stderr_output = ""

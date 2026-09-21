@@ -926,10 +926,34 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     if not p.exists():
         return True
 
+    # Ensure all directories and files in tree are writable before deletion
+    try:
+        os.chmod(str(p), 0o777)
+        for root, dirs, files in os.walk(str(p)):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o777)
+                except Exception:
+                    pass
+            for f in files:
+                try:
+                    os.chmod(os.path.join(root, f), 0o777)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     def _handle_remove_readonly(func, target_path, exc_info):
         try:
+            parent = Path(target_path).parent
+            if parent.exists():
+                try:
+                    os.chmod(parent, 0o777)
+                except Exception:
+                    pass
             os.chmod(target_path, 0o777)
-            func(target_path)
+            if func in (os.unlink, os.rmdir, os.remove):
+                func(target_path)
         except Exception:
             pass
 
@@ -1447,6 +1471,10 @@ def sync_conversation_to_agyhub(
                 (target_pid, target_ws, new_summary_bytes, cid),
             )
             conn.commit()
+            try:
+                db_path.chmod(0o644)
+            except Exception:
+                pass
 
         # Update conversation db trajectory_metadata_blob if present
         conv_db_path = c_dir / "conversations" / f"{cid}.db"
