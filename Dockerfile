@@ -31,6 +31,7 @@ RUN pip install --break-system-packages google-antigravity
 WORKDIR /workspace
 RUN mkdir -p /root/.gemini/antigravity-cli \
     && mkdir -p -m 777 /home/ubuntu/.gemini/antigravity-cli \
+    && chmod -R 777 /home/ubuntu \
     && chown -R ubuntu:ubuntu /home/ubuntu 2>/dev/null || true
 
 CMD ["bash"]

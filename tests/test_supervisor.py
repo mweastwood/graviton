@@ -26,6 +26,7 @@ from lib.supervisor import (
     run_stream_turn,
     sync_conversation_to_agyhub,
     ensure_workspace_trusted,
+    ensure_default_project,
 )
 
 
@@ -783,6 +784,14 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertEqual(sup.container_name, "graviton-stream-run-test1234")
         self.assertEqual(sup.temp_workspace, Path(self.tmp_dir.name) / "run-test1234")
         self.assertFalse(sup.is_alive())
+
+    def test_container_home_non_1000_user(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            user="1001:1001",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup.container_home, "/home/ubuntu")
 
     def test_prepare_workspace_cache_restore(self):
         cache_dir = Path(self.tmp_dir.name) / "cache"
@@ -1543,6 +1552,26 @@ class TestEnsureWorkspaceTrusted(unittest.TestCase):
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         self.assertIsInstance(data.get("trustedWorkspaces"), list)
         self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_non_dict_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps(["not", "a", "dict"]))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(data, dict)
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_null_project_resources(self):
+        projects_dir = Path(self.cli_dir) / "projects"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        proj_file = projects_dir / "null_res.json"
+        proj_file.write_text(json.dumps({"id": "proj-null", "name": "Graviton Workers", "projectResources": None}))
+        repo_dir = Path(self.cli_dir) / "repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        ensure_default_project(projects_dir, repo_dir)
+        data = json.loads(proj_file.read_text(encoding="utf-8"))
+        self.assertIsInstance(data.get("projectResources"), dict)
+        self.assertIsInstance(data.get("projectResources", {}).get("resources"), list)
 
 
 class TestSupervisorIntegration(unittest.TestCase):

@@ -1011,10 +1011,19 @@ def ensure_default_project(
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
             p_name = str(data.get("name") or "")
             p_id = str(data.get("id") or p.stem)
             if p_name.strip().lower() == name.lower() or p_id == name:
-                res_list = data.setdefault("projectResources", {}).setdefault("resources", [])
+                proj_res = data.get("projectResources")
+                if not isinstance(proj_res, dict):
+                    proj_res = {}
+                    data["projectResources"] = proj_res
+                res_list = proj_res.get("resources")
+                if not isinstance(res_list, list):
+                    res_list = []
+                    proj_res["resources"] = res_list
                 updated = False
                 if repo_path:
                     target_uri = f"file://{repo_path.resolve()}"
@@ -1103,6 +1112,8 @@ def ensure_workspace_trusted(cli_dir: Optional[Union[str, Path]] = None) -> None
                 data = {}
         else:
             data = {}
+        if not isinstance(data, dict):
+            data = {}
         tw = data.setdefault("trustedWorkspaces", [])
         if not isinstance(tw, list):
             tw = []
@@ -1154,6 +1165,8 @@ def find_project_for_repo(
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
             project_id = str(data.get("id") or p.stem)
             project_name = str(data.get("name") or project_id)
 
@@ -1163,7 +1176,8 @@ def find_project_for_repo(
             if project_name.strip().lower() == DEFAULT_PROJECT_NAME.lower():
                 match_default_worker = (project_id, project_name)
 
-            resources = data.get("projectResources", {}).get("resources", [])
+            proj_res = data.get("projectResources")
+            resources = proj_res.get("resources", []) if isinstance(proj_res, dict) and isinstance(proj_res.get("resources"), list) else []
             for r in resources:
                 gf = r.get("gitFolder", {})
                 folder_uri = gf.get("folderUri", "")
@@ -1597,8 +1611,7 @@ class ContainerSupervisor:
         if container_home is not None:
             self.container_home: str = container_home
         elif self.user and self.user.split(":")[0] not in ("0", "root"):
-            uid_str = self.user.split(":")[0]
-            self.container_home = "/home/ubuntu" if uid_str == "1000" else f"/tmp/graviton-home-{uid_str}"
+            self.container_home = "/home/ubuntu"
         else:
             self.container_home = "/root"
 
