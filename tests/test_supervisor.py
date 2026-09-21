@@ -1573,6 +1573,39 @@ class TestEnsureWorkspaceTrusted(unittest.TestCase):
         self.assertIsInstance(data.get("projectResources"), dict)
         self.assertIsInstance(data.get("projectResources", {}).get("resources"), list)
 
+    def test_handles_null_git_folder_and_non_dict_resources(self):
+        projects_dir = Path(self.cli_dir) / "projects"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        proj_file = projects_dir / "null_git_folder.json"
+        repo_dir = Path(self.cli_dir) / "repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        proj_file.write_text(json.dumps({
+            "id": "proj-null-gf",
+            "name": "Null Git Folder Project",
+            "projectResources": {
+                "resources": [
+                    None,
+                    "not-a-dict",
+                    123,
+                    {"gitFolder": None},
+                    {"gitFolder": {"folderUri": None}},
+                    {"gitFolder": {"folderUri": f"file://{repo_dir.resolve()}"}},
+                ]
+            }
+        }))
+
+        res = find_project_for_repo(repo_dir, config_dir=projects_dir)
+        self.assertEqual(res, ("proj-null-gf", "Null Git Folder Project"))
+
+        p_id, p_name = ensure_default_project(projects_dir, repo_dir, name="Null Git Folder Project")
+        self.assertEqual(p_id, "proj-null-gf")
+        data = json.loads(proj_file.read_text(encoding="utf-8"))
+        res_list = data.get("projectResources", {}).get("resources", [])
+        self.assertTrue(any(
+            isinstance(r, dict) and isinstance(r.get("gitFolder"), dict) and r["gitFolder"].get("folderUri") == "file:///workspace"
+            for r in res_list
+        ))
+
 
 class TestSupervisorIntegration(unittest.TestCase):
     def test_live_stream_session(self):

@@ -991,6 +991,18 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     return not p.exists()
 
 
+def _extract_uri(res_item: Any) -> Optional[str]:
+    """Safely extract folderUri from a resource item dict or nested gitFolder dict."""
+    if not isinstance(res_item, dict):
+        return None
+    if isinstance(res_item.get("folderUri"), str):
+        return res_item["folderUri"]
+    gf = res_item.get("gitFolder")
+    if isinstance(gf, dict) and isinstance(gf.get("folderUri"), str):
+        return gf["folderUri"]
+    return None
+
+
 def ensure_default_project(
     projects_dir: Path,
     repo_path: Optional[Path] = None,
@@ -1027,10 +1039,7 @@ def ensure_default_project(
                 updated = False
                 if repo_path:
                     target_uri = f"file://{repo_path.resolve()}"
-                    has_uri = any(
-                        r.get("folderUri") == target_uri or r.get("gitFolder", {}).get("folderUri") == target_uri
-                        for r in res_list
-                    )
+                    has_uri = any(_extract_uri(r) == target_uri for r in res_list)
                     if not has_uri:
                         res_list.append({
                             "gitFolder": {
@@ -1042,10 +1051,7 @@ def ensure_default_project(
 
                 # Always ensure container workspace is registered for sandbox execution
                 workspace_uri = "file:///workspace"
-                has_workspace = any(
-                    r.get("folderUri") == workspace_uri or r.get("gitFolder", {}).get("folderUri") == workspace_uri
-                    for r in res_list
-                )
+                has_workspace = any(_extract_uri(r) == workspace_uri for r in res_list)
                 if not has_workspace:
                     res_list.append({
                         "gitFolder": {
@@ -1179,8 +1185,7 @@ def find_project_for_repo(
             proj_res = data.get("projectResources")
             resources = proj_res.get("resources", []) if isinstance(proj_res, dict) and isinstance(proj_res.get("resources"), list) else []
             for r in resources:
-                gf = r.get("gitFolder", {})
-                folder_uri = gf.get("folderUri", "")
+                folder_uri = _extract_uri(r)
                 if folder_uri:
                     parsed_path = urllib.parse.unquote(urllib.parse.urlparse(folder_uri).path)
                     if parsed_path:
