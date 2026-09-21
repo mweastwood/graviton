@@ -889,8 +889,8 @@ class TestContainerSupervisor(unittest.TestCase):
 
             # Antigravity CLI mount: directory mount and ro credentials/binaries
             self.assertIn(f"{cli_dir.resolve()}:{container_home}/.gemini/antigravity-cli", cmd)
-            self.assertIn(f"{container_home}/.gemini/antigravity-cli/scratch:rw,exec", cmd)
-            self.assertIn(f"{(cli_dir / 'bin').resolve()}:{container_home}/.gemini/antigravity-cli/bin:ro", cmd)
+            # bin is not mounted :ro so agy can dynamically write agentapi execution helper
+            self.assertNotIn(f"{(cli_dir / 'bin').resolve()}:{container_home}/.gemini/antigravity-cli/bin:ro", cmd)
             self.assertIn(f"{container_home}/.gemini/config:rw,exec", cmd)
             self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:{container_home}/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
             self.assertIn(f"{(cli_dir / 'token.json').resolve()}:{container_home}/.gemini/antigravity-cli/token.json:ro", cmd)
@@ -924,8 +924,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("--output-format", cmd)
             self.assertIn("--dangerously-skip-permissions", cmd)
             self.assertIn("--remote-control", cmd)
-            self.assertIn("--agent", cmd)
-            self.assertIn("tester", cmd)
+            self.assertNotIn("--agent", cmd)
             self.assertIn("--model", cmd)
             self.assertIn("claude-3-sonnet", cmd)
             self.assertIn("--project", cmd)

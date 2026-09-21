@@ -273,9 +273,10 @@ class TestSidecarManager(unittest.TestCase):
 
     @patch.dict(os.environ, {"SMEE_URL": "https://smee.io/env-channel"}, clear=False)
     @patch("lib.sidecar.is_pid_alive", return_value=True)
+    @patch("lib.sidecar.ensure_shell_environment")
     @patch("lib.sidecar.subprocess.Popen")
     @patch("lib.sidecar.check_health", side_effect=[(False, {}), (True, {"status": "ok"})])
-    def test_start_sidecar_with_no_smee_flag(self, mock_health, mock_popen, mock_alive):
+    def test_start_sidecar_with_no_smee_flag(self, mock_health, mock_popen, mock_shell_env, mock_alive):
         mock_proc = MagicMock()
         mock_proc.pid = 9999
         mock_proc.poll.return_value = None

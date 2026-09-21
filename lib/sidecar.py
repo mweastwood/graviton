@@ -43,11 +43,6 @@ def ensure_shell_environment(timeout: float = 2.0) -> None:
     This executes the user's configured $SHELL with interactive flags to resolve
     and import the real shell environment cleanly without ad-hoc file parsing.
     """
-    if os.environ.get("SMEE_URL") or os.environ.get("WEBHOOK_PROXY_URL"):
-        if not os.environ.get("SMEE_URL") and os.environ.get("WEBHOOK_PROXY_URL"):
-            os.environ["SMEE_URL"] = os.environ["WEBHOOK_PROXY_URL"]
-        return
-
     shell = os.environ.get("SHELL") or "/bin/bash"
     try:
         res = subprocess.run(
@@ -60,14 +55,15 @@ def ensure_shell_environment(timeout: float = 2.0) -> None:
             for line in res.stdout.splitlines():
                 if "=" in line:
                     key, val = line.split("=", 1)
-                    if key not in os.environ or not os.environ[key]:
-                        os.environ[key] = val
-                    elif key == "PATH":
-                        existing_paths = set(os.environ["PATH"].split(":"))
-                        for p in val.split(":"):
-                            if p and p not in existing_paths:
-                                os.environ["PATH"] = f"{p}:{os.environ['PATH']}"
-                                existing_paths.add(p)
+                    if key and key.isidentifier():
+                        if key not in os.environ or not os.environ[key]:
+                            os.environ[key] = val
+                        elif key == "PATH":
+                            existing_paths = set(os.environ["PATH"].split(":"))
+                            for p in val.split(":"):
+                                if p and p not in existing_paths:
+                                    os.environ["PATH"] = f"{p}:{os.environ['PATH']}"
+                                    existing_paths.add(p)
     except Exception as e:
         logger.debug(f"Could not load shell environment from {shell}: {e}")
 

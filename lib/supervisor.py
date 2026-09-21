@@ -1743,14 +1743,16 @@ class ContainerSupervisor:
             cmd.extend(["-v", f"{gh_config.resolve()}:{self.container_home}/.config/gh:ro"])
 
         # Mount Antigravity CLI directory to persist conversations, summaries, and brain
-        # while keeping credential files, binaries, and builtins read-only, and scratch isolated
+        # while keeping credential files and builtins read-only, and scratch isolated.
+        # Note: 'bin' must remain writable because agy dynamically writes its agentapi
+        # execution helper into ~/.gemini/antigravity-cli/bin/agentapi.
         cli_dir = Path.home() / ".gemini" / "antigravity-cli"
         if cli_dir.is_dir():
             cmd.extend([
                 "-v", f"{cli_dir.resolve()}:{self.container_home}/.gemini/antigravity-cli",
                 "--tmpfs", f"{self.container_home}/.gemini/antigravity-cli/scratch:rw,exec",
             ])
-            for ro_sub in ["bin", "builtin", "updater"]:
+            for ro_sub in ["builtin", "updater"]:
                 sub_target = cli_dir / ro_sub
                 if sub_target.is_dir():
                     cmd.extend(["-v", f"{sub_target.resolve()}:{self.container_home}/.gemini/antigravity-cli/{ro_sub}:ro"])
@@ -1855,8 +1857,9 @@ class ContainerSupervisor:
                 inner_cmd.append("--dangerously-skip-permissions")
             if self.remote_control:
                 inner_cmd.append("--remote-control")
-            if self.agent_name:
-                inner_cmd.extend(["--agent", self.agent_name])
+            # Note: Do not pass '--agent' in container mode. Passing '--agent' causes agy to enter
+            # restricted subagent mode, which strips execution and file modification tools (run_command,
+            # write_to_file, etc.). Persona and task instructions are provided via the goal/prompt and mounted skills.
             if target_model:
                 inner_cmd.extend(["--model", target_model])
             if self.project_id and not any(arg == "--project" or arg.startswith("--project=") for arg in (self.extra_args or [])):
