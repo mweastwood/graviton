@@ -1104,6 +1104,9 @@ def ensure_workspace_trusted(cli_dir: Optional[Union[str, Path]] = None) -> None
         else:
             data = {}
         tw = data.setdefault("trustedWorkspaces", [])
+        if not isinstance(tw, list):
+            tw = []
+            data["trustedWorkspaces"] = tw
         if "/workspace" not in tw:
             tw.append("/workspace")
             tmp_file = settings_file.with_name(f".{settings_file.name}.tmp_{uuid.uuid4().hex}")
@@ -1774,7 +1777,7 @@ class ContainerSupervisor:
         # while keeping credential files and builtins read-only, and scratch isolated.
         # Note: 'bin' must remain writable because agy dynamically writes its agentapi
         # execution helper into ~/.gemini/antigravity-cli/bin/agentapi.
-        cli_dir = Path.home() / ".gemini" / "antigravity-cli"
+        cli_dir = self.cli_dir if self.cli_dir else (Path.home() / ".gemini" / "antigravity-cli")
         if cli_dir.is_dir():
             cmd.extend([
                 "-v", f"{cli_dir.resolve()}:{self.container_home}/.gemini/antigravity-cli",
@@ -1941,6 +1944,7 @@ class ContainerSupervisor:
                 repo_dir=self.repo_dir,
                 branch=self.default_branch,
                 project_id=self.project_id,
+                cli_dir=self.cli_dir,
             )
         except Exception as e:
             logger.debug(f"Failed to sync conversation to agyhub: {e}")

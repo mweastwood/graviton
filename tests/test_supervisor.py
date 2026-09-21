@@ -955,6 +955,39 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("custom_binary", cmd)
         self.assertIn("--custom-arg", cmd)
 
+    def test_build_docker_command_custom_cli_dir(self):
+        custom_cli = Path(self.tmp_dir.name) / "custom_cli"
+        custom_cli.mkdir(parents=True)
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="custom_cli_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            cli_dir=custom_cli,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn(f"{custom_cli.resolve()}:{sup.container_home}/.gemini/antigravity-cli", cmd)
+
+    def test_sync_agyhub_passes_custom_cli_dir(self):
+        custom_cli = Path(self.tmp_dir.name) / "custom_cli"
+        custom_cli.mkdir(parents=True)
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sync_custom_cli_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            cli_dir=custom_cli,
+        )
+        sup.conversation_id = "test-conv-123"
+        with patch("lib.supervisor.sync_conversation_to_agyhub") as mock_sync:
+            sup.sync_agyhub()
+            mock_sync.assert_called_once_with(
+                conversation_id="test-conv-123",
+                repo_dir=sup.repo_dir,
+                branch=sup.default_branch,
+                project_id=sup.project_id,
+                cli_dir=custom_cli,
+            )
+
     def test_build_docker_command_mounts_plugin_skills_and_agents_by_default(self):
         fake_repo = Path(self.tmp_dir.name) / "fake_repo"
         fake_repo.mkdir(parents=True)
@@ -1501,6 +1534,14 @@ class TestEnsureWorkspaceTrusted(unittest.TestCase):
         settings_path.write_text("{not valid json")
         ensure_workspace_trusted(self.cli_dir)
         data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_null_trusted_workspaces(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps({"trustedWorkspaces": None}))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(data.get("trustedWorkspaces"), list)
         self.assertIn("/workspace", data.get("trustedWorkspaces", []))
 
 
