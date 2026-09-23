@@ -43,11 +43,13 @@ __all__ = [
     "extract_remote_control_url",
     "find_project_for_repo",
     "get_remote_control_instance_name",
+    "has_ssh_credentials",
     "run_container_goal",
     "run_container_turn",
     "run_goal_turn",
     "run_stream_turn",
     "sync_conversation_to_agyhub",
+    "to_ssh_url",
 ]
 
 _UNSET: Any = object()
@@ -203,6 +205,7 @@ class StreamSession:
         self.extra_args = list(extra_args) if extra_args else []
         self.agy_binary = agy_binary or shutil.which("agy") or "agy"
         self.env = dict(env) if env is not None else dict(os.environ)
+        self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         self.custom_command = list(custom_command) if custom_command is not None else None
 
         self.proc: Optional[subprocess.Popen] = None
@@ -1544,6 +1547,50 @@ def sync_conversation_to_agyhub(
         return False
 
 
+def to_ssh_url(url: str) -> str:
+    """
+    Convert an HTTPS GitHub URL to an SSH clone URL if applicable.
+    Leaves SSH URLs or non-GitHub URLs untouched.
+
+    Examples:
+        https://github.com/owner/repo.git -> git@github.com:owner/repo.git
+        https://github.com/owner/repo -> git@github.com:owner/repo.git
+        git@github.com:owner/repo.git -> git@github.com:owner/repo.git
+    """
+    if not url:
+        return url
+    trimmed = url.strip()
+    clean = trimmed.rstrip("/")
+    if clean.endswith(".git"):
+        clean = clean[:-4]
+    m = re.match(r"^https://(?:[^@/]+@)?github\.com/([^/]+)/([^/]+)$", clean)
+    if m:
+        owner, repo = m.group(1), m.group(2)
+        return f"git@github.com:{owner}/{repo}.git"
+    return trimmed
+
+
+def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
+    """
+    Check if the host/environment has usable SSH credentials in ~/.ssh (or specified directory).
+    Detects standard private key files or non-empty SSH config file.
+    """
+    path = Path(ssh_dir) if ssh_dir else (Path.home() / ".ssh")
+    if not path.is_dir():
+        return False
+    try:
+        for item in path.iterdir():
+            if item.is_file() and item.stat().st_size > 0:
+                name = item.name
+                if name == "config":
+                    return True
+                if name.startswith("id_") and not name.endswith(".pub"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 
 class ContainerSupervisor:
     """
@@ -1583,6 +1630,7 @@ class ContainerSupervisor:
         user: Optional[str] = None,
         container_home: Optional[str] = None,
         cli_dir: Optional[Union[str, Path]] = None,
+        ssh_dir: Optional[Union[str, Path]] = None,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
@@ -1599,6 +1647,7 @@ class ContainerSupervisor:
         self.git_user_name = git_user_name
         self.git_user_email = git_user_email
         self.github_token = github_token
+        self.ssh_dir = Path(ssh_dir).resolve() if ssh_dir else (Path.home() / ".ssh")
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
         self.agents_dir = Path(agents_dir).resolve() if agents_dir else None
         self.env = dict(env) if env is not None else {}
@@ -1648,6 +1697,21 @@ class ContainerSupervisor:
         """Return accumulated stderr from the container session."""
         return self.session.get_stderr() if self.session else ""
 
+    def _resolve_github_token(self) -> Optional[str]:
+        """Resolve GitHub token from supervisor property, environment, or gh auth token."""
+        if self.github_token:
+            return self.github_token
+        token = os.environ.get("GITHUB_TOKEN")
+        if token:
+            return token
+        try:
+            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception:
+            pass
+        return None
+
     def prepare_workspace(self, branch: Optional[str] = None) -> Path:
         """
         Create isolated ephemeral workspace directory and populate it from cache or local clone.
@@ -1660,6 +1724,22 @@ class ContainerSupervisor:
 
         if self.cache_dir and self.cache_dir.is_dir():
             shutil.copytree(self.cache_dir, self.temp_workspace, dirs_exist_ok=True)
+            # Ensure origin URL uses SSH if SSH credentials are available
+            origin_res = subprocess.run(
+                ["git", "-C", str(self.temp_workspace), "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            origin_url = origin_res.stdout.strip()
+            if origin_url and has_ssh_credentials(self.ssh_dir):
+                ssh_url = to_ssh_url(origin_url)
+                if ssh_url != origin_url:
+                    subprocess.run(
+                        ["git", "-C", str(self.temp_workspace), "remote", "set-url", "origin", ssh_url],
+                        capture_output=True,
+                        check=False,
+                    )
         else:
             # Fast local git clone to ensure isolated .git index and working copy
             clone_cmd = ["git", "clone", "--local", str(self.repo_dir), str(self.temp_workspace)]
@@ -1677,6 +1757,8 @@ class ContainerSupervisor:
             )
             origin_url = origin_res.stdout.strip()
             if origin_url:
+                if has_ssh_credentials(self.ssh_dir):
+                    origin_url = to_ssh_url(origin_url)
                 subprocess.run(
                     ["git", "-C", str(self.temp_workspace), "remote", "set-url", "origin", origin_url],
                     capture_output=True,
@@ -1707,6 +1789,22 @@ class ContainerSupervisor:
             )
             subprocess.run(
                 ["git", "-C", str(self.temp_workspace), "reset", "--hard", f"origin/{target_branch}"],
+                capture_output=True,
+                check=False,
+            )
+
+        # Configure fallback authentication with GitHub token if available
+        token = self._resolve_github_token()
+        if token:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.temp_workspace),
+                    "config",
+                    f"url.https://x-access-token:{token}@github.com/.insteadOf",
+                    "https://github.com/",
+                ],
                 capture_output=True,
                 check=False,
             )
@@ -1782,7 +1880,7 @@ class ContainerSupervisor:
             cmd.extend(["-v", f"{agents_path.resolve()}:{self.container_home}/.gemini/config/agents:ro"])
 
         # SSH credentials mount
-        ssh_dir = Path.home() / ".ssh"
+        ssh_dir = self.ssh_dir if self.ssh_dir else (Path.home() / ".ssh")
         if ssh_dir.is_dir():
             cmd.extend(["-v", f"{ssh_dir.resolve()}:{self.container_home}/.ssh:ro"])
 
@@ -1828,14 +1926,7 @@ class ContainerSupervisor:
             cmd.extend(["-v", f"{gemini_projects_dir.resolve()}:{self.container_home}/.gemini/config/projects:ro"])
 
         # Environment variables
-        github_token = self.github_token or os.environ.get("GITHUB_TOKEN")
-        if not github_token:
-            try:
-                res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=False)
-                if res.returncode == 0 and res.stdout.strip():
-                    github_token = res.stdout.strip()
-            except Exception:
-                pass
+        github_token = self._resolve_github_token()
         if github_token:
             cmd.extend(["-e", f"GITHUB_TOKEN={github_token}"])
 
@@ -1870,6 +1961,7 @@ class ContainerSupervisor:
             "-e", f"GIT_AUTHOR_EMAIL={git_email}",
             "-e", f"GIT_COMMITTER_NAME={git_user}",
             "-e", f"GIT_COMMITTER_EMAIL={git_email}",
+            "-e", "GIT_TERMINAL_PROMPT=0",
         ])
 
         target_model = self.model or os.environ.get("ANTIGRAVITY_MODEL") or os.environ.get("MODEL_NAME")

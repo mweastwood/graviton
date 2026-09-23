@@ -19,14 +19,16 @@ from lib.supervisor import (
     SupervisorResult,
     SupervisorTimeoutError,
     clean_workspace_dir,
+    ensure_default_project,
+    ensure_workspace_trusted,
     find_project_for_repo,
+    has_ssh_credentials,
     run_container_goal,
     run_container_turn,
     run_goal_turn,
     run_stream_turn,
     sync_conversation_to_agyhub,
-    ensure_workspace_trusted,
-    ensure_default_project,
+    to_ssh_url,
 )
 
 
@@ -92,6 +94,72 @@ class TestSupervisorResult(unittest.TestCase):
         self.assertFalse(res2.is_goal_complete)
 
 
+class TestToSshUrl(unittest.TestCase):
+    def test_converts_https_github_url_with_dot_git(self):
+        url = "https://github.com/mweastwood/graviton.git"
+        self.assertEqual(to_ssh_url(url), "git@github.com:mweastwood/graviton.git")
+
+    def test_converts_https_github_url_without_dot_git(self):
+        url = "https://github.com/mweastwood/graviton"
+        self.assertEqual(to_ssh_url(url), "git@github.com:mweastwood/graviton.git")
+
+    def test_converts_https_github_url_with_trailing_slash(self):
+        url = "https://github.com/mweastwood/graviton/"
+        self.assertEqual(to_ssh_url(url), "git@github.com:mweastwood/graviton.git")
+
+    def test_converts_https_github_url_with_token(self):
+        url = "https://x-access-token:ghp_123456789@github.com/mweastwood/graviton.git"
+        self.assertEqual(to_ssh_url(url), "git@github.com:mweastwood/graviton.git")
+
+    def test_preserves_existing_ssh_url(self):
+        url = "git@github.com:mweastwood/graviton.git"
+        self.assertEqual(to_ssh_url(url), "git@github.com:mweastwood/graviton.git")
+
+    def test_preserves_non_github_url(self):
+        url = "https://gitlab.com/owner/repo.git"
+        self.assertEqual(to_ssh_url(url), "https://gitlab.com/owner/repo.git")
+
+    def test_handles_empty_or_none(self):
+        self.assertEqual(to_ssh_url(""), "")
+        self.assertEqual(to_ssh_url(None), None)
+
+
+class TestHasSshCredentials(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.ssh_dir = Path(self.tmp_dir.name)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_returns_false_for_nonexistent_dir(self):
+        non_existent = self.ssh_dir / "does_not_exist"
+        self.assertFalse(has_ssh_credentials(non_existent))
+
+    def test_returns_false_for_empty_dir(self):
+        self.assertFalse(has_ssh_credentials(self.ssh_dir))
+
+    def test_returns_false_for_pub_files_only(self):
+        pub_key = self.ssh_dir / "id_ed25519.pub"
+        pub_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...")
+        self.assertFalse(has_ssh_credentials(self.ssh_dir))
+
+    def test_returns_false_for_empty_key_file(self):
+        key = self.ssh_dir / "id_rsa"
+        key.touch()
+        self.assertFalse(has_ssh_credentials(self.ssh_dir))
+
+    def test_returns_true_for_valid_private_key(self):
+        key = self.ssh_dir / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n...")
+        self.assertTrue(has_ssh_credentials(self.ssh_dir))
+
+    def test_returns_true_for_non_empty_config(self):
+        cfg = self.ssh_dir / "config"
+        cfg.write_text("Host github.com\n  User git\n")
+        self.assertTrue(has_ssh_credentials(self.ssh_dir))
+
+
 class TestStreamSession(unittest.TestCase):
     def setUp(self):
         self.mock_proc = MagicMock()
@@ -139,6 +207,7 @@ class TestStreamSession(unittest.TestCase):
             self.assertIn("gemini-pro", cmd)
             self.assertIn("--effort", cmd)
             self.assertIn("high", cmd)
+            self.assertEqual(session.env.get("GIT_TERMINAL_PROMPT"), "0")
 
     def test_stream_session_custom_command(self):
         custom_cmd = ["docker", "run", "-i", "my-container", "agy", "--stream"]
@@ -819,6 +888,93 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertTrue(ws.exists())
         self.assertTrue((ws / "README.md").exists())
 
+    def test_prepare_workspace_converts_https_origin_to_ssh_when_ssh_keys_present(self):
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "add", "."], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+            cwd=str(self.repo_dir),
+            check=True,
+        )
+
+        fake_ssh = Path(self.tmp_dir.name) / "test_ssh"
+        fake_ssh.mkdir()
+        (fake_ssh / "id_ed25519").write_text("dummy private key")
+
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="ssh_convert_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            ssh_dir=fake_ssh,
+        )
+        ws = sup.prepare_workspace()
+        res = subprocess.run(["git", "-C", str(ws), "remote", "get-url", "origin"], capture_output=True, text=True, check=True)
+        self.assertEqual(res.stdout.strip(), "git@github.com:mweastwood/graviton.git")
+
+    def test_prepare_workspace_keeps_https_origin_when_no_ssh_keys(self):
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "add", "."], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+            cwd=str(self.repo_dir),
+            check=True,
+        )
+
+        fake_ssh = Path(self.tmp_dir.name) / "empty_ssh"
+        fake_ssh.mkdir()
+
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="no_ssh_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            ssh_dir=fake_ssh,
+        )
+        with patch.object(sup, "_resolve_github_token", return_value=None):
+            ws = sup.prepare_workspace()
+        res_config = subprocess.run(["git", "-C", str(ws), "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=True)
+        self.assertEqual(res_config.stdout.strip(), "https://github.com/mweastwood/graviton.git")
+        res_url = subprocess.run(["git", "-C", str(ws), "remote", "get-url", "origin"], capture_output=True, text=True, check=True)
+        self.assertEqual(res_url.stdout.strip(), "https://github.com/mweastwood/graviton.git")
+
+    def test_prepare_workspace_configures_github_token_insteadof(self):
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "add", "."], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+            cwd=str(self.repo_dir),
+            check=True,
+        )
+
+        fake_ssh = Path(self.tmp_dir.name) / "empty_ssh_token"
+        fake_ssh.mkdir()
+
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="token_insteadof_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            github_token="ghp_test1234567890",
+            ssh_dir=fake_ssh,
+        )
+        ws = sup.prepare_workspace()
+        res = subprocess.run(
+            ["git", "-C", str(ws), "config", "--get-regexp", r"url\..*"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("url.https://x-access-token:ghp_test1234567890@github.com/.insteadof https://github.com/", res.stdout)
+        res_url = subprocess.run(["git", "-C", str(ws), "remote", "get-url", "origin"], capture_output=True, text=True, check=True)
+        self.assertEqual(res_url.stdout.strip(), "https://x-access-token:ghp_test1234567890@github.com/mweastwood/graviton.git")
+
     def test_build_docker_command(self):
         home_mock = Path(self.tmp_dir.name) / "fake_home"
         ssh_dir = home_mock / ".ssh"
@@ -919,6 +1075,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("GITHUB_TOKEN=gh_secret_123", cmd)
             self.assertIn("GIT_AUTHOR_NAME=Test User", cmd)
             self.assertIn("GIT_AUTHOR_EMAIL=test@example.com", cmd)
+            self.assertIn("GIT_TERMINAL_PROMPT=0", cmd)
             self.assertIn("ANTIGRAVITY_MODEL=claude-3-sonnet", cmd)
             self.assertIn("ANTIGRAVITY_INSTANCE_NAME=test-instance", cmd)
             self.assertIn("MY_CUSTOM_VAR=hello", cmd)

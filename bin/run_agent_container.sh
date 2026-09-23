@@ -47,6 +47,14 @@ else
   # Restore original remote origin URL (git clone --local sets origin to the local host folder)
   ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
   if [ -n "${ORIGIN_URL}" ]; then
+    # Convert HTTPS GitHub origin to SSH if SSH keys or config exist
+    if ls -1 "${HOME}/.ssh"/id_* &>/dev/null 2>&1 || [ -s "${HOME}/.ssh/config" ]; then
+      CLEAN_ORIGIN="${ORIGIN_URL%/}"
+      CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
+      if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
+        ORIGIN_URL="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
+      fi
+    fi
     git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
     git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
     BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
@@ -55,6 +63,12 @@ else
     fi
     git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
     git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
+  fi
+
+  # Fallback authentication via token rewrite for HTTPS GitHub URLs
+  GH_TOKEN="$(gh auth token 2>/dev/null || echo "${GITHUB_TOKEN:-}")"
+  if [ -n "${GH_TOKEN}" ]; then
+    git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
   fi
 fi
 
@@ -173,6 +187,7 @@ if docker run -d --name "${CONTAINER_NAME}" \
     -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
     -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
     -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+    -e GIT_TERMINAL_PROMPT=0 \
     -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
     -e MODEL_NAME="${TARGET_MODEL:-}" \
     -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
@@ -209,6 +224,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
       -e MODEL_NAME="${TARGET_MODEL:-}" \
       -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
+      -e GIT_TERMINAL_PROMPT=0 \
       "${CONTAINER_NAME}" "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
     EXIT_CODE=${PIPESTATUS[0]}
   else
@@ -228,6 +244,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
       -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
       -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+      -e GIT_TERMINAL_PROMPT=0 \
       -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
       -e MODEL_NAME="${TARGET_MODEL:-}" \
       -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
