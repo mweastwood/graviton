@@ -27,7 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.tasks import TaskManager, Task, TaskStatus
-from lib.quota import QuotaTracker
+from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.scheduler import TaskScheduler
 
 logger = logging.getLogger("graviton.dashboard")
@@ -427,6 +427,16 @@ def parse_dashboard_markdown(
                         "remote_control_url": rc_url,
                     })
 
+    available_gemini_models = DEFAULT_GEMINI_MODELS.copy()
+    available_third_party_models = DEFAULT_THIRD_PARTY_MODELS.copy()
+    p_low = pool.lower()
+    if any(k in p_low for k in ("claude", "gpt", "3p", "third")):
+        active_third_party_model = model if model != "default" else (available_third_party_models[0] if available_third_party_models else "default")
+        active_gemini_model = available_gemini_models[0] if available_gemini_models else "default"
+    else:
+        active_gemini_model = model if model != "default" else (available_gemini_models[0] if available_gemini_models else "default")
+        active_third_party_model = available_third_party_models[0] if available_third_party_models else "default"
+
     return {
         "host": host,
         "port": port,
@@ -449,6 +459,10 @@ def parse_dashboard_markdown(
         "active_tasks": active_tasks,
         "queued_tasks_list": queued_tasks,
         "history_tasks": history_tasks,
+        "available_gemini_models": available_gemini_models,
+        "available_third_party_models": available_third_party_models,
+        "active_gemini_model": active_gemini_model,
+        "active_third_party_model": active_third_party_model,
     }
 
 
@@ -631,8 +645,36 @@ def render_dashboard_html(
                     data["pool"] = q_info.get("quota_pool") or q_info.get("current_pool") or data["pool"]
                 if data["model"] == "default":
                     data["model"] = q_info.get("selected_model") or q_info.get("active_model") or data["model"]
+
+            if hasattr(quota_tracker, "available_gemini_models") and quota_tracker.available_gemini_models:
+                data["available_gemini_models"] = list(quota_tracker.available_gemini_models)
+            if hasattr(quota_tracker, "available_third_party_models") and quota_tracker.available_third_party_models:
+                data["available_third_party_models"] = list(quota_tracker.available_third_party_models)
+
+            if hasattr(quota_tracker, "get_active_model"):
+                data["active_gemini_model"] = quota_tracker.get_active_model("gemini")
+                data["active_third_party_model"] = quota_tracker.get_active_model("third_party")
+            else:
+                if hasattr(quota_tracker, "active_gemini_model") and quota_tracker.active_gemini_model:
+                    data["active_gemini_model"] = quota_tracker.active_gemini_model
+                if hasattr(quota_tracker, "active_third_party_model") and quota_tracker.active_third_party_model:
+                    data["active_third_party_model"] = quota_tracker.active_third_party_model
         except Exception as e:
             logger.debug(f"Error enriching dashboard data from quota_tracker: {e}")
+
+    if data.get("active_gemini_model") and data["active_gemini_model"] not in data["available_gemini_models"]:
+        data["available_gemini_models"].insert(0, data["active_gemini_model"])
+    if data.get("active_third_party_model") and data["active_third_party_model"] not in data["available_third_party_models"]:
+        data["available_third_party_models"].insert(0, data["active_third_party_model"])
+
+    gemini_options_html = "\n".join([
+        f'<option value="{html.escape(m)}"{ " selected" if m == data["active_gemini_model"] else ""}>{html.escape(m)}</option>'
+        for m in data["available_gemini_models"]
+    ])
+    tp_options_html = "\n".join([
+        f'<option value="{html.escape(m)}"{ " selected" if m == data["active_third_party_model"] else ""}>{html.escape(m)}</option>'
+        for m in data["available_third_party_models"]
+    ])
 
     # Calculations for presentation
     workers_pct = min(100, int((data["active_workers"] / data["max_workers"]) * 100)) if data["max_workers"] > 0 else 0
@@ -981,6 +1023,67 @@ def render_dashboard_html(
             font-size: 0.75rem;
             color: var(--text-muted);
         }}
+        .model-select-row {{
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .model-select-label {{
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }}
+        .model-select-dropdown {{
+            background-color: var(--bg);
+            color: var(--text-bright);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            outline: none;
+            width: 100%;
+        }}
+        .model-select-dropdown:hover {{
+            border-color: var(--accent);
+        }}
+        .model-select-dropdown:focus {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        }}
+        .toast-container {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-width: 360px;
+        }}
+        .toast {{
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }}
+        .toast.show {{
+            opacity: 1;
+            transform: translateY(0);
+        }}
+        .toast-success {{
+            background-color: #238636;
+            border: 1px solid #2ea043;
+        }}
+        .toast-error {{
+            background-color: #da3633;
+            border: 1px solid #f85149;
+        }}
         .table-wrapper {{
             overflow-x: auto;
             border-radius: 6px;
@@ -1277,6 +1380,12 @@ def render_dashboard_html(
                         <div id="gemini-bar" class="meter-fill" style="width: {gemini_bar_pct}%; background-color: {gemini_color};"></div>
                     </div>
                     <div class="meter-sub">Live Gemini rate &amp; token pacing</div>
+                    <div class="model-select-row">
+                        <label for="gemini-model-select" class="model-select-label">Active Model:</label>
+                        <select id="gemini-model-select" class="model-select-dropdown" data-pool="gemini">
+{gemini_options_html}
+                        </select>
+                    </div>
                 </div>
                 <div class="quota-meter">
                     <div class="meter-header">
@@ -1287,9 +1396,17 @@ def render_dashboard_html(
                         <div id="tp-bar" class="meter-fill" style="width: {tp_bar_pct}%; background-color: {tp_color};"></div>
                     </div>
                     <div class="meter-sub">Fallback provider quota budget</div>
+                    <div class="model-select-row">
+                        <label for="tp-model-select" class="model-select-label">Active Model:</label>
+                        <select id="tp-model-select" class="model-select-dropdown" data-pool="third_party">
+{tp_options_html}
+                        </select>
+                    </div>
                 </div>
             </div>
         </div>
+
+        <div id="toast-container" class="toast-container"></div>
 
         <!-- Active Container Tasks Table -->
         <div class="card section-card">
@@ -1488,6 +1605,21 @@ def render_dashboard_html(
             const quotaModel = document.getElementById('quota-model');
             if (quotaModel) quotaModel.innerHTML = `Model: <strong>${{escapeHtml(model)}}</strong>`;
 
+            const gSelect = document.getElementById('gemini-model-select');
+            if (gSelect && document.activeElement !== gSelect && model && model !== 'default' && !pool.toLowerCase().includes('third') && !pool.toLowerCase().includes('claude') && !pool.toLowerCase().includes('3p')) {{
+                if (Array.from(gSelect.options).some(o => o.value === model)) {{
+                    gSelect.value = model;
+                    gSelect.setAttribute('data-last-val', model);
+                }}
+            }}
+            const tSelect = document.getElementById('tp-model-select');
+            if (tSelect && document.activeElement !== tSelect && model && model !== 'default' && (pool.toLowerCase().includes('third') || pool.toLowerCase().includes('claude') || pool.toLowerCase().includes('3p'))) {{
+                if (Array.from(tSelect.options).some(o => o.value === model)) {{
+                    tSelect.value = model;
+                    tSelect.setAttribute('data-last-val', model);
+                }}
+            }}
+
             function parsePct(str) {{
                 if (!str || str.startsWith('N/A')) return null;
                 const num = parseFloat(str.replace('%', ''));
@@ -1633,6 +1765,64 @@ def render_dashboard_html(
                 }}
             }}
         }}
+
+        function showToast(message, type) {{
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${{type || 'success'}}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => {{
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 300);
+            }}, 3000);
+        }}
+
+        async function onModelSelectChange(event) {{
+            const select = event.target;
+            const pool = select.getAttribute('data-pool');
+            const model = select.value;
+            const originalVal = select.getAttribute('data-last-val') || model;
+            select.disabled = true;
+            try {{
+                const res = await fetch('/api/model', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ pool: pool, model: model }})
+                }});
+                if (res.ok) {{
+                    const resData = await res.json();
+                    const newModel = resData.active_model || model;
+                    select.setAttribute('data-last-val', newModel);
+                    const poolName = pool === 'gemini' ? 'Gemini' : 'Third-Party';
+                    showToast(`Updated ${{poolName}} active model to ${{newModel}}`, 'success');
+                    refreshDashboard();
+                }} else {{
+                    let errText = 'Failed to set model';
+                    try {{
+                        const errData = await res.json();
+                        if (errData && errData.error) errText = errData.error;
+                    }} catch (e) {{}}
+                    select.value = originalVal;
+                    showToast(`Error: ${{errText}}`, 'error');
+                }}
+            }} catch (err) {{
+                select.value = originalVal;
+                showToast('Network error: Could not reach Graviton server', 'error');
+            }} finally {{
+                select.disabled = false;
+            }}
+        }}
+
+        document.addEventListener('DOMContentLoaded', () => {{
+            const dropdowns = document.querySelectorAll('.model-select-dropdown');
+            dropdowns.forEach(d => {{
+                d.setAttribute('data-last-val', d.value);
+                d.addEventListener('change', onModelSelectChange);
+            }});
+        }});
 
         async function refreshDashboard() {{
             try {{
