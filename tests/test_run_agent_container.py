@@ -54,6 +54,15 @@ if subcmd == "run":
                         Path(record_origin_file).write_text(res.stdout.strip())
                 except Exception:
                     pass
+            record_token_file = os.environ.get("MOCK_RECORD_GIT_TOKEN_CONFIG_FILE")
+            if record_token_file and Path(host_ws).exists():
+                import subprocess
+                try:
+                    res = subprocess.run(["git", "-C", host_ws, "config", "--get-regexp", "url\\..*"], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        Path(record_token_file).write_text(res.stdout.strip())
+                except Exception:
+                    pass
 
 # Record call
 if log_file:
@@ -1009,6 +1018,84 @@ sys.exit(0)
 
             self.assertTrue(origin_record.exists())
             self.assertEqual(origin_record.read_text().strip(), "git@github.com:mweastwood/graviton.git")
+
+    def test_empty_ssh_private_key_does_not_convert_origin_to_ssh(self):
+        """Verify that a 0-byte SSH private key file does not trigger HTTPS origin SSH conversion."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            fake_home = ctx["fake_home"]
+
+            origin_record = Path(tmp_dir) / "origin_record.txt"
+            ctx["env"]["MOCK_RECORD_GIT_ORIGIN_FILE"] = str(origin_record)
+
+            # Create .ssh directory with a 0-byte private key file
+            ssh_dir = fake_home / ".ssh"
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            (ssh_dir / "id_rsa").touch()
+
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Empty SSH key test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(origin_record.exists())
+            self.assertEqual(origin_record.read_text().strip(), "https://github.com/mweastwood/graviton.git")
+
+    def test_cached_workspace_configures_token_insteadof(self):
+        """Verify that restoring from CACHE_DIR still configures GitHub token url.insteadOf rewrite."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            cache_dir = Path(tmp_dir) / "cached_workspace"
+            cache_dir.mkdir()
+
+            # Initialize a git repo inside cache_dir
+            subprocess.run(["git", "init", "-q"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(cache_dir), check=True)
+            (cache_dir / "file.py").write_text("print('cached')\n")
+            subprocess.run(["git", "add", "file.py"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "cached commit"], cwd=str(cache_dir), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+
+            token_record = Path(tmp_dir) / "token_record.txt"
+            ctx["env"]["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cache_dir)
+            ctx["env"]["GITHUB_TOKEN"] = "ghp_cached_token_xyz"
+            ctx["env"]["MOCK_GH_TOKEN"] = "ghp_cached_token_xyz"
+            ctx["env"]["MOCK_RECORD_GIT_TOKEN_CONFIG_FILE"] = str(token_record)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Cached token test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(token_record.exists())
+            self.assertIn("url.https://x-access-token:ghp_cached_token_xyz@github.com/.insteadof https://github.com/", token_record.read_text())
 
 
 if __name__ == "__main__":

@@ -1575,7 +1575,15 @@ def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
     Check if the host/environment has usable SSH credentials in ~/.ssh (or specified directory).
     Detects standard private key files or non-empty SSH config file.
     """
-    path = Path(ssh_dir) if ssh_dir else (Path.home() / ".ssh")
+    if ssh_dir is not None:
+        if isinstance(ssh_dir, str) and not ssh_dir.strip():
+            return False
+        if isinstance(ssh_dir, Path) and (ssh_dir == Path("") or str(ssh_dir).strip() in ("", ".")):
+            return False
+        path = Path(ssh_dir)
+    else:
+        path = Path.home() / ".ssh"
+
     if not path.is_dir():
         return False
     try:
@@ -1699,11 +1707,11 @@ class ContainerSupervisor:
 
     def _resolve_github_token(self) -> Optional[str]:
         """Resolve GitHub token from supervisor property, environment, or gh auth token."""
-        if self.github_token:
-            return self.github_token
+        if self.github_token and self.github_token.strip():
+            return self.github_token.strip()
         token = os.environ.get("GITHUB_TOKEN")
-        if token:
-            return token
+        if token and token.strip():
+            return token.strip()
         try:
             res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout.strip():
@@ -1722,6 +1730,9 @@ class ContainerSupervisor:
         clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
         self.temp_workspace.parent.mkdir(parents=True, exist_ok=True)
 
+        git_env = dict(os.environ)
+        git_env["GIT_TERMINAL_PROMPT"] = "0"
+
         if self.cache_dir and self.cache_dir.is_dir():
             shutil.copytree(self.cache_dir, self.temp_workspace, dirs_exist_ok=True)
             # Ensure origin URL uses SSH if SSH credentials are available
@@ -1730,6 +1741,7 @@ class ContainerSupervisor:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=git_env,
             )
             origin_url = origin_res.stdout.strip()
             if origin_url and has_ssh_credentials(self.ssh_dir):
@@ -1739,30 +1751,15 @@ class ContainerSupervisor:
                         ["git", "-C", str(self.temp_workspace), "remote", "set-url", "origin", ssh_url],
                         capture_output=True,
                         check=False,
+                        env=git_env,
                     )
         else:
             # Fast local git clone to ensure isolated .git index and working copy
             clone_cmd = ["git", "clone", "--local", str(self.repo_dir), str(self.temp_workspace)]
-            res = subprocess.run(clone_cmd, capture_output=True, text=True, check=False)
+            res = subprocess.run(clone_cmd, capture_output=True, text=True, check=False, env=git_env)
             if res.returncode != 0:
                 clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
                 shutil.copytree(self.repo_dir, self.temp_workspace, dirs_exist_ok=True)
-
-            # Configure fallback authentication with GitHub token if available
-            token = self._resolve_github_token()
-            if token:
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.temp_workspace),
-                        "config",
-                        f"url.https://x-access-token:{token}@github.com/.insteadOf",
-                        "https://github.com/",
-                    ],
-                    capture_output=True,
-                    check=False,
-                )
 
             # Restore original remote origin URL
             origin_res = subprocess.run(
@@ -1770,6 +1767,7 @@ class ContainerSupervisor:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=git_env,
             )
             origin_url = origin_res.stdout.strip()
             if origin_url:
@@ -1779,11 +1777,13 @@ class ContainerSupervisor:
                     ["git", "-C", str(self.temp_workspace), "remote", "set-url", "origin", origin_url],
                     capture_output=True,
                     check=False,
+                    env=git_env,
                 )
                 subprocess.run(
                     ["git", "-C", str(self.temp_workspace), "fetch", "origin"],
                     capture_output=True,
                     check=False,
+                    env=git_env,
                 )
 
             # Determine target branch
@@ -1794,6 +1794,7 @@ class ContainerSupervisor:
                     capture_output=True,
                     text=True,
                     check=False,
+                    env=git_env,
                 )
                 cur = branch_res.stdout.strip()
                 target_branch = cur if cur and cur != "HEAD" else "main"
@@ -1802,11 +1803,30 @@ class ContainerSupervisor:
                 ["git", "-C", str(self.temp_workspace), "checkout", target_branch],
                 capture_output=True,
                 check=False,
+                env=git_env,
             )
             subprocess.run(
                 ["git", "-C", str(self.temp_workspace), "reset", "--hard", f"origin/{target_branch}"],
                 capture_output=True,
                 check=False,
+                env=git_env,
+            )
+
+        # Configure fallback authentication with GitHub token if available (for both cached and cloned workspaces)
+        token = self._resolve_github_token()
+        if token:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.temp_workspace),
+                    "config",
+                    f"url.https://x-access-token:{token}@github.com/.insteadOf",
+                    "https://github.com/",
+                ],
+                capture_output=True,
+                check=False,
+                env=git_env,
             )
 
         # Configure pre-commit hook if present
@@ -1818,6 +1838,7 @@ class ContainerSupervisor:
                     ["git", "-C", str(self.temp_workspace), "config", "core.hooksPath", ".githooks"],
                     capture_output=True,
                     check=False,
+                    env=git_env,
                 )
             except Exception as e:
                 logger.debug(f"Failed to configure githooks: {e}")
