@@ -406,6 +406,9 @@ class GravitonHandler(BaseHTTPRequestHandler):
         if path_clean == "/api/model":
             try:
                 data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+                if not isinstance(data, dict):
+                    self._send_json(400, {"error": "Invalid JSON payload, expected object"})
+                    return
             except Exception:
                 self._send_json(400, {"error": "Invalid JSON payload"})
                 return

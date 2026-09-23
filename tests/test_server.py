@@ -2165,6 +2165,20 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertIn("Invalid JSON payload", data["error"])
 
+    def test_do_post_api_model_non_dict_json(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'["gemini", "gemini-3.6-flash-high"]'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertEqual(data["error"], "Invalid JSON payload, expected object")
+
     def test_do_post_api_model_missing_fields(self):
         handler = MagicMock(spec=GravitonHandler)
         handler.path = "/api/model"
