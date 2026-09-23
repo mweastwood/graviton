@@ -55,7 +55,8 @@ if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
       done
     fi
     if [ "${HAS_SSH_KEYS}" = true ]; then
-      CLEAN_ORIGIN="${ORIGIN_URL%/}"
+      CLEAN_ORIGIN="${ORIGIN_URL}"
+      while [[ "${CLEAN_ORIGIN}" == */ ]]; do CLEAN_ORIGIN="${CLEAN_ORIGIN%/}"; done
       CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
       if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
         ORIGIN_URL="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
@@ -83,7 +84,8 @@ else
       done
     fi
     if [ "${HAS_SSH_KEYS}" = true ]; then
-      CLEAN_ORIGIN="${ORIGIN_URL%/}"
+      CLEAN_ORIGIN="${ORIGIN_URL}"
+      while [[ "${CLEAN_ORIGIN}" == */ ]]; do CLEAN_ORIGIN="${CLEAN_ORIGIN%/}"; done
       CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
       if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
         ORIGIN_URL="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
@@ -94,7 +96,7 @@ else
 fi
 
 # Fallback authentication via token rewrite for HTTPS GitHub URLs (configured for both cached and newly cloned workspaces)
-GH_TOKEN="$(gh auth token 2>/dev/null || echo "${GITHUB_TOKEN:-}")"
+GH_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || echo "")}"
 if [ -n "${GH_TOKEN}" ]; then
   git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
 fi
@@ -219,7 +221,7 @@ if docker run -d --name "${CONTAINER_NAME}" \
     "${INSTANCE_NAME_ARG[@]}" \
     -v "${TEMP_WORKSPACE}:/workspace" \
     -w /workspace \
-    -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+    -e GITHUB_TOKEN="${GH_TOKEN}" \
     -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
     -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
     -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
@@ -276,7 +278,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       "${INSTANCE_NAME_ARG[@]}" \
       -v "${TEMP_WORKSPACE}:/workspace" \
       -w /workspace \
-      -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+      -e GITHUB_TOKEN="${GH_TOKEN}" \
       -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
       -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
       -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \

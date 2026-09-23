@@ -1570,13 +1570,24 @@ def to_ssh_url(url: str) -> str:
     return trimmed
 
 
+def _is_empty_path(val: Union[str, Path]) -> bool:
+    if isinstance(val, str):
+        return not val.strip()
+    if isinstance(val, Path):
+        raw_paths = getattr(val, "_raw_paths", None)
+        if raw_paths:
+            return not str(raw_paths[0]).strip()
+        return not str(val).strip()
+    return not str(val).strip()
+
+
 def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
     """
     Check if the host/environment has usable SSH credentials in ~/.ssh (or specified directory).
     Detects standard private key files or non-empty SSH config file.
     """
     if ssh_dir is not None:
-        if isinstance(ssh_dir, str) and not ssh_dir.strip():
+        if _is_empty_path(ssh_dir):
             return False
         path = Path(ssh_dir)
     else:
@@ -1653,7 +1664,7 @@ class ContainerSupervisor:
         self.git_user_name = git_user_name
         self.git_user_email = git_user_email
         self.github_token = github_token
-        self.ssh_dir = Path(ssh_dir).resolve() if ssh_dir else (Path.home() / ".ssh")
+        self.ssh_dir = Path(ssh_dir).resolve() if (ssh_dir is not None and not _is_empty_path(ssh_dir)) else (Path.home() / ".ssh")
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
         self.agents_dir = Path(agents_dir).resolve() if agents_dir else None
         self.env = dict(env) if env is not None else {}

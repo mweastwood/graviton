@@ -139,6 +139,8 @@ class TestHasSshCredentials(unittest.TestCase):
     def test_returns_false_for_empty_path_strings(self):
         self.assertFalse(has_ssh_credentials(""))
         self.assertFalse(has_ssh_credentials("   "))
+        self.assertFalse(has_ssh_credentials(Path("")))
+        self.assertFalse(has_ssh_credentials(Path("   ")))
 
     def test_accepts_dot_path_and_dot_string_with_valid_credentials(self):
         key = self.ssh_dir / "id_ed25519"
@@ -868,6 +870,35 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertEqual(sup.container_name, "graviton-stream-run-test1234")
         self.assertEqual(sup.temp_workspace, Path(self.tmp_dir.name) / "run-test1234")
         self.assertFalse(sup.is_alive())
+
+    def test_ssh_dir_empty_path_defaults_to_home_ssh(self):
+        sup_empty_str = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            ssh_dir="",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup_empty_str.ssh_dir, Path.home() / ".ssh")
+
+        sup_whitespace_str = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            ssh_dir="   ",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup_whitespace_str.ssh_dir, Path.home() / ".ssh")
+
+        sup_empty_path = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            ssh_dir=Path(""),
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup_empty_path.ssh_dir, Path.home() / ".ssh")
+
+        sup_whitespace_path = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            ssh_dir=Path("   "),
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup_whitespace_path.ssh_dir, Path.home() / ".ssh")
 
     def test_container_home_non_1000_user(self):
         sup = ContainerSupervisor(
