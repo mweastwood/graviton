@@ -44,11 +44,28 @@ else
   # Fast local git clone to ensure an isolated .git index and working copy
   git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
 
+  # Fallback authentication via token rewrite for HTTPS GitHub URLs
+  GH_TOKEN="$(gh auth token 2>/dev/null || echo "${GITHUB_TOKEN:-}")"
+  if [ -n "${GH_TOKEN}" ]; then
+    git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
+  fi
+
   # Restore original remote origin URL (git clone --local sets origin to the local host folder)
   ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
   if [ -n "${ORIGIN_URL}" ]; then
     # Convert HTTPS GitHub origin to SSH if SSH keys or config exist
-    if ls -1 "${HOME}/.ssh"/id_* &>/dev/null 2>&1 || [ -s "${HOME}/.ssh/config" ]; then
+    HAS_SSH_KEYS=false
+    if [ -s "${HOME}/.ssh/config" ]; then
+      HAS_SSH_KEYS=true
+    else
+      for k in "${HOME}/.ssh"/id_*; do
+        if [ -f "${k}" ] && [[ "${k}" != *.pub ]]; then
+          HAS_SSH_KEYS=true
+          break
+        fi
+      done
+    fi
+    if [ "${HAS_SSH_KEYS}" = true ]; then
       CLEAN_ORIGIN="${ORIGIN_URL%/}"
       CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
       if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
@@ -63,12 +80,6 @@ else
     fi
     git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
     git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
-  fi
-
-  # Fallback authentication via token rewrite for HTTPS GitHub URLs
-  GH_TOKEN="$(gh auth token 2>/dev/null || echo "${GITHUB_TOKEN:-}")"
-  if [ -n "${GH_TOKEN}" ]; then
-    git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
   fi
 fi
 

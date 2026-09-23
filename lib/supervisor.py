@@ -1748,6 +1748,22 @@ class ContainerSupervisor:
                 clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
                 shutil.copytree(self.repo_dir, self.temp_workspace, dirs_exist_ok=True)
 
+            # Configure fallback authentication with GitHub token if available
+            token = self._resolve_github_token()
+            if token:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.temp_workspace),
+                        "config",
+                        f"url.https://x-access-token:{token}@github.com/.insteadOf",
+                        "https://github.com/",
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+
             # Restore original remote origin URL
             origin_res = subprocess.run(
                 ["git", "-C", str(self.repo_dir), "remote", "get-url", "origin"],
@@ -1789,22 +1805,6 @@ class ContainerSupervisor:
             )
             subprocess.run(
                 ["git", "-C", str(self.temp_workspace), "reset", "--hard", f"origin/{target_branch}"],
-                capture_output=True,
-                check=False,
-            )
-
-        # Configure fallback authentication with GitHub token if available
-        token = self._resolve_github_token()
-        if token:
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.temp_workspace),
-                    "config",
-                    f"url.https://x-access-token:{token}@github.com/.insteadOf",
-                    "https://github.com/",
-                ],
                 capture_output=True,
                 check=False,
             )
