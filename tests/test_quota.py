@@ -927,36 +927,40 @@ class TestQuotaTracker(unittest.TestCase):
                 mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
 
     def test_dual_pool_tracking_and_model_selection(self):
-        tracker = QuotaTracker(
-            available_gemini_models=DEFAULT_GEMINI_MODELS,
-            available_third_party_models=DEFAULT_THIRD_PARTY_MODELS,
-        )
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = QuotaTracker(
+                available_gemini_models=DEFAULT_GEMINI_MODELS,
+                available_third_party_models=DEFAULT_THIRD_PARTY_MODELS,
+                state_path=Path(tmpdir) / ".graviton_model_selection.json",
+            )
 
-        # Initial active models
-        self.assertEqual(tracker.get_active_model("gemini"), "gemini-3.8-flash-medium")
-        self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-sonnet-4-6")
+            # Initial active models
+            self.assertEqual(tracker.get_active_model("gemini"), "gemini-3.8-flash-medium")
+            self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-sonnet-4-6")
 
-        # Set active model
-        tracker.set_active_model("gemini", "gemini-2.5-pro")
-        tracker.set_active_model("claude_gpt", "claude-3-opus")
+            # Set active model
+            tracker.set_active_model("gemini", "gemini-2.5-pro")
+            tracker.set_active_model("claude_gpt", "claude-3-opus")
 
-        self.assertEqual(tracker.get_active_model("gemini"), "gemini-2.5-pro")
-        self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-3-opus")
+            self.assertEqual(tracker.get_active_model("gemini"), "gemini-2.5-pro")
+            self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-3-opus")
 
-        # Update quota for individual pools
-        tracker.update_quota(75.0, quota_pool="gemini")
-        tracker.update_quota(45.0, quota_pool="claude_gpt")
+            # Update quota for individual pools
+            tracker.update_quota(75.0, quota_pool="gemini")
+            tracker.update_quota(45.0, quota_pool="claude_gpt")
 
-        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 75.0)
-        self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 45.0)
+            self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 75.0)
+            self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 45.0)
 
-        self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
-        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+            self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
+            self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.NORMAL)
 
-        # Set claude_gpt pool to 0% -> EXHAUSTED
-        tracker.update_quota(0.0, quota_pool="claude_gpt")
-        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.EXHAUSTED)
-        self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
+            # Set claude_gpt pool to 0% -> EXHAUSTED
+            tracker.update_quota(0.0, quota_pool="claude_gpt")
+            self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.EXHAUSTED)
+            self.assertEqual(tracker.get_pool_state("gemini"), QuotaState.NORMAL)
 
     def test_poll_live_quota_third_party_pool(self):
         tracker = QuotaTracker()
@@ -1199,6 +1203,7 @@ class TestQuotaTracker(unittest.TestCase):
                 available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.1-pro-high"],
                 available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
                 quota_pool="gemini",
+                state_path=state_file,
             )
             tracker.set_active_model("gemini", "gemini-3.1-pro-high")
             tracker.set_active_model("claude_gpt", "claude-opus-4-6-thinking")

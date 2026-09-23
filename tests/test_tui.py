@@ -751,64 +751,68 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "main")
 
     def test_gemini_and_third_party_model_selection_screens(self):
-        quota = QuotaTracker(
-            available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium"],
-            available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
-            active_gemini_model="gemini-3.6-flash-high",
-            active_third_party_model="claude-sonnet-4-6",
-        )
-        manager = TaskManager(max_workers=2, quota_tracker=quota)
-        dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quota = QuotaTracker(
+                available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium"],
+                available_third_party_models=["claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+                active_gemini_model="gemini-3.6-flash-high",
+                active_third_party_model="claude-sonnet-4-6",
+                state_path=Path(tmpdir) / ".graviton_model_selection.json",
+            )
+            manager = TaskManager(max_workers=2, quota_tracker=quota)
+            dashboard = TerminalDashboard(task_manager=manager, quota_tracker=quota)
 
-        # Test Gemini Model Selection Screen via 'g'
-        dashboard.handle_key("g")
-        self.assertEqual(dashboard.active_screen, "gemini_models")
-        rendered_gemini = dashboard.render(width=80)
-        self.assertIn("GEMINI MODEL SELECTION", rendered_gemini)
-        self.assertIn("gemini-3.6-flash-high", rendered_gemini)
+            # Test Gemini Model Selection Screen via 'g'
+            dashboard.handle_key("g")
+            self.assertEqual(dashboard.active_screen, "gemini_models")
+            rendered_gemini = dashboard.render(width=80)
+            self.assertIn("GEMINI MODEL SELECTION", rendered_gemini)
+            self.assertIn("gemini-3.6-flash-high", rendered_gemini)
 
-        # Navigate down 'j' and select 'gemini-3.6-flash-medium' via Space
-        dashboard.handle_key("j")
-        dashboard.handle_key(" ")
-        self.assertEqual(quota.get_active_model("gemini"), "gemini-3.6-flash-medium")
+            # Navigate down 'j' and select 'gemini-3.6-flash-medium' via Space
+            dashboard.handle_key("j")
+            dashboard.handle_key(" ")
+            self.assertEqual(quota.get_active_model("gemini"), "gemini-3.6-flash-medium")
 
-        # Esc back to main
-        dashboard.handle_key("esc")
-        self.assertEqual(dashboard.active_screen, "main")
+            # Esc back to main
+            dashboard.handle_key("esc")
+            self.assertEqual(dashboard.active_screen, "main")
 
-        # Test 3rd Party Model Selection Screen via 'c'
-        dashboard.handle_key("c")
-        self.assertEqual(dashboard.active_screen, "third_party_models")
-        rendered_3p = dashboard.render(width=80)
-        self.assertIn("3RD PARTY MODEL SELECTION", rendered_3p)
-        self.assertIn("claude-sonnet-4-6", rendered_3p)
+            # Test 3rd Party Model Selection Screen via 'c'
+            dashboard.handle_key("c")
+            self.assertEqual(dashboard.active_screen, "third_party_models")
+            rendered_3p = dashboard.render(width=80)
+            self.assertIn("3RD PARTY MODEL SELECTION", rendered_3p)
+            self.assertIn("claude-sonnet-4-6", rendered_3p)
 
-        # Navigate down 'down' and select 'claude-opus-4-6-thinking' via Enter
-        dashboard.handle_key("down")
-        dashboard.handle_key("\n")
-        self.assertEqual(quota.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
+            # Navigate down 'down' and select 'claude-opus-4-6-thinking' via Enter
+            dashboard.handle_key("down")
+            dashboard.handle_key("\n")
+            self.assertEqual(quota.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
 
-        # Esc back to main
-        dashboard.handle_key("esc")
-        self.assertEqual(dashboard.active_screen, "main")
-        rendered_back = dashboard.render(width=80)
-        self.assertNotIn("SCHEDULED JOBS", rendered_back)
-        self.assertNotIn("EVENT LOGS", rendered_back)
-        self.assertIn("[p] Prioritize", rendered_back)
+            # Esc back to main
+            dashboard.handle_key("esc")
+            self.assertEqual(dashboard.active_screen, "main")
+            rendered_back = dashboard.render(width=80)
+            self.assertNotIn("SCHEDULED JOBS", rendered_back)
+            self.assertNotIn("EVENT LOGS", rendered_back)
+            self.assertIn("[p] Prioritize", rendered_back)
 
-        # 5. Toggle to "logs" screen via 'e' hotkey
-        dashboard.handle_key("e")
-        self.assertEqual(dashboard.active_screen, "logs")
-        rendered_logs = dashboard.render(width=80)
-        self.assertIn("EVENT LOGS", rendered_logs)
-        self.assertIn("Press [Esc] to return to Main Screen", rendered_logs)
+            # 5. Toggle to "logs" screen via 'e' hotkey
+            dashboard.handle_key("e")
+            self.assertEqual(dashboard.active_screen, "logs")
+            rendered_logs = dashboard.render(width=80)
+            self.assertIn("EVENT LOGS", rendered_logs)
+            self.assertIn("Press [Esc] to return to Main Screen", rendered_logs)
 
-        # 6. Toggle back to "main" screen via 'Esc' key
-        dashboard.handle_key("\x1b")
-        self.assertEqual(dashboard.active_screen, "main")
-        rendered_back_again = dashboard.render(width=80)
-        self.assertNotIn("EVENT LOGS", rendered_back_again)
-        self.assertIn("[p] Prioritize", rendered_back_again)
+            # 6. Toggle back to "main" screen via 'Esc' key
+            dashboard.handle_key("\x1b")
+            self.assertEqual(dashboard.active_screen, "main")
+            rendered_back_again = dashboard.render(width=80)
+            self.assertNotIn("EVENT LOGS", rendered_back_again)
+            self.assertIn("[p] Prioritize", rendered_back_again)
 
     def test_jobs_screen_line_widths(self):
         manager = TaskManager(max_workers=2)
