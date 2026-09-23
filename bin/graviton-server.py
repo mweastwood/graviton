@@ -30,6 +30,7 @@ from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
 from lib.updater import sync_repo_and_reload, stop_smee_listener, set_hot_reload_state
+from lib.sidecar import ensure_shell_environment
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard, run_graceful_shutdown
@@ -700,6 +701,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    ensure_shell_environment()
     parser = argparse.ArgumentParser(description="Graviton Webhook Server & Event Router")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="Host IP to bind (default: 0.0.0.0)")
     parser.add_argument("--port", "-p", type=int, default=int(os.getenv("PORT", "8000")), help="Port to bind (default: 8000)")
@@ -711,7 +713,7 @@ def main():
     parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
-    parser.add_argument("--smee-url", default=os.getenv("SMEE_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL)")
+    parser.add_argument("--smee-url", default=os.getenv("SMEE_URL") or os.getenv("WEBHOOK_PROXY_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL or WEBHOOK_PROXY_URL)")
     parser.add_argument(
         "--no-smee",
         action="store_true",

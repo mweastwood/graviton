@@ -39,6 +39,7 @@ __all__ = [
     "SupervisorTimeoutError",
     "clean_workspace_dir",
     "ensure_default_project",
+    "ensure_workspace_trusted",
     "extract_remote_control_url",
     "find_project_for_repo",
     "get_remote_control_instance_name",
@@ -925,10 +926,34 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     if not p.exists():
         return True
 
+    # Ensure all directories and files in tree are writable before deletion
+    try:
+        os.chmod(str(p), 0o777)
+        for root, dirs, files in os.walk(str(p)):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o777)
+                except Exception:
+                    pass
+            for f in files:
+                try:
+                    os.chmod(os.path.join(root, f), 0o777)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     def _handle_remove_readonly(func, target_path, exc_info):
         try:
+            parent = Path(target_path).parent
+            if parent.exists():
+                try:
+                    os.chmod(parent, 0o777)
+                except Exception:
+                    pass
             os.chmod(target_path, 0o777)
-            func(target_path)
+            if func in (os.unlink, os.rmdir, os.remove):
+                func(target_path)
         except Exception:
             pass
 
@@ -966,6 +991,18 @@ def clean_workspace_dir(path: Optional[Union[Path, str]], docker_binary: str = "
     return not p.exists()
 
 
+def _extract_uri(res_item: Any) -> Optional[str]:
+    """Safely extract folderUri from a resource item dict or nested gitFolder dict."""
+    if not isinstance(res_item, dict):
+        return None
+    if isinstance(res_item.get("folderUri"), str):
+        return res_item["folderUri"]
+    gf = res_item.get("gitFolder")
+    if isinstance(gf, dict) and isinstance(gf.get("folderUri"), str):
+        return gf["folderUri"]
+    return None
+
+
 def ensure_default_project(
     projects_dir: Path,
     repo_path: Optional[Path] = None,
@@ -986,16 +1023,23 @@ def ensure_default_project(
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
             p_name = str(data.get("name") or "")
             p_id = str(data.get("id") or p.stem)
             if p_name.strip().lower() == name.lower() or p_id == name:
+                proj_res = data.get("projectResources")
+                if not isinstance(proj_res, dict):
+                    proj_res = {}
+                    data["projectResources"] = proj_res
+                res_list = proj_res.get("resources")
+                if not isinstance(res_list, list):
+                    res_list = []
+                    proj_res["resources"] = res_list
+                updated = False
                 if repo_path:
-                    res_list = data.setdefault("projectResources", {}).setdefault("resources", [])
                     target_uri = f"file://{repo_path.resolve()}"
-                    has_uri = any(
-                        r.get("folderUri") == target_uri or r.get("gitFolder", {}).get("folderUri") == target_uri
-                        for r in res_list
-                    )
+                    has_uri = any(_extract_uri(r) == target_uri for r in res_list)
                     if not has_uri:
                         res_list.append({
                             "gitFolder": {
@@ -1003,10 +1047,25 @@ def ensure_default_project(
                                 "defaultBranch": "main",
                             }
                         })
-                        try:
-                            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                        except Exception:
-                            pass
+                        updated = True
+
+                # Always ensure container workspace is registered for sandbox execution
+                workspace_uri = "file:///workspace"
+                has_workspace = any(_extract_uri(r) == workspace_uri for r in res_list)
+                if not has_workspace:
+                    res_list.append({
+                        "gitFolder": {
+                            "folderUri": workspace_uri,
+                            "defaultBranch": "main",
+                        }
+                    })
+                    updated = True
+
+                if updated:
+                    try:
+                        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
                 return (p_id, p_name)
         except Exception:
             continue
@@ -1014,14 +1073,23 @@ def ensure_default_project(
     # Deterministic UUID for the project
     proj_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"graviton-{name.lower().replace(' ', '-')}"))
     proj_file = projects_dir / f"{proj_id}.json"
-    resources = []
-    if repo_path:
-        resources.append({
+    resources = [
+        {
             "gitFolder": {
-                "folderUri": f"file://{repo_path.resolve()}",
+                "folderUri": "file:///workspace",
                 "defaultBranch": "main",
             }
-        })
+        }
+    ]
+    if repo_path:
+        target_uri = f"file://{repo_path.resolve()}"
+        if target_uri != "file:///workspace":
+            resources.append({
+                "gitFolder": {
+                    "folderUri": target_uri,
+                    "defaultBranch": "main",
+                }
+            })
     proj_data = {
         "id": proj_id,
         "name": name,
@@ -1035,6 +1103,34 @@ def ensure_default_project(
     except Exception as e:
         logger.debug(f"Could not auto-create project file {proj_file}: {e}")
     return (proj_id, name)
+
+
+def ensure_workspace_trusted(cli_dir: Optional[Union[str, Path]] = None) -> None:
+    """Ensure /workspace is explicitly in trustedWorkspaces in settings.json atomically."""
+    base = Path(cli_dir) if cli_dir else (Path.home() / ".gemini" / "antigravity-cli")
+    settings_file = base / "settings.json"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        if settings_file.is_file():
+            try:
+                data = json.loads(settings_file.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        else:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        tw = data.setdefault("trustedWorkspaces", [])
+        if not isinstance(tw, list):
+            tw = []
+            data["trustedWorkspaces"] = tw
+        if "/workspace" not in tw:
+            tw.append("/workspace")
+            tmp_file = settings_file.with_name(f".{settings_file.name}.tmp_{uuid.uuid4().hex}")
+            tmp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_file.replace(settings_file)
+    except Exception as e:
+        logger.debug(f"Failed to ensure /workspace in settings.json: {e}")
 
 
 def find_project_for_repo(
@@ -1075,6 +1171,8 @@ def find_project_for_repo(
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
             project_id = str(data.get("id") or p.stem)
             project_name = str(data.get("name") or project_id)
 
@@ -1084,10 +1182,10 @@ def find_project_for_repo(
             if project_name.strip().lower() == DEFAULT_PROJECT_NAME.lower():
                 match_default_worker = (project_id, project_name)
 
-            resources = data.get("projectResources", {}).get("resources", [])
+            proj_res = data.get("projectResources")
+            resources = proj_res.get("resources", []) if isinstance(proj_res, dict) and isinstance(proj_res.get("resources"), list) else []
             for r in resources:
-                gf = r.get("gitFolder", {})
-                folder_uri = gf.get("folderUri", "")
+                folder_uri = _extract_uri(r)
                 if folder_uri:
                     parsed_path = urllib.parse.unquote(urllib.parse.urlparse(folder_uri).path)
                     if parsed_path:
@@ -1099,10 +1197,10 @@ def find_project_for_repo(
             continue
 
     if match_by_repo:
-        return match_by_repo
+        return ensure_default_project(projects_dir, repo_path, match_by_repo[1])
 
     if match_default_worker:
-        return match_default_worker
+        return ensure_default_project(projects_dir, repo_path, match_default_worker[1])
 
     # If config_dir is not custom (i.e. default system config dir), auto-ensure DEFAULT_PROJECT_NAME
     default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
@@ -1395,11 +1493,19 @@ def sync_conversation_to_agyhub(
                 (target_pid, target_ws, new_summary_bytes, cid),
             )
             conn.commit()
+            try:
+                db_path.chmod(0o644)
+            except Exception:
+                pass
 
         # Update conversation db trajectory_metadata_blob if present
         conv_db_path = c_dir / "conversations" / f"{cid}.db"
         if conv_db_path.exists():
             try:
+                try:
+                    conv_db_path.chmod(0o644)
+                except Exception:
+                    pass
                 with sqlite3.connect(str(conv_db_path), timeout=30.0) as c_conn:
                     c_cur = c_conn.cursor()
                     c_cur.execute(
@@ -1410,26 +1516,27 @@ def sync_conversation_to_agyhub(
             except Exception as e:
                 logger.debug(f"Failed to update trajectory_metadata_blob for {cid}: {e}")
 
-        # Update agyhub_summaries_proto.pb
-        hub_pb_path = c_dir / "agyhub_summaries_proto.pb"
-        existing_entries = []
-        if hub_pb_path.exists():
+        # Update agyhub_summaries_proto.pb and jetbox_summaries_proto.pb
+        for proto_name in ("agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb"):
+            pb_path = c_dir / proto_name
+            existing_entries = []
+            if pb_path.exists():
+                try:
+                    existing_entries = _read_agyhub_entries(pb_path.read_bytes())
+                except Exception as e:
+                    logger.debug(f"Failed to read existing {proto_name}: {e}")
+
+            filtered = [(entry_id, entry_sum) for entry_id, entry_sum in existing_entries if entry_id != cid]
+            updated_entries = [(cid, new_summary_bytes)] + filtered
+            encoded_hub_data = _write_agyhub_entries(updated_entries)
+
+            tmp_path = pb_path.with_name(f".{pb_path.name}.tmp_{uuid.uuid4().hex}")
+            tmp_path.write_bytes(encoded_hub_data)
             try:
-                existing_entries = _read_agyhub_entries(hub_pb_path.read_bytes())
-            except Exception as e:
-                logger.debug(f"Failed to read existing agyhub_summaries_proto.pb: {e}")
-
-        filtered = [(entry_id, entry_sum) for entry_id, entry_sum in existing_entries if entry_id != cid]
-        updated_entries = [(cid, new_summary_bytes)] + filtered
-        encoded_hub_data = _write_agyhub_entries(updated_entries)
-
-        tmp_path = hub_pb_path.with_name(f".{hub_pb_path.name}.tmp_{uuid.uuid4().hex}")
-        tmp_path.write_bytes(encoded_hub_data)
-        try:
-            tmp_path.chmod(0o600)
-        except Exception:
-            pass
-        tmp_path.replace(hub_pb_path)
+                tmp_path.chmod(0o644)
+            except Exception:
+                pass
+            tmp_path.replace(pb_path)
         logger.debug(f"Successfully synced conversation {cid} to agyhub.")
         return True
     except Exception as e:
@@ -1473,6 +1580,9 @@ class ContainerSupervisor:
         agy_binary: Optional[str] = None,
         cache_dir: Optional[Union[str, Path]] = None,
         project_id: Optional[str] = None,
+        user: Optional[str] = None,
+        container_home: Optional[str] = None,
+        cli_dir: Optional[Union[str, Path]] = None,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
@@ -1496,6 +1606,20 @@ class ContainerSupervisor:
         self.agy_binary = agy_binary
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
 
+        if user is not None:
+            self.user: Optional[str] = user
+        else:
+            host_uid = os.getuid() if hasattr(os, "getuid") else 0
+            host_gid = os.getgid() if hasattr(os, "getgid") else 0
+            self.user = f"{host_uid}:{host_gid}" if host_uid != 0 else None
+
+        if container_home is not None:
+            self.container_home: str = container_home
+        elif self.user and self.user.split(":")[0] not in ("0", "root"):
+            self.container_home = "/home/ubuntu"
+        else:
+            self.container_home = "/root"
+
         raw_project_id = (
             project_id
             or os.environ.get("ANTIGRAVITY_PROJECT")
@@ -1506,6 +1630,9 @@ class ContainerSupervisor:
             self.project_id = resolved[0]
         else:
             self.project_id = raw_project_id or DEFAULT_PROJECT_NAME
+
+        self.cli_dir = Path(cli_dir).resolve() if cli_dir else None
+        ensure_workspace_trusted(self.cli_dir)
 
         self.session: Optional[StreamSession] = None
         self.conversation_id: Optional[str] = None
@@ -1613,6 +1740,9 @@ class ContainerSupervisor:
             self.container_name,
             "--security-opt=no-new-privileges",
         ]
+        if self.user:
+            cmd.extend(["--user", self.user])
+        cmd.extend(["-e", f"HOME={self.container_home}"])
 
         # Ephemeral workspace mount
         cmd.extend(["-v", f"{self.temp_workspace.resolve()}:/workspace", "-w", "/workspace"])
@@ -1623,7 +1753,7 @@ class ContainerSupervisor:
             cmd.extend(["-v", f"{Path(host_agy).resolve()}:/usr/local/bin/agy:ro"])
 
         # Config directory tmpfs overlay
-        cmd.extend(["--tmpfs", "/root/.gemini/config:rw,exec"])
+        cmd.extend(["--tmpfs", f"{self.container_home}/.gemini/config:rw,exec"])
 
         # Skills directory mount
         skills_path = self.skills_dir
@@ -1636,7 +1766,7 @@ class ContainerSupervisor:
                 if repo_skills.is_dir():
                     skills_path = repo_skills
         if skills_path and skills_path.is_dir():
-            cmd.extend(["-v", f"{skills_path.resolve()}:/root/.gemini/config/skills:ro"])
+            cmd.extend(["-v", f"{skills_path.resolve()}:{self.container_home}/.gemini/config/skills:ro"])
 
         # Agents directory mount
         agents_path = self.agents_dir
@@ -1649,30 +1779,32 @@ class ContainerSupervisor:
                 if repo_agents.is_dir():
                     agents_path = repo_agents
         if agents_path and agents_path.is_dir():
-            cmd.extend(["-v", f"{agents_path.resolve()}:/root/.gemini/config/agents:ro"])
+            cmd.extend(["-v", f"{agents_path.resolve()}:{self.container_home}/.gemini/config/agents:ro"])
 
         # SSH credentials mount
         ssh_dir = Path.home() / ".ssh"
         if ssh_dir.is_dir():
-            cmd.extend(["-v", f"{ssh_dir.resolve()}:/root/.ssh:ro"])
+            cmd.extend(["-v", f"{ssh_dir.resolve()}:{self.container_home}/.ssh:ro"])
 
         # GitHub CLI config mount
         gh_config = Path.home() / ".config" / "gh"
         if gh_config.is_dir():
-            cmd.extend(["-v", f"{gh_config.resolve()}:/root/.config/gh:ro"])
+            cmd.extend(["-v", f"{gh_config.resolve()}:{self.container_home}/.config/gh:ro"])
 
         # Mount Antigravity CLI directory to persist conversations, summaries, and brain
-        # while keeping credential files, binaries, and builtins read-only, and scratch isolated
-        cli_dir = Path.home() / ".gemini" / "antigravity-cli"
+        # while keeping credential files and builtins read-only, and scratch isolated.
+        # Note: 'bin' must remain writable because agy dynamically writes its agentapi
+        # execution helper into ~/.gemini/antigravity-cli/bin/agentapi.
+        cli_dir = self.cli_dir if self.cli_dir else (Path.home() / ".gemini" / "antigravity-cli")
         if cli_dir.is_dir():
             cmd.extend([
-                "-v", f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli",
-                "--tmpfs", "/root/.gemini/antigravity-cli/scratch:rw,exec",
+                "-v", f"{cli_dir.resolve()}:{self.container_home}/.gemini/antigravity-cli",
+                "--tmpfs", f"{self.container_home}/.gemini/antigravity-cli/scratch:rw,exec",
             ])
-            for ro_sub in ["bin", "builtin", "updater"]:
+            for ro_sub in ["builtin", "updater"]:
                 sub_target = cli_dir / ro_sub
                 if sub_target.is_dir():
-                    cmd.extend(["-v", f"{sub_target.resolve()}:/root/.gemini/antigravity-cli/{ro_sub}:ro"])
+                    cmd.extend(["-v", f"{sub_target.resolve()}:{self.container_home}/.gemini/antigravity-cli/{ro_sub}:ro"])
             for cred_file in [
                 "antigravity-oauth-token",
                 "token.json",
@@ -1683,17 +1815,17 @@ class ContainerSupervisor:
             ]:
                 target = cli_dir / cred_file
                 if target.is_file():
-                    cmd.extend(["-v", f"{target.resolve()}:/root/.gemini/antigravity-cli/{cred_file}:ro"])
+                    cmd.extend(["-v", f"{target.resolve()}:{self.container_home}/.gemini/antigravity-cli/{cred_file}:ro"])
 
         # Mount host config.json for Antigravity Remote Control identification
         gemini_config_file = Path.home() / ".gemini" / "config" / "config.json"
         if gemini_config_file.is_file():
-            cmd.extend(["-v", f"{gemini_config_file.resolve()}:/root/.gemini/config/config.json:ro"])
+            cmd.extend(["-v", f"{gemini_config_file.resolve()}:{self.container_home}/.gemini/config/config.json:ro"])
 
         # Mount host projects directory for project definitions and workspace scoping
         gemini_projects_dir = Path.home() / ".gemini" / "config" / "projects"
         if gemini_projects_dir.is_dir():
-            cmd.extend(["-v", f"{gemini_projects_dir.resolve()}:/root/.gemini/config/projects:ro"])
+            cmd.extend(["-v", f"{gemini_projects_dir.resolve()}:{self.container_home}/.gemini/config/projects:ro"])
 
         # Environment variables
         github_token = self.github_token or os.environ.get("GITHUB_TOKEN")
@@ -1774,8 +1906,9 @@ class ContainerSupervisor:
                 inner_cmd.append("--dangerously-skip-permissions")
             if self.remote_control:
                 inner_cmd.append("--remote-control")
-            if self.agent_name:
-                inner_cmd.extend(["--agent", self.agent_name])
+            # Note: Do not pass '--agent' in container mode. Passing '--agent' causes agy to enter
+            # restricted subagent mode, which strips execution and file modification tools (run_command,
+            # write_to_file, etc.). Persona and task instructions are provided via the goal/prompt and mounted skills.
             if target_model:
                 inner_cmd.extend(["--model", target_model])
             if self.project_id and not any(arg == "--project" or arg.startswith("--project=") for arg in (self.extra_args or [])):
@@ -1829,6 +1962,7 @@ class ContainerSupervisor:
                 repo_dir=self.repo_dir,
                 branch=self.default_branch,
                 project_id=self.project_id,
+                cli_dir=self.cli_dir,
             )
         except Exception as e:
             logger.debug(f"Failed to sync conversation to agyhub: {e}")

@@ -25,6 +25,8 @@ from lib.supervisor import (
     run_goal_turn,
     run_stream_turn,
     sync_conversation_to_agyhub,
+    ensure_workspace_trusted,
+    ensure_default_project,
 )
 
 
@@ -783,6 +785,14 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertEqual(sup.temp_workspace, Path(self.tmp_dir.name) / "run-test1234")
         self.assertFalse(sup.is_alive())
 
+    def test_container_home_non_1000_user(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            user="1001:1001",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup.container_home, "/home/ubuntu")
+
     def test_prepare_workspace_cache_restore(self):
         cache_dir = Path(self.tmp_dir.name) / "cache"
         cache_dir.mkdir()
@@ -878,26 +888,31 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("/workspace", cmd)
 
             # SSH and gh mounts
-            self.assertIn(f"{ssh_dir.resolve()}:/root/.ssh:ro", cmd)
-            self.assertIn(f"{gh_dir.resolve()}:/root/.config/gh:ro", cmd)
+            container_home = sup.container_home
+            if sup.user:
+                self.assertIn("--user", cmd)
+                self.assertIn(sup.user, cmd)
+            self.assertIn(f"HOME={container_home}", cmd)
+            self.assertIn(f"{ssh_dir.resolve()}:{container_home}/.ssh:ro", cmd)
+            self.assertIn(f"{gh_dir.resolve()}:{container_home}/.config/gh:ro", cmd)
 
             # Antigravity CLI mount: directory mount and ro credentials/binaries
-            self.assertIn(f"{cli_dir.resolve()}:/root/.gemini/antigravity-cli", cmd)
-            self.assertIn("/root/.gemini/antigravity-cli/scratch:rw,exec", cmd)
-            self.assertIn(f"{(cli_dir / 'bin').resolve()}:/root/.gemini/antigravity-cli/bin:ro", cmd)
-            self.assertIn("/root/.gemini/config:rw,exec", cmd)
-            self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:/root/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
-            self.assertIn(f"{(cli_dir / 'token.json').resolve()}:/root/.gemini/antigravity-cli/token.json:ro", cmd)
-            self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:/root/.gemini/antigravity-cli/settings.json:ro", cmd)
+            self.assertIn(f"{cli_dir.resolve()}:{container_home}/.gemini/antigravity-cli", cmd)
+            # bin is not mounted :ro so agy can dynamically write agentapi execution helper
+            self.assertNotIn(f"{(cli_dir / 'bin').resolve()}:{container_home}/.gemini/antigravity-cli/bin:ro", cmd)
+            self.assertIn(f"{container_home}/.gemini/config:rw,exec", cmd)
+            self.assertIn(f"{(cli_dir / 'antigravity-oauth-token').resolve()}:{container_home}/.gemini/antigravity-cli/antigravity-oauth-token:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'token.json').resolve()}:{container_home}/.gemini/antigravity-cli/token.json:ro", cmd)
+            self.assertIn(f"{(cli_dir / 'settings.json').resolve()}:{container_home}/.gemini/antigravity-cli/settings.json:ro", cmd)
             # jetbox_summaries_proto.pb is writable so containerized agy can persist summary updates
-            self.assertNotIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:/root/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
-            self.assertIn(f"{config_file.resolve()}:/root/.gemini/config/config.json:ro", cmd)
-            self.assertIn(f"{projects_dir.resolve()}:/root/.gemini/config/projects:ro", cmd)
+            self.assertNotIn(f"{(cli_dir / 'jetbox_summaries_proto.pb').resolve()}:{container_home}/.gemini/antigravity-cli/jetbox_summaries_proto.pb:ro", cmd)
+            self.assertIn(f"{config_file.resolve()}:{container_home}/.gemini/config/config.json:ro", cmd)
+            self.assertIn(f"{projects_dir.resolve()}:{container_home}/.gemini/config/projects:ro", cmd)
 
             # Skills mount and tmpfs mount order
-            self.assertIn(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro", cmd)
-            config_tmpfs_idx = cmd.index("/root/.gemini/config:rw,exec")
-            skills_mount_idx = cmd.index(f"{skills_dir.resolve()}:/root/.gemini/config/skills:ro")
+            self.assertIn(f"{skills_dir.resolve()}:{container_home}/.gemini/config/skills:ro", cmd)
+            config_tmpfs_idx = cmd.index(f"{container_home}/.gemini/config:rw,exec")
+            skills_mount_idx = cmd.index(f"{skills_dir.resolve()}:{container_home}/.gemini/config/skills:ro")
             self.assertLess(config_tmpfs_idx, skills_mount_idx)
 
             # Environment variables
@@ -918,8 +933,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("--output-format", cmd)
             self.assertIn("--dangerously-skip-permissions", cmd)
             self.assertIn("--remote-control", cmd)
-            self.assertIn("--agent", cmd)
-            self.assertIn("tester", cmd)
+            self.assertNotIn("--agent", cmd)
             self.assertIn("--model", cmd)
             self.assertIn("claude-3-sonnet", cmd)
             self.assertIn("--project", cmd)
@@ -950,6 +964,39 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("custom_binary", cmd)
         self.assertIn("--custom-arg", cmd)
 
+    def test_build_docker_command_custom_cli_dir(self):
+        custom_cli = Path(self.tmp_dir.name) / "custom_cli"
+        custom_cli.mkdir(parents=True)
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="custom_cli_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            cli_dir=custom_cli,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn(f"{custom_cli.resolve()}:{sup.container_home}/.gemini/antigravity-cli", cmd)
+
+    def test_sync_agyhub_passes_custom_cli_dir(self):
+        custom_cli = Path(self.tmp_dir.name) / "custom_cli"
+        custom_cli.mkdir(parents=True)
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sync_custom_cli_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            cli_dir=custom_cli,
+        )
+        sup.conversation_id = "test-conv-123"
+        with patch("lib.supervisor.sync_conversation_to_agyhub") as mock_sync:
+            sup.sync_agyhub()
+            mock_sync.assert_called_once_with(
+                conversation_id="test-conv-123",
+                repo_dir=sup.repo_dir,
+                branch=sup.default_branch,
+                project_id=sup.project_id,
+                cli_dir=custom_cli,
+            )
+
     def test_build_docker_command_mounts_plugin_skills_and_agents_by_default(self):
         fake_repo = Path(self.tmp_dir.name) / "fake_repo"
         fake_repo.mkdir(parents=True)
@@ -964,8 +1011,8 @@ class TestContainerSupervisor(unittest.TestCase):
         )
         sup.prepare_workspace()
         cmd = sup.build_docker_command()
-        self.assertIn(f"{(fake_repo / 'plugin' / 'skills').resolve()}:/root/.gemini/config/skills:ro", cmd)
-        self.assertIn(f"{(fake_repo / 'plugin' / 'agents').resolve()}:/root/.gemini/config/agents:ro", cmd)
+        self.assertIn(f"{(fake_repo / 'plugin' / 'skills').resolve()}:{sup.container_home}/.gemini/config/skills:ro", cmd)
+        self.assertIn(f"{(fake_repo / 'plugin' / 'agents').resolve()}:{sup.container_home}/.gemini/config/agents:ro", cmd)
 
     def test_build_docker_command_mounts_explicit_agents_dir(self):
         fake_agents = Path(self.tmp_dir.name) / "custom_agents"
@@ -978,7 +1025,7 @@ class TestContainerSupervisor(unittest.TestCase):
         )
         sup.prepare_workspace()
         cmd = sup.build_docker_command()
-        self.assertIn(f"{fake_agents.resolve()}:/root/.gemini/config/agents:ro", cmd)
+        self.assertIn(f"{fake_agents.resolve()}:{sup.container_home}/.gemini/config/agents:ro", cmd)
 
     def test_start_and_lifecycle(self):
         sup = ContainerSupervisor(
@@ -1463,6 +1510,101 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+
+
+class TestEnsureWorkspaceTrusted(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cli_dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_creates_settings_json_when_missing(self):
+        settings_path = self.cli_dir / "settings.json"
+        self.assertFalse(settings_path.exists())
+        ensure_workspace_trusted(self.cli_dir)
+        self.assertTrue(settings_path.exists())
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_updates_existing_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps({"existingKey": 123, "trustedWorkspaces": ["/home/test"]}))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("existingKey"), 123)
+        self.assertIn("/home/test", data.get("trustedWorkspaces", []))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_corrupt_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text("{not valid json")
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_null_trusted_workspaces(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps({"trustedWorkspaces": None}))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(data.get("trustedWorkspaces"), list)
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_non_dict_settings_json(self):
+        settings_path = self.cli_dir / "settings.json"
+        settings_path.write_text(json.dumps(["not", "a", "dict"]))
+        ensure_workspace_trusted(self.cli_dir)
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(data, dict)
+        self.assertIn("/workspace", data.get("trustedWorkspaces", []))
+
+    def test_handles_null_project_resources(self):
+        projects_dir = Path(self.cli_dir) / "projects"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        proj_file = projects_dir / "null_res.json"
+        proj_file.write_text(json.dumps({"id": "proj-null", "name": "Graviton Workers", "projectResources": None}))
+        repo_dir = Path(self.cli_dir) / "repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        ensure_default_project(projects_dir, repo_dir)
+        data = json.loads(proj_file.read_text(encoding="utf-8"))
+        self.assertIsInstance(data.get("projectResources"), dict)
+        self.assertIsInstance(data.get("projectResources", {}).get("resources"), list)
+
+    def test_handles_null_git_folder_and_non_dict_resources(self):
+        projects_dir = Path(self.cli_dir) / "projects"
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        proj_file = projects_dir / "null_git_folder.json"
+        repo_dir = Path(self.cli_dir) / "repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        proj_file.write_text(json.dumps({
+            "id": "proj-null-gf",
+            "name": "Null Git Folder Project",
+            "projectResources": {
+                "resources": [
+                    None,
+                    "not-a-dict",
+                    123,
+                    {"gitFolder": None},
+                    {"gitFolder": {"folderUri": None}},
+                    {"gitFolder": {"folderUri": f"file://{repo_dir.resolve()}"}},
+                ]
+            }
+        }))
+
+        res = find_project_for_repo(repo_dir, config_dir=projects_dir)
+        self.assertEqual(res, ("proj-null-gf", "Null Git Folder Project"))
+
+        p_id, p_name = ensure_default_project(projects_dir, repo_dir, name="Null Git Folder Project")
+        self.assertEqual(p_id, "proj-null-gf")
+        data = json.loads(proj_file.read_text(encoding="utf-8"))
+        res_list = data.get("projectResources", {}).get("resources", [])
+        self.assertTrue(any(
+            isinstance(r, dict) and isinstance(r.get("gitFolder"), dict) and r["gitFolder"].get("folderUri") == "file:///workspace"
+            for r in res_list
+        ))
 
 
 class TestSupervisorIntegration(unittest.TestCase):
