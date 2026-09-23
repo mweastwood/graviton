@@ -152,6 +152,28 @@ def format_dashboard_markdown(
     if not model:
         model = "default"
 
+    gemini_model = None
+    tp_model = None
+    if quota_tracker and hasattr(quota_tracker, "get_active_model"):
+        try:
+            gemini_model = quota_tracker.get_active_model("gemini")
+        except Exception:
+            pass
+        try:
+            tp_model = quota_tracker.get_active_model("third_party")
+        except Exception:
+            pass
+    if not gemini_model and quota_info:
+        gemini_model = quota_info.get("active_gemini_model")
+    if not tp_model and quota_info:
+        tp_model = quota_info.get("active_third_party_model")
+
+    p_low = str(pool).lower()
+    if not gemini_model:
+        gemini_model = model if not any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_GEMINI_MODELS[0] if DEFAULT_GEMINI_MODELS else "default")
+    if not tp_model:
+        tp_model = model if any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_THIRD_PARTY_MODELS[0] if DEFAULT_THIRD_PARTY_MODELS else "default")
+
     gemini_rem = quota_info.get("gemini_remaining_percentage")
     if gemini_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
         try:
@@ -176,6 +198,8 @@ def format_dashboard_markdown(
     lines.extend([
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
         f"| **Active Model** | `{model}` | Active Gemini / LLM persona |",
+        f"| **Active Gemini Model** | `{gemini_model}` | Active Gemini model persona |",
+        f"| **Active Third-Party Model** | `{tp_model}` | Active Third-Party model persona |",
         f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |",
         f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |",
         "",
@@ -427,15 +451,28 @@ def parse_dashboard_markdown(
                         "remote_control_url": rc_url,
                     })
 
+    active_gemini_model = _extract_metric_str("Active Gemini Model", "")
+    active_third_party_model = _extract_metric_str("Active Third-Party Model", "")
+
     available_gemini_models = DEFAULT_GEMINI_MODELS.copy()
     available_third_party_models = DEFAULT_THIRD_PARTY_MODELS.copy()
     p_low = pool.lower()
-    if any(k in p_low for k in ("claude", "gpt", "3p", "third")):
-        active_third_party_model = model if model != "default" else (available_third_party_models[0] if available_third_party_models else "default")
-        active_gemini_model = available_gemini_models[0] if available_gemini_models else "default"
+
+    if not active_gemini_model or not isinstance(active_gemini_model, str) or not active_gemini_model.strip():
+        if not any(k in p_low for k in ("claude", "gpt", "3p", "third")):
+            active_gemini_model = model if (isinstance(model, str) and model.strip() and model != "default") else (available_gemini_models[0] if available_gemini_models else "default")
+        else:
+            active_gemini_model = available_gemini_models[0] if available_gemini_models else "default"
     else:
-        active_gemini_model = model if model != "default" else (available_gemini_models[0] if available_gemini_models else "default")
-        active_third_party_model = available_third_party_models[0] if available_third_party_models else "default"
+        active_gemini_model = active_gemini_model.strip()
+
+    if not active_third_party_model or not isinstance(active_third_party_model, str) or not active_third_party_model.strip():
+        if any(k in p_low for k in ("claude", "gpt", "3p", "third")):
+            active_third_party_model = model if (isinstance(model, str) and model.strip() and model != "default") else (available_third_party_models[0] if available_third_party_models else "default")
+        else:
+            active_third_party_model = available_third_party_models[0] if available_third_party_models else "default"
+    else:
+        active_third_party_model = active_third_party_model.strip()
 
     return {
         "host": host,
@@ -662,10 +699,12 @@ def render_dashboard_html(
         except Exception as e:
             logger.debug(f"Error enriching dashboard data from quota_tracker: {e}")
 
-    if data.get("active_gemini_model") and data["active_gemini_model"] not in data["available_gemini_models"]:
-        data["available_gemini_models"].insert(0, data["active_gemini_model"])
-    if data.get("active_third_party_model") and data["active_third_party_model"] not in data["available_third_party_models"]:
-        data["available_third_party_models"].insert(0, data["active_third_party_model"])
+    g_act = data.get("active_gemini_model")
+    if isinstance(g_act, str) and g_act.strip() and g_act not in data["available_gemini_models"]:
+        data["available_gemini_models"].insert(0, g_act)
+    tp_act = data.get("active_third_party_model")
+    if isinstance(tp_act, str) and tp_act.strip() and tp_act not in data["available_third_party_models"]:
+        data["available_third_party_models"].insert(0, tp_act)
 
     gemini_options_html = "\n".join([
         f'<option value="{html.escape(m)}"{ " selected" if m == data["active_gemini_model"] else ""}>{html.escape(m)}</option>'
@@ -1598,6 +1637,8 @@ def render_dashboard_html(
             const pool = extractStr('Active Pool', 'default');
             const model = extractStr('Active Model', 'default');
             const geminiRem = extractStr('Gemini Remaining', 'N/A');
+            const geminiModel = extractStr('Active Gemini Model', '');
+            const tpModel = extractStr('Active Third-Party Model', '');
             const tpRem = extractStr('Third-Party Remaining', 'N/A');
 
             const quotaPool = document.getElementById('quota-pool');
@@ -1605,18 +1646,20 @@ def render_dashboard_html(
             const quotaModel = document.getElementById('quota-model');
             if (quotaModel) quotaModel.innerHTML = `Model: <strong>${{escapeHtml(model)}}</strong>`;
 
+            const targetGModel = (geminiModel && geminiModel !== 'default') ? geminiModel : (!pool.toLowerCase().includes('third') && !pool.toLowerCase().includes('claude') && !pool.toLowerCase().includes('3p') ? model : '');
             const gSelect = document.getElementById('gemini-model-select');
-            if (gSelect && document.activeElement !== gSelect && model && model !== 'default' && !pool.toLowerCase().includes('third') && !pool.toLowerCase().includes('claude') && !pool.toLowerCase().includes('3p')) {{
-                if (Array.from(gSelect.options).some(o => o.value === model)) {{
-                    gSelect.value = model;
-                    gSelect.setAttribute('data-last-val', model);
+            if (gSelect && document.activeElement !== gSelect && targetGModel && targetGModel !== 'default') {{
+                if (Array.from(gSelect.options).some(o => o.value === targetGModel)) {{
+                    gSelect.value = targetGModel;
+                    gSelect.setAttribute('data-last-val', targetGModel);
                 }}
             }}
+            const targetTModel = (tpModel && tpModel !== 'default') ? tpModel : ((pool.toLowerCase().includes('third') || pool.toLowerCase().includes('claude') || pool.toLowerCase().includes('3p')) ? model : '');
             const tSelect = document.getElementById('tp-model-select');
-            if (tSelect && document.activeElement !== tSelect && model && model !== 'default' && (pool.toLowerCase().includes('third') || pool.toLowerCase().includes('claude') || pool.toLowerCase().includes('3p'))) {{
-                if (Array.from(tSelect.options).some(o => o.value === model)) {{
-                    tSelect.value = model;
-                    tSelect.setAttribute('data-last-val', model);
+            if (tSelect && document.activeElement !== tSelect && targetTModel && targetTModel !== 'default') {{
+                if (Array.from(tSelect.options).some(o => o.value === targetTModel)) {{
+                    tSelect.value = targetTModel;
+                    tSelect.setAttribute('data-last-val', targetTModel);
                 }}
             }}
 

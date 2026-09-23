@@ -2193,6 +2193,44 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertIn("Missing required 'model' field", data["error"])
 
+    def test_do_post_api_model_missing_pool_field(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"model": "gemini-3.6-flash-high"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Missing required 'pool' field", data["error"])
+
+    def test_do_post_api_model_non_string_payload_values(self):
+        invalid_payloads = [
+            ({"pool": 123, "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": 456}, "model"),
+            ({"pool": None, "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": True}, "model"),
+            ({"pool": "   ", "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": "   "}, "model"),
+        ]
+        for payload_dict, expected_field in invalid_payloads:
+            with self.subTest(payload_dict=payload_dict):
+                handler = MagicMock(spec=GravitonHandler)
+                handler.path = "/api/model"
+                body = json.dumps(payload_dict).encode("utf-8")
+                handler.headers = {"Content-Length": str(len(body))}
+                handler.rfile = io.BytesIO(body)
+                handler.quota_tracker = MagicMock()
+
+                GravitonHandler.do_POST(handler)
+                handler._send_json.assert_called_once()
+                status_code, data = handler._send_json.call_args[0]
+                self.assertEqual(status_code, 400)
+                self.assertIn(f"Missing required '{expected_field}' field", data["error"])
+
     def test_do_post_api_model_invalid_pool(self):
         handler = MagicMock(spec=GravitonHandler)
         handler.path = "/api/model"
