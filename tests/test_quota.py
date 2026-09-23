@@ -927,8 +927,6 @@ class TestQuotaTracker(unittest.TestCase):
                 mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
 
     def test_dual_pool_tracking_and_model_selection(self):
-        import tempfile
-        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
             tracker = QuotaTracker(
                 available_gemini_models=DEFAULT_GEMINI_MODELS,

@@ -751,8 +751,6 @@ class TestTerminalDashboard(unittest.TestCase):
         self.assertEqual(dashboard.active_screen, "main")
 
     def test_gemini_and_third_party_model_selection_screens(self):
-        import tempfile
-        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
             quota = QuotaTracker(
                 available_gemini_models=["gemini-3.6-flash-high", "gemini-3.6-flash-medium"],

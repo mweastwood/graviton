@@ -87,8 +87,6 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("| **Gemini Remaining** | `95%` |", md)
 
     def test_format_dashboard_markdown_with_real_quota_tracker(self):
-        import tempfile
-        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
             tracker = QuotaTracker(state_path=Path(tmpdir) / ".graviton_model_selection.json")
             md = format_dashboard_markdown(quota_tracker=tracker)
