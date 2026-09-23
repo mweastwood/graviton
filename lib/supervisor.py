@@ -1570,7 +1570,9 @@ def to_ssh_url(url: str) -> str:
     return trimmed
 
 
-def _is_empty_path(val: Union[str, Path]) -> bool:
+def _is_empty_path(val: Optional[Union[str, Path]]) -> bool:
+    if val is None:
+        return True
     if isinstance(val, str):
         return not val.strip()
     if isinstance(val, Path):
