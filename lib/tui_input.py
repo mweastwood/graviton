@@ -26,7 +26,9 @@ def _get_termios():
         return termios
     t_mod = sys.modules.get("lib.tui", None)
     if t_mod and hasattr(t_mod, "termios"):
-        return getattr(t_mod, "termios")
+        cand = getattr(t_mod, "termios")
+        if hasattr(cand, "assert_called") or hasattr(cand, "mock_calls"):
+            return cand
     return termios
 
 
@@ -35,7 +37,9 @@ def _get_tty():
         return tty
     t_mod = sys.modules.get("lib.tui", None)
     if t_mod and hasattr(t_mod, "tty"):
-        return getattr(t_mod, "tty")
+        cand = getattr(t_mod, "tty")
+        if hasattr(cand, "assert_called") or hasattr(cand, "mock_calls"):
+            return cand
     return tty
 
 

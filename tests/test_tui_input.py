@@ -11,10 +11,13 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from lib.tui import TerminalDashboard
 from lib.tui_input import (
     ESCAPE_TIMEOUT,
     HAS_TERMIOS,
     TerminalInputListener,
+    _get_termios,
+    _get_tty,
     is_incomplete_escape_sequence,
     parse_keys,
     split_incomplete_escape_tail,
@@ -163,3 +166,43 @@ class TestTUIInput(unittest.TestCase):
             listener.restore_terminal()
             mock_termios.tcsetattr.assert_called_once_with(sys.stdin.fileno(), 2, [1, 2, 3, 4])
             self.assertIsNone(listener._old_term_settings)
+
+    def test_terminal_dashboard_termios_sync(self):
+        manager = MagicMock()
+        dashboard = TerminalDashboard(task_manager=manager)
+        dashboard._old_term_settings = [1, 2, 3, 4]
+        self.assertEqual(dashboard._stored_old_term_settings, [1, 2, 3, 4])
+        self.assertEqual(dashboard._input_listener._old_term_settings, [1, 2, 3, 4])
+
+        with patch("lib.tui_input.termios") as mock_termios, \
+             patch("sys.stdin.isatty", return_value=True):
+            mock_termios.TCSAFLUSH = 2
+            dashboard._restore_termios()
+
+        self.assertIsNone(dashboard._stored_old_term_settings)
+        self.assertIsNone(dashboard._input_listener._old_term_settings)
+        self.assertIsNone(dashboard._old_term_settings)
+
+    def test_get_termios_and_tty_mock_lookup(self):
+        mock_termios = MagicMock()
+        mock_tty = MagicMock()
+
+        class FakeModule:
+            termios = "not_a_mock"
+            tty = "not_a_mock"
+
+        with patch.dict("sys.modules", {"lib.tui": FakeModule()}):
+            with patch("lib.tui_input.termios", "real_termios"), \
+                 patch("lib.tui_input.tty", "real_tty"):
+                self.assertEqual(_get_termios(), "real_termios")
+                self.assertEqual(_get_tty(), "real_tty")
+
+        class MockModule:
+            termios = mock_termios
+            tty = mock_tty
+
+        with patch.dict("sys.modules", {"lib.tui": MockModule()}):
+            with patch("lib.tui_input.termios", "real_termios"), \
+                 patch("lib.tui_input.tty", "real_tty"):
+                self.assertEqual(_get_termios(), mock_termios)
+                self.assertEqual(_get_tty(), mock_tty)

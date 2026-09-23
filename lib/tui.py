@@ -899,7 +899,7 @@ class TerminalDashboard:
                     termios.tcsetattr(fd, termios.TCSAFLUSH, self._old_term_settings)
             except Exception:
                 pass
-            self._old_term_settings = None
+        self._old_term_settings = None
 
         if not self._termios_restored:
             if self.out_stream:
