@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GIT_TERMINAL_PROMPT=0
 
 if [ "$#" -eq 0 ]; then
   echo "Usage: $0 [AGENT_NAME] <PROMPT>"
@@ -89,13 +90,6 @@ else
       fi
     fi
     git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
-    git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
-    BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
-    if [ "${BASE_BRANCH}" = "HEAD" ]; then
-      BASE_BRANCH="main"
-    fi
-    git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
-    git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
   fi
 fi
 
@@ -103,6 +97,16 @@ fi
 GH_TOKEN="$(gh auth token 2>/dev/null || echo "${GITHUB_TOKEN:-}")"
 if [ -n "${GH_TOKEN}" ]; then
   git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
+fi
+
+if [ "${RESTORED_FROM_CACHE}" = false ] && [ -n "${ORIGIN_URL:-}" ]; then
+  git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
+  BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+  if [ "${BASE_BRANCH}" = "HEAD" ]; then
+    BASE_BRANCH="main"
+  fi
+  git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
+  git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
 fi
 
 # Configure git pre-commit hooks if present in workspace

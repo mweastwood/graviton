@@ -136,10 +136,20 @@ class TestHasSshCredentials(unittest.TestCase):
         non_existent = self.ssh_dir / "does_not_exist"
         self.assertFalse(has_ssh_credentials(non_existent))
 
-    def test_returns_false_for_empty_path_strings_and_empty_path_objects(self):
+    def test_returns_false_for_empty_path_strings(self):
         self.assertFalse(has_ssh_credentials(""))
         self.assertFalse(has_ssh_credentials("   "))
-        self.assertFalse(has_ssh_credentials(Path("")))
+
+    def test_accepts_dot_path_and_dot_string_with_valid_credentials(self):
+        key = self.ssh_dir / "id_ed25519"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n...")
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(self.ssh_dir)
+            self.assertTrue(has_ssh_credentials(Path(".")))
+            self.assertTrue(has_ssh_credentials("."))
+        finally:
+            os.chdir(old_cwd)
 
     def test_returns_false_for_empty_dir(self):
         self.assertFalse(has_ssh_credentials(self.ssh_dir))
@@ -1027,6 +1037,7 @@ class TestContainerSupervisor(unittest.TestCase):
             repo_dir=self.repo_dir,
             run_id="git_env_prompt_test",
             base_workspaces_dir=self.tmp_dir.name,
+            env={"CUSTOM_TEST_VAR": "custom_val"},
         )
         with patch("subprocess.run", wraps=subprocess.run) as mock_sub_run:
             sup.prepare_workspace()
@@ -1039,6 +1050,54 @@ class TestContainerSupervisor(unittest.TestCase):
                 env = c[1].get("env")
                 self.assertIsNotNone(env, f"Subprocess call {c} did not pass env")
                 self.assertEqual(env.get("GIT_TERMINAL_PROMPT"), "0")
+                self.assertEqual(env.get("CUSTOM_TEST_VAR"), "custom_val")
+
+    def test_resolve_github_token_from_self_env(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            env={"GITHUB_TOKEN": "ghp_from_self_env"},
+        )
+        self.assertEqual(sup._resolve_github_token(), "ghp_from_self_env")
+
+    def test_prepare_workspace_configures_token_before_git_fetch(self):
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "add", "."], cwd=str(self.repo_dir), check=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+            cwd=str(self.repo_dir),
+            check=True,
+        )
+
+        fake_ssh = Path(self.tmp_dir.name) / "empty_ssh_order_test"
+        fake_ssh.mkdir()
+
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="token_ordering_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            github_token="ghp_order_test_token",
+            ssh_dir=fake_ssh,
+        )
+        call_order = []
+        real_run = subprocess.run
+
+        def tracking_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and len(cmd) > 0 and cmd[0] == "git":
+                if "config" in cmd and any("insteadOf" in str(x) or "insteadof" in str(x) for x in cmd):
+                    call_order.append("config_insteadof")
+                elif "fetch" in cmd:
+                    call_order.append("fetch_origin")
+            return real_run(cmd, *args, **kwargs)
+
+        with patch("subprocess.run", side_effect=tracking_run):
+            sup.prepare_workspace()
+
+        self.assertIn("config_insteadof", call_order)
+        self.assertIn("fetch_origin", call_order)
+        self.assertLess(call_order.index("config_insteadof"), call_order.index("fetch_origin"))
 
     def test_build_docker_command(self):
         home_mock = Path(self.tmp_dir.name) / "fake_home"

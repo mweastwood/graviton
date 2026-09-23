@@ -1578,8 +1578,6 @@ def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
     if ssh_dir is not None:
         if isinstance(ssh_dir, str) and not ssh_dir.strip():
             return False
-        if isinstance(ssh_dir, Path) and (ssh_dir == Path("") or str(ssh_dir).strip() in ("", ".")):
-            return False
         path = Path(ssh_dir)
     else:
         path = Path.home() / ".ssh"
@@ -1706,10 +1704,10 @@ class ContainerSupervisor:
         return self.session.get_stderr() if self.session else ""
 
     def _resolve_github_token(self) -> Optional[str]:
-        """Resolve GitHub token from supervisor property, environment, or gh auth token."""
+        """Resolve GitHub token from supervisor property, custom env, environment, or gh auth token."""
         if self.github_token and self.github_token.strip():
             return self.github_token.strip()
-        token = os.environ.get("GITHUB_TOKEN")
+        token = (self.env or {}).get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if token and token.strip():
             return token.strip()
         try:
@@ -1730,9 +1728,9 @@ class ContainerSupervisor:
         clean_workspace_dir(self.temp_workspace, docker_binary=self.docker_binary)
         self.temp_workspace.parent.mkdir(parents=True, exist_ok=True)
 
-        git_env = dict(os.environ)
-        git_env["GIT_TERMINAL_PROMPT"] = "0"
+        git_env = {**os.environ, **(self.env or {}), "GIT_TERMINAL_PROMPT": "0"}
 
+        origin_url = ""
         if self.cache_dir and self.cache_dir.is_dir():
             shutil.copytree(self.cache_dir, self.temp_workspace, dirs_exist_ok=True)
             # Ensure origin URL uses SSH if SSH credentials are available
@@ -1779,6 +1777,27 @@ class ContainerSupervisor:
                     check=False,
                     env=git_env,
                 )
+
+        # Configure fallback authentication with GitHub token if available (for both cached and cloned workspaces)
+        # Note: Must be configured before git fetch origin
+        token = self._resolve_github_token()
+        if token:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.temp_workspace),
+                    "config",
+                    f"url.https://x-access-token:{token}@github.com/.insteadOf",
+                    "https://github.com/",
+                ],
+                capture_output=True,
+                check=False,
+                env=git_env,
+            )
+
+        if not (self.cache_dir and self.cache_dir.is_dir()):
+            if origin_url:
                 subprocess.run(
                     ["git", "-C", str(self.temp_workspace), "fetch", "origin"],
                     capture_output=True,
@@ -1807,23 +1826,6 @@ class ContainerSupervisor:
             )
             subprocess.run(
                 ["git", "-C", str(self.temp_workspace), "reset", "--hard", f"origin/{target_branch}"],
-                capture_output=True,
-                check=False,
-                env=git_env,
-            )
-
-        # Configure fallback authentication with GitHub token if available (for both cached and cloned workspaces)
-        token = self._resolve_github_token()
-        if token:
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.temp_workspace),
-                    "config",
-                    f"url.https://x-access-token:{token}@github.com/.insteadOf",
-                    "https://github.com/",
-                ],
                 capture_output=True,
                 check=False,
                 env=git_env,
