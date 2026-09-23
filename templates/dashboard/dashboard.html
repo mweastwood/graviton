@@ -1045,8 +1045,10 @@ return f"""<!DOCTYPE html>
                         if (urlMatch && isSafeUrl(urlMatch[2])) {{
                             detailHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
                         }} else if (r[5].trim() && r[5].trim() !== 'Finished') {{
-                            const cleanDetail = escapeHtml(r[5].replace(/`/g, '').trim());
-                            const trunc = cleanDetail.length > 40 ? cleanDetail.substring(0, 40) + '...' : cleanDetail;
+                            const rawDetail = r[5].replace(/`/g, '').trim();
+                            const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;
+                            const cleanDetail = escapeHtml(rawDetail);
+                            const trunc = escapeHtml(truncRaw);
                             detailHtml = `<code class="error-snippet" title="${{cleanDetail}}">${{trunc}}</code>`;
                         }}
                         htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;

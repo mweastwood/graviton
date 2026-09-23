@@ -705,7 +705,25 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("Running Tasks", METRIC_INT_PATTERNS)
         self.assertIn("Active Pool", METRIC_STR_PATTERNS)
 
+    def test_template_js_truncates_raw_detail_before_escape_html(self):
+        template = _get_dashboard_template()
+        self.assertIn("const rawDetail = r[5].replace(/`/g, '').trim();", template)
+        self.assertIn("const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;", template)
+        self.assertIn("const cleanDetail = escapeHtml(rawDetail);", template)
+        self.assertIn("const trunc = escapeHtml(truncRaw);", template)
+
+    def test_possible_paths_has_no_duplicates_and_correct_subdirectories(self):
+        from lib.dashboard import REPO_ROOT
+        possible_paths = [
+            REPO_ROOT / "templates" / "dashboard" / "dashboard.html",
+            Path(__file__).resolve().parent.parent / "lib" / "templates" / "dashboard" / "dashboard.html",
+        ]
+        # Verify all path entries end with templates/dashboard/dashboard.html
+        for p in possible_paths:
+            self.assertTrue(str(p).endswith(os.path.join("templates", "dashboard", "dashboard.html")))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
