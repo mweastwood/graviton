@@ -87,22 +87,23 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("| **Gemini Remaining** | `95%` |", md)
 
     def test_format_dashboard_markdown_with_real_quota_tracker(self):
-        tracker = QuotaTracker()
-        md = format_dashboard_markdown(quota_tracker=tracker)
-        self.assertIn("| **Active Pool** | `gemini` |", md)
-        self.assertIn("| **Active Model** | `gemini-3.8-flash-medium` |", md)
-        self.assertIn("| **Gemini Remaining** | `100.0%` |", md)
-        self.assertIn("| **Third-Party Remaining** | `100.0%` |", md)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = QuotaTracker(state_path=Path(tmpdir) / ".graviton_model_selection.json")
+            md = format_dashboard_markdown(quota_tracker=tracker)
+            self.assertIn("| **Active Pool** | `gemini` |", md)
+            self.assertIn("| **Active Model** | `gemini-3.8-flash-medium` |", md)
+            self.assertIn("| **Gemini Remaining** | `100.0%` |", md)
+            self.assertIn("| **Third-Party Remaining** | `100.0%` |", md)
 
-        # Test active model override and pool switching
-        tracker.set_active_model("gemini", "gemini-2.5-pro")
-        md2 = format_dashboard_markdown(quota_tracker=tracker)
-        self.assertIn("| **Active Model** | `gemini-2.5-pro` |", md2)
+            # Test active model override and pool switching
+            tracker.set_active_model("gemini", "gemini-2.5-pro")
+            md2 = format_dashboard_markdown(quota_tracker=tracker)
+            self.assertIn("| **Active Model** | `gemini-2.5-pro` |", md2)
 
-        tracker.quota_pool = "claude"
-        md3 = format_dashboard_markdown(quota_tracker=tracker)
-        self.assertIn("| **Active Pool** | `claude` |", md3)
-        self.assertIn("| **Active Model** | `claude-sonnet-4-6` |", md3)
+            tracker.quota_pool = "claude"
+            md3 = format_dashboard_markdown(quota_tracker=tracker)
+            self.assertIn("| **Active Pool** | `claude` |", md3)
+            self.assertIn("| **Active Model** | `claude-sonnet-4-6` |", md3)
 
     def test_format_dashboard_markdown_with_tasks_and_remote_control(self):
         mock_tm = MagicMock()
