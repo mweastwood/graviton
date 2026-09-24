@@ -35,7 +35,7 @@ from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard, run_graceful_shutdown
 from lib.pr_tracker import PRTracker
-from lib.quota import QuotaTracker, QuotaState
+from lib.quota import QuotaTracker, QuotaState, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.reactions import post_emoji_reaction_async
 from lib.release import (
     DEFAULT_BRANCH,
@@ -401,6 +401,76 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "unregistered": str(Path(target_path).resolve()),
                 "targets": self.dashboard_updater.get_targets(),
             })
+            return
+
+        if path_clean == "/api/model":
+            try:
+                data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+                if not isinstance(data, dict):
+                    self._send_json(400, {"error": "Invalid JSON payload, expected object"})
+                    return
+            except Exception:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+
+            if not getattr(self, "quota_tracker", None):
+                self._send_json(503, {"error": "QuotaTracker not initialized"})
+                return
+
+            pool = data.get("pool")
+            model = data.get("model")
+
+            if not pool or not isinstance(pool, str) or not pool.strip():
+                self._send_json(400, {"error": "Missing required 'pool' field"})
+                return
+            if not model or not isinstance(model, str) or not model.strip():
+                self._send_json(400, {"error": "Missing required 'model' field"})
+                return
+
+            pool_str = pool.strip()
+            model_str = model.strip()
+            p_lower = pool_str.lower()
+
+            if "gemini" in p_lower:
+                canonical_pool = "gemini"
+                valid_models = (
+                    getattr(self.quota_tracker, "available_gemini_models", None)
+                    or DEFAULT_GEMINI_MODELS
+                )
+            elif any(k in p_lower for k in ("claude", "gpt", "3p", "third")):
+                canonical_pool = "third_party"
+                valid_models = (
+                    getattr(self.quota_tracker, "available_third_party_models", None)
+                    or DEFAULT_THIRD_PARTY_MODELS
+                )
+            else:
+                self._send_json(400, {"error": f"Invalid pool '{pool_str}'"})
+                return
+
+            if valid_models and model_str not in valid_models:
+                self._send_json(
+                    400,
+                    {
+                        "error": f"Invalid model '{model_str}' for pool '{canonical_pool}'"
+                    },
+                )
+                return
+
+            try:
+                self.quota_tracker.set_active_model(canonical_pool, model_str)
+                active_model = self.quota_tracker.get_active_model(canonical_pool)
+                if getattr(self, "dashboard_updater", None):
+                    self.dashboard_updater.trigger_update()
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "pool": canonical_pool,
+                        "active_model": active_model,
+                    },
+                )
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
             return
 
         # Verify HMAC signature if secret is configured

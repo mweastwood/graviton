@@ -612,6 +612,56 @@ class TestDashboardUpdater(unittest.TestCase):
         expected_suffix = f".tmp.{os.getpid()}.{threading.get_ident()}"
         self.assertTrue(captured_tmp[0].endswith(expected_suffix))
 
+    def test_parse_dashboard_markdown_model_selection_fields(self):
+        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-3.6-flash-high` |"
+        parsed = parse_dashboard_markdown(md)
+        self.assertIn("available_gemini_models", parsed)
+        self.assertIn("available_third_party_models", parsed)
+        self.assertEqual(parsed["active_gemini_model"], "gemini-3.6-flash-high")
+        self.assertIn("gemini-3.6-flash-high", parsed["available_gemini_models"])
+
+    def test_render_dashboard_html_model_dropdown_elements(self):
+        tracker = QuotaTracker()
+        tracker.available_gemini_models = ["gemini-3.8-flash-medium", "gemini-3.6-flash-high"]
+        tracker.available_third_party_models = ["claude-sonnet-4-6", "gpt-oss-120b-medium"]
+        tracker.set_active_model("gemini", "gemini-3.6-flash-high")
+        tracker.set_active_model("third_party", "claude-sonnet-4-6")
+
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        html_out = render_dashboard_html(md, quota_tracker=tracker)
+
+        self.assertIn('id="gemini-model-select"', html_out)
+        self.assertIn('id="tp-model-select"', html_out)
+        self.assertIn('data-pool="gemini"', html_out)
+        self.assertIn('data-pool="third_party"', html_out)
+        self.assertIn('value="gemini-3.6-flash-high" selected', html_out)
+        self.assertIn('value="claude-sonnet-4-6" selected', html_out)
+        self.assertIn('id="toast-container"', html_out)
+        self.assertIn('/api/model', html_out)
+
+    def test_format_dashboard_markdown_exposes_both_active_models(self):
+        tracker = QuotaTracker()
+        tracker.set_active_model("gemini", "gemini-3.6-flash-high")
+        tracker.set_active_model("third_party", "claude-opus-4-6-thinking")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+
+        self.assertIn("| **Active Gemini Model** | `gemini-3.6-flash-high` |", md)
+        self.assertIn("| **Active Third-Party Model** | `claude-opus-4-6-thinking` |", md)
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(parsed["active_gemini_model"], "gemini-3.6-flash-high")
+        self.assertEqual(parsed["active_third_party_model"], "claude-opus-4-6-thinking")
+
+    def test_render_dashboard_html_whitespace_active_model_not_prepended(self):
+        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-3.8-flash-medium` |"
+        parsed = parse_dashboard_markdown(md)
+        parsed["active_gemini_model"] = "   "
+        parsed["active_third_party_model"] = ""
+
+        html_out = render_dashboard_html(md)
+        self.assertNotIn('<option value="   "', html_out)
+        self.assertNotIn('<option value=""', html_out)
+
 
 if __name__ == "__main__":
     unittest.main()

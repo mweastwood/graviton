@@ -2137,6 +2137,176 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(data["markdown"], "# Markdown Content")
         self.assertEqual(data["targets"], ["/path/to/target.md"])
 
+    def test_do_post_api_model_uninitialized_quota_tracker(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "gemini", "model": "gemini-3.6-flash-high"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = None
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 503)
+        self.assertIn("QuotaTracker not initialized", data["error"])
+
+    def test_do_post_api_model_invalid_json(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b"not a json"
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Invalid JSON payload", data["error"])
+
+    def test_do_post_api_model_non_dict_json(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'["gemini", "gemini-3.6-flash-high"]'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertEqual(data["error"], "Invalid JSON payload, expected object")
+
+    def test_do_post_api_model_missing_fields(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "gemini"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Missing required 'model' field", data["error"])
+
+    def test_do_post_api_model_missing_pool_field(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"model": "gemini-3.6-flash-high"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Missing required 'pool' field", data["error"])
+
+    def test_do_post_api_model_non_string_payload_values(self):
+        invalid_payloads = [
+            ({"pool": 123, "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": 456}, "model"),
+            ({"pool": None, "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": True}, "model"),
+            ({"pool": "   ", "model": "gemini-3.6-flash-high"}, "pool"),
+            ({"pool": "gemini", "model": "   "}, "model"),
+        ]
+        for payload_dict, expected_field in invalid_payloads:
+            with self.subTest(payload_dict=payload_dict):
+                handler = MagicMock(spec=GravitonHandler)
+                handler.path = "/api/model"
+                body = json.dumps(payload_dict).encode("utf-8")
+                handler.headers = {"Content-Length": str(len(body))}
+                handler.rfile = io.BytesIO(body)
+                handler.quota_tracker = MagicMock()
+
+                GravitonHandler.do_POST(handler)
+                handler._send_json.assert_called_once()
+                status_code, data = handler._send_json.call_args[0]
+                self.assertEqual(status_code, 400)
+                self.assertIn(f"Missing required '{expected_field}' field", data["error"])
+
+    def test_do_post_api_model_invalid_pool(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "unknown", "model": "some-model"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.quota_tracker = MagicMock()
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Invalid pool 'unknown'", data["error"])
+
+    def test_do_post_api_model_invalid_model(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "gemini", "model": "nonexistent-model"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        mock_qt = MagicMock()
+        mock_qt.available_gemini_models = ["gemini-3.8-flash-medium", "gemini-3.6-flash-high"]
+        handler.quota_tracker = mock_qt
+
+        GravitonHandler.do_POST(handler)
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 400)
+        self.assertIn("Invalid model 'nonexistent-model'", data["error"])
+
+    def test_do_post_api_model_success_gemini(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "gemini", "model": "gemini-3.6-flash-high"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        mock_qt = MagicMock()
+        mock_qt.available_gemini_models = ["gemini-3.8-flash-medium", "gemini-3.6-flash-high"]
+        mock_qt.get_active_model.return_value = "gemini-3.6-flash-high"
+        mock_updater = MagicMock()
+        handler.quota_tracker = mock_qt
+        handler.dashboard_updater = mock_updater
+
+        GravitonHandler.do_POST(handler)
+        mock_qt.set_active_model.assert_called_once_with("gemini", "gemini-3.6-flash-high")
+        mock_updater.trigger_update.assert_called_once()
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["pool"], "gemini")
+        self.assertEqual(data["active_model"], "gemini-3.6-flash-high")
+
+    def test_do_post_api_model_success_third_party(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.path = "/api/model"
+        body = b'{"pool": "third_party", "model": "claude-sonnet-4-6"}'
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        mock_qt = MagicMock()
+        mock_qt.available_third_party_models = ["claude-sonnet-4-6", "claude-opus-4-6-thinking"]
+        mock_qt.get_active_model.return_value = "claude-sonnet-4-6"
+        mock_updater = MagicMock()
+        handler.quota_tracker = mock_qt
+        handler.dashboard_updater = mock_updater
+
+        GravitonHandler.do_POST(handler)
+        mock_qt.set_active_model.assert_called_once_with("third_party", "claude-sonnet-4-6")
+        mock_updater.trigger_update.assert_called_once()
+        handler._send_json.assert_called_once()
+        status_code, data = handler._send_json.call_args[0]
+        self.assertEqual(status_code, 200)
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["pool"], "third_party")
+        self.assertEqual(data["active_model"], "claude-sonnet-4-6")
+
 
 if __name__ == "__main__":
     unittest.main()
