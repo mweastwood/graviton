@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -140,16 +141,18 @@ class TestHasSshCredentials(unittest.TestCase):
     def test_returns_false_for_empty_path_strings(self):
         self.assertFalse(has_ssh_credentials(""))
         self.assertFalse(has_ssh_credentials("   "))
-        self.assertFalse(has_ssh_credentials(Path()))
-        self.assertFalse(has_ssh_credentials(Path("")))
+        if sys.version_info >= (3, 12):
+            self.assertFalse(has_ssh_credentials(Path()))
+            self.assertFalse(has_ssh_credentials(Path("")))
         self.assertFalse(has_ssh_credentials(Path("   ")))
 
     def test_is_empty_path_handles_empty_path_instance(self):
         self.assertTrue(_is_empty_path(None))
         self.assertTrue(_is_empty_path(""))
         self.assertTrue(_is_empty_path("   "))
-        self.assertTrue(_is_empty_path(Path()))
-        self.assertTrue(_is_empty_path(Path("")))
+        if sys.version_info >= (3, 12):
+            self.assertTrue(_is_empty_path(Path()))
+            self.assertTrue(_is_empty_path(Path("")))
         self.assertTrue(_is_empty_path(Path("   ")))
         self.assertFalse(_is_empty_path(Path(".")))
         self.assertFalse(_is_empty_path(Path("/tmp")))
@@ -187,6 +190,19 @@ class TestHasSshCredentials(unittest.TestCase):
         cfg = self.ssh_dir / "config"
         cfg.write_text("Host github.com\n  User git\n")
         self.assertTrue(has_ssh_credentials(self.ssh_dir))
+
+    def test_skips_unreadable_entries_and_finds_valid_key(self):
+        bad_item = MagicMock()
+        bad_item.is_file.return_value = True
+        bad_item.stat.side_effect = OSError("Permission denied")
+
+        good_item = MagicMock()
+        good_item.is_file.return_value = True
+        good_item.stat.return_value.st_size = 100
+        good_item.name = "id_ed25519"
+
+        with patch.object(Path, "iterdir", return_value=[bad_item, good_item]):
+            self.assertTrue(has_ssh_credentials(self.ssh_dir))
 
 
 class TestStreamSession(unittest.TestCase):
@@ -898,12 +914,13 @@ class TestContainerSupervisor(unittest.TestCase):
         )
         self.assertEqual(sup_whitespace_str.ssh_dir, Path.home() / ".ssh")
 
-        sup_empty_path = ContainerSupervisor(
-            repo_dir=self.repo_dir,
-            ssh_dir=Path(""),
-            base_workspaces_dir=self.tmp_dir.name,
-        )
-        self.assertEqual(sup_empty_path.ssh_dir, Path.home() / ".ssh")
+        if sys.version_info >= (3, 12):
+            sup_empty_path = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                ssh_dir=Path(""),
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup_empty_path.ssh_dir, Path.home() / ".ssh")
 
         sup_whitespace_path = ContainerSupervisor(
             repo_dir=self.repo_dir,
@@ -911,6 +928,13 @@ class TestContainerSupervisor(unittest.TestCase):
             base_workspaces_dir=self.tmp_dir.name,
         )
         self.assertEqual(sup_whitespace_path.ssh_dir, Path.home() / ".ssh")
+
+        sup_dot_path = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            ssh_dir=Path("."),
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        self.assertEqual(sup_dot_path.ssh_dir, Path(".").resolve())
 
     def test_container_home_non_1000_user(self):
         sup = ContainerSupervisor(
@@ -1101,6 +1125,21 @@ class TestContainerSupervisor(unittest.TestCase):
             env={"GITHUB_TOKEN": "ghp_from_self_env"},
         )
         self.assertEqual(sup._resolve_github_token(), "ghp_from_self_env")
+
+    def test_resolve_github_token_from_self_env_gh_token(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            env={"GH_TOKEN": "ghp_from_self_env_gh_token"},
+        )
+        self.assertEqual(sup._resolve_github_token(), "ghp_from_self_env_gh_token")
+
+    def test_resolve_github_token_from_os_environ_gh_token(self):
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+        )
+        with patch.dict(os.environ, {"GH_TOKEN": "ghp_from_os_environ_gh_token"}, clear=False):
+            with patch.dict(os.environ, {"GITHUB_TOKEN": ""}):
+                self.assertEqual(sup._resolve_github_token(), "ghp_from_os_environ_gh_token")
 
     def test_prepare_workspace_configures_token_before_git_fetch(self):
         subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)

@@ -1602,12 +1602,15 @@ def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
         return False
     try:
         for item in path.iterdir():
-            if item.is_file() and item.stat().st_size > 0:
-                name = item.name
-                if name == "config":
-                    return True
-                if name.startswith("id_") and not name.endswith(".pub"):
-                    return True
+            try:
+                if item.is_file() and item.stat().st_size > 0:
+                    name = item.name
+                    if name == "config":
+                        return True
+                    if name.startswith("id_") and not name.endswith(".pub"):
+                        return True
+            except OSError:
+                continue
     except OSError:
         pass
     return False
@@ -1672,8 +1675,6 @@ class ContainerSupervisor:
         is_empty_ssh = (
             ssh_dir is None
             or _is_empty_path(ssh_dir)
-            or ssh_dir == Path("")
-            or ssh_dir == Path("   ")
         )
         self.ssh_dir = (Path.home() / ".ssh") if is_empty_ssh else Path(ssh_dir).resolve()
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
@@ -1729,7 +1730,12 @@ class ContainerSupervisor:
         """Resolve GitHub token from supervisor property, custom env, environment, or gh auth token."""
         if self.github_token and self.github_token.strip():
             return self.github_token.strip()
-        token = (self.env or {}).get("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        token = (
+            (self.env or {}).get("GITHUB_TOKEN")
+            or (self.env or {}).get("GH_TOKEN")
+            or os.environ.get("GITHUB_TOKEN")
+            or os.environ.get("GH_TOKEN")
+        )
         if token and token.strip():
             return token.strip()
         try:
