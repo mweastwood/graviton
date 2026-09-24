@@ -1580,8 +1580,11 @@ def _is_empty_path(val: Optional[Union[str, Path]]) -> bool:
         if raw_paths:
             return not str(raw_paths[0]).strip()
         s = str(val).strip()
-        return not s
-    return not str(val).strip()
+        if not s or val == Path(""):
+            return True
+        return False
+    s = str(val).strip()
+    return not s
 
 
 def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
