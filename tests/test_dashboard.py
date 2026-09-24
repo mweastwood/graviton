@@ -681,6 +681,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
     def test_template_loader_loads_external_html(self):
         template = _get_dashboard_template()
+        self.assertTrue(template.startswith("<!DOCTYPE html>"))
         self.assertIn("<!DOCTYPE html>", template)
         self.assertIn("Graviton Live Dashboard", template)
         self.assertIn("{effective_host}", template)

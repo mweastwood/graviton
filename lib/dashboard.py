@@ -369,7 +369,7 @@ def parse_dashboard_markdown(
     """Parse formatted dashboard markdown into structured dictionary for HTML rendering."""
     host = default_host
     port = default_port
-    server_m = re.search(r"\*\*Server\*\*:\s*`([^:`]+):(\d+)`", markdown_content)
+    server_m = SERVER_PATTERN.search(markdown_content)
     if server_m:
         host = server_m.group(1)
         try:
@@ -380,7 +380,7 @@ def parse_dashboard_markdown(
     status_text = "ONLINE"
     status_icon = "🟢"
     status_class = "online"
-    status_m = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", markdown_content)
+    status_m = STATUS_PATTERN.search(markdown_content)
     status_line = status_m.group(1) if status_m else markdown_content[:500]
     if "BUSY" in status_line:
         status_text = "BUSY"
@@ -399,7 +399,7 @@ def parse_dashboard_markdown(
         status_icon = "🟢"
         status_class = "online"
 
-    updated_m = re.search(r"\*Last updated:\s*([^(]+)", markdown_content)
+    updated_m = UPDATED_PATTERN.search(markdown_content)
     now_iso = (
         updated_m.group(1).strip()
         if updated_m
@@ -408,13 +408,14 @@ def parse_dashboard_markdown(
 
     active_workers = 0
     max_workers = 0
-    workers_m = re.search(r"\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*/\s*(\d+)`?", markdown_content)
+    workers_m = WORKERS_PATTERN.search(markdown_content)
     if workers_m:
         active_workers = int(workers_m.group(1))
         max_workers = int(workers_m.group(2))
 
     def _extract_metric_int(label: str) -> int:
-        m = re.search(rf"\|\s*\*\*{re.escape(label)}\*\*\s*\|\s*`?(\d+)`?", markdown_content)
+        pat = METRIC_INT_PATTERNS.get(label)
+        m = pat.search(markdown_content) if pat else re.search(rf"\|\s*\*\*{re.escape(label)}\*\*\s*\|\s*`?(\d+)`?", markdown_content)
         return int(m.group(1)) if m else 0
 
     running_tasks = _extract_metric_int("Running Tasks")
@@ -423,7 +424,8 @@ def parse_dashboard_markdown(
     failed_tasks = _extract_metric_int("Failed Tasks")
 
     def _extract_metric_str(label: str, default: str = "default") -> str:
-        m = re.search(rf"\|\s*\*\*{re.escape(label)}\*\*\s*\|\s*`?([^`|\n]+)`?", markdown_content)
+        pat = METRIC_STR_PATTERNS.get(label)
+        m = pat.search(markdown_content) if pat else re.search(rf"\|\s*\*\*{re.escape(label)}\*\*\s*\|\s*`?([^`|\n]+)`?", markdown_content)
         return m.group(1).strip() if m else default
 
     pool = _extract_metric_str("Active Pool", "default")
@@ -447,7 +449,7 @@ def parse_dashboard_markdown(
     queued_tasks: List[Dict[str, Any]] = []
     history_tasks: List[Dict[str, Any]] = []
 
-    sections = re.split(r"(?m)^##\s+", markdown_content)
+    sections = SECTION_SPLIT_PATTERN.split(markdown_content)
     for sec in sections:
         sec_lines = sec.strip().splitlines()
         if not sec_lines:
@@ -469,10 +471,10 @@ def parse_dashboard_markdown(
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
                     elapsed = cells[3]
-                    status = re.sub(r"[🔄`\s]+", " ", cells[4]).strip()
+                    status = STATUS_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
                     rc_cell = cells[5]
                     rc_url = None
-                    url_m = re.search(r"\[.*?\]\((.*?)\)", rc_cell)
+                    url_m = MD_LINK_PATTERN.search(rc_cell)
                     if url_m:
                         cand = url_m.group(1).strip()
                         if is_safe_url(cand):
@@ -509,10 +511,10 @@ def parse_dashboard_markdown(
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
                     duration = cells[3]
-                    status_raw = re.sub(r"[✅❌`\s]+", " ", cells[4]).strip()
+                    status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
                     detail_cell = cells[5]
                     rc_url = None
-                    url_m = re.search(r"\[.*?\]\((.*?)\)", detail_cell)
+                    url_m = MD_LINK_PATTERN.search(detail_cell)
                     if url_m:
                         cand = url_m.group(1).strip()
                         if is_safe_url(cand):
