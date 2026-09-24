@@ -734,11 +734,19 @@ def main():
         default=os.getenv("MODEL_SELECTION_STATE", str(REPO_ROOT / ".graviton_model_selection.json")),
         help="Path to persisted model selection state JSON file (default: REPO_ROOT/.graviton_model_selection.json)",
     )
+    raw_quota_poll_interval = os.getenv("GRAVITON_QUOTA_POLL_INTERVAL") or os.getenv("QUOTA_POLL_INTERVAL", "5.0")
+    try:
+        default_quota_poll_interval = float(raw_quota_poll_interval)
+        if default_quota_poll_interval <= 0.0:
+            default_quota_poll_interval = 5.0
+    except (ValueError, TypeError):
+        default_quota_poll_interval = 5.0
+
     parser.add_argument(
         "--quota-poll-interval",
         type=float,
-        default=float(os.getenv("QUOTA_POLL_INTERVAL", "5.0")),
-        help="Interval in seconds for background quota polling loop (default: 5.0, env: QUOTA_POLL_INTERVAL)",
+        default=default_quota_poll_interval,
+        help="Interval in seconds for background quota polling loop (default: 5.0, env: GRAVITON_QUOTA_POLL_INTERVAL or QUOTA_POLL_INTERVAL)",
     )
     parser.add_argument(
         "--no-quota-background-polling",
@@ -855,8 +863,14 @@ def main():
 
         if getattr(args, "quota_background_polling", True):
             try:
+                poll_interval = getattr(args, "quota_poll_interval", 5.0)
+                try:
+                    val = float(poll_interval)
+                    poll_interval = val if val > 0.0 else 5.0
+                except (ValueError, TypeError):
+                    poll_interval = 5.0
                 quota_tracker.start_background_polling(
-                    poll_interval=getattr(args, "quota_poll_interval", 5.0)
+                    poll_interval=poll_interval
                 )
                 logger.info("Started QuotaTracker background polling thread for live quota updates.")
             except Exception as e:

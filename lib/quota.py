@@ -1756,6 +1756,11 @@ class QuotaTracker:
         self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
     ):
         """Start asynchronous background polling thread for live quota updates."""
+        try:
+            val = float(poll_interval)
+            poll_interval = val if val > 0.0 else 5.0
+        except (ValueError, TypeError):
+            poll_interval = 5.0
         with self._lock:
             if self._polling_thread and self._polling_thread.is_alive():
                 return
@@ -1793,6 +1798,11 @@ class QuotaTracker:
         self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
     ):
         """Background thread loop calling poll_live_quota() or poll_all_pools() periodically."""
+        try:
+            val = float(poll_interval)
+            poll_interval = val if val > 0.0 else 5.0
+        except (ValueError, TypeError):
+            poll_interval = 5.0
         while not self._stop_polling_event.is_set():
             try:
                 if quota_pool is None:
