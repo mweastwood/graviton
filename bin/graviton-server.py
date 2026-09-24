@@ -734,6 +734,19 @@ def main():
         default=os.getenv("MODEL_SELECTION_STATE", str(REPO_ROOT / ".graviton_model_selection.json")),
         help="Path to persisted model selection state JSON file (default: REPO_ROOT/.graviton_model_selection.json)",
     )
+    parser.add_argument(
+        "--quota-poll-interval",
+        type=float,
+        default=float(os.getenv("QUOTA_POLL_INTERVAL", "5.0")),
+        help="Interval in seconds for background quota polling loop (default: 5.0, env: QUOTA_POLL_INTERVAL)",
+    )
+    parser.add_argument(
+        "--no-quota-background-polling",
+        dest="quota_background_polling",
+        action="store_false",
+        default=os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING", "true").lower() in ("1", "true", "yes"),
+        help="Disable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING)",
+    )
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     parser.add_argument(
         "--supervisor",
@@ -839,6 +852,15 @@ def main():
             quota_tracker.poll_all_pools()
         except Exception as e:
             logger.warning(f"Initial live quota poll for all pools failed: {e}")
+
+        if getattr(args, "quota_background_polling", True):
+            try:
+                quota_tracker.start_background_polling(
+                    poll_interval=getattr(args, "quota_poll_interval", 5.0)
+                )
+                logger.info("Started QuotaTracker background polling thread for live quota updates.")
+            except Exception as e:
+                logger.warning(f"Failed to start QuotaTracker background polling: {e}")
 
         task_manager = TaskManager(
             max_workers=args.max_workers,
