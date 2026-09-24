@@ -1579,7 +1579,8 @@ def _is_empty_path(val: Optional[Union[str, Path]]) -> bool:
         raw_paths = getattr(val, "_raw_paths", None)
         if raw_paths:
             return not str(raw_paths[0]).strip()
-        return not str(val).strip()
+        s = str(val).strip()
+        return not s
     return not str(val).strip()
 
 
