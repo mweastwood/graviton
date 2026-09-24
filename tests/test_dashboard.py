@@ -13,16 +13,19 @@ from unittest.mock import MagicMock, patch
 
 from lib.dashboard import (
     DashboardUpdater,
+    _detect_git_repo_full_name,
     _get_dashboard_template,
-    _reset_dashboard_template_cache,
     _render_active_tasks_table,
     _render_history_tasks_table,
+    _reset_dashboard_template_cache,
+    _reset_detected_repo_cache,
     format_dashboard_markdown,
     format_duration,
     get_quota_color,
     is_safe_url,
     parse_dashboard_markdown,
     render_dashboard_html,
+    resolve_target_url,
     SERVER_PATTERN,
     STATUS_PATTERN,
     WORKERS_PATTERN,
@@ -38,6 +41,8 @@ class TestDashboardFormatting(unittest.TestCase):
 
     def setUp(self):
         super().setUp()
+        _reset_detected_repo_cache()
+        self.addCleanup(_reset_detected_repo_cache)
         self._models_patcher = patch(
             "lib.quota.fetch_cli_models",
             return_value=(["gemini-3.8-flash-medium"], ["claude-sonnet-4-6"]),
@@ -112,7 +117,7 @@ class TestDashboardFormatting(unittest.TestCase):
             self.assertIn("| **Active Pool** | `claude` |", md3)
             self.assertIn("| **Active Model** | `claude-sonnet-4-6` |", md3)
 
-    def test_format_dashboard_markdown_with_tasks_and_remote_control(self):
+    def test_format_dashboard_markdown_with_clickable_targets(self):
         mock_tm = MagicMock()
         mock_tm.get_stats.return_value = {
             "active_workers": 1,
@@ -138,6 +143,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Fix bug",
             target_id="#43",
+            repo_full_name="owner/repo",
             status=TaskStatus.QUEUED,
             priority=2,
             enqueue_time=time.time() - 10.0,
@@ -147,6 +153,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Completed task",
             target_id="#40",
+            repo_full_name="owner/repo",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 100.0,
             finish_time=time.time() - 40.0,
@@ -165,10 +172,64 @@ class TestDashboardFormatting(unittest.TestCase):
 
         self.assertIn("🟡 **BUSY**", md)
         self.assertIn("`task-101`", md)
-        self.assertIn("[Remote Control 🌐](https://antigravity.google.com/c/conv-101)", md)
+        self.assertIn("[`#42`](https://github.com/owner/repo/pull/42)", md)
+        self.assertNotIn("Remote Control", md)
         self.assertIn("`task-102`", md)
+        self.assertIn("[`#43`](https://github.com/owner/repo/pull/43)", md)
         self.assertIn("`task-100`", md)
+        self.assertIn("[`#40`](https://github.com/owner/repo/pull/40)", md)
         self.assertIn("✅ `COMPLETED`", md)
+
+    def test_format_dashboard_markdown_target_cell_normalization(self):
+        """Verify backticked and markdown-linked targets do not produce double-backticks or nested links."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1,
+            "max_workers": 2,
+            "active_tasks": 1,
+            "queued_tasks": 1,
+            "completed_tasks": 1,
+            "failed_tasks": 0,
+        }
+        active_task = Task(
+            id="task-backtick",
+            agent="code_reviewer",
+            prompt="Review PR #42",
+            target_id="`#42`",
+            repo_full_name="owner/repo",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 30.0,
+        )
+        queued_task = Task(
+            id="task-mdlink",
+            agent="issue_triager",
+            prompt="Triage issue",
+            target_id="[#99](https://github.com/owner/repo/issues/99)",
+            repo_full_name="owner/repo",
+            status=TaskStatus.QUEUED,
+            priority=1,
+            enqueue_time=time.time() - 10.0,
+        )
+        history_task = Task(
+            id="task-hyphen",
+            agent="pr_drafter",
+            prompt="Draft PR",
+            target_id="`owner/repo#pr-77`",
+            repo_full_name="owner/repo",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 50.0,
+            finish_time=time.time() - 10.0,
+        )
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = [queued_task]
+        mock_tm.get_task_history.return_value = [history_task]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertNotIn("``", md)
+        self.assertNotIn("[[", md)
+        self.assertIn("[`#42`](https://github.com/owner/repo/pull/42)", md)
+        self.assertIn("[`#99`](https://github.com/owner/repo/issues/99)", md)
+        self.assertIn("[`owner/repo#pr-77`](https://github.com/owner/repo/pull/77)", md)
 
     def test_render_dashboard_html(self):
         md = "# Sample Markdown"
@@ -177,6 +238,7 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("Graviton Live Dashboard", html_out)
         self.assertIn("# Sample Markdown", html_out)
         self.assertIn("/dashboard/content", html_out)
+        self.assertIn("pr[\\/-]|pull[\\/-]|issues?[\\/-]", html_out)
 
     def test_get_quota_color_thresholds(self):
         # > 50%: Green (#3fb950)
@@ -262,12 +324,13 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("class=\"markdown-view\"", html_out)
         self.assertIn("setInterval(refreshDashboard, 3000)", html_out)
 
-    def test_render_dashboard_html_with_active_tasks_and_remote_control(self):
+    def test_render_dashboard_html_with_active_tasks_and_clickable_target(self):
         active_task = Task(
             id="task-live-1",
             agent="code_reviewer",
             prompt="Review PR #99",
             target_id="#99",
+            repo_full_name="owner/repo",
             status=TaskStatus.RUNNING,
             start_time=time.time() - 45.0,
             remote_control_url="https://antigravity.google.com/c/live-sess-1",
@@ -284,8 +347,11 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("task-live-1", html_out)
         self.assertIn("code_reviewer", html_out)
         self.assertIn("#99", html_out)
-        self.assertIn("https://antigravity.google.com/c/live-sess-1", html_out)
-        self.assertIn("🌐 Remote Control", html_out)
+        self.assertIn('href="https://github.com/owner/repo/pull/99"', html_out)
+        self.assertIn('class="target-link"', html_out)
+        self.assertNotIn("🌐 Remote Control", html_out)
+        self.assertNotIn("<th>Remote Control</th>", html_out)
+        self.assertNotIn("https://antigravity.google.com/c/live-sess-1", html_out)
         self.assertIn("target=\"_blank\"", html_out)
         self.assertIn("rel=\"noopener\"", html_out)
 
@@ -320,6 +386,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="pr_drafter",
             prompt="Draft PR",
             target_id="#55",
+            repo_full_name="owner/repo",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 60.0,
             finish_time=time.time() - 10.0,
@@ -330,6 +397,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Failing fix",
             target_id="#56",
+            repo_full_name="owner/repo",
             status=TaskStatus.FAILED,
             start_time=time.time() - 30.0,
             finish_time=time.time() - 5.0,
@@ -346,7 +414,9 @@ class TestDashboardFormatting(unittest.TestCase):
 
         self.assertIn("task-hist-1", html_out)
         self.assertIn("status-completed", html_out)
-        self.assertIn("https://antigravity.google.com/c/sess-hist", html_out)
+        self.assertIn('href="https://github.com/owner/repo/pull/55"', html_out)
+        self.assertNotIn("Remote Session", html_out)
+        self.assertNotIn("https://antigravity.google.com/c/sess-hist", html_out)
         self.assertIn("task-hist-2", html_out)
         self.assertIn("status-failed", html_out)
         self.assertIn("Compilation failed on line 42", html_out)
@@ -406,7 +476,7 @@ class TestDashboardFormatting(unittest.TestCase):
             id="task-xss-1",
             agent="code_reviewer",
             prompt="Malicious task",
-            target_id="#99",
+            target_id="javascript:alert(1)",
             status=TaskStatus.RUNNING,
             start_time=time.time() - 30.0,
             remote_control_url="javascript:alert(document.cookie)",
@@ -415,11 +485,12 @@ class TestDashboardFormatting(unittest.TestCase):
             id="task-xss-2",
             agent="code_fixer",
             prompt="Malicious history",
-            target_id="#100",
+            target_id="javascript:alert(2)",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 60.0,
             finish_time=time.time() - 10.0,
             remote_control_url="javascript:alert('pwned')",
+            error_message="Test error",
         )
         mock_tm = MagicMock()
         mock_tm.get_stats.return_value = {"active_workers": 1, "max_workers": 1, "active_tasks": 1, "completed_tasks": 1}
@@ -433,20 +504,18 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertNotIn('href="javascript:', html_out)
         self.assertNotIn("href='javascript:", html_out)
         self.assertNotIn('<a href="javascript', html_out)
-        self.assertIn("Pending...", html_out)
         self.assertIn('class="error-snippet"', html_out)
 
         # Direct table rendering verification
         active_rendered = _render_active_tasks_table([{
-            "id": "t1", "agent": "a", "target": "b", "elapsed": "1s", "status": "RUNNING",
+            "id": "t1", "agent": "a", "target": "javascript:alert(1)", "elapsed": "1s", "status": "RUNNING",
             "remote_control_url": "javascript:alert(1)"
         }])
         self.assertNotIn("<a ", active_rendered)
-        self.assertIn("Pending...", active_rendered)
 
         history_rendered = _render_history_tasks_table([{
-            "id": "t2", "agent": "a", "target": "b", "duration": "1s", "status": "COMPLETED",
-            "remote_control_url": "javascript:alert(1)", "details": "Remote Control"
+            "id": "t2", "agent": "a", "target": "javascript:alert(2)", "duration": "1s", "status": "COMPLETED",
+            "remote_control_url": "javascript:alert(1)", "details": "Finished"
         }])
         self.assertNotIn("<a ", history_rendered)
 
@@ -495,6 +564,263 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
         self.assertEqual(len(parsed["history_tasks"]), 1)
         self.assertEqual(parsed["history_tasks"][0]["id"], "task-3")
+
+    def test_resolve_target_url_various_formats(self):
+        # Full repo#number format
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="code_reviewer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="issue_triager"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="pr_drafter"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="code_fixer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="arbitrary_agent"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+
+        # Bare #number with explicit repo
+        self.assertEqual(
+            resolve_target_url("#42", repo="my-org/my-repo", agent="code_reviewer"),
+            "https://github.com/my-org/my-repo/pull/42",
+        )
+        self.assertEqual(
+            resolve_target_url("42", repo="my-org/my-repo", agent="issue_triager"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+
+        # Direct HTTP/HTTPS URLs
+        self.assertEqual(
+            resolve_target_url("https://github.com/foo/bar/pull/99"),
+            "https://github.com/foo/bar/pull/99",
+        )
+        self.assertEqual(
+            resolve_target_url("http://github.com/foo/bar/issues/100"),
+            "http://github.com/foo/bar/issues/100",
+        )
+
+        # Whole repository
+        self.assertEqual(
+            resolve_target_url("owner/repo"),
+            "https://github.com/owner/repo",
+        )
+
+        # Markdown links
+        self.assertEqual(
+            resolve_target_url("[#42](https://github.com/owner/repo/pull/42)"),
+            "https://github.com/owner/repo/pull/42",
+        )
+
+        # Backticked targets
+        self.assertEqual(
+            resolve_target_url("`#42`", repo="my-org/my-repo", agent="code_reviewer"),
+            "https://github.com/my-org/my-repo/pull/42",
+        )
+        self.assertEqual(
+            resolve_target_url("`octocat/Hello-World#123`", agent="code_reviewer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`octocat/Hello-World#123`", agent="issue_triager"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`owner/repo`"),
+            "https://github.com/owner/repo",
+        )
+        self.assertEqual(
+            resolve_target_url("`https://github.com/foo/bar/pull/99`"),
+            "https://github.com/foo/bar/pull/99",
+        )
+
+        # Hyphenated target formats
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#pr-123"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#pull-123"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#issue-123"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#issues-123"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#pr-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#issue-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("pr-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("issue-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`#pr-123`", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`owner/repo#issue-456`"),
+            "https://github.com/owner/repo/issues/456",
+        )
+
+        # Unsafe / non-target inputs
+        self.assertIsNone(resolve_target_url(None))
+        self.assertIsNone(resolve_target_url(""))
+        self.assertIsNone(resolve_target_url("   "))
+        self.assertIsNone(resolve_target_url("N/A"))
+        self.assertIsNone(resolve_target_url("javascript:alert(1)"))
+        self.assertIsNone(resolve_target_url("random text without issue"))
+
+    def test_parse_dashboard_markdown_clickable_targets(self):
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-1` | `code_reviewer` | [`#42`](https://github.com/owner/repo/pull/42) | 12s | 🔄 RUNNING |\n\n"
+            "## ⏳ Queued Tasks\n\n"
+            "| Task ID | Agent | Target | Priority | Queued Duration |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-2` | `issue_triager` | [`#43`](https://github.com/owner/repo/issues/43) | 1 | 30s |\n\n"
+            "## 📜 Recent Task Execution History\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-3` | `pr_drafter` | [`#44`](https://github.com/owner/repo/pull/44) | 45s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed["active_tasks"][0]["target"], "#42")
+        self.assertEqual(parsed["active_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/42")
+
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
+        self.assertEqual(parsed["queued_tasks_list"][0]["target"], "#43")
+        self.assertEqual(parsed["queued_tasks_list"][0]["target_url"], "https://github.com/owner/repo/issues/43")
+
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-3")
+        self.assertEqual(parsed["history_tasks"][0]["target"], "#44")
+        self.assertEqual(parsed["history_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/44")
+        self.assertEqual(parsed["history_tasks"][0]["details"], "Finished")
+
+    def test_parse_dashboard_markdown_5_column_history(self):
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History\n\n"
+            "| Task ID | Agent | Target | Duration | Status |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-comp` | `pr_drafter` | [`#44`](https://github.com/owner/repo/pull/44) | 45s | ✅ COMPLETED |\n"
+            "| `task-fail` | `code_reviewer` | `#45` | 10s | ❌ FAILED |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(len(parsed["history_tasks"]), 2)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-comp")
+        self.assertEqual(parsed["history_tasks"][0]["status"], "COMPLETED")
+        self.assertEqual(parsed["history_tasks"][0]["details"], "Finished")
+        self.assertEqual(parsed["history_tasks"][1]["id"], "task-fail")
+        self.assertEqual(parsed["history_tasks"][1]["status"], "FAILED")
+        self.assertEqual(parsed["history_tasks"][1]["details"], "Finished")
+
+        # Verify rendered HTML does not render the status string as an error-snippet under details
+        rendered_html = _render_history_tasks_table(parsed["history_tasks"])
+        self.assertIn('<span class="text-muted">Finished</span>', rendered_html)
+        self.assertNotIn('class="error-snippet"', rendered_html)
+        self.assertNotIn('title="COMPLETED"', rendered_html)
+
+    def test_detect_git_repo_full_name(self):
+        # 1. Test GITHUB_REPOSITORY environment variable
+        _reset_detected_repo_cache()
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "env-owner/env-repo"}):
+            self.assertEqual(_detect_git_repo_full_name(), "env-owner/env-repo")
+            # Caching check: even if env changes, cached value is retained until reset
+            with patch.dict(os.environ, {"GITHUB_REPOSITORY": "other/repo"}):
+                self.assertEqual(_detect_git_repo_full_name(), "env-owner/env-repo")
+
+        # 2. Reset cache and test git remote origin URL (HTTPS)
+        _reset_detected_repo_cache()
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/git-owner/git-repo.git\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "git-owner/git-repo")
+
+        # 3. Test git remote origin URL (SSH)
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-owner/ssh-repo.git\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-owner/ssh-repo")
+
+        # 4. Test git failure / no remote
+        _reset_detected_repo_cache()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertIsNone(_detect_git_repo_full_name())
+
+        # 5. Test trailing slash git remote URLs
+        _reset_detected_repo_cache()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/trailing-owner/trailing-repo/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "trailing-owner/trailing-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "https://github.com/trailing-owner/trailing-repo.git/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "trailing-owner/trailing-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-trailing/ssh-repo/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-trailing/ssh-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-trailing/ssh-repo.git/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-trailing/ssh-repo")
+
+        # Cleanup cache after test
+        _reset_detected_repo_cache()
+
+    def test_render_dashboard_html_default_repo_handling(self):
+        # When repo cannot be detected, defaultRepo in JS template is empty string
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value=None):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "";', html_out)
+            self.assertNotIn('const defaultRepo = "None";', html_out)
+
+        # When repo is detected, defaultRepo is populated
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="my-org/my-repo"):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "my-org/my-repo";', html_out)
+
+        _reset_detected_repo_cache()
 
 
 class TestDashboardUpdater(unittest.TestCase):
