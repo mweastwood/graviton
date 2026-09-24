@@ -1578,6 +1578,8 @@ def _is_empty_path(val: Optional[Union[str, Path]]) -> bool:
     if isinstance(val, Path):
         raw_paths = getattr(val, "_raw_paths", None)
         if raw_paths is not None:
+            if not raw_paths:
+                return True
             return not str(raw_paths[0]).strip()
         s = str(val).strip()
         return not s
@@ -1802,6 +1804,38 @@ class ContainerSupervisor:
         # Note: Must be configured before git fetch origin
         token = self._resolve_github_token()
         if token:
+            get_keys = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.temp_workspace),
+                    "config",
+                    "--get-regexp",
+                    r"^url\.https://.*github\.com/\.instead[oO]f$",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=git_env,
+            )
+            if get_keys.returncode == 0 and get_keys.stdout:
+                for line in get_keys.stdout.splitlines():
+                    if line.strip():
+                        key = line.split()[0]
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(self.temp_workspace),
+                                "config",
+                                "--unset-all",
+                                key,
+                            ],
+                            capture_output=True,
+                            check=False,
+                            env=git_env,
+                        )
+
             subprocess.run(
                 [
                     "git",

@@ -23,6 +23,7 @@ from lib.supervisor import (
     ensure_workspace_trusted,
     find_project_for_repo,
     has_ssh_credentials,
+    _is_empty_path,
     run_container_goal,
     run_container_turn,
     run_goal_turn,
@@ -139,8 +140,19 @@ class TestHasSshCredentials(unittest.TestCase):
     def test_returns_false_for_empty_path_strings(self):
         self.assertFalse(has_ssh_credentials(""))
         self.assertFalse(has_ssh_credentials("   "))
+        self.assertFalse(has_ssh_credentials(Path()))
         self.assertFalse(has_ssh_credentials(Path("")))
         self.assertFalse(has_ssh_credentials(Path("   ")))
+
+    def test_is_empty_path_handles_empty_path_instance(self):
+        self.assertTrue(_is_empty_path(None))
+        self.assertTrue(_is_empty_path(""))
+        self.assertTrue(_is_empty_path("   "))
+        self.assertTrue(_is_empty_path(Path()))
+        self.assertTrue(_is_empty_path(Path("")))
+        self.assertTrue(_is_empty_path(Path("   ")))
+        self.assertFalse(_is_empty_path(Path(".")))
+        self.assertFalse(_is_empty_path(Path("/tmp")))
 
     def test_accepts_dot_path_and_dot_string_with_valid_credentials(self):
         key = self.ssh_dir / "id_ed25519"
@@ -1129,6 +1141,30 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("config_insteadof", call_order)
         self.assertIn("fetch_origin", call_order)
         self.assertLess(call_order.index("config_insteadof"), call_order.index("fetch_origin"))
+
+    def test_prepare_workspace_clears_stale_insteadof_tokens(self):
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(self.repo_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo_dir), "config", "url.https://x-access-token:old_token_123@github.com/.insteadOf", "https://github.com/"],
+            check=True,
+        )
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="stale_token_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            github_token="new_token_456",
+        )
+        sup.prepare_workspace()
+        res = subprocess.run(
+            ["git", "-C", str(sup.temp_workspace), "config", "--get-regexp", r"^url\.https://.*github\.com/\.instead[oO]f$"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lines = res.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("new_token_456", lines[0])
+        self.assertNotIn("old_token_123", lines[0])
 
     def test_build_docker_command(self):
         home_mock = Path(self.tmp_dir.name) / "fake_home"

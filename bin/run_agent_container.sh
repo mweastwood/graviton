@@ -37,67 +37,63 @@ RESTORED_FROM_CACHE=false
 EXIT_CODE=1
 USE_CONTAINER_EXEC=false
 
+convert_origin_to_ssh() {
+  local target_workspace="$1"
+  local source_repo="$2"
+
+  local origin_url
+  origin_url="$(git -C "${source_repo}" remote get-url origin 2>/dev/null || echo "")"
+  if [ -z "${origin_url}" ]; then
+    return 0
+  fi
+
+  local has_ssh_keys=false
+  if [ -s "${HOME}/.ssh/config" ]; then
+    has_ssh_keys=true
+  else
+    for k in "${HOME}/.ssh"/id_*; do
+      if [ -s "${k}" ] && [[ "${k}" != *.pub ]]; then
+        has_ssh_keys=true
+        break
+      fi
+    done
+  fi
+
+  if [ "${has_ssh_keys}" = true ]; then
+    local clean_origin="${origin_url}"
+    while [[ "${clean_origin}" == */ ]]; do clean_origin="${clean_origin%/}"; done
+    clean_origin="${clean_origin%.git}"
+    if [[ "${clean_origin}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
+      origin_url="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
+    fi
+  fi
+  git -C "${target_workspace}" remote set-url origin "${origin_url}" &>/dev/null || true
+}
+
 if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
   echo "Restoring workspace from cache: ${CACHE_DIR}"
   cp -a "${CACHE_DIR}/." "${TEMP_WORKSPACE}/"
   RESTORED_FROM_CACHE=true
+  convert_origin_to_ssh "${TEMP_WORKSPACE}" "${TEMP_WORKSPACE}"
   ORIGIN_URL="$(git -C "${TEMP_WORKSPACE}" remote get-url origin 2>/dev/null || echo "")"
-  if [ -n "${ORIGIN_URL}" ]; then
-    HAS_SSH_KEYS=false
-    if [ -s "${HOME}/.ssh/config" ]; then
-      HAS_SSH_KEYS=true
-    else
-      for k in "${HOME}/.ssh"/id_*; do
-        if [ -s "${k}" ] && [[ "${k}" != *.pub ]]; then
-          HAS_SSH_KEYS=true
-          break
-        fi
-      done
-    fi
-    if [ "${HAS_SSH_KEYS}" = true ]; then
-      CLEAN_ORIGIN="${ORIGIN_URL}"
-      while [[ "${CLEAN_ORIGIN}" == */ ]]; do CLEAN_ORIGIN="${CLEAN_ORIGIN%/}"; done
-      CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
-      if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
-        ORIGIN_URL="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
-      fi
-      git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
-    fi
-  fi
 else
   # Fast local git clone to ensure an isolated .git index and working copy
   git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
 
   # Restore original remote origin URL (git clone --local sets origin to the local host folder)
-  ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
-  if [ -n "${ORIGIN_URL}" ]; then
-    # Convert HTTPS GitHub origin to SSH if SSH keys or config exist
-    HAS_SSH_KEYS=false
-    if [ -s "${HOME}/.ssh/config" ]; then
-      HAS_SSH_KEYS=true
-    else
-      for k in "${HOME}/.ssh"/id_*; do
-        if [ -s "${k}" ] && [[ "${k}" != *.pub ]]; then
-          HAS_SSH_KEYS=true
-          break
-        fi
-      done
-    fi
-    if [ "${HAS_SSH_KEYS}" = true ]; then
-      CLEAN_ORIGIN="${ORIGIN_URL}"
-      while [[ "${CLEAN_ORIGIN}" == */ ]]; do CLEAN_ORIGIN="${CLEAN_ORIGIN%/}"; done
-      CLEAN_ORIGIN="${CLEAN_ORIGIN%.git}"
-      if [[ "${CLEAN_ORIGIN}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
-        ORIGIN_URL="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
-      fi
-    fi
-    git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
-  fi
+  convert_origin_to_ssh "${TEMP_WORKSPACE}" "${WORKSPACE_DIR}"
+  ORIGIN_URL="$(git -C "${TEMP_WORKSPACE}" remote get-url origin 2>/dev/null || echo "")"
 fi
 
 # Fallback authentication via token rewrite for HTTPS GitHub URLs (configured for both cached and newly cloned workspaces)
 GH_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || echo "")}"
 if [ -n "${GH_TOKEN}" ]; then
+  INSTEADOF_KEYS="$(git -C "${TEMP_WORKSPACE}" config --get-regexp '^url\.https://.*github\.com/\.instead[oO]f$' 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "${INSTEADOF_KEYS}" ]; then
+    for k in ${INSTEADOF_KEYS}; do
+      git -C "${TEMP_WORKSPACE}" config --unset-all "${k}" 2>/dev/null || true
+    done
+  fi
   git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
 fi
 

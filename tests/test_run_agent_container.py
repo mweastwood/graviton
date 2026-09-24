@@ -1099,6 +1099,50 @@ sys.exit(0)
             self.assertTrue(token_record.exists())
             self.assertIn("url.https://x-access-token:ghp_cached_token_xyz@github.com/.insteadof https://github.com/", token_record.read_text())
 
+    def test_cached_workspace_clears_stale_token_insteadof(self):
+        """Verify that reusing a cached workspace with a new token clears old insteadOf entries."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            cache_dir = Path(tmp_dir) / "cached_workspace"
+            cache_dir.mkdir()
+
+            subprocess.run(["git", "init", "-q"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(cache_dir), check=True)
+            (cache_dir / "file.py").write_text("print('cached')\n")
+            subprocess.run(["git", "add", "file.py"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "cached commit"], cwd=str(cache_dir), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "url.https://x-access-token:old_stale_token_123@github.com/.insteadOf", "https://github.com/"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+
+            token_record = Path(tmp_dir) / "token_record.txt"
+            ctx["env"]["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cache_dir)
+            ctx["env"]["GITHUB_TOKEN"] = "ghp_new_token_456"
+            ctx["env"]["MOCK_RECORD_GIT_TOKEN_CONFIG_FILE"] = str(token_record)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Cached token stale clear test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(token_record.exists())
+            recorded_text = token_record.read_text()
+            self.assertIn("ghp_new_token_456", recorded_text)
+            self.assertNotIn("old_stale_token_123", recorded_text)
+
     def test_github_token_env_var_takes_priority_over_gh_auth_token(self):
         """Verify that GITHUB_TOKEN env var takes precedence over gh auth token in run_agent_container.sh."""
         with tempfile.TemporaryDirectory() as tmp_dir:
