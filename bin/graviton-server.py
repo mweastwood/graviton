@@ -749,6 +749,13 @@ def main():
         help="Interval in seconds for background quota polling loop (default: 5.0, env: GRAVITON_QUOTA_POLL_INTERVAL or QUOTA_POLL_INTERVAL)",
     )
     parser.add_argument(
+        "--quota-background-polling",
+        dest="quota_background_polling",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable automatic background polling for live model quota",
+    )
+    parser.add_argument(
         "--no-quota-background-polling",
         dest="quota_background_polling",
         action="store_false",

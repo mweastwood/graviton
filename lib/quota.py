@@ -1753,7 +1753,7 @@ class QuotaTracker:
         return t
 
     def start_background_polling(
-        self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
+        self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 5.0
     ):
         """Start asynchronous background polling thread for live quota updates."""
         try:
@@ -1795,7 +1795,7 @@ class QuotaTracker:
 
 
     def _background_polling_loop(
-        self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 1.0
+        self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 5.0
     ):
         """Background thread loop calling poll_live_quota() or poll_all_pools() periodically."""
         try:
