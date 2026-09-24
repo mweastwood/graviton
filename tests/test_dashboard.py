@@ -714,13 +714,15 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
     def test_possible_paths_has_no_duplicates_and_correct_subdirectories(self):
         from lib.dashboard import REPO_ROOT
-        possible_paths = [
-            REPO_ROOT / "templates" / "dashboard" / "dashboard.html",
-            Path(__file__).resolve().parent.parent / "lib" / "templates" / "dashboard" / "dashboard.html",
-        ]
-        # Verify all path entries end with templates/dashboard/dashboard.html
-        for p in possible_paths:
-            self.assertTrue(str(p).endswith(os.path.join("templates", "dashboard", "dashboard.html")))
+        expected_template_path = REPO_ROOT / "templates" / "dashboard" / "dashboard.html"
+        self.assertTrue(expected_template_path.is_file(), f"Template file does not exist at {expected_template_path}")
+        template = _get_dashboard_template()
+        self.assertIn("<!DOCTYPE html>", template)
+        self.assertIn("Graviton Live Dashboard", template)
+
+    def test_template_js_handles_finish_status(self):
+        template = _get_dashboard_template()
+        self.assertIn("r[4].toLowerCase().includes('finish')", template)
 
 
 if __name__ == "__main__":

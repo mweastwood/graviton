@@ -831,7 +831,7 @@ def render_dashboard_html(
     queued_count = len(data["queued_tasks_list"])
     history_count = len(data["history_tasks"])
 
-        template = _get_dashboard_template()
+    template = _get_dashboard_template()
 
     return template.format(
         effective_host=effective_host,

@@ -1036,7 +1036,7 @@ return f"""<!DOCTYPE html>
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
                         const target = escapeHtml(r[2].replace(/`/g, ''));
                         const dur = escapeHtml(r[3]);
-                        const isSuccess = r[4].includes('✅') || r[4].toLowerCase().includes('complete');
+                        const isSuccess = r[4].includes('✅') || r[4].toLowerCase().includes('complete') || r[4].toLowerCase().includes('finish');
                         const statusClean = escapeHtml(r[4].replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
