@@ -45,6 +45,24 @@ if subcmd == "run":
             host_ws = target.split(":/workspace")[0]
             if workspace_file:
                 Path(workspace_file).write_text(host_ws)
+            record_origin_file = os.environ.get("MOCK_RECORD_GIT_ORIGIN_FILE")
+            if record_origin_file and Path(host_ws).exists():
+                import subprocess
+                try:
+                    res = subprocess.run(["git", "-C", host_ws, "config", "--get", "remote.origin.url"], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        Path(record_origin_file).write_text(res.stdout.strip())
+                except Exception:
+                    pass
+            record_token_file = os.environ.get("MOCK_RECORD_GIT_TOKEN_CONFIG_FILE")
+            if record_token_file and Path(host_ws).exists():
+                import subprocess
+                try:
+                    res = subprocess.run(["git", "-C", host_ws, "config", "--get-regexp", "url\\..*"], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        Path(record_token_file).write_text(res.stdout.strip())
+                except Exception:
+                    pass
 
 # Record call
 if log_file:
@@ -192,6 +210,9 @@ class TestRunAgentContainer(unittest.TestCase):
             "MOCK_DOCKER_TRANSCRIPT_PATH",
             "MOCK_DOCKER_COMPLETE_TRANSCRIPT_ON_ATTEMPT",
             "MOCK_CHECK_HOOK_FILE",
+            "MOCK_RECORD_GIT_ORIGIN_FILE",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
         ]:
             env.pop(key, None)
 
@@ -917,10 +938,291 @@ sys.exit(0)
 
             calls = self._get_docker_calls(ctx["docker_log"])
             run_call = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]][0]
-            self.assertIn("-v", run_call["args"])
             expected_mount = f"{config_file.resolve()}:/root/.gemini/config/config.json:ro"
             self.assertIn(expected_mount, run_call["args"])
+
+    def test_ssh_pub_file_only_does_not_convert_origin_to_ssh(self):
+        """Verify that having only .pub files in ~/.ssh does not trigger HTTPS to SSH origin conversion."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            fake_home = ctx["fake_home"]
+
+            origin_record = Path(tmp_dir) / "origin_record.txt"
+            ctx["env"]["MOCK_RECORD_GIT_ORIGIN_FILE"] = str(origin_record)
+
+            # Create .ssh directory with ONLY a public key file (no private keys)
+            ssh_dir = fake_home / ".ssh"
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            (ssh_dir / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...")
+
+            # Initialize a git repo with HTTPS GitHub origin
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "SSH pub key test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            # Since only .pub file existed, HTTPS origin should NOT be converted to SSH (git@github.com:...)
+            self.assertTrue(origin_record.exists())
+            self.assertEqual(origin_record.read_text().strip(), "https://github.com/mweastwood/graviton.git")
+
+    def test_ssh_private_key_converts_origin_to_ssh(self):
+        """Verify that having an SSH private key in ~/.ssh converts HTTPS origin to SSH."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            fake_home = ctx["fake_home"]
+
+            origin_record = Path(tmp_dir) / "origin_record.txt"
+            ctx["env"]["MOCK_RECORD_GIT_ORIGIN_FILE"] = str(origin_record)
+
+            # Create .ssh directory with a valid private key file
+            ssh_dir = fake_home / ".ssh"
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            (ssh_dir / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\ndummy...")
+
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "SSH private key test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(origin_record.exists())
+            self.assertEqual(origin_record.read_text().strip(), "git@github.com:mweastwood/graviton.git")
+
+    def test_empty_ssh_private_key_does_not_convert_origin_to_ssh(self):
+        """Verify that a 0-byte SSH private key file does not trigger HTTPS origin SSH conversion."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            fake_home = ctx["fake_home"]
+
+            origin_record = Path(tmp_dir) / "origin_record.txt"
+            ctx["env"]["MOCK_RECORD_GIT_ORIGIN_FILE"] = str(origin_record)
+
+            # Create .ssh directory with a 0-byte private key file
+            ssh_dir = fake_home / ".ssh"
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            (ssh_dir / "id_rsa").touch()
+
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Empty SSH key test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(origin_record.exists())
+            self.assertEqual(origin_record.read_text().strip(), "https://github.com/mweastwood/graviton.git")
+
+    def test_cached_workspace_configures_token_insteadof(self):
+        """Verify that restoring from CACHE_DIR still configures GitHub token url.insteadOf rewrite."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            cache_dir = Path(tmp_dir) / "cached_workspace"
+            cache_dir.mkdir()
+
+            # Initialize a git repo inside cache_dir
+            subprocess.run(["git", "init", "-q"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(cache_dir), check=True)
+            (cache_dir / "file.py").write_text("print('cached')\n")
+            subprocess.run(["git", "add", "file.py"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "cached commit"], cwd=str(cache_dir), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+
+            token_record = Path(tmp_dir) / "token_record.txt"
+            ctx["env"]["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cache_dir)
+            ctx["env"]["GITHUB_TOKEN"] = "ghp_cached_token_xyz"
+            ctx["env"]["MOCK_GH_TOKEN"] = "ghp_cached_token_xyz"
+            ctx["env"]["MOCK_RECORD_GIT_TOKEN_CONFIG_FILE"] = str(token_record)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Cached token test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(token_record.exists())
+            self.assertIn("url.https://x-access-token:ghp_cached_token_xyz@github.com/.insteadof https://github.com/", token_record.read_text())
+
+    def test_cached_workspace_clears_stale_token_insteadof(self):
+        """Verify that reusing a cached workspace with a new token clears old insteadOf entries."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            cache_dir = Path(tmp_dir) / "cached_workspace"
+            cache_dir.mkdir()
+
+            subprocess.run(["git", "init", "-q"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(cache_dir), check=True)
+            (cache_dir / "file.py").write_text("print('cached')\n")
+            subprocess.run(["git", "add", "file.py"], cwd=str(cache_dir), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "cached commit"], cwd=str(cache_dir), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "url.https://x-access-token:old_stale_token_123@github.com/.insteadOf", "https://github.com/"],
+                cwd=str(cache_dir),
+                check=True,
+            )
+
+            token_record = Path(tmp_dir) / "token_record.txt"
+            ctx["env"]["GRAVITON_WORKSPACE_CACHE_DIR"] = str(cache_dir)
+            ctx["env"]["GITHUB_TOKEN"] = "ghp_new_token_456"
+            ctx["env"]["MOCK_RECORD_GIT_TOKEN_CONFIG_FILE"] = str(token_record)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Cached token stale clear test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(token_record.exists())
+            recorded_text = token_record.read_text()
+            self.assertIn("ghp_new_token_456", recorded_text)
+            self.assertNotIn("old_stale_token_123", recorded_text)
+
+    def test_github_token_env_var_takes_priority_over_gh_auth_token(self):
+        """Verify that GITHUB_TOKEN env var takes precedence over gh auth token in run_agent_container.sh."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            token_record = Path(tmp_dir) / "token_record.txt"
+
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            ctx["env"]["GITHUB_TOKEN"] = "explicit_env_token_override"
+            ctx["env"]["MOCK_GH_TOKEN"] = "gh_cli_token_fallback"
+            ctx["env"]["MOCK_RECORD_GIT_TOKEN_CONFIG_FILE"] = str(token_record)
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Token priority test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(token_record.exists())
+            self.assertIn("url.https://x-access-token:explicit_env_token_override@github.com/.insteadof https://github.com/", token_record.read_text())
+
+            calls = self._get_docker_calls(ctx["docker_log"])
+            run_call = [c for c in calls if c["args"] and c["args"][0] == "run" and "-d" in c["args"]][0]
+            run_args_str = " ".join(run_call["args"])
+            self.assertIn("GITHUB_TOKEN=explicit_env_token_override", run_args_str)
+
+    def test_multiple_trailing_slashes_on_git_origin_converted_to_ssh(self):
+        """Verify that an HTTPS origin URL with multiple trailing slashes is stripped and converted to SSH."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = self._setup_test_env(Path(tmp_dir))
+            fake_cwd = ctx["fake_cwd"]
+            fake_home = ctx["fake_home"]
+
+            origin_record = Path(tmp_dir) / "origin_record.txt"
+            ctx["env"]["MOCK_RECORD_GIT_ORIGIN_FILE"] = str(origin_record)
+
+            # Create .ssh directory with a valid private key file
+            ssh_dir = fake_home / ".ssh"
+            ssh_dir.mkdir(parents=True, exist_ok=True)
+            (ssh_dir / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\ndummy...")
+
+            subprocess.run(["git", "init", "-q"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(fake_cwd), check=True)
+            (fake_cwd / "sample.py").write_text("print('hello')\n")
+            subprocess.run(["git", "add", "sample.py"], cwd=str(fake_cwd), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=str(fake_cwd), check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://github.com/mweastwood/graviton.git///"],
+                cwd=str(fake_cwd),
+                check=True,
+            )
+
+            res = subprocess.run(
+                [str(RUN_AGENT_CONTAINER_PATH), "Multiple trailing slashes test"],
+                capture_output=True,
+                text=True,
+                env=ctx["env"],
+                cwd=str(fake_cwd),
+            )
+            self.assertEqual(res.returncode, 0)
+
+            self.assertTrue(origin_record.exists())
+            self.assertEqual(origin_record.read_text().strip(), "git@github.com:mweastwood/graviton.git")
 
 
 if __name__ == "__main__":
     unittest.main()
+
