@@ -55,8 +55,10 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.dashboard_updater = None
         GravitonHandler.server_host = "localhost"
         GravitonHandler.server_port = 8000
+        server_mod.set_hot_reload_state("IDLE")
 
     def tearDown(self):
+        server_mod.set_hot_reload_state("IDLE")
         self._listener_patcher.stop()
         if self._orig_smee_url is None:
             os.environ.pop("SMEE_URL", None)
@@ -1490,6 +1492,7 @@ class TestGravitonHandler(unittest.TestCase):
         args = kwargs.get("args") or mock_thread.call_args[1].get("args")
         self.assertEqual(target_fn, server_mod.sync_repo_and_reload)
         self.assertIn(mock_qt, args)
+        self.assertEqual(server_mod.get_hot_reload_state(), "PULLING_GIT")
 
     @patch("graviton_server.get_hot_reload_state", return_value="PULLING_GIT")
     @patch("graviton_server.sync_repo_and_reload")

@@ -952,6 +952,55 @@ class TestUpdater(unittest.TestCase):
         mock_uptime_secs.return_value = 0.8
         self.assertEqual(get_uptime_str(), "00:00:00")
 
+    @patch("os.execv")
+    def test_hot_reload_server_unbounded_drain_timeout_logging(self, mock_execv):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="INFO") as cm:
+            hot_reload_server(task_manager=mock_tm, drain_timeout=None)
+        mock_tm.drain_active_tasks.assert_called_once_with(timeout=None)
+        self.assertTrue(any("timeout=unbounded" in log for log in cm.output))
+        self.assertFalse(any("timeout=Nones" in log for log in cm.output))
+
+    @patch("lib.updater.rebuild_agent_container", return_value=False)
+    @patch("lib.updater.check_if_dockerfile_changed", return_value=True)
+    @patch("lib.updater.perform_git_pull", return_value=(True, "Dockerfile modified"))
+    def test_sync_repo_and_reload_aborts_on_container_rebuild_failure(self, mock_pull, mock_check, mock_rebuild):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            res = sync_repo_and_reload(repo_root=Path("/tmp/fake_repo"), task_manager=mock_tm)
+        self.assertFalse(res)
+        self.assertEqual(get_hot_reload_state(), "IDLE")
+        mock_tm.drain_active_tasks.assert_not_called()
+        self.assertTrue(any("Agent container rebuild failed" in log for log in cm.output))
+
+    @patch("lib.updater.hot_reload_server", side_effect=RuntimeError("exec failure"))
+    @patch("lib.updater.perform_git_pull", return_value=(True, "Already up to date."))
+    def test_sync_repo_and_reload_resets_idle_on_unexpected_exception(self, mock_pull, mock_reload):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            res = sync_repo_and_reload(repo_root=Path("/tmp/fake_repo"), task_manager=mock_tm)
+        self.assertFalse(res)
+        self.assertEqual(get_hot_reload_state(), "IDLE")
+        self.assertTrue(any("Unexpected error during self-update and reload" in log for log in cm.output))
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_perform_git_pull_matches_index_lock_and_logs_exhaustion(self, mock_run, mock_sleep):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=1,
+            stdout="fatal: Unable to create '/repo/.git/index.lock': File exists.",
+            stderr="",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        with self.assertLogs("graviton.updater", level="WARNING") as cm:
+            success, output = perform_git_pull(repo_root, branch="main", max_retries=2, retry_delay=0.1)
+
+        self.assertFalse(success)
+        self.assertIn("index.lock", output)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertTrue(any("lock collision retry limit reached (2/2)" in log for log in cm.output))
+
 
 if __name__ == "__main__":
     unittest.main()

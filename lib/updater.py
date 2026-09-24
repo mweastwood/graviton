@@ -123,16 +123,23 @@ def perform_git_pull(
                     "cannot lock ref",
                     "unable to update local ref",
                     "another git process",
+                    "index.lock",
                     ".git/index.lock",
                 )
             )
-            if is_lock_error and attempt < max_retries:
-                logger.warning(
-                    f"Git pull encountered lock collision on attempt {attempt}/{max_retries}: {output.strip()}. "
-                    f"Retrying in {retry_delay}s..."
-                )
-                time.sleep(retry_delay)
-                continue
+            if is_lock_error:
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Git pull encountered lock collision on attempt {attempt}/{max_retries}: {output.strip()}. "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.warning(
+                        f"Git pull lock collision retry limit reached ({max_retries}/{max_retries}): {output.strip()}"
+                    )
+                    return (False, output.strip())
 
             return (False, output.strip())
         except Exception as e:
@@ -223,7 +230,8 @@ def hot_reload_server(
     """
     if task_manager is not None:
         set_hot_reload_state("DRAINING_TASKS")
-        logger.info(f"Draining active tasks before hot reload (timeout={drain_timeout}s)...")
+        timeout_str = f"{drain_timeout}s" if drain_timeout is not None else "unbounded"
+        logger.info(f"Draining active tasks before hot reload (timeout={timeout_str})...")
         clean_drain = task_manager.drain_active_tasks(timeout=drain_timeout)
         if not clean_drain:
             logger.warning("Active tasks did not drain completely within timeout; proceeding with reload.")
@@ -302,7 +310,10 @@ def sync_repo_and_reload(
 
         if check_if_dockerfile_changed(git_output):
             set_hot_reload_state("REBUILDING_CONTAINER")
-            rebuild_agent_container(repo_root)
+            if not rebuild_agent_container(repo_root):
+                logger.error("Agent container rebuild failed; aborting hot reload.")
+                set_hot_reload_state("IDLE")
+                return False
 
         hot_reload_server(
             httpd=httpd,
@@ -312,6 +323,10 @@ def sync_repo_and_reload(
             drain_timeout=drain_timeout,
         )
         return True
+    except Exception as e:
+        logger.exception(f"Unexpected error during self-update and reload: {e}")
+        set_hot_reload_state("IDLE")
+        return False
     finally:
         if _SYNC_LOCK.locked():
             try:

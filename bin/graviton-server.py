@@ -548,6 +548,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     })
                     return
 
+                set_hot_reload_state("PULLING_GIT")
                 self._send_json(200, {
                     "status": "accepted",
                     "action": "self_update",
