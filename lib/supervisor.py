@@ -1577,14 +1577,11 @@ def _is_empty_path(val: Optional[Union[str, Path]]) -> bool:
         return not val.strip()
     if isinstance(val, Path):
         raw_paths = getattr(val, "_raw_paths", None)
-        if raw_paths:
+        if raw_paths is not None:
             return not str(raw_paths[0]).strip()
         s = str(val).strip()
-        if not s or val == Path(""):
-            return True
-        return False
-    s = str(val).strip()
-    return not s
+        return not s
+    return not str(val).strip()
 
 
 def has_ssh_credentials(ssh_dir: Optional[Union[str, Path]] = None) -> bool:
@@ -1670,7 +1667,13 @@ class ContainerSupervisor:
         self.git_user_name = git_user_name
         self.git_user_email = git_user_email
         self.github_token = github_token
-        self.ssh_dir = Path(ssh_dir).resolve() if (ssh_dir is not None and not _is_empty_path(ssh_dir)) else (Path.home() / ".ssh")
+        is_empty_ssh = (
+            ssh_dir is None
+            or _is_empty_path(ssh_dir)
+            or ssh_dir == Path("")
+            or ssh_dir == Path("   ")
+        )
+        self.ssh_dir = (Path.home() / ".ssh") if is_empty_ssh else Path(ssh_dir).resolve()
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
         self.agents_dir = Path(agents_dir).resolve() if agents_dir else None
         self.env = dict(env) if env is not None else {}
