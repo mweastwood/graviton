@@ -15,8 +15,11 @@ logger = logging.getLogger("graviton.updater")
 
 SERVER_START_TIME = time.time()
 
+DEFAULT_DRAIN_TIMEOUT: float = 30.0
+
 _HOT_RELOAD_STATE = "IDLE"
 _HOT_RELOAD_LOCK = threading.Lock()
+_SYNC_LOCK = threading.Lock()
 
 
 def get_hot_reload_state() -> str:
@@ -84,27 +87,58 @@ def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str
     return commit, branch
 
 
-def perform_git_pull(repo_root: Path, branch: str = "main") -> Tuple[bool, str]:
+def perform_git_pull(
+    repo_root: Path,
+    branch: str = "main",
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+) -> Tuple[bool, str]:
     """
     Execute git pull origin <branch> in repo_root.
+    Retries automatically if a transient git ref lock collision is encountered.
 
     :param repo_root: Path to repository root.
     :param branch: Branch name to pull (e.g. 'main' or 'master').
+    :param max_retries: Maximum number of pull attempts if transient lock conflicts occur.
+    :param retry_delay: Delay in seconds between retries.
     :return: Tuple (success: bool, output: str).
     """
-    try:
-        res = subprocess.run(
-            ["git", "pull", "origin", branch],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = (res.stdout or "") + (res.stderr or "")
-        return (res.returncode == 0, output.strip())
-    except Exception as e:
-        logger.exception(f"Failed to execute git pull on branch '{branch}': {e}")
-        return (False, str(e))
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = subprocess.run(
+                ["git", "pull", "origin", branch],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = (res.stdout or "") + (res.stderr or "")
+            if res.returncode == 0:
+                return (True, output.strip())
+
+            lower_out = output.lower()
+            is_lock_error = any(
+                kw in lower_out
+                for kw in (
+                    "cannot lock ref",
+                    "unable to update local ref",
+                    "another git process",
+                    ".git/index.lock",
+                )
+            )
+            if is_lock_error and attempt < max_retries:
+                logger.warning(
+                    f"Git pull encountered lock collision on attempt {attempt}/{max_retries}: {output.strip()}. "
+                    f"Retrying in {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+                continue
+
+            return (False, output.strip())
+        except Exception as e:
+            logger.exception(f"Failed to execute git pull on branch '{branch}': {e}")
+            return (False, str(e))
+    return (False, "Git pull failed after maximum retries")
 
 
 def check_if_dockerfile_changed(git_output: str) -> bool:
@@ -171,7 +205,13 @@ def stop_smee_listener(listener_proc=None) -> None:
             logger.error(f"Error stopping smee listener process: {e}")
 
 
-def hot_reload_server(httpd=None, task_manager=None, listener_proc=None, quota_tracker=None):
+def hot_reload_server(
+    httpd=None,
+    task_manager=None,
+    listener_proc=None,
+    quota_tracker=None,
+    drain_timeout: Optional[float] = DEFAULT_DRAIN_TIMEOUT,
+):
     """
     Hot reload the running Python server process by re-executing sys.executable.
 
@@ -179,11 +219,14 @@ def hot_reload_server(httpd=None, task_manager=None, listener_proc=None, quota_t
     :param task_manager: Optional TaskManager instance to drain active tasks before execv.
     :param listener_proc: Optional subprocess.Popen instance of background smee listener to terminate before execv.
     :param quota_tracker: Optional QuotaTracker instance to persist active model selection before execv.
+    :param drain_timeout: Maximum seconds to wait for active tasks to complete.
     """
     if task_manager is not None:
         set_hot_reload_state("DRAINING_TASKS")
-        logger.info("Draining active tasks before hot reload...")
-        task_manager.drain_active_tasks()
+        logger.info(f"Draining active tasks before hot reload (timeout={drain_timeout}s)...")
+        clean_drain = task_manager.drain_active_tasks(timeout=drain_timeout)
+        if not clean_drain:
+            logger.warning("Active tasks did not drain completely within timeout; proceeding with reload.")
         logger.info("Dumping queue state before process re-execution...")
         task_manager.dump_queue_state()
 
@@ -220,9 +263,11 @@ def sync_repo_and_reload(
     task_manager=None,
     listener_proc=None,
     quota_tracker=None,
-):
+    drain_timeout: Optional[float] = DEFAULT_DRAIN_TIMEOUT,
+) -> bool:
     """
     Pull latest git commits for target branch, rebuild Docker image if necessary, and hot-reload server.
+    Ensures single-flight execution via _SYNC_LOCK to prevent concurrent git pull collisions.
 
     :param repo_root: Path to repository root.
     :param ref: Git ref from push webhook payload (e.g. 'refs/heads/main').
@@ -230,32 +275,47 @@ def sync_repo_and_reload(
     :param task_manager: Optional TaskManager instance to drain active tasks before reload.
     :param listener_proc: Optional subprocess.Popen instance of background smee listener.
     :param quota_tracker: Optional QuotaTracker instance to persist model selection state before reload.
+    :param drain_timeout: Maximum seconds to wait for active tasks to drain before reload.
+    :return: True if hot reload succeeded/initiated, False otherwise.
     """
-    if ref and ref.startswith("refs/heads/"):
-        branch = ref[len("refs/heads/") :]
-    elif not ref:
-        branch = "main"
-    else:
-        branch = ref
-    logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
-    set_hot_reload_state("PULLING_GIT")
-    success, git_output = perform_git_pull(repo_root, branch=branch)
+    if not _SYNC_LOCK.acquire(blocking=False):
+        logger.warning("Self-update/git sync already in progress. Ignoring duplicate trigger.")
+        return False
 
-    if not success:
-        logger.error(f"Git pull failed for branch '{branch}':\n{git_output}")
-        set_hot_reload_state("IDLE")
-        return
+    try:
+        if ref and ref.startswith("refs/heads/"):
+            branch = ref[len("refs/heads/") :]
+        elif not ref:
+            branch = "main"
+        else:
+            branch = ref
+        logger.info(f"Self-update triggered: Pulling latest commits from branch '{branch}'...")
+        set_hot_reload_state("PULLING_GIT")
+        success, git_output = perform_git_pull(repo_root, branch=branch)
 
-    logger.info(f"Git pull output:\n{git_output}")
+        if not success:
+            logger.error(f"Git pull failed for branch '{branch}':\n{git_output}")
+            set_hot_reload_state("IDLE")
+            return False
 
-    if check_if_dockerfile_changed(git_output):
-        set_hot_reload_state("REBUILDING_CONTAINER")
-        rebuild_agent_container(repo_root)
+        logger.info(f"Git pull output:\n{git_output}")
 
-    hot_reload_server(
-        httpd=httpd,
-        task_manager=task_manager,
-        listener_proc=listener_proc,
-        quota_tracker=quota_tracker,
-    )
+        if check_if_dockerfile_changed(git_output):
+            set_hot_reload_state("REBUILDING_CONTAINER")
+            rebuild_agent_container(repo_root)
+
+        hot_reload_server(
+            httpd=httpd,
+            task_manager=task_manager,
+            listener_proc=listener_proc,
+            quota_tracker=quota_tracker,
+            drain_timeout=drain_timeout,
+        )
+        return True
+    finally:
+        if _SYNC_LOCK.locked():
+            try:
+                _SYNC_LOCK.release()
+            except RuntimeError:
+                pass
 
