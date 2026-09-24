@@ -333,6 +333,7 @@ class QuotaWindow:
             "remaining_percentage": round(self.remaining_percentage, 1),
             "reset_time": self.reset_time,
             "reset_timestamp": self.reset_timestamp,
+            "reset_countdown": self.format_reset_countdown(),
             "pacing_status": pacing_status,
             "backoff_delay": backoff,
             "pacing_recovery_seconds": round(self.get_pacing_recovery_seconds(), 1),
@@ -891,6 +892,10 @@ class QuotaInfo:
     window_5h: Optional[Union[QuotaWindow, dict]] = None
     window_1w: Optional[Union[QuotaWindow, dict]] = None
     quota_pool: str = "gemini"
+    gemini_window_5h: Optional[Union[QuotaWindow, dict]] = None
+    gemini_window_1w: Optional[Union[QuotaWindow, dict]] = None
+    claude_window_5h: Optional[Union[QuotaWindow, dict]] = None
+    claude_window_1w: Optional[Union[QuotaWindow, dict]] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -912,6 +917,90 @@ class QuotaInfo:
                 d["window_1w"] = self.window_1w.to_dict()
             else:
                 d["window_1w"] = self.window_1w
+        if self.gemini_window_5h is not None:
+            if isinstance(self.gemini_window_5h, QuotaWindow):
+                d["gemini_window_5h"] = self.gemini_window_5h.to_dict()
+            else:
+                d["gemini_window_5h"] = self.gemini_window_5h
+        if self.gemini_window_1w is not None:
+            if isinstance(self.gemini_window_1w, QuotaWindow):
+                d["gemini_window_1w"] = self.gemini_window_1w.to_dict()
+            else:
+                d["gemini_window_1w"] = self.gemini_window_1w
+        if self.claude_window_5h is not None:
+            if isinstance(self.claude_window_5h, QuotaWindow):
+                d["claude_window_5h"] = self.claude_window_5h.to_dict()
+            else:
+                d["claude_window_5h"] = self.claude_window_5h
+        if self.claude_window_1w is not None:
+            if isinstance(self.claude_window_1w, QuotaWindow):
+                d["claude_window_1w"] = self.claude_window_1w.to_dict()
+            else:
+                d["claude_window_1w"] = self.claude_window_1w
+        def _extract_win_metrics(w, default_name=None):
+            if w is None:
+                return None, None, None
+            if isinstance(w, QuotaWindow):
+                return round(w.remaining_percentage, 1), w.reset_time, w.format_reset_countdown()
+            elif isinstance(w, dict):
+                pct = w.get("remaining_percentage")
+                if pct is not None:
+                    try:
+                        pct = round(float(pct), 1)
+                    except (ValueError, TypeError):
+                        pass
+                res = w.get("reset_time")
+                cd = w.get("reset_countdown")
+                if cd is None and res is not None:
+                    cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
+                return pct, res, cd
+            return None, None, None
+
+        p = str(self.quota_pool or "").lower()
+        is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
+
+        gemini_5h = self.gemini_window_5h if self.gemini_window_5h is not None else (None if is_tp else self.window_5h)
+        gemini_1w = self.gemini_window_1w if self.gemini_window_1w is not None else (None if is_tp else self.window_1w)
+        claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
+        claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
+
+        g5_pct, g5_res, g5_cd = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd = _extract_win_metrics(claude_1w, default_name="1W")
+
+        def _to_win_dict(w):
+            if w is None:
+                return None
+            if isinstance(w, QuotaWindow):
+                return w.to_dict()
+            return w
+
+        if gemini_5h is not None and "gemini_window_5h" not in d:
+            d["gemini_window_5h"] = _to_win_dict(gemini_5h)
+        if gemini_1w is not None and "gemini_window_1w" not in d:
+            d["gemini_window_1w"] = _to_win_dict(gemini_1w)
+        if claude_5h is not None and "claude_window_5h" not in d:
+            d["claude_window_5h"] = _to_win_dict(claude_5h)
+        if claude_1w is not None and "claude_window_1w" not in d:
+            d["claude_window_1w"] = _to_win_dict(claude_1w)
+
+        d["gemini_5h_remaining_percentage"] = g5_pct
+        d["gemini_5h_reset_time"] = g5_res
+        d["gemini_5h_countdown"] = g5_cd
+
+        d["gemini_1w_remaining_percentage"] = g1_pct
+        d["gemini_1w_reset_time"] = g1_res
+        d["gemini_1w_countdown"] = g1_cd
+
+        d["third_party_5h_remaining_percentage"] = c5_pct
+        d["third_party_5h_reset_time"] = c5_res
+        d["third_party_5h_countdown"] = c5_cd
+
+        d["third_party_1w_remaining_percentage"] = c1_pct
+        d["third_party_1w_reset_time"] = c1_res
+        d["third_party_1w_countdown"] = c1_cd
+
         return d
 
 
@@ -1877,6 +1966,10 @@ class QuotaTracker:
                 window_5h=self.window_5h,
                 window_1w=self.window_1w,
                 quota_pool=self.quota_pool,
+                gemini_window_5h=self.gemini_window_5h,
+                gemini_window_1w=self.gemini_window_1w,
+                claude_window_5h=self.claude_window_5h,
+                claude_window_1w=self.claude_window_1w,
             )
 
     def get_reset_time_str(self) -> str:
