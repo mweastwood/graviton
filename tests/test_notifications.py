@@ -110,6 +110,42 @@ class TestNotifications(unittest.TestCase):
         self.assertIn("❌ **Antigravity Agent `agent` Finished**", body)
 
     @patch("lib.release.post_issue_comment")
+    def test_post_task_completion_comment_failed_task_status_precedence(self, mock_post):
+        mock_post.return_value = True
+        task = MagicMock()
+        task.repo_full_name = "owner/repo"
+        task.target_id = "123"
+        task.status = "FAILED"
+        task.agent = "agent"
+
+        result = MagicMock()
+        result.is_success = True
+        result.status = "SUCCESS"
+
+        res = post_task_completion_comment(task, result=result)
+        self.assertTrue(res)
+        body = mock_post.call_args[0][2]
+        self.assertIn("❌ **Antigravity Agent `agent` Finished**", body)
+
+    @patch("lib.release.post_issue_comment")
+    def test_post_task_completion_comment_failed_result_status_attr(self, mock_post):
+        mock_post.return_value = True
+        task = MagicMock()
+        task.repo_full_name = "owner/repo"
+        task.target_id = "123"
+        task.status = "COMPLETED"
+        task.agent = "agent"
+
+        result = MagicMock()
+        result.is_success = True
+        result.status = "FAILED"
+
+        res = post_task_completion_comment(task, result=result)
+        self.assertTrue(res)
+        body = mock_post.call_args[0][2]
+        self.assertIn("❌ **Antigravity Agent `agent` Finished**", body)
+
+    @patch("lib.release.post_issue_comment")
     def test_post_task_completion_comment_formatting_exception_handled(self, mock_post):
         bad_task = MagicMock()
         bad_task.repo_full_name = "owner/repo"

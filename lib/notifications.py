@@ -35,8 +35,13 @@ def post_task_completion_comment(
         except (TypeError, ValueError):
             return False
 
-        if result is not None:
-            is_success = bool(getattr(result, "is_success", False))
+        if getattr(task, "status", None) in ("FAILED", "ABORTED", "CANCELLED", "ERROR"):
+            is_success = False
+        elif result is not None:
+            if getattr(result, "status", None) == "FAILED":
+                is_success = False
+            else:
+                is_success = bool(getattr(result, "is_success", False))
         else:
             is_success = getattr(task, "status", None) == "COMPLETED"
 

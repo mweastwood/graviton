@@ -1521,7 +1521,7 @@ class TaskManager:
                                     result.error = stderr_output
                                 logger.warning(f"[{worker_id}] Task '{task.id}' (pr_drafter) completed turn without producing a GitHub PR URL.")
 
-                        if return_code == 0 and self.post_completion_comment:
+                        if self.post_completion_comment:
                             self._trigger_completion_comment(task, result)
 
                         if self.on_task_result:
