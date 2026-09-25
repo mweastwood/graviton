@@ -119,8 +119,8 @@ class QuotaState:
 
 
 def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -> Optional[datetime]:
-    """Parse numeric timestamp or ISO 8601 string to timezone-aware UTC datetime."""
-    if reset_time is None:
+    """Parse numeric timestamp or ISO 8601 string to timezone-aware datetime (defaulting to UTC)."""
+    if reset_time is None or isinstance(reset_time, bool):
         return None
     if isinstance(reset_time, datetime):
         return reset_time if reset_time.tzinfo else reset_time.replace(tzinfo=timezone.utc)
@@ -129,7 +129,7 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -
     try:
         ts = float(reset_time)
         return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         pass
 
     # 2. Try ISO string parsing (handling trailing 'Z' for Python <= 3.10)
@@ -141,7 +141,7 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
