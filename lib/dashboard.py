@@ -137,6 +137,7 @@ def _format_target_markdown_cell(target_disp: str, target_url: Optional[str]) ->
         clean_disp = md_m.group(1).strip("` ").strip()
     if not clean_disp:
         clean_disp = target_disp
+    clean_disp = clean_disp.replace("|", "\\|")
     return f"[`{clean_disp}`]({target_url})" if target_url else f"`{clean_disp}`"
 
 
@@ -383,12 +384,15 @@ def _detect_git_repo_full_name() -> Optional[str]:
         return _DETECTED_REPO
     repo = os.getenv("GITHUB_REPOSITORY")
     if repo and repo.strip():
-        _DETECTED_REPO = repo.strip()
-        _DETECTED_REPO_CHECKED = True
-        return _DETECTED_REPO
+        val = repo.strip()
+        if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", val):
+            _DETECTED_REPO = val
+            _DETECTED_REPO_CHECKED = True
+            return _DETECTED_REPO
     try:
         res = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
             timeout=1,
@@ -418,45 +422,39 @@ def resolve_target_url(
     if not raw or raw in ("N/A", "-", "None"):
         return None
 
-    # 0. Markdown link check [text](url)
+    # Markdown link check [text](url)
     m_md = re.match(r"^\[(.*?)\]\((.*?)\)$", raw)
     if m_md:
         extracted = m_md.group(2).strip()
         return extracted if is_safe_url(extracted) else None
 
-    # 1. Direct URL check
+    # Direct URL or bare github.com
     if raw.startswith("http://") or raw.startswith("https://"):
         return raw if is_safe_url(raw) else None
+    if raw.startswith("github.com/"):
+        cand = f"https://{raw}"
+        return cand if is_safe_url(cand) else None
 
-    # Determine default repo
-    eff_repo = repo
-    if not eff_repo:
-        eff_repo = _detect_git_repo_full_name()
+    eff_repo = repo or _detect_git_repo_full_name()
 
-    # 2. owner/repo#number or owner/repo#pr-123 or owner/repo#issue-123
-    m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)#(?:pr[-/]|pull[-/]|issues?[-/])?(\d+)$", raw, re.IGNORECASE)
+    is_pr = "pr" in raw.lower() or "pull" in raw.lower()
+    is_issue = (
+        "issue" in raw.lower()
+        or (not is_pr and agent and ("issue" in str(agent).lower() or "drafter" in str(agent).lower()))
+    )
+    subpath = "issues" if is_issue else "pull"
+
+    # owner/repo#number, owner/repo PR #123, owner/repo Issue #123, owner/repo#pr-123
+    m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$", raw, re.IGNORECASE)
     if m:
-        r_name = m.group(1)
-        num = m.group(2)
-        is_issue = (
-            "issue" in raw.lower()
-            or (agent and "issue" in str(agent).lower())
-        )
-        subpath = "issues" if is_issue else "pull"
-        return f"https://github.com/{r_name}/{subpath}/{num}"
+        return f"https://github.com/{m.group(1)}/{subpath}/{m.group(2)}"
 
-    # 3. #number or number with eff_repo
-    m = re.match(r"^#?(?:pr[-/]|pull[-/]|issues?[-/])?(\d+)$", raw, re.IGNORECASE)
+    # #number, PR #123, Issue #123, #pr-123, pr-123, or bare number with eff_repo
+    m = re.match(r"^#?[\s:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$", raw, re.IGNORECASE)
     if m and eff_repo:
-        num = m.group(1)
-        is_issue = (
-            "issue" in raw.lower()
-            or (agent and "issue" in str(agent).lower())
-        )
-        subpath = "issues" if is_issue else "pull"
-        return f"https://github.com/{eff_repo}/{subpath}/{num}"
+        return f"https://github.com/{eff_repo}/{subpath}/{m.group(1)}"
 
-    # 4. owner/repo without number
+    # owner/repo without number
     m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)$", raw)
     if m:
         return f"https://github.com/{m.group(1)}"
@@ -983,7 +981,8 @@ def render_dashboard_html(
     active_count = len(data["active_tasks"])
     queued_count = len(data["queued_tasks_list"])
     history_count = len(data["history_tasks"])
-    default_repo = _detect_git_repo_full_name() or ""
+    raw_repo = _detect_git_repo_full_name() or ""
+    default_repo = raw_repo if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", raw_repo) else ""
 
     template = _get_dashboard_template()
 

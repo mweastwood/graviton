@@ -810,28 +810,31 @@
             let clean = targetStr.trim();
             const mdMatch = clean.match(/\[(.*?)\]\((.*?)\)/);
             if (mdMatch) {{
-                return mdMatch[2].trim();
+                const url = mdMatch[2].trim();
+                return isSafeUrl(url) ? url : null;
             }}
             clean = clean.replace(/`/g, '').trim();
             if (clean.startsWith('http://') || clean.startsWith('https://')) {{
-                return clean;
+                return isSafeUrl(clean) ? clean : null;
             }}
-            const isIssue = clean.toLowerCase().includes('issue') || (agent && agent.toLowerCase().includes('issue'));
+            if (clean.startsWith('github.com/')) {{
+                const cand = 'https://' + clean;
+                return isSafeUrl(cand) ? cand : null;
+            }}
+            const isPr = clean.toLowerCase().includes('pr') || clean.toLowerCase().includes('pull');
+            const isIssue = clean.toLowerCase().includes('issue') || (!isPr && agent && (agent.toLowerCase().includes('issue') || agent.toLowerCase().includes('drafter')));
             const subpath = isIssue ? 'issues' : 'pull';
-            const repoIssueMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)#(?:pr[\/-]|pull[\/-]|issues?[\/-])?(\d+)$/i);
+            const repoIssueMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$/i);
             if (repoIssueMatch) {{
-                const repo = repoIssueMatch[1];
-                const num = repoIssueMatch[2];
-                return `https://github.com/${{repo}}/${{subpath}}/${{num}}`;
+                return `https://github.com/${{repoIssueMatch[1]}}/${{subpath}}/${{repoIssueMatch[2]}}`;
             }}
-            const numMatch = clean.match(/^#?(?:pr[\/-]|pull[\/-]|issues?[\/-])?(\d+)$/i);
+            const numMatch = clean.match(/^#?[\s:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$/i);
             if (numMatch) {{
                 const defaultRepo = "{default_repo}";
-                if (!defaultRepo || defaultRepo === 'None' || !defaultRepo.includes('/')) {{
+                if (!defaultRepo || defaultRepo === 'None' || !defaultRepo.includes('/') || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(defaultRepo)) {{
                     return null;
                 }}
-                const num = numMatch[1];
-                return `https://github.com/${{defaultRepo}}/${{subpath}}/${{num}}`;
+                return `https://github.com/${{defaultRepo}}/${{subpath}}/${{numMatch[1]}}`;
             }}
             if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(clean)) {{
                 return `https://github.com/${{clean}}`;

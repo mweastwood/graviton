@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 
 from lib.dashboard import (
     DashboardUpdater,
+    REPO_ROOT,
     _detect_git_repo_full_name,
+    _format_target_markdown_cell,
     _get_dashboard_template,
     _render_active_tasks_table,
     _render_history_tasks_table,
@@ -238,7 +240,7 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("Graviton Live Dashboard", html_out)
         self.assertIn("# Sample Markdown", html_out)
         self.assertIn("/dashboard/content", html_out)
-        self.assertIn("pr[\\/-]|pull[\\/-]|issues?[\\/-]", html_out)
+        self.assertIn("issues?[\\s\\-/:]*", html_out)
 
     def test_get_quota_color_thresholds(self):
         # > 50%: Green (#3fb950)
@@ -414,11 +416,12 @@ class TestDashboardFormatting(unittest.TestCase):
 
         self.assertIn("task-hist-1", html_out)
         self.assertIn("status-completed", html_out)
-        self.assertIn('href="https://github.com/owner/repo/pull/55"', html_out)
+        self.assertIn('href="https://github.com/owner/repo/issues/55"', html_out)
         self.assertNotIn("Remote Session", html_out)
         self.assertNotIn("https://antigravity.google.com/c/sess-hist", html_out)
         self.assertIn("task-hist-2", html_out)
         self.assertIn("status-failed", html_out)
+        self.assertIn('href="https://github.com/owner/repo/pull/56"', html_out)
         self.assertIn("Compilation failed on line 42", html_out)
 
     def test_render_dashboard_html_empty_states(self):
@@ -575,9 +578,22 @@ class TestDashboardFormatting(unittest.TestCase):
             resolve_target_url("octocat/Hello-World#123", agent="issue_triager"),
             "https://github.com/octocat/Hello-World/issues/123",
         )
+        # pr_drafter routes bare targets or issue targets to issues/
         self.assertEqual(
             resolve_target_url("octocat/Hello-World#123", agent="pr_drafter"),
-            "https://github.com/octocat/Hello-World/pull/123",
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#42", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+        self.assertEqual(
+            resolve_target_url("42", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+        self.assertEqual(
+            resolve_target_url("PR #123", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/pull/123",
         )
         self.assertEqual(
             resolve_target_url("octocat/Hello-World#123", agent="code_fixer"),
@@ -586,6 +602,40 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(
             resolve_target_url("octocat/Hello-World#123", agent="arbitrary_agent"),
             "https://github.com/octocat/Hello-World/pull/123",
+        )
+
+        # Flexible prefixes and spacing (PR #123, Issue #45, PR 123, Issue 45)
+        self.assertEqual(
+            resolve_target_url("PR #123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("Issue #45", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("PR 123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("Issue 45", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo PR #123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo Issue #45"),
+            "https://github.com/owner/repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo PR 123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo Issue 45"),
+            "https://github.com/owner/repo/issues/45",
         )
 
         # Bare #number with explicit repo
@@ -598,7 +648,7 @@ class TestDashboardFormatting(unittest.TestCase):
             "https://github.com/my-org/my-repo/issues/42",
         )
 
-        # Direct HTTP/HTTPS URLs
+        # Direct HTTP/HTTPS URLs and bare github.com
         self.assertEqual(
             resolve_target_url("https://github.com/foo/bar/pull/99"),
             "https://github.com/foo/bar/pull/99",
@@ -606,6 +656,18 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(
             resolve_target_url("http://github.com/foo/bar/issues/100"),
             "http://github.com/foo/bar/issues/100",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/foo/bar/pull/99"),
+            "https://github.com/foo/bar/pull/99",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/foo/bar/issues/100"),
+            "https://github.com/foo/bar/issues/100",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/owner/repo"),
+            "https://github.com/owner/repo",
         )
 
         # Whole repository
@@ -690,7 +752,32 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIsNone(resolve_target_url("   "))
         self.assertIsNone(resolve_target_url("N/A"))
         self.assertIsNone(resolve_target_url("javascript:alert(1)"))
+        self.assertIsNone(resolve_target_url("[click](javascript:alert(1))"))
         self.assertIsNone(resolve_target_url("random text without issue"))
+
+    def test_format_target_markdown_cell(self):
+        # Escape pipe characters to preserve table syntax
+        self.assertEqual(
+            _format_target_markdown_cell("feat | fix", "https://github.com/owner/repo/pull/1"),
+            "[`feat \\| fix`](https://github.com/owner/repo/pull/1)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("a|b|c", None),
+            "`a\\|b\\|c`",
+        )
+        # Strips existing markdown or backticks cleanly
+        self.assertEqual(
+            _format_target_markdown_cell("[`#42`](https://github.com/foo/bar)", "https://github.com/foo/bar"),
+            "[`#42`](https://github.com/foo/bar)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("`#42`", "https://github.com/foo/bar"),
+            "[`#42`](https://github.com/foo/bar)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("`#42`", None),
+            "`#42`",
+        )
 
     def test_parse_dashboard_markdown_clickable_targets(self):
         sample_md = (
@@ -760,13 +847,29 @@ class TestDashboardFormatting(unittest.TestCase):
             with patch.dict(os.environ, {"GITHUB_REPOSITORY": "other/repo"}):
                 self.assertEqual(_detect_git_repo_full_name(), "env-owner/env-repo")
 
-        # 2. Reset cache and test git remote origin URL (HTTPS)
+        # 1b. Test invalid GITHUB_REPOSITORY environment variable is ignored/rejected
+        _reset_detected_repo_cache()
+        mock_proc_git = MagicMock()
+        mock_proc_git.returncode = 0
+        mock_proc_git.stdout = "https://github.com/valid-owner/valid-repo.git\n"
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "invalid;repo/injection\n"}):
+            with patch("subprocess.run", return_value=mock_proc_git):
+                self.assertEqual(_detect_git_repo_full_name(), "valid-owner/valid-repo")
+
+        # 2. Reset cache and test git remote origin URL (HTTPS) with cwd=str(REPO_ROOT)
         _reset_detected_repo_cache()
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.stdout = "https://github.com/git-owner/git-repo.git\n"
-        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc) as mock_subproc:
             self.assertEqual(_detect_git_repo_full_name(), "git-owner/git-repo")
+            mock_subproc.assert_called_once_with(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
 
         # 3. Test git remote origin URL (SSH)
         _reset_detected_repo_cache()
@@ -819,6 +922,13 @@ class TestDashboardFormatting(unittest.TestCase):
         with patch("lib.dashboard._detect_git_repo_full_name", return_value="my-org/my-repo"):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "my-org/my-repo";', html_out)
+
+        # When repo detection returns invalid/malicious string, it is sanitized to empty string
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value='"; alert("xss");//'):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "";', html_out)
+            self.assertNotIn('alert("xss")', html_out)
 
         _reset_detected_repo_cache()
 
