@@ -428,6 +428,20 @@
             font-weight: 700;
             border: 1px solid rgba(210, 153, 34, 0.3);
         }}
+        .author-badge {{
+            display: inline-block;
+            background: rgba(188, 140, 255, 0.15);
+            color: var(--accent-purple);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            border: 1px solid rgba(188, 140, 255, 0.3);
+        }}
+        .pr-title {{
+            color: var(--text-bright);
+            font-weight: 500;
+        }}
         .status-pill {{
             display: inline-flex;
             align-items: center;
@@ -721,6 +735,19 @@
             </div>
         </div>
 
+        <!-- Approved Pull Requests (Ready to Merge) Table -->
+        <div class="card section-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>🔀 Approved Pull Requests (Ready to Merge)</h2>
+                </div>
+                <span id="approved-prs-count" class="badge badge-counter">{approved_count} Ready</span>
+            </div>
+            <div id="approved-prs-container">
+                {approved_table_html}
+            </div>
+        </div>
+
         <!-- Recent Task Execution History Table -->
         <div class="card section-card">
             <div class="section-header">
@@ -784,7 +811,9 @@
 
         function isSafeUrl(url) {{
             if (!url) return false;
-            const clean = String(url).trim().toLowerCase();
+            const str = String(url).trim();
+            if (/[\s'"<>]/.test(str)) return false;
+            const clean = str.toLowerCase();
             return clean.startsWith('http://') || clean.startsWith('https://');
         }}
 
@@ -943,23 +972,26 @@
             }}
 
             // 4. Tables Parsing
-            const sections = md.split(/^##\\s+/m);
-            let activeSec = '', queuedSec = '', historySec = '';
+            const sections = md.split(/^##\s+/m);
+            let activeSec = '', queuedSec = '', approvedSec = '', historySec = '';
             for (const sec of sections) {{
                 if (sec.startsWith('🚀 Active Container Tasks')) activeSec = sec;
                 else if (sec.startsWith('⏳ Queued Tasks')) queuedSec = sec;
+                else if (sec.startsWith('🔀 Approved Pull Requests') || sec.includes('Approved Pull Requests')) approvedSec = sec;
                 else if (sec.startsWith('📜 Recent Task Execution History')) historySec = sec;
             }}
 
             function parseTableRows(sec) {{
                 if (!sec) return [];
-                const lines = sec.split('\\n').map(l => l.trim());
+                const lines = sec.split('\n').map(l => l.trim());
                 const rows = [];
                 for (const line of lines) {{
-                    if (line.startsWith('|') && !line.startsWith('| Metric') && !line.includes('Task ID')) {{
+                    if (line.startsWith('|')) {{
                         const parts = line.split('|').slice(1, -1).map(c => c.trim());
                         if (parts.length > 0 && !parts.every(p => /^:?-+:?$/.test(p))) {{
-                            rows.push(parts);
+                            if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #') {{
+                                rows.push(parts);
+                            }}
                         }}
                     }}
                 }}
@@ -1017,6 +1049,65 @@
                     }}
                     htmlStr += '</tbody></table></div>';
                     queuedContainer.innerHTML = htmlStr;
+                }}
+            }}
+
+            // Approved PRs Table
+            const approvedRows = parseTableRows(approvedSec);
+            const validApprovedRows = approvedRows.filter(r => r.length >= 4 && !r[0].startsWith('('));
+            const approvedCount = document.getElementById('approved-prs-count');
+            if (approvedCount) approvedCount.textContent = `${{validApprovedRows.length}} Ready`;
+            const approvedContainer = document.getElementById('approved-prs-container');
+            if (approvedContainer) {{
+                if (validApprovedRows.length === 0) {{
+                    approvedContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">✨</span><p class="empty-text">No approved PRs awaiting merge.</p></div>';
+                }} else {{
+                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>PR #</th><th>Repository</th><th>Title</th><th>Author</th><th>Action</th></tr></thead><tbody>';
+                    for (const r of validApprovedRows) {{
+                        const prMatch = r[0].match(/\[.*?#?(\d+).*?\]\((.*?)\)/);
+                        let prNum = '';
+                        let prUrl = '';
+                        if (prMatch) {{
+                            prNum = escapeHtml(prMatch[1]);
+                            const candUrl = prMatch[2].trim();
+                            if (isSafeUrl(candUrl)) {{
+                                prUrl = candUrl;
+                            }}
+                        }} else {{
+                            const digitsMatch = r[0].match(/\d+/);
+                            prNum = digitsMatch ? digitsMatch[0] : escapeHtml(r[0].replace(/[`#]/g, '').trim());
+                        }}
+                        const rawRepo = r[1].replace(/`/g, '').trim();
+                        const repo = escapeHtml(rawRepo);
+                        const title = escapeHtml(r[2]);
+                        const author = escapeHtml(r[3].replace(/[`@]/g, ''));
+                        if (!prUrl && r.length >= 5) {{
+                            const urlMatch = r[4].match(/\[(.*?)\]\((.*?)\)/);
+                            if (urlMatch) {{
+                                const candUrl = urlMatch[2].trim();
+                                if (isSafeUrl(candUrl)) {{
+                                    prUrl = candUrl;
+                                }}
+                            }} else if (isSafeUrl(r[4].trim())) {{
+                                prUrl = r[4].trim();
+                            }}
+                        }}
+                        const hasNum = Boolean(prNum && prNum !== '-' && prNum !== 'None' && prNum !== '0');
+                        if (!prUrl && rawRepo && rawRepo !== '-' && hasNum) {{
+                            prUrl = `https://github.com/${{rawRepo}}/pull/${{prNum}}`;
+                        }}
+                        let numHtml = hasNum ? `<code>#${{prNum}}</code>` : '<span class="text-muted">-</span>';
+                        let actionHtml = '<span class="text-muted">-</span>';
+                        if (prUrl && isSafeUrl(prUrl)) {{
+                            numHtml = hasNum ? `<a href="${{escapeHtml(prUrl)}}" target="_blank" rel="noopener"><code>#${{prNum}}</code></a>` : '<span class="text-muted">-</span>';
+                            actionHtml = `<a href="${{escapeHtml(prUrl)}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View PR ↗</a>`;
+                        }}
+                        const repoHtml = repo !== '-' ? `<code>${{repo}}</code>` : '<span class="text-muted">-</span>';
+                        const authorHtml = (author && author !== '-') ? `<span class="author-badge">@${{author}}</span>` : '<span class="text-muted">-</span>';
+                        htmlStr += `<tr><td>${{numHtml}}</td><td>${{repoHtml}}</td><td><span class="pr-title">${{title}}</span></td><td>${{authorHtml}}</td><td>${{actionHtml}}</td></tr>`;
+                    }}
+                    htmlStr += '</tbody></table></div>';
+                    approvedContainer.innerHTML = htmlStr;
                 }}
             }}
 

@@ -16,6 +16,7 @@ from lib.dashboard import (
     _get_dashboard_template,
     _reset_dashboard_template_cache,
     _render_active_tasks_table,
+    _render_approved_prs_table,
     _render_history_tasks_table,
     format_dashboard_markdown,
     format_duration,
@@ -398,6 +399,13 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertFalse(is_safe_url("JAVASCRIPT:alert(1)"))
         self.assertFalse(is_safe_url("data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="))
         self.assertFalse(is_safe_url("vbscript:msgbox(1)"))
+        self.assertFalse(is_safe_url(12345))  # type: ignore
+        self.assertFalse(is_safe_url(3.14))  # type: ignore
+        self.assertFalse(is_safe_url(["https://example.com"]))  # type: ignore
+        self.assertFalse(is_safe_url({"url": "https://example.com"}))  # type: ignore
+        self.assertFalse(is_safe_url(object()))  # type: ignore
+        self.assertFalse(is_safe_url(True))  # type: ignore
+        self.assertFalse(is_safe_url(False))  # type: ignore
         self.assertTrue(is_safe_url("http://localhost:8000/session/1"))
         self.assertTrue(is_safe_url("https://antigravity.google.com/c/123"))
 
@@ -668,6 +676,664 @@ class TestDashboardUpdater(unittest.TestCase):
         html_out = render_dashboard_html(md)
         self.assertNotIn('<option value="   "', html_out)
         self.assertNotIn('<option value=""', html_out)
+
+
+    def test_format_dashboard_markdown_with_approved_prs(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 42,
+                "repo_full_name": "owner/repo",
+                "title": "Add feature X",
+                "author": "octocat",
+                "url": "https://github.com/owner/repo/pull/42",
+            }
+        ]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("## 🔀 Approved Pull Requests (Ready to Merge)", md)
+        self.assertIn("| [`#42`](https://github.com/owner/repo/pull/42) | `owner/repo` | Add feature X | `@octocat` | [View PR ↗](https://github.com/owner/repo/pull/42) |", md)
+
+    def test_format_dashboard_markdown_approved_prs_empty(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = []
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("## 🔀 Approved Pull Requests (Ready to Merge)", md)
+        self.assertIn("*(No approved PRs awaiting merge)*", md)
+
+    def test_render_dashboard_html_with_approved_prs(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 105,
+                "repo_full_name": "google/graviton",
+                "title": "Support 3.8 flash medium",
+                "author": "mweastwood",
+                "url": "https://github.com/google/graviton/pull/105",
+            }
+        ]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        html_out = render_dashboard_html(md, pr_tracker=mock_pr_tracker)
+
+        self.assertIn("<h2>🔀 Approved Pull Requests (Ready to Merge)</h2>", html_out)
+        self.assertIn('id="approved-prs-count"', html_out)
+        self.assertIn("1 Ready", html_out)
+        self.assertIn('<code>#105</code>', html_out)
+        self.assertIn('<code>google/graviton</code>', html_out)
+        self.assertIn('Support 3.8 flash medium', html_out)
+        self.assertIn('<span class="author-badge">@mweastwood</span>', html_out)
+        self.assertIn('href="https://github.com/google/graviton/pull/105"', html_out)
+        self.assertIn('View PR ↗', html_out)
+
+    def test_render_dashboard_html_approved_prs_empty(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = []
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        html_out = render_dashboard_html(md, pr_tracker=mock_pr_tracker)
+
+        self.assertIn("<h2>🔀 Approved Pull Requests (Ready to Merge)</h2>", html_out)
+        self.assertIn('0 Ready', html_out)
+        self.assertIn("No approved PRs awaiting merge.", html_out)
+
+    def test_parse_dashboard_markdown_approved_prs(self):
+        md = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#77`](https://github.com/test/repo/pull/77) | `test/repo` | Great PR | `@alice` | [View PR ↗](https://github.com/test/repo/pull/77) |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertIn("approved_prs", parsed)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        pr = parsed["approved_prs"][0]
+        self.assertEqual(pr["number"], 77)
+        self.assertEqual(pr["repo_full_name"], "test/repo")
+        self.assertEqual(pr["title"], "Great PR")
+        self.assertEqual(pr["author"], "alice")
+        self.assertEqual(pr["url"], "https://github.com/test/repo/pull/77")
+
+    def test_dashboard_updater_with_pr_tracker(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 88,
+                "repo_full_name": "owner/repo",
+                "title": "PR Title",
+                "author": "bob",
+                "url": "https://github.com/owner/repo/pull/88",
+            }
+        ]
+        updater = DashboardUpdater(pr_tracker=mock_pr_tracker)
+        md = updater.get_markdown()
+        self.assertIn("## 🔀 Approved Pull Requests (Ready to Merge)", md)
+        self.assertIn("`#88`", md)
+
+    def test_render_dashboard_html_client_js_regex_capture_index(self):
+        html_out = render_dashboard_html("# Dashboard")
+        self.assertIn("urlMatch[2].trim()", html_out)
+        self.assertNotIn("prUrl = urlMatch[1].trim()", html_out)
+        self.assertIn("(author && author !== '-')", html_out)
+
+    def test_format_dashboard_markdown_empty_author(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 99,
+                "repo_full_name": "owner/repo",
+                "title": "PR with empty author",
+                "author": "",
+                "url": "https://github.com/owner/repo/pull/99",
+            }
+        ]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("| [`#99`](https://github.com/owner/repo/pull/99) | `owner/repo` | PR with empty author | - | [View PR ↗](https://github.com/owner/repo/pull/99) |", md)
+        self.assertNotIn("@-", md)
+
+    def test_format_dashboard_markdown_title_newline_sanitization(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 100,
+                "repo_full_name": "owner/repo",
+                "title": "Multi\r\nline\ntitle | with pipe",
+                "author": "dev",
+                "url": "https://github.com/owner/repo/pull/100",
+            }
+        ]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("Multi  line title - with pipe", md)
+        self.assertNotIn("\nline", md)
+        self.assertNotIn("\r", md)
+
+    def test_format_dashboard_markdown_extra_info_fallback(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = []
+        extra_info = {
+            "approved_prs": [
+                {
+                    "number": 101,
+                    "repo_full_name": "owner/repo",
+                    "title": "Fallback PR",
+                    "author": "fallback-user",
+                    "url": "https://github.com/owner/repo/pull/101",
+                }
+            ]
+        }
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker, extra_info=extra_info)
+        self.assertIn("Fallback PR", md)
+        self.assertIn("`#101`", md)
+
+    def test_render_dashboard_html_extra_info_fallback(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = []
+        extra_info = {
+            "approved_prs": [
+                {
+                    "number": 102,
+                    "repo_full_name": "owner/repo",
+                    "title": "HTML Fallback PR",
+                    "author": "html-user",
+                    "url": "https://github.com/owner/repo/pull/102",
+                }
+            ]
+        }
+        html_out = render_dashboard_html("# Dashboard", pr_tracker=mock_pr_tracker, extra_info=extra_info)
+        self.assertIn("HTML Fallback PR", html_out)
+        self.assertIn("1 Ready", html_out)
+
+    def test_parse_dashboard_markdown_approved_prs_raw_url(self):
+        md = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `#105` | - | Raw URL PR | `@octocat` | https://github.com/custom/repo/pull/105 |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertIn("approved_prs", parsed)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        pr = parsed["approved_prs"][0]
+        self.assertEqual(pr["number"], 105)
+        self.assertEqual(pr["url"], "https://github.com/custom/repo/pull/105")
+        self.assertEqual(pr["author"], "octocat")
+        self.assertEqual(pr["title"], "Raw URL PR")
+
+    def test_approved_prs_dict_author_support(self):
+        approved = [
+            {
+                "number": 106,
+                "repo_full_name": "owner/repo",
+                "title": "Dict Author PR",
+                "author": {"login": "octocat"},
+                "url": "https://github.com/owner/repo/pull/106",
+            }
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("`@octocat`", md)
+        self.assertNotIn("{'login'", md)
+        self.assertNotIn("&#x27;", md)
+
+        html_table = _render_approved_prs_table(approved)
+        self.assertIn('<span class="author-badge">@octocat</span>', html_table)
+        self.assertNotIn("{&#x27;login&#x27;", html_table)
+
+    def test_approved_prs_sanitization_pipes_and_newlines(self):
+        approved = [
+            {
+                "number": 107,
+                "repo_full_name": "owner|with|pipe\nnewline\rrepo",
+                "title": "Title|pipe\r\nnewline",
+                "author": "user|pipe\nnewline",
+                "url": "",
+            }
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        approved_lines = [line for line in md.splitlines() if line.startswith("|") and ("#107" in line)]
+        self.assertEqual(len(approved_lines), 1)
+        row = approved_lines[0]
+        self.assertNotIn("\n", row)
+        self.assertNotIn("\r", row)
+        cells = [c.strip() for c in row.split("|")[1:-1]]
+        self.assertEqual(len(cells), 5)
+        self.assertEqual(cells[1], "`owner-with-pipe newline repo`")
+        self.assertEqual(cells[2], "Title-pipe  newline")
+        self.assertEqual(cells[3], "`@user-pipe newline`")
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        self.assertEqual(parsed["approved_prs"][0]["number"], 107)
+
+    def test_render_dashboard_html_client_js_pr_num_escaped(self):
+        html_out = render_dashboard_html("# Dashboard")
+        self.assertIn("const digitsMatch = r[0].match(/\\d+/);", html_out)
+        self.assertIn("prNum = digitsMatch ? digitsMatch[0] : escapeHtml(r[0].replace(/[`#]/g, '').trim());", html_out)
+        self.assertIn("const rawRepo = r[1].replace(/`/g, '').trim();", html_out)
+        self.assertIn("if (!prUrl && rawRepo && rawRepo !== '-' && hasNum)", html_out)
+
+    def test_render_approved_prs_table_no_double_html_encoding_in_fallback_url(self):
+        approved = [
+            {
+                "number": 108,
+                "repo_full_name": "owner&org/repo&project",
+                "title": "Ampersand Repo",
+                "author": "bob",
+                "url": "",
+            }
+        ]
+        html_out = _render_approved_prs_table(approved)
+        self.assertIn('href="https://github.com/owner&amp;org/repo&amp;project/pull/108"', html_out)
+        self.assertNotIn("&amp;amp;", html_out)
+
+    def test_parse_dashboard_markdown_approved_prs_rejects_unsafe_urls(self):
+        # 1. Unsafe scheme in column 0 markdown link brackets
+        md_col0 = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#101`](javascript:alert(1)) | - | XSS PR | `@alice` | - |\n"
+        )
+        parsed0 = parse_dashboard_markdown(md_col0)
+        self.assertIn("approved_prs", parsed0)
+        self.assertEqual(len(parsed0["approved_prs"]), 1)
+        self.assertEqual(parsed0["approved_prs"][0]["number"], 101)
+        self.assertEqual(parsed0["approved_prs"][0]["url"], "")
+
+        # 2. Unsafe scheme in column 5 markdown link brackets
+        md_col5 = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `#102` | - | XSS Link PR | `@bob` | [View PR ↗](javascript:alert(2)) |\n"
+        )
+        parsed5 = parse_dashboard_markdown(md_col5)
+        self.assertIn("approved_prs", parsed5)
+        self.assertEqual(len(parsed5["approved_prs"]), 1)
+        self.assertEqual(parsed5["approved_prs"][0]["number"], 102)
+        self.assertEqual(parsed5["approved_prs"][0]["url"], "")
+
+        # 3. Candidate unsafe URL is rejected and safe repository fallback is used
+        md_fallback = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#103`](data:text/html,evil) | `custom/repo` | Fallback PR | `@charlie` | [Link](javascript:void(0)) |\n"
+        )
+        parsed_fallback = parse_dashboard_markdown(md_fallback)
+        self.assertEqual(len(parsed_fallback["approved_prs"]), 1)
+        self.assertEqual(parsed_fallback["approved_prs"][0]["url"], "https://github.com/custom/repo/pull/103")
+
+    def test_format_dashboard_markdown_pr_num_pipes_and_newlines_sanitization(self):
+        approved = [
+            {
+                "number": "42 | pipe\r\nnewline",
+                "repo_full_name": "owner/repo",
+                "title": "Pipe PR",
+                "author": "octocat",
+                "url": "",
+            }
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        row_lines = [l for l in md.splitlines() if l.startswith("|") and ("Pipe PR" in l)]
+        self.assertEqual(len(row_lines), 1)
+        row = row_lines[0]
+        self.assertNotIn("\n", row)
+        self.assertNotIn("\r", row)
+        # Should NOT split into more than 5 columns
+        cells = [c.strip() for c in row.split("|")[1:-1]]
+        self.assertEqual(len(cells), 5)
+        self.assertIn("#42 - pipenewline", cells[0])
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        self.assertEqual(parsed["approved_prs"][0]["number"], 42)
+
+    def test_approved_prs_author_leading_at_normalization(self):
+        approved = [
+            {
+                "number": 109,
+                "repo_full_name": "owner/repo",
+                "title": "At Author PR",
+                "author": "@octocat",
+                "url": "https://github.com/owner/repo/pull/109",
+            },
+            {
+                "number": 110,
+                "repo_full_name": "owner/repo",
+                "title": "Double At Author PR",
+                "author": "@@multi_at",
+                "url": "https://github.com/owner/repo/pull/110",
+            },
+            {
+                "number": 111,
+                "repo_full_name": "owner/repo",
+                "title": "Dict At Author PR",
+                "author": {"login": "@dict_user"},
+                "url": "https://github.com/owner/repo/pull/111",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("`@octocat`", md)
+        self.assertNotIn("`@@octocat`", md)
+        self.assertIn("`@multi_at`", md)
+        self.assertNotIn("`@@multi_at`", md)
+        self.assertIn("`@dict_user`", md)
+        self.assertNotIn("`@@dict_user`", md)
+
+        html_table = _render_approved_prs_table(approved)
+        self.assertIn('<span class="author-badge">@octocat</span>', html_table)
+        self.assertNotIn('<span class="author-badge">@@octocat</span>', html_table)
+        self.assertIn('<span class="author-badge">@multi_at</span>', html_table)
+        self.assertNotIn('<span class="author-badge">@@multi_at</span>', html_table)
+        self.assertIn('<span class="author-badge">@dict_user</span>', html_table)
+        self.assertNotIn('<span class="author-badge">@@dict_user</span>', html_table)
+
+    def test_render_dashboard_html_client_js_url_scheme_validation(self):
+        html_out = render_dashboard_html("# Dashboard")
+        self.assertIn("const candUrl = prMatch[2].trim();", html_out)
+        self.assertIn("if (isSafeUrl(candUrl))", html_out)
+        self.assertIn("const candUrl = urlMatch[2].trim();", html_out)
+
+    def test_parse_dashboard_markdown_pr_title_contains_pr_number(self):
+        md = (
+            "# Dashboard\n\n"
+            "## 🔀 Approved Pull Requests (Ready to Merge)\n\n"
+            "| PR # | Repository | Title | Author | URL |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#42`](https://github.com/owner/repo/pull/42) | `owner/repo` | fix: resolve conflict with PR #100 | `@alice` | [View PR ↗](https://github.com/owner/repo/pull/42) |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertIn("approved_prs", parsed)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        self.assertEqual(parsed["approved_prs"][0]["number"], 42)
+        self.assertEqual(parsed["approved_prs"][0]["title"], "fix: resolve conflict with PR #100")
+
+    def test_client_js_parsetablerows_header_filtering(self):
+        html_out = render_dashboard_html("# Dashboard")
+        self.assertIn("if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #')", html_out)
+        self.assertNotIn("!line.includes('PR #')", html_out)
+
+    def test_approved_prs_dict_author_none_login_and_empty_dict(self):
+        approved = [
+            {
+                "number": 201,
+                "repo_full_name": "owner/repo",
+                "title": "Deleted User PR",
+                "author": {"login": None},
+                "url": "https://github.com/owner/repo/pull/201",
+            },
+            {
+                "number": 202,
+                "repo_full_name": "owner/repo",
+                "title": "Empty Dict User PR",
+                "author": {},
+                "url": "https://github.com/owner/repo/pull/202",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("`#201`", md)
+        self.assertIn("`#202`", md)
+        self.assertNotIn("None", md)
+
+        html_table = _render_approved_prs_table(approved)
+        self.assertIn("<code>#201</code>", html_table)
+        self.assertIn("<code>#202</code>", html_table)
+        self.assertNotIn("@None", html_table)
+
+    def test_approved_prs_none_pr_number_handling(self):
+        approved = [
+            {
+                "number": None,
+                "repo_full_name": "owner/repo",
+                "title": "PR with None number",
+                "author": "carol",
+                "url": "",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertNotIn("#None", md)
+        self.assertNotIn("pull/None", md)
+
+        html_table = _render_approved_prs_table(approved)
+        self.assertNotIn("#None", html_table)
+        self.assertNotIn("pull/None", html_table)
+        self.assertIn('<span class="text-muted">-</span>', html_table)
+
+    def test_approved_prs_none_title_in_html(self):
+        approved = [
+            {
+                "number": 203,
+                "repo_full_name": "owner/repo",
+                "title": None,
+                "author": "dave",
+                "url": "https://github.com/owner/repo/pull/203",
+            },
+        ]
+        html_table = _render_approved_prs_table(approved)
+        self.assertIn('<span class="pr-title"></span>', html_table)
+        self.assertNotIn('<span class="pr-title">None</span>', html_table)
+
+    def test_approved_prs_url_sanitization_pipes(self):
+        approved = [
+            {
+                "number": 204,
+                "repo_full_name": "owner/repo",
+                "title": "Pipe URL PR",
+                "author": "eve",
+                "url": "https://github.com/owner/repo/pull/204|extra_pipe",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        # Verify markdown row has exactly 5 columns
+        row = [line for line in md.splitlines() if line.startswith("|") and "#204" in line][0]
+        cells = [c.strip() for c in row.split("|")[1:-1]]
+        self.assertEqual(len(cells), 5)
+        self.assertNotIn("|", cells[0])
+        self.assertNotIn("|", cells[4])
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        self.assertEqual(parsed["approved_prs"][0]["number"], 204)
+        self.assertNotIn("|", parsed["approved_prs"][0]["url"])
+
+    def test_approved_prs_skips_non_dict_elements(self):
+        approved = [
+            None,
+            "not-a-dict",
+            12345,
+            {
+                "number": 301,
+                "repo_full_name": "owner/repo",
+                "title": "Valid PR",
+                "author": "alice",
+                "url": "https://github.com/owner/repo/pull/301",
+            },
+            ["list", "item"],
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("#301", md)
+        self.assertIn("Valid PR", md)
+
+        html_out = _render_approved_prs_table(approved)
+        self.assertIn("#301", html_out)
+        self.assertIn("Valid PR", html_out)
+
+        # Verify all non-dict elements renders empty state, not empty table headers
+        all_non_dict = [None, "invalid", 42]
+        mock_pr_tracker.get_approved_prs.return_value = all_non_dict
+        md_non_dict = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("*(No approved PRs awaiting merge)*", md_non_dict)
+        self.assertNotIn("| PR # |", md_non_dict)
+
+        html_non_dict = _render_approved_prs_table(all_non_dict)
+        self.assertIn("empty-card", html_non_dict)
+        self.assertNotIn("data-table", html_non_dict)
+
+    def test_approved_prs_non_string_title_handling(self):
+        approved = [
+            {
+                "number": 501,
+                "repo_full_name": "owner/repo",
+                "title": 12345,
+                "author": "tester",
+                "url": "https://github.com/owner/repo/pull/501",
+            },
+            {
+                "number": 502,
+                "repo_full_name": "owner/repo",
+                "title": True,
+                "author": "tester",
+                "url": "https://github.com/owner/repo/pull/502",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("12345", md)
+        self.assertIn("True", md)
+
+        html_out = _render_approved_prs_table(approved)
+        self.assertIn("12345", html_out)
+        self.assertIn("True", html_out)
+
+    def test_approved_prs_empty_state_in_render_dashboard_html_for_non_dict(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [None, "invalid", 999]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        html_out = render_dashboard_html(md, pr_tracker=mock_pr_tracker)
+        self.assertIn("0 Ready", html_out)
+        self.assertIn("No approved PRs awaiting merge.", html_out)
+
+    def test_approved_prs_none_pr_number_no_zero_or_pull_zero_url(self):
+        approved = [
+            {
+                "number": None,
+                "repo_full_name": "owner/repo",
+                "title": "PR with None number",
+                "author": "alice",
+                "url": "",
+            },
+        ]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        # Should not synthesize /pull/ or /pull/0
+        self.assertNotIn("pull/0", md)
+        self.assertNotIn("`#0`", md)
+        self.assertIn("| - | `owner/repo` | PR with None number | `@alice` | - |", md)
+
+        html_out = _render_approved_prs_table(approved)
+        self.assertNotIn("pull/0", html_out)
+        self.assertNotIn("<code>#0</code>", html_out)
+
+        # Round trip via parse_dashboard_markdown with cell '-'
+        parsed = parse_dashboard_markdown(md)
+        for item in parsed.get("approved_prs", []):
+            self.assertIsNone(item["number"])
+            self.assertNotIn("pull/0", item.get("url", ""))
+
+        # Also verify when raw_num is "0", 0, "-", or "None", has_num is False in both markdown and HTML
+        for bad_num in ("0", 0, "-", "None"):
+            bad_approved = [{"number": bad_num, "repo_full_name": "owner/repo", "title": "Test PR", "author": "alice"}]
+            mock_pr_tracker.get_approved_prs.return_value = bad_approved
+            bad_md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+            self.assertNotIn(f"pull/{bad_num}", bad_md)
+            self.assertNotIn(f"`#{bad_num}`", bad_md)
+            self.assertIn("| - | `owner/repo` | Test PR | `@alice` | - |", bad_md)
+
+            bad_html = _render_approved_prs_table(bad_approved)
+            self.assertNotIn(f"pull/{bad_num}", bad_html)
+            self.assertNotIn(f"#{bad_num}</code>", bad_html)
+
+    def test_render_dashboard_html_client_script_has_num_logic(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = []
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        html_out = render_dashboard_html(md, pr_tracker=mock_pr_tracker)
+        self.assertIn("const hasNum = Boolean(prNum && prNum !== '-' && prNum !== 'None' && prNum !== '0');", html_out)
+        self.assertIn("if (!prUrl && rawRepo && rawRepo !== '-' && hasNum) {", html_out)
+
+    def test_is_safe_url_and_markdown_link_injection_prevention(self):
+        self.assertTrue(is_safe_url("https://github.com/mweastwood/graviton/pull/1"))
+        self.assertTrue(is_safe_url("http://example.com/test"))
+        self.assertFalse(is_safe_url("javascript:alert(1)"))
+        self.assertFalse(is_safe_url("https://example.com/path) [Click](https://evil.com"))
+        self.assertFalse(is_safe_url("https://example.com/path <script>"))
+        self.assertFalse(is_safe_url("https://example.com/path\"quote"))
+        self.assertFalse(is_safe_url("https://example.com/path'quote"))
+        self.assertFalse(is_safe_url("https://example.com/path\nnewline"))
+        self.assertFalse(is_safe_url("https://example.com/path\rreturn"))
+        self.assertFalse(is_safe_url("https://example.com/path\ttab"))
+        self.assertFalse(is_safe_url("   "))
+        self.assertFalse(is_safe_url(None))
+
+        # Markdown URL injection test: parenthesis encoded so link is not prematurely terminated
+        approved = [{
+            "number": 401,
+            "repo_full_name": "owner/repo",
+            "title": "Injection Test",
+            "author": "hacker",
+            "url": "https://github.com/repo/pull/1(subpath)",
+        }]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("%28subpath%29", md)
+
+        # And malicious URL with closing parenthesis and spaces/quotes is rejected by is_safe_url
+        approved_malicious = [{
+            "number": 402,
+            "repo_full_name": "owner/repo",
+            "title": "Malicious Test",
+            "author": "hacker",
+            "url": "https://github.com/repo/pull/1) [Injected](javascript:alert(1))",
+        }]
+        mock_pr_tracker.get_approved_prs.return_value = approved_malicious
+        md_malicious = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertNotIn("javascript:alert(1)", md_malicious)
+        self.assertNotIn("[Injected]", md_malicious)
+
+    def test_approved_prs_markdown_backtick_sanitization(self):
+        approved = [{
+            "number": "4`0`2",
+            "repo_full_name": "owner/`repo`",
+            "title": "Backtick test",
+            "author": "dev`user",
+            "url": "https://github.com/owner/repo/pull/402",
+        }]
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = approved
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertNotIn("owner/`repo`", md)
+        self.assertIn("`owner/repo`", md)
+        self.assertIn("`#402`", md)
+        self.assertIn("`@devuser`", md)
 
 
 class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
