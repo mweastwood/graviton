@@ -824,14 +824,21 @@
             const agentStr = agent ? String(agent).replace(/`/g, '').toLowerCase() : '';
             const isAgentIssue = agentStr.includes('issue') || agentStr.includes('drafter');
 
-            const repoIssueMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#/:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$/i);
-            if (repoIssueMatch) {{
-                const typeIndicator = repoIssueMatch[2] ? repoIssueMatch[2].toLowerCase() : null;
-                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
-                return `https://github.com/${{repoIssueMatch[1]}}/${{subpath}}/${{repoIssueMatch[3]}}`;
+            const repoPathMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/(?:(pr|pulls?|issues?))\/(\d+)$/i);
+            if (repoPathMatch) {{
+                const typeIndicator = repoPathMatch[2].toLowerCase();
+                const subpath = typeIndicator.startsWith('issue') ? 'issues' : 'pull';
+                return `https://github.com/${{repoPathMatch[1]}}/${{subpath}}/${{repoPathMatch[3]}}`;
             }}
 
-            const numMatch = clean.match(/^#?[\s:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$/i);
+            const repoDelimMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#:]+(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$/i);
+            if (repoDelimMatch) {{
+                const typeIndicator = repoDelimMatch[2] ? repoDelimMatch[2].toLowerCase() : null;
+                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
+                return `https://github.com/${{repoDelimMatch[1]}}/${{subpath}}/${{repoDelimMatch[3]}}`;
+            }}
+
+            const numMatch = clean.match(/^#?[\s:]*(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$/i);
             if (numMatch) {{
                 const defaultRepo = "{default_repo}";
                 if (!defaultRepo || defaultRepo === 'None' || !defaultRepo.includes('/') || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(defaultRepo)) {{
@@ -851,7 +858,8 @@
         function formatTargetCell(targetRaw, agent) {{
             if (!targetRaw) return '<code>N/A</code>';
             const rawStr = String(targetRaw).trim();
-            if (!rawStr || rawStr === 'N/A' || rawStr === '-' || rawStr === 'None') {{
+            const norm = rawStr.replace(/`/g, '').trim();
+            if (!norm || norm === 'N/A' || norm === '-' || norm === 'None') {{
                 return '<code>N/A</code>';
             }}
             let label = rawStr;
@@ -864,10 +872,13 @@
                     url = cand;
                 }}
             }} else {{
-                label = rawStr.replace(/`/g, '').trim();
-                url = resolveTargetUrl(rawStr, agent);
+                label = norm;
+                url = resolveTargetUrl(label, agent);
             }}
-            const cleanLabel = escapeHtml(label);
+            const cleanLabel = escapeHtml(label.replace(/`/g, '').trim());
+            if (!cleanLabel || cleanLabel === 'N/A' || cleanLabel === '-' || cleanLabel === 'None') {{
+                return '<code>N/A</code>';
+            }}
             if (url && isSafeUrl(url)) {{
                 return `<a href="${{escapeHtml(url)}}" target="_blank" rel="noopener" class="target-link"><code>${{cleanLabel}}</code></a>`;
             }}
@@ -1043,7 +1054,8 @@
                 const rows = [];
                 for (const line of lines) {{
                     if (line.startsWith('|') && !line.startsWith('| Metric') && !line.includes('Task ID')) {{
-                        const parts = line.split('|').slice(1, -1).map(c => c.trim());
+                        const rawParts = line.split(/(?<!\\)\|/).slice(1, -1);
+                        const parts = rawParts.map(c => c.trim().replace(/\\\|/g, '|'));
                         if (parts.length > 0 && !parts.every(p => /^:?-+:?$/.test(p))) {{
                             rows.push(parts);
                         }}

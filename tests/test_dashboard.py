@@ -241,8 +241,8 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html_out)
         self.assertIn("Graviton Live Dashboard", html_out)
         self.assertIn("/dashboard/content", html_out)
-        self.assertIn("(pr|pull|issues?)", html_out)
-        self.assertIn("[\\s#/:]*", html_out)
+        self.assertIn("(pr|pulls?|issues?)", html_out)
+        self.assertIn("[\\s#:]+", html_out)
 
     def test_get_quota_color_thresholds(self):
         # > 50%: Green (#3fb950)
@@ -813,6 +813,46 @@ class TestDashboardFormatting(unittest.TestCase):
             "https://github.com/owner/issue-tracker/pull/456",
         )
 
+        # Path notation with repo and plural pulls
+        self.assertEqual(
+            resolve_target_url("owner/repo/pulls/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo/pull/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+
+        # Bare path targets with eff_repo (pull/123, pulls/123, issues/123, pr/123)
+        self.assertEqual(
+            resolve_target_url("pull/1234", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("pulls/1234", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("issues/456", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+        self.assertEqual(
+            resolve_target_url("issue/456", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+        self.assertEqual(
+            resolve_target_url("pr/789", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/789",
+        )
+        self.assertEqual(
+            resolve_target_url("`pull/1234`", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("`issues/456`", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+
         # Unsafe / non-target inputs
         self.assertIsNone(resolve_target_url(None))
         self.assertIsNone(resolve_target_url(""))
@@ -839,6 +879,15 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(_format_target_html_cell("N/A"), "<code>N/A</code>")
         self.assertEqual(_format_target_html_cell("-"), "<code>N/A</code>")
         self.assertEqual(_format_target_html_cell("None"), "<code>N/A</code>")
+        # Backticked placeholders
+        self.assertEqual(_format_target_html_cell("`None`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`-`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`N/A`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("``"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`   `"), "<code>N/A</code>")
+        # Empty label guard
+        self.assertEqual(_format_target_html_cell("[ ](https://github.com/owner/repo/pull/42)"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("[` `](https://github.com/owner/repo/pull/42)"), "<code>N/A</code>")
         # Standard target string with agent resolution
         self.assertEqual(
             _format_target_html_cell("owner/repo#123", agent="issue_triager"),
@@ -854,6 +903,75 @@ class TestDashboardFormatting(unittest.TestCase):
             _format_target_html_cell("arbitrary non-target string"),
             "<code>arbitrary non-target string</code>",
         )
+
+    def test_format_target_markdown_cell_type_safety(self):
+        # None and non-string handling
+        self.assertEqual(_format_target_markdown_cell(None, None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell(None, "https://github.com/owner/repo/pull/1"), "[`N/A`](https://github.com/owner/repo/pull/1)")
+        self.assertEqual(_format_target_markdown_cell("", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell("   ", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell("``", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell(1234, None), "`1234`")
+        self.assertEqual(_format_target_markdown_cell(1234, "https://github.com/owner/repo/pull/1234"), "[`1234`](https://github.com/owner/repo/pull/1234)")
+        # Escaped pipes
+        self.assertEqual(_format_target_markdown_cell("feat | fix", None), "`feat \\| fix`")
+        self.assertEqual(_format_target_markdown_cell("feat | fix", "https://github.com/owner/repo/pull/1"), "[`feat \\| fix`](https://github.com/owner/repo/pull/1)")
+
+    def test_parse_dashboard_markdown_escaped_pipe_in_table_rows(self):
+        md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            "| `task-1` | `code_reviewer` | [`feat \\| fix`](https://github.com/owner/repo/pull/1) | 42s | 🔄 Running |\n\n"
+            "## ⏳ Queued Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Priority | Wait Time |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            "| `task-2` | `code_fixer` | [`fix \\| patch`](https://github.com/owner/repo/pull/2) | P1 | 5s |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "|:---|:---|:---|:---|:---|:---|\n"
+            "| `task-3` | `codebase_auditor` | [`audit \\| check`](https://github.com/owner/repo/pull/3) | 1m 20s | ✅ Completed | Finished |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+
+        # Active task checks (no shifted columns)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        act = parsed["active_tasks"][0]
+        self.assertEqual(act["id"], "task-1")
+        self.assertEqual(act["agent"], "code_reviewer")
+        self.assertEqual(act["target"], "feat | fix")
+        self.assertEqual(act["target_url"], "https://github.com/owner/repo/pull/1")
+        self.assertEqual(act["elapsed"], "42s")
+        self.assertEqual(act["status"], "Running")
+
+        # Queued task checks
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        q = parsed["queued_tasks_list"][0]
+        self.assertEqual(q["id"], "task-2")
+        self.assertEqual(q["agent"], "code_fixer")
+        self.assertEqual(q["target"], "fix | patch")
+        self.assertEqual(q["target_url"], "https://github.com/owner/repo/pull/2")
+        self.assertEqual(q["priority"], "P1")
+        self.assertEqual(q["wait_time"], "5s")
+
+        # History task checks
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        h = parsed["history_tasks"][0]
+        self.assertEqual(h["id"], "task-3")
+        self.assertEqual(h["agent"], "codebase_auditor")
+        self.assertEqual(h["target"], "audit | check")
+        self.assertEqual(h["target_url"], "https://github.com/owner/repo/pull/3")
+        self.assertEqual(h["duration"], "1m 20s")
+        self.assertEqual(h["status"], "Completed")
+        self.assertEqual(h["details"], "Finished")
+
+        # Render HTML with escaped pipes
+        html_out = render_dashboard_html(md)
+        self.assertIn("feat | fix", html_out)
+        self.assertIn("fix | patch", html_out)
+        self.assertIn("audit | check", html_out)
 
     def test_table_rendering_target_unwrapping_and_fallback(self):
         active_rendered = _render_active_tasks_table([
@@ -1285,6 +1403,18 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
     def test_template_js_handles_finish_status(self):
         template = _get_dashboard_template()
         self.assertIn("r[4].toLowerCase().includes('finish')", template)
+
+    def test_template_js_escaped_pipe_and_target_resolution(self):
+        template = _get_dashboard_template()
+        # Escaped pipe splitting
+        self.assertIn("line.split(/(?<!\\\\)\\|/).slice(1, -1)", template)
+        self.assertIn("c.trim().replace(/\\\\\\|/g, '|')", template)
+        # Target resolution regexes
+        self.assertIn("(pr|pulls?|issues?)", template)
+        self.assertIn("repoPathMatch", template)
+        self.assertIn("repoDelimMatch", template)
+        # Backtick placeholder stripping
+        self.assertIn("rawStr.replace(/`/g, '').trim()", template)
 
 
 if __name__ == "__main__":

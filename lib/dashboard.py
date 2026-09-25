@@ -129,14 +129,14 @@ def format_duration(seconds: Optional[float]) -> str:
     return f"{h}h {m}m"
 
 
-def _format_target_markdown_cell(target_disp: str, target_url: Optional[str]) -> str:
+def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
     """Format target cell for markdown table, stripping existing formatting to prevent double-backticks or nested links."""
-    clean_disp = target_disp.strip().strip("`").strip()
+    clean_disp = str(target_disp or "N/A").strip().strip("`").strip()
     md_m = re.match(r"^\[(.*?)\]\((.*?)\)$", clean_disp)
     if md_m:
         clean_disp = md_m.group(1).strip("` ").strip()
     if not clean_disp:
-        clean_disp = target_disp
+        clean_disp = "N/A"
     clean_disp = clean_disp.replace("|", "\\|")
     return f"[`{clean_disp}`]({target_url})" if target_url else f"`{clean_disp}`"
 
@@ -439,9 +439,22 @@ def resolve_target_url(
     agent_str = str(agent).lower() if agent else ""
     is_agent_issue = "issue" in agent_str or "drafter" in agent_str
 
-    # owner/repo#number, owner/repo PR #123, owner/repo Issue #123, owner/repo/pull/123, owner/repo#pr-123
+    # Path-style with repo: owner/repo/pull/123, owner/repo/pulls/123, owner/repo/issues/123, owner/repo/pr/123
     m = re.match(
-        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#/:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$",
+        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)/(?:(pr|pulls?|issues?))/(\d+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if m:
+        target_repo = m.group(1)
+        type_prefix = m.group(2).lower()
+        num = m.group(3)
+        subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        return f"https://github.com/{target_repo}/{subpath}/{num}"
+
+    # Delimiter-style with repo: owner/repo#number, owner/repo PR #123, owner/repo:123
+    m = re.match(
+        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#:]+(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$",
         raw,
         re.IGNORECASE,
     )
@@ -455,9 +468,9 @@ def resolve_target_url(
             subpath = "issues" if is_agent_issue else "pull"
         return f"https://github.com/{target_repo}/{subpath}/{num}"
 
-    # #number, PR #123, Issue #123, #pr-123, pr-123, or bare number with eff_repo
+    # #number, PR #123, Issue #123, pull/123, pulls/123, issues/123, #pr-123, pr-123, or bare number with eff_repo
     m = re.match(
-        r"^#?[\s:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$",
+        r"^#?[\s:]*(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$",
         raw,
         re.IGNORECASE,
     )
@@ -487,7 +500,8 @@ def _format_target_html_cell(
     if not target_raw:
         return '<code>N/A</code>'
     raw_str = str(target_raw).strip()
-    if not raw_str or raw_str in ("N/A", "-", "None"):
+    norm = raw_str.strip("`").strip()
+    if not norm or norm in ("N/A", "-", "None"):
         return '<code>N/A</code>'
 
     label = raw_str
@@ -500,11 +514,13 @@ def _format_target_html_cell(
             if is_safe_url(extracted_url):
                 url = extracted_url
     else:
-        label = raw_str.strip("` ").strip()
+        label = norm
         if not url:
             url = resolve_target_url(label, agent=agent)
 
-    clean_label = html.escape(label.strip("` "))
+    clean_label = html.escape(label.strip("` ").strip())
+    if not clean_label or clean_label in ("N/A", "-", "None"):
+        return '<code>N/A</code>'
     if url and is_safe_url(url):
         return f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="target-link"><code>{clean_label}</code></a>'
     return f'<code>{clean_label}</code>'
@@ -633,7 +649,8 @@ def parse_dashboard_markdown(
         for line in sec_lines:
             sline = line.strip()
             if sline.startswith("|") and not sline.startswith("| Metric") and "Task ID" not in sline:
-                cells = [c.strip() for c in sline.split("|")[1:-1]]
+                raw_cells = re.split(r"(?<!\\)\|", sline)[1:-1]
+                cells = [c.strip().replace(r"\|", "|") for c in raw_cells]
                 if cells and not all(c.replace(":", "").replace("-", "") == "" for c in cells):
                     table_rows.append(cells)
 
