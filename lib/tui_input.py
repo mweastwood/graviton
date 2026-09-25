@@ -200,6 +200,12 @@ class TerminalInputListener:
         self.escape_timeout = escape_timeout
         self._old_term_settings: Optional[Any] = None
         self._running: bool = False
+        self._leftover_bytes: bytes = b""
+        self._idle_flush_count: int = 0
+
+    @property
+    def leftover_bytes(self) -> bytes:
+        return self._leftover_bytes
 
     def setup_terminal(self) -> bool:
         """Set up raw termios cbreak mode on stdin if interactive TTY."""
@@ -240,7 +246,7 @@ class TerminalInputListener:
 
         self._running = True
         fd = sys.stdin.fileno()
-        leftover_bytes = b""
+        self._leftover_bytes = b""
 
         def check_running():
             if not self._running:
@@ -271,8 +277,8 @@ class TerminalInputListener:
                     if not chunk:
                         break
 
-                    raw_bytes = leftover_bytes + chunk
-                    leftover_bytes = b""
+                    raw_bytes = self._leftover_bytes + chunk
+                    self._leftover_bytes = b""
 
                     while check_running() and is_incomplete_escape_sequence(raw_bytes):
                         try:
@@ -299,16 +305,17 @@ class TerminalInputListener:
 
                     raw_bytes, leftover_esc = split_incomplete_escape_tail(raw_bytes)
                     prefix, leftover_utf8 = split_incomplete_utf8_tail(raw_bytes)
-                    leftover_bytes = leftover_utf8 + leftover_esc
+                    self._leftover_bytes = leftover_utf8 + leftover_esc
                     for key in parse_keys(prefix):
                         if self.on_key:
                             self.on_key(key)
                 else:
-                    if leftover_bytes:
-                        for key in parse_keys(leftover_bytes):
+                    if self._leftover_bytes:
+                        for key in parse_keys(self._leftover_bytes):
                             if self.on_key:
                                 self.on_key(key)
-                        leftover_bytes = b""
+                        self._leftover_bytes = b""
+                        self._idle_flush_count += 1
         except Exception:
             pass
         finally:

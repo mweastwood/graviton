@@ -1112,8 +1112,14 @@ class TestTerminalDashboard(unittest.TestCase):
                 try:
                     # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
                     os.write(master, b"\x1b[")
-                    # Wait long enough for stdin to become idle and select.select to time out (>0.15s)
-                    time.sleep(0.35)
+                    # Wait for incomplete sequence to be captured into leftover_bytes, then flushed on idle timeout
+                    self.assertTrue(
+                        self._wait_for_condition(
+                            lambda: len(getattr(dashboard, "_leftover_bytes", b"")) > 0 or getattr(dashboard, "_idle_flush_count", 0) > 0,
+                            timeout=2.0,
+                        )
+                    )
+                    self.assertTrue(self._wait_for_condition(lambda: len(getattr(dashboard, "_leftover_bytes", b"")) == 0, timeout=2.0))
 
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
