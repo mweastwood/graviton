@@ -975,10 +975,11 @@
             const sections = md.split(/^##\s+/m);
             let activeSec = '', queuedSec = '', approvedSec = '', historySec = '';
             for (const sec of sections) {{
-                if (sec.startsWith('🚀 Active Container Tasks')) activeSec = sec;
-                else if (sec.startsWith('⏳ Queued Tasks')) queuedSec = sec;
-                else if (sec.startsWith('🔀 Approved Pull Requests') || sec.includes('Approved Pull Requests')) approvedSec = sec;
-                else if (sec.startsWith('📜 Recent Task Execution History')) historySec = sec;
+                const firstLine = sec.split('\n')[0].trim();
+                if (firstLine.includes('Active Container Tasks')) activeSec = sec;
+                else if (firstLine.includes('Queued Tasks')) queuedSec = sec;
+                else if (firstLine.includes('Approved Pull Requests') || firstLine.includes('Ready to Merge')) approvedSec = sec;
+                else if (firstLine.includes('Recent Task Execution History')) historySec = sec;
             }}
 
             function parseTableRows(sec) {{

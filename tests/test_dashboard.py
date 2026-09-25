@@ -1088,6 +1088,30 @@ class TestDashboardUpdater(unittest.TestCase):
         self.assertIn("if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #')", html_out)
         self.assertNotIn("!line.includes('PR #')", html_out)
 
+    def test_client_js_section_header_parsing_avoids_history_misattribution(self):
+        html_out = render_dashboard_html("# Dashboard")
+        self.assertIn("const firstLine = sec.split('\\n')[0].trim();", html_out)
+        self.assertIn("if (firstLine.includes('Active Container Tasks')) activeSec = sec;", html_out)
+        self.assertIn("else if (firstLine.includes('Queued Tasks')) queuedSec = sec;", html_out)
+        self.assertIn("else if (firstLine.includes('Approved Pull Requests') || firstLine.includes('Ready to Merge')) approvedSec = sec;", html_out)
+        self.assertIn("else if (firstLine.includes('Recent Task Execution History')) historySec = sec;", html_out)
+        self.assertNotIn("sec.includes('Approved Pull Requests')", html_out)
+
+        # Verify that task execution history items mentioning "Approved Pull Requests"
+        # are not misattributed as approved PRs
+        md = (
+            "# Dashboard\n\n"
+            "## 📜 Recent Task Execution History\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Summary |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-101` | `code_reviewer` | `PR #383` | 1m 20s | ✅ Success | Support Approved Pull Requests section |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed.get("approved_prs", [])), 0)
+        self.assertEqual(len(parsed.get("history_tasks", [])), 1)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-101")
+        self.assertIn("Approved Pull Requests", parsed["history_tasks"][0]["details"])
+
     def test_approved_prs_dict_author_none_login_and_empty_dict(self):
         approved = [
             {
