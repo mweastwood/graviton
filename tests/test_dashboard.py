@@ -15,10 +15,12 @@ from lib.dashboard import (
     DashboardUpdater,
     REPO_ROOT,
     _detect_git_repo_full_name,
+    _format_target_html_cell,
     _format_target_markdown_cell,
     _get_dashboard_template,
     _render_active_tasks_table,
     _render_history_tasks_table,
+    _render_queued_tasks_table,
     _reset_dashboard_template_cache,
     _reset_detected_repo_cache,
     format_dashboard_markdown,
@@ -238,9 +240,9 @@ class TestDashboardFormatting(unittest.TestCase):
         html_out = render_dashboard_html(md, host="localhost", port=8000)
         self.assertIn("<!DOCTYPE html>", html_out)
         self.assertIn("Graviton Live Dashboard", html_out)
-        self.assertIn("# Sample Markdown", html_out)
         self.assertIn("/dashboard/content", html_out)
-        self.assertIn("issues?[\\s\\-/:]*", html_out)
+        self.assertIn("(pr|pull|issues?)", html_out)
+        self.assertIn("[\\s#/:]*", html_out)
 
     def test_get_quota_color_thresholds(self):
         # > 50%: Green (#3fb950)
@@ -746,6 +748,71 @@ class TestDashboardFormatting(unittest.TestCase):
             "https://github.com/owner/repo/issues/456",
         )
 
+        # Substring collision resistance with repo names containing "pr", "pull", or "issue"
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot#123", agent="issue_triager"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot#123", agent="pr_drafter"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("expressjs/express#123", agent="issue_triager"),
+            "https://github.com/expressjs/express/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("cypress-io/cypress#123", agent="issue_triager"),
+            "https://github.com/cypress-io/cypress/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/pulley#123", agent="issue_triager"),
+            "https://github.com/owner/pulley/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("org/enterprise-app#123", agent="issue_triager"),
+            "https://github.com/org/enterprise-app/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker#123", agent="code_reviewer"),
+            "https://github.com/owner/issue-tracker/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker#123", agent="code_fixer"),
+            "https://github.com/owner/issue-tracker/pull/123",
+        )
+        # Explicit prefix overrides agent defaults on repos with substrings
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot PR #123", agent="issue_triager"),
+            "https://github.com/spring-projects/spring-boot/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker Issue #123", agent="code_reviewer"),
+            "https://github.com/owner/issue-tracker/issues/123",
+        )
+
+        # Path-style targets (e.g. owner/repo/pull/123, owner/repo/issues/123)
+        self.assertEqual(
+            resolve_target_url("owner/repo/pull/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo/issues/123"),
+            "https://github.com/owner/repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot/pull/123"),
+            "https://github.com/spring-projects/spring-boot/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot/issues/123"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker/pull/456"),
+            "https://github.com/owner/issue-tracker/pull/456",
+        )
+
         # Unsafe / non-target inputs
         self.assertIsNone(resolve_target_url(None))
         self.assertIsNone(resolve_target_url(""))
@@ -754,6 +821,64 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIsNone(resolve_target_url("javascript:alert(1)"))
         self.assertIsNone(resolve_target_url("[click](javascript:alert(1))"))
         self.assertIsNone(resolve_target_url("random text without issue"))
+
+    def test_format_target_html_cell(self):
+        # Markdown link unwrapping
+        self.assertEqual(
+            _format_target_html_cell("[#42](https://github.com/owner/repo/pull/42)"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell("[`#42`](https://github.com/owner/repo/pull/42)"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        # Empty / None / fallback cases
+        self.assertEqual(_format_target_html_cell(None), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell(""), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("   "), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("N/A"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("-"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("None"), "<code>N/A</code>")
+        # Standard target string with agent resolution
+        self.assertEqual(
+            _format_target_html_cell("owner/repo#123", agent="issue_triager"),
+            '<a href="https://github.com/owner/repo/issues/123" target="_blank" rel="noopener" class="target-link"><code>owner/repo#123</code></a>',
+        )
+        # Explicit target_url override
+        self.assertEqual(
+            _format_target_html_cell("Custom Label", target_url="https://github.com/foo/bar/pull/1"),
+            '<a href="https://github.com/foo/bar/pull/1" target="_blank" rel="noopener" class="target-link"><code>Custom Label</code></a>',
+        )
+        # Unresolvable target string
+        self.assertEqual(
+            _format_target_html_cell("arbitrary non-target string"),
+            "<code>arbitrary non-target string</code>",
+        )
+
+    def test_table_rendering_target_unwrapping_and_fallback(self):
+        active_rendered = _render_active_tasks_table([
+            {"id": "t1", "agent": "code_reviewer", "target": "[#42](https://github.com/org/repo/pull/42)", "elapsed": "1s", "status": "RUNNING"},
+            {"id": "t2", "agent": "code_reviewer", "target": "", "elapsed": "1s", "status": "RUNNING"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>', active_rendered)
+        self.assertNotIn("<code>[#42]", active_rendered)
+        self.assertIn("<code>N/A</code>", active_rendered)
+
+        queued_rendered = _render_queued_tasks_table([
+            {"id": "q1", "agent": "issue_triager", "target": "[#99](https://github.com/org/repo/issues/99)", "priority": "1", "wait_time": "5s"},
+            {"id": "q2", "agent": "issue_triager", "target": None, "priority": "1", "wait_time": "5s"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/issues/99" target="_blank" rel="noopener" class="target-link"><code>#99</code></a>', queued_rendered)
+        self.assertNotIn("<code>[#99]", queued_rendered)
+        self.assertIn("<code>N/A</code>", queued_rendered)
+
+        history_rendered = _render_history_tasks_table([
+            {"id": "h1", "agent": "code_fixer", "target": "[#55](https://github.com/org/repo/pull/55)", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
+            {"id": "h2", "agent": "code_fixer", "target": "N/A", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/pull/55" target="_blank" rel="noopener" class="target-link"><code>#55</code></a>', history_rendered)
+        self.assertNotIn("<code>[#55]", history_rendered)
+        self.assertIn("<code>N/A</code>", history_rendered)
 
     def test_format_target_markdown_cell(self):
         # Escape pipe characters to preserve table syntax

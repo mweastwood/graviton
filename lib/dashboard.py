@@ -436,23 +436,39 @@ def resolve_target_url(
         return cand if is_safe_url(cand) else None
 
     eff_repo = repo or _detect_git_repo_full_name()
+    agent_str = str(agent).lower() if agent else ""
+    is_agent_issue = "issue" in agent_str or "drafter" in agent_str
 
-    is_pr = "pr" in raw.lower() or "pull" in raw.lower()
-    is_issue = (
-        "issue" in raw.lower()
-        or (not is_pr and agent and ("issue" in str(agent).lower() or "drafter" in str(agent).lower()))
+    # owner/repo#number, owner/repo PR #123, owner/repo Issue #123, owner/repo/pull/123, owner/repo#pr-123
+    m = re.match(
+        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#/:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$",
+        raw,
+        re.IGNORECASE,
     )
-    subpath = "issues" if is_issue else "pull"
-
-    # owner/repo#number, owner/repo PR #123, owner/repo Issue #123, owner/repo#pr-123
-    m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$", raw, re.IGNORECASE)
     if m:
-        return f"https://github.com/{m.group(1)}/{subpath}/{m.group(2)}"
+        target_repo = m.group(1)
+        type_prefix = m.group(2).lower() if m.group(2) else ""
+        num = m.group(3)
+        if type_prefix:
+            subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        else:
+            subpath = "issues" if is_agent_issue else "pull"
+        return f"https://github.com/{target_repo}/{subpath}/{num}"
 
     # #number, PR #123, Issue #123, #pr-123, pr-123, or bare number with eff_repo
-    m = re.match(r"^#?[\s:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$", raw, re.IGNORECASE)
+    m = re.match(
+        r"^#?[\s:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$",
+        raw,
+        re.IGNORECASE,
+    )
     if m and eff_repo:
-        return f"https://github.com/{eff_repo}/{subpath}/{m.group(1)}"
+        type_prefix = m.group(1).lower() if m.group(1) else ""
+        num = m.group(2)
+        if type_prefix:
+            subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        else:
+            subpath = "issues" if is_agent_issue else "pull"
+        return f"https://github.com/{eff_repo}/{subpath}/{num}"
 
     # owner/repo without number
     m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)$", raw)
@@ -460,6 +476,38 @@ def resolve_target_url(
         return f"https://github.com/{m.group(1)}"
 
     return None
+
+
+def _format_target_html_cell(
+    target_raw: Any,
+    target_url: Optional[str] = None,
+    agent: Optional[str] = None,
+) -> str:
+    """Format target cell for HTML table, resolving URL and unwrapping markdown link labels."""
+    if not target_raw:
+        return '<code>N/A</code>'
+    raw_str = str(target_raw).strip()
+    if not raw_str or raw_str in ("N/A", "-", "None"):
+        return '<code>N/A</code>'
+
+    label = raw_str
+    url = target_url
+    md_m = re.match(r"^\[(.*?)\]\((.*?)\)$", raw_str)
+    if md_m:
+        label = md_m.group(1).strip("` ").strip()
+        if not url:
+            extracted_url = md_m.group(2).strip()
+            if is_safe_url(extracted_url):
+                url = extracted_url
+    else:
+        label = raw_str.strip("` ").strip()
+        if not url:
+            url = resolve_target_url(label, agent=agent)
+
+    clean_label = html.escape(label.strip("` "))
+    if url and is_safe_url(url):
+        return f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="target-link"><code>{clean_label}</code></a>'
+    return f'<code>{clean_label}</code>'
 
 
 def _parse_target_cell(cell: str, agent: Optional[str] = None) -> Tuple[str, Optional[str]]:
@@ -725,15 +773,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
     for t in active_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
-        target = html.escape(str(t.get("target", "")))
-        target_url = t.get("target_url")
-        if not target_url:
-            raw_target = str(t.get("target", ""))
-            target_url = resolve_target_url(raw_target, agent=str(t.get("agent", "")))
-        if target_url and is_safe_url(target_url):
-            target_html = f'<a href="{html.escape(target_url)}" target="_blank" rel="noopener" class="target-link"><code>{target}</code></a>'
-        else:
-            target_html = f'<code>{target}</code>'
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         elapsed = html.escape(str(t.get("elapsed", "")))
         status = html.escape(str(t.get("status", "")))
         rows.append(
@@ -758,15 +798,7 @@ def _render_queued_tasks_table(queued_tasks: List[Dict[str, Any]]) -> str:
     for t in queued_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
-        target = html.escape(str(t.get("target", "")))
-        target_url = t.get("target_url")
-        if not target_url:
-            raw_target = str(t.get("target", ""))
-            target_url = resolve_target_url(raw_target, agent=str(t.get("agent", "")))
-        if target_url and is_safe_url(target_url):
-            target_html = f'<a href="{html.escape(target_url)}" target="_blank" rel="noopener" class="target-link"><code>{target}</code></a>'
-        else:
-            target_html = f'<code>{target}</code>'
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         prio = html.escape(str(t.get("priority", "")))
         prio_label = prio if prio.startswith("P") else f"P{prio}"
         wait_time = html.escape(str(t.get("wait_time", "")))
@@ -792,15 +824,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
     for t in history_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
-        target = html.escape(str(t.get("target", "")))
-        target_url = t.get("target_url")
-        if not target_url:
-            raw_target = str(t.get("target", ""))
-            target_url = resolve_target_url(raw_target, agent=str(t.get("agent", "")))
-        if target_url and is_safe_url(target_url):
-            target_html = f'<a href="{html.escape(target_url)}" target="_blank" rel="noopener" class="target-link"><code>{target}</code></a>'
-        else:
-            target_html = f'<code>{target}</code>'
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         duration = html.escape(str(t.get("duration", "")))
         raw_status = str(t.get("status", "")).lower()
         is_success = "complete" in raw_status or "finish" in raw_status

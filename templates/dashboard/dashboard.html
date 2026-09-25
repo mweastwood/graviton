@@ -821,21 +821,27 @@
                 const cand = 'https://' + clean;
                 return isSafeUrl(cand) ? cand : null;
             }}
-            const isPr = clean.toLowerCase().includes('pr') || clean.toLowerCase().includes('pull');
-            const isIssue = clean.toLowerCase().includes('issue') || (!isPr && agent && (agent.toLowerCase().includes('issue') || agent.toLowerCase().includes('drafter')));
-            const subpath = isIssue ? 'issues' : 'pull';
-            const repoIssueMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$/i);
+            const agentStr = agent ? String(agent).replace(/`/g, '').toLowerCase() : '';
+            const isAgentIssue = agentStr.includes('issue') || agentStr.includes('drafter');
+
+            const repoIssueMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#/:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$/i);
             if (repoIssueMatch) {{
-                return `https://github.com/${{repoIssueMatch[1]}}/${{subpath}}/${{repoIssueMatch[2]}}`;
+                const typeIndicator = repoIssueMatch[2] ? repoIssueMatch[2].toLowerCase() : null;
+                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
+                return `https://github.com/${{repoIssueMatch[1]}}/${{subpath}}/${{repoIssueMatch[3]}}`;
             }}
-            const numMatch = clean.match(/^#?[\s:]*(?:pr[\s\-/:]*|pull[\s\-/:]*|issues?[\s\-/:]*)?#?(\d+)$/i);
+
+            const numMatch = clean.match(/^#?[\s:]*(?:(pr|pull|issues?)[\s\-/:]*)?#?(\d+)$/i);
             if (numMatch) {{
                 const defaultRepo = "{default_repo}";
                 if (!defaultRepo || defaultRepo === 'None' || !defaultRepo.includes('/') || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(defaultRepo)) {{
                     return null;
                 }}
-                return `https://github.com/${{defaultRepo}}/${{subpath}}/${{numMatch[1]}}`;
+                const typeIndicator = numMatch[1] ? numMatch[1].toLowerCase() : null;
+                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
+                return `https://github.com/${{defaultRepo}}/${{subpath}}/${{numMatch[2]}}`;
             }}
+
             if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(clean)) {{
                 return `https://github.com/${{clean}}`;
             }}
@@ -844,20 +850,28 @@
 
         function formatTargetCell(targetRaw, agent) {{
             if (!targetRaw) return '<code>N/A</code>';
-            let label = targetRaw;
+            const rawStr = String(targetRaw).trim();
+            if (!rawStr || rawStr === 'N/A' || rawStr === '-' || rawStr === 'None') {{
+                return '<code>N/A</code>';
+            }}
+            let label = rawStr;
             let url = null;
-            const mdMatch = targetRaw.match(/\[(.*?)\]\((.*?)\)/);
+            const mdMatch = rawStr.match(/\[(.*?)\]\((.*?)\)/);
             if (mdMatch) {{
-                label = mdMatch[1];
-                url = mdMatch[2].trim();
+                label = mdMatch[1].replace(/`/g, '').trim();
+                const cand = mdMatch[2].trim();
+                if (isSafeUrl(cand)) {{
+                    url = cand;
+                }}
             }} else {{
-                url = resolveTargetUrl(targetRaw, agent);
+                label = rawStr.replace(/`/g, '').trim();
+                url = resolveTargetUrl(rawStr, agent);
             }}
-            label = escapeHtml(label.replace(/`/g, ''));
+            const cleanLabel = escapeHtml(label);
             if (url && isSafeUrl(url)) {{
-                return `<a href="${{escapeHtml(url)}}" target="_blank" rel="noopener" class="target-link"><code>${{label}}</code></a>`;
+                return `<a href="${{escapeHtml(url)}}" target="_blank" rel="noopener" class="target-link"><code>${{cleanLabel}}</code></a>`;
             }}
-            return `<code>${{label}}</code>`;
+            return `<code>${{cleanLabel}}</code>`;
         }}
 
         function getQuotaColor(pct) {{
