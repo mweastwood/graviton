@@ -2183,6 +2183,50 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         d2 = info2.to_dict()
         self.assertEqual(d2["third_party_5h_pacing_status"], "BEHIND_PACING")
 
+    def test_quota_info_to_dict_exposes_pool_remaining_percentages(self):
+        """Verify QuotaInfo.to_dict includes gemini_remaining_percentage and third_party_remaining_percentage."""
+        w5_g = QuotaWindow(name="5H", remaining_percentage=80.0)
+        w1_g = QuotaWindow(name="1W", remaining_percentage=90.0)
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0)
+        w1_c = QuotaWindow(name="1W", remaining_percentage=60.0)
+
+        info = QuotaInfo(
+            remaining_percentage=80.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+            gemini_window_1w=w1_g,
+            claude_window_5h=w5_c,
+            claude_window_1w=w1_c,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_remaining_percentage"], 80.0)
+        self.assertEqual(d["third_party_remaining_percentage"], 60.0)
+
+        info_5h_only = QuotaInfo(
+            remaining_percentage=85.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+        )
+        d_5h = info_5h_only.to_dict()
+        self.assertEqual(d_5h["gemini_remaining_percentage"], 80.0)
+        self.assertIsNone(d_5h.get("third_party_remaining_percentage"))
+
+        info_gemini_fallback = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+        )
+        d_gf = info_gemini_fallback.to_dict()
+        self.assertEqual(d_gf["gemini_remaining_percentage"], 75.0)
+        self.assertIsNone(d_gf.get("third_party_remaining_percentage"))
+
+        info_tp_fallback = QuotaInfo(
+            remaining_percentage=55.0,
+            quota_pool="claude_gpt",
+        )
+        d_tpf = info_tp_fallback.to_dict()
+        self.assertEqual(d_tpf["third_party_remaining_percentage"], 55.0)
+        self.assertIsNone(d_tpf.get("gemini_remaining_percentage"))
+
 
 if __name__ == "__main__":
     unittest.main()

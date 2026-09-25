@@ -1007,6 +1007,24 @@ class QuotaInfo:
         d["third_party_1w_countdown"] = c1_cd
         d["third_party_1w_pacing_status"] = c1_st
 
+        if g5_pct is not None and g1_pct is not None:
+            d["gemini_remaining_percentage"] = min(g5_pct, g1_pct)
+        elif g5_pct is not None:
+            d["gemini_remaining_percentage"] = g5_pct
+        elif g1_pct is not None:
+            d["gemini_remaining_percentage"] = g1_pct
+        elif not is_tp:
+            d["gemini_remaining_percentage"] = d["remaining_percentage"]
+
+        if c5_pct is not None and c1_pct is not None:
+            d["third_party_remaining_percentage"] = min(c5_pct, c1_pct)
+        elif c5_pct is not None:
+            d["third_party_remaining_percentage"] = c5_pct
+        elif c1_pct is not None:
+            d["third_party_remaining_percentage"] = c1_pct
+        elif is_tp:
+            d["third_party_remaining_percentage"] = d["remaining_percentage"]
+
         return d
 
 

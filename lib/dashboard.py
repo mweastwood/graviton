@@ -155,14 +155,14 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         flt = float(val)
         return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
     val_str = str(val).strip()
-    if val_str == "N/A":
-        return "N/A"
+    if val_str.lower() in ("n/a", "n/a%", "none", "null", "unknown"):
+        return default
     clean_str = val_str[:-1].strip() if val_str.endswith("%") else val_str
     try:
         flt = float(clean_str)
         return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
     except (ValueError, TypeError):
-        return val_str if val_str.endswith("%") else f"{val_str}%"
+        return default
 
 
 def format_dashboard_markdown(
@@ -395,6 +395,8 @@ def format_dashboard_markdown(
             if not cd:
                 cd = "N/A"
             status = w.get("pacing_status", "OK")
+            if pct is None and cd == "N/A" and (status == "OK" or not status):
+                return "N/A", "N/A"
             return pct_disp, f"Reset: {cd} | Pacing: {status}"
         # QuotaWindow object
         pct = w.remaining_percentage
@@ -625,10 +627,10 @@ def parse_dashboard_markdown(
 
     gemini_pct = _parse_pct(gemini_rem)
     tp_pct = _parse_pct(tp_rem)
-    gemini_5h_pct = _parse_pct(gemini_5h_rem) if gemini_5h_rem != "N/A" else gemini_pct
-    gemini_1w_pct = _parse_pct(gemini_1w_rem) if gemini_1w_rem != "N/A" else gemini_pct
-    tp_5h_pct = _parse_pct(tp_5h_rem) if tp_5h_rem != "N/A" else tp_pct
-    tp_1w_pct = _parse_pct(tp_1w_rem) if tp_1w_rem != "N/A" else tp_pct
+    gemini_5h_pct = _parse_pct(gemini_5h_rem)
+    gemini_1w_pct = _parse_pct(gemini_1w_rem)
+    tp_5h_pct = _parse_pct(tp_5h_rem)
+    tp_1w_pct = _parse_pct(tp_1w_rem)
 
     active_tasks: List[Dict[str, Any]] = []
     queued_tasks: List[Dict[str, Any]] = []
@@ -1052,7 +1054,9 @@ def render_dashboard_html(
                 except Exception:
                     cd = str(q_extra.get(f"{key_prefix}_reset_time"))
             st = q_extra.get(f"{key_prefix}_pacing_status")
-            if cd or st:
+            has_pct = q_extra.get(f"{key_prefix}_remaining_percentage") is not None
+            has_res = q_extra.get(f"{key_prefix}_reset_time") is not None
+            if cd or has_res or has_pct or (st and st != "OK"):
                 details = f"Reset: {cd or 'N/A'} | Pacing: {st or 'OK'}"
                 data[f"{prefix}_details"] = details
                 if prefix.startswith("tp_"):

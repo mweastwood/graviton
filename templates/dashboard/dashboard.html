@@ -1003,10 +1003,10 @@
             const tp5hDetails = extractDetails(['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)'], 'Fallback burst quota');
             const tp1wDetails = extractDetails(['Third-Party (1W)', 'Third Party (1W)', 'Third-Party Quota (1W)'], 'Fallback weekly quota');
 
-            const gemini5hPct = parsePct(gemini5hRem) !== null ? parsePct(gemini5hRem) : geminiPct;
-            const gemini1wPct = parsePct(gemini1wRem) !== null ? parsePct(gemini1wRem) : geminiPct;
-            const tp5hPct = parsePct(tp5hRem) !== null ? parsePct(tp5hRem) : tpPct;
-            const tp1wPct = parsePct(tp1wRem) !== null ? parsePct(tp1wRem) : tpPct;
+            const gemini5hPct = parsePct(gemini5hRem);
+            const gemini1wPct = parsePct(gemini1wRem);
+            const tp5hPct = parsePct(tp5hRem);
+            const tp1wPct = parsePct(tp1wRem);
 
             const g5hLabel = document.getElementById('gemini-5h-pct-label');
             const g5hBar = document.getElementById('gemini-5h-bar');

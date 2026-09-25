@@ -942,6 +942,17 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(format_percentage("N/A"), "N/A")
         self.assertEqual(format_percentage(True), "N/A")
 
+    def test_format_percentage_edge_cases(self):
+        """Verify format_percentage handles 'N/A%', 'n/a', 'None', and non-numeric strings without appending %."""
+        self.assertEqual(format_percentage("N/A%"), "N/A")
+        self.assertEqual(format_percentage("n/a"), "N/A")
+        self.assertEqual(format_percentage("None"), "N/A")
+        self.assertEqual(format_percentage("null"), "N/A")
+        self.assertEqual(format_percentage("unknown"), "N/A")
+        self.assertEqual(format_percentage("error"), "N/A")
+        self.assertEqual(format_percentage("None%", default="N/A"), "N/A")
+        self.assertEqual(format_percentage("invalid", default="--"), "--")
+
     def test_render_dashboard_html_string_float_and_integer_percentages(self):
         """Verify render_dashboard_html handles string-float and int percentages without ValueError or AttributeError."""
         extra = {
@@ -1065,6 +1076,67 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("function extractStr(labels, defVal)", template)
         self.assertIn("function extractDetails(labels, defVal)", template)
         self.assertIn("['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)']", template)
+
+    def test_parse_dashboard_markdown_explicit_na_does_not_fallback(self):
+        """Verify explicit N/A window rows parse to None rather than falling back to gemini_pct / tp_pct."""
+        md_content = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Gemini Remaining** | `85.0%` | Primary capacity |
+| **Third-Party Remaining** | `70.0%` | Secondary capacity |
+| **Gemini (5H)** | `N/A` | N/A |
+| **Gemini (1W)** | `85.0%` | Live Gemini weekly quota |
+| **Third-Party (5H)** | `N/A` | N/A |
+| **Third-Party (1W)** | `70.0%` | Fallback weekly quota |
+"""
+        data = parse_dashboard_markdown(md_content)
+        self.assertEqual(data["gemini_pct"], 85.0)
+        self.assertIsNone(data["gemini_5h_pct"])
+        self.assertEqual(data["gemini_1w_pct"], 85.0)
+        self.assertEqual(data["tp_pct"], 70.0)
+        self.assertIsNone(data["tp_5h_pct"])
+        self.assertEqual(data["tp_1w_pct"], 70.0)
+
+        # Contrast with legacy markdown dashboard where window rows are missing
+        legacy_md = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Gemini Remaining** | `85.0%` | Primary capacity |
+| **Third-Party Remaining** | `70.0%` | Secondary capacity |
+"""
+        legacy_data = parse_dashboard_markdown(legacy_md)
+        self.assertEqual(legacy_data["gemini_5h_pct"], 85.0)
+        self.assertEqual(legacy_data["gemini_1w_pct"], 85.0)
+        self.assertEqual(legacy_data["tp_5h_pct"], 70.0)
+        self.assertEqual(legacy_data["tp_1w_pct"], 70.0)
+
+    def test_render_dashboard_html_no_phantom_details_on_null_window(self):
+        """Verify render_dashboard_html avoids creating dummy 'Reset: N/A | Pacing: OK' details when a window is null in extra_info."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "claude_gpt",
+                "remaining_percentage": 50.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "gemini_1w_reset_time": None,
+                "gemini_1w_countdown": None,
+                "gemini_1w_pacing_status": "OK",
+                "third_party_5h_remaining_percentage": 50.0,
+                "third_party_5h_reset_time": "2026-09-25T17:00:00Z",
+                "third_party_5h_countdown": "01h 00m",
+                "third_party_5h_pacing_status": "OK",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
+        self.assertIn("Reset: 01h 00m | Pacing: OK", html_out)
 
 
 if __name__ == "__main__":
