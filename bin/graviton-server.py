@@ -822,15 +822,14 @@ def main():
         "--quota-background-polling",
         dest="quota_background_polling",
         action="store_true",
-        default=argparse.SUPPRESS,
-        help="Enable automatic background polling for live model quota",
+        default=os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING", "true").lower() in ("1", "true", "yes"),
+        help="Enable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING)",
     )
     parser.add_argument(
         "--no-quota-background-polling",
         dest="quota_background_polling",
         action="store_false",
-        default=os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING", "true").lower() in ("1", "true", "yes"),
-        help="Disable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING)",
+        help="Disable automatic background polling for live model quota",
     )
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     parser.add_argument(
