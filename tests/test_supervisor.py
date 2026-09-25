@@ -775,14 +775,18 @@ class TestStreamSession(unittest.TestCase):
     def test_drain_stdout_exits_retry_loop_when_closed(self):
         session = StreamSession()
         session.proc = self.mock_proc
-        self.mock_proc.stdout.readline.side_effect = ["event 1\n", ""]
+        self.mock_proc.stdout.readline.side_effect = ["event 1\n", "extra event\n", ""]
 
         def fake_put(item, timeout=None):
             session._is_closed = True
             raise queue.Full()
 
-        with patch.object(session._stdout_queue, "put", side_effect=fake_put):
+        with patch.object(session._stdout_queue, "put", side_effect=fake_put) as mock_put:
             session._drain_stdout()
+            self.assertTrue(mock_put.called)
+            self.assertEqual(mock_put.call_args_list[0][0][0], "event 1\n")
+            self.assertTrue(session._is_closed)
+            self.mock_proc.stdout.readline.assert_called_once()
 
     def test_run_stream_turn_wrapper(self):
         with patch("lib.supervisor.StreamSession") as mock_cls:
