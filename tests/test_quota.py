@@ -2149,6 +2149,40 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertNotIn("gemini_window_5h", d_tp)
         self.assertNotIn("gemini_window_1w", d_tp)
 
+    def test_quota_info_pacing_status_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_status and preserves non-OK status."""
+        w5 = QuotaWindow(name="5H", duration_seconds=18000, remaining_percentage=5.0)
+        w5.get_pacing_status = MagicMock(return_value=("BEHIND_PACING", 5.0))
+        w1 = QuotaWindow(name="1W", duration_seconds=604800, remaining_percentage=80.0)
+        w1.get_pacing_status = MagicMock(return_value=("OK", 0.0))
+
+        info = QuotaInfo(
+            remaining_percentage=5.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertEqual(d["gemini_1w_pacing_status"], "OK")
+        self.assertEqual(d["third_party_5h_pacing_status"], "OK")
+        self.assertEqual(d["third_party_1w_pacing_status"], "OK")
+
+        # Preserving pacing_status from dictionary window
+        win_dict = {
+            "name": "5H",
+            "remaining_percentage": 10.0,
+            "reset_time": "2029-01-01T18:00:00Z",
+            "pacing_status": "BEHIND_PACING",
+        }
+        info2 = QuotaInfo(
+            remaining_percentage=10.0,
+            quota_pool="claude_gpt",
+            claude_window_5h=win_dict,
+        )
+        d2 = info2.to_dict()
+        self.assertEqual(d2["third_party_5h_pacing_status"], "BEHIND_PACING")
+
 
 if __name__ == "__main__":
     unittest.main()

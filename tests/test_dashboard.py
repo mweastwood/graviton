@@ -19,6 +19,7 @@ from lib.dashboard import (
     _render_history_tasks_table,
     format_dashboard_markdown,
     format_duration,
+    format_percentage,
     get_quota_color,
     is_safe_url,
     parse_dashboard_markdown,
@@ -920,6 +921,65 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIsNotNone(WORKERS_PATTERN.search("| **Active Workers** | `2 / 4` |"))
         self.assertIn("Running Tasks", METRIC_INT_PATTERNS)
         self.assertIn("Active Pool", METRIC_STR_PATTERNS)
+        self.assertIn("Active Gemini Model", METRIC_STR_PATTERNS)
+        self.assertIn("Active Third-Party Model", METRIC_STR_PATTERNS)
+        self.assertIn("Gemini (5H)", METRIC_STR_PATTERNS)
+        self.assertIn("Gemini (1W)", METRIC_STR_PATTERNS)
+        self.assertIn("Third-Party (5H)", METRIC_STR_PATTERNS)
+        self.assertIn("Third-Party (1W)", METRIC_STR_PATTERNS)
+
+    def test_format_percentage_helper(self):
+        """Verify format_percentage handles int, float, string-float, and strings with %."""
+        self.assertEqual(format_percentage(100), "100%")
+        self.assertEqual(format_percentage(88.0), "88%")
+        self.assertEqual(format_percentage(78.5), "78.5%")
+        self.assertEqual(format_percentage("78.5"), "78.5%")
+        self.assertEqual(format_percentage("78.5%"), "78.5%")
+        self.assertEqual(format_percentage("88.0"), "88%")
+        self.assertEqual(format_percentage("88.0%"), "88%")
+        self.assertEqual(format_percentage("100%"), "100%")
+        self.assertEqual(format_percentage(None), "N/A")
+        self.assertEqual(format_percentage("N/A"), "N/A")
+        self.assertEqual(format_percentage(True), "N/A")
+
+    def test_render_dashboard_html_string_float_and_integer_percentages(self):
+        """Verify render_dashboard_html handles string-float and int percentages without ValueError or AttributeError."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": "78.5",
+                "gemini_1w_remaining_percentage": 88,  # int
+                "third_party_5h_remaining_percentage": "65.0%",
+                "third_party_1w_remaining_percentage": "92.4",
+                "gemini_5h_countdown": "02h 10m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertIn("78.5%", html_out)
+        self.assertIn("88%", html_out)
+        self.assertIn("65%", html_out)
+        self.assertIn("92.4%", html_out)
+        self.assertIn("Pacing: BEHIND_PACING", html_out)
+
+    def test_format_dashboard_markdown_integer_window_percentage_compatibility(self):
+        """Verify integer remaining_percentage on QuotaWindow does not cause AttributeError on Python 3.10/3.11."""
+        win_int = QuotaWindow(name="5H", duration_seconds=18000)
+        win_int.remaining_percentage = 80  # int instead of float
+        md = format_dashboard_markdown(extra_info={"quota_info": {"gemini_window_5h": win_int}})
+        self.assertIn("| **Gemini (5H)** | `80%` |", md)
+
+    def test_format_dashboard_markdown_reconstructed_dict_preserves_pacing_status(self):
+        """Verify format_dashboard_markdown preserves pacing_status in reconstructed window dicts."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 45.0,
+                "gemini_5h_countdown": "01h 30m",
+                "gemini_5h_reset_time": "2026-09-25T12:00:00Z",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `45%` | Reset: 01h 30m | Pacing: BEHIND_PACING |", md)
 
     def test_template_js_truncates_raw_detail_before_escape_html(self):
         template = _get_dashboard_template()

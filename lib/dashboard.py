@@ -46,8 +46,21 @@ METRIC_INT_PATTERNS = {
 METRIC_STR_PATTERNS = {
     "Active Pool": re.compile(r"\|\s*\*\*Active Pool\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Active Model": re.compile(r"\|\s*\*\*Active Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Active Gemini Model": re.compile(r"\|\s*\*\*Active Gemini Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Active Third-Party Model": re.compile(r"\|\s*\*\*Active Third-Party Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Gemini Remaining": re.compile(r"\|\s*\*\*Gemini Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Third-Party Remaining": re.compile(r"\|\s*\*\*Third-Party Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party Remaining": re.compile(r"\|\s*\*\*Third Party Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini (5H)": re.compile(r"\|\s*\*\*Gemini \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini Quota (5H)": re.compile(r"\|\s*\*\*Gemini Quota \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini (1W)": re.compile(r"\|\s*\*\*Gemini \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini Quota (1W)": re.compile(r"\|\s*\*\*Gemini Quota \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party (5H)": re.compile(r"\|\s*\*\*Third-Party \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party (5H)": re.compile(r"\|\s*\*\*Third Party \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party Quota (5H)": re.compile(r"\|\s*\*\*Third-Party Quota \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party (1W)": re.compile(r"\|\s*\*\*Third-Party \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party (1W)": re.compile(r"\|\s*\*\*Third Party \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party Quota (1W)": re.compile(r"\|\s*\*\*Third-Party Quota \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
 }
 SECTION_SPLIT_PATTERN = re.compile(r"(?m)^##\s+")
 STATUS_CLEANUP_PATTERN = re.compile(r"[🔄`\s]+")
@@ -126,6 +139,30 @@ def format_duration(seconds: Optional[float]) -> str:
         return f"{m}m {s}s"
     h, m = divmod(m, 60)
     return f"{h}h {m}m"
+
+
+def format_percentage(val: Any, default: str = "N/A") -> str:
+    """
+    Format a percentage value (float, int, or string) cleanly without trailing .0%.
+    Handles numbers, whole floats, decimal floats, and strings with or without trailing '%'.
+    Safe across Python 3.10, 3.11, and 3.12.
+    """
+    if val is None or val == "":
+        return default
+    if isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        flt = float(val)
+        return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
+    val_str = str(val).strip()
+    if val_str == "N/A":
+        return "N/A"
+    clean_str = val_str[:-1].strip() if val_str.endswith("%") else val_str
+    try:
+        flt = float(clean_str)
+        return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
+    except (ValueError, TypeError):
+        return val_str if val_str.endswith("%") else f"{val_str}%"
 
 
 def format_dashboard_markdown(
@@ -311,42 +348,39 @@ def format_dashboard_markdown(
                 "remaining_percentage": quota_info.get("gemini_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_5h_countdown"),
                 "reset_time": quota_info.get("gemini_5h_reset_time"),
+                "pacing_status": quota_info.get("gemini_5h_pacing_status", "OK"),
             }
         if w1_g is None and "gemini_1w_remaining_percentage" in quota_info:
             w1_g = {
                 "remaining_percentage": quota_info.get("gemini_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_1w_countdown"),
                 "reset_time": quota_info.get("gemini_1w_reset_time"),
+                "pacing_status": quota_info.get("gemini_1w_pacing_status", "OK"),
             }
         if w5_c is None and "third_party_5h_remaining_percentage" in quota_info:
             w5_c = {
                 "remaining_percentage": quota_info.get("third_party_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_5h_countdown"),
                 "reset_time": quota_info.get("third_party_5h_reset_time"),
+                "pacing_status": quota_info.get("third_party_5h_pacing_status", "OK"),
             }
         if w1_c is None and "third_party_1w_remaining_percentage" in quota_info:
             w1_c = {
                 "remaining_percentage": quota_info.get("third_party_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_1w_countdown"),
                 "reset_time": quota_info.get("third_party_1w_reset_time"),
+                "pacing_status": quota_info.get("third_party_1w_pacing_status", "OK"),
             }
 
     def _fmt_window_val_and_details(w, fallback_pct=None):
         if w is None:
             if fallback_pct is not None and fallback_pct != "N/A":
-                disp = f"{fallback_pct}%" if not str(fallback_pct).endswith("%") else str(fallback_pct)
+                disp = format_percentage(fallback_pct)
                 return disp, "Live quota capacity"
             return "N/A", "N/A"
         if isinstance(w, dict):
             pct = w.get("remaining_percentage")
-            if pct is not None and not str(pct).endswith("%"):
-                try:
-                    pct_flt = float(pct)
-                    pct_disp = f"{pct_flt:.1f}%" if not pct_flt.is_integer() else f"{int(pct_flt)}%"
-                except (ValueError, TypeError):
-                    pct_disp = f"{pct}%"
-            else:
-                pct_disp = str(pct) if pct is not None else "N/A"
+            pct_disp = format_percentage(pct) if pct is not None else "N/A"
             cd = w.get("reset_countdown")
             if cd is None and w.get("reset_time") is not None:
                 try:
@@ -359,7 +393,7 @@ def format_dashboard_markdown(
             return pct_disp, f"Reset: {cd} | Pacing: {status}"
         # QuotaWindow object
         pct = w.remaining_percentage
-        pct_disp = f"{pct:.1f}%" if not pct.is_integer() else f"{int(pct)}%"
+        pct_disp = format_percentage(pct)
         cd = w.format_reset_countdown()
         status, _ = w.get_pacing_status()
         return pct_disp, f"Reset: {cd} | Pacing: {status}"
@@ -447,13 +481,21 @@ def is_safe_url(url: Optional[str]) -> bool:
     return clean.startswith("http://") or clean.startswith("https://")
 
 
-def get_quota_color(pct: Optional[float]) -> str:
+def get_quota_color(pct: Optional[Union[float, int, str]]) -> str:
     """Return adaptive status color for quota percentage thresholds."""
     if pct is None:
         return "#58a6ff"
-    if pct > 50:
+    try:
+        if isinstance(pct, str):
+            pct_clean = pct[:-1].strip() if pct.strip().endswith("%") else pct.strip()
+            pct_val = float(pct_clean)
+        else:
+            pct_val = float(pct)
+    except (ValueError, TypeError):
+        return "#58a6ff"
+    if pct_val > 50:
         return "#3fb950"
-    if pct >= 20:
+    if pct_val >= 20:
         return "#d29922"
     return "#f85149"
 
@@ -950,25 +992,25 @@ def render_dashboard_html(
             w5_c, w1_c = quota_tracker.get_pool_windows("claude_gpt")
             if w5_g is not None:
                 data["gemini_5h_pct"] = w5_g.remaining_percentage
-                data["gemini_5h_rem"] = f"{w5_g.remaining_percentage:.1f}%" if not w5_g.remaining_percentage.is_integer() else f"{int(w5_g.remaining_percentage)}%"
+                data["gemini_5h_rem"] = format_percentage(w5_g.remaining_percentage)
                 cd = w5_g.format_reset_countdown()
                 st, _ = w5_g.get_pacing_status()
                 data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
             if w1_g is not None:
                 data["gemini_1w_pct"] = w1_g.remaining_percentage
-                data["gemini_1w_rem"] = f"{w1_g.remaining_percentage:.1f}%" if not w1_g.remaining_percentage.is_integer() else f"{int(w1_g.remaining_percentage)}%"
+                data["gemini_1w_rem"] = format_percentage(w1_g.remaining_percentage)
                 cd = w1_g.format_reset_countdown()
                 st, _ = w1_g.get_pacing_status()
                 data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
             if w5_c is not None:
                 data["tp_5h_pct"] = w5_c.remaining_percentage
-                data["tp_5h_rem"] = f"{w5_c.remaining_percentage:.1f}%" if not w5_c.remaining_percentage.is_integer() else f"{int(w5_c.remaining_percentage)}%"
+                data["tp_5h_rem"] = format_percentage(w5_c.remaining_percentage)
                 cd = w5_c.format_reset_countdown()
                 st, _ = w5_c.get_pacing_status()
                 data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
             if w1_c is not None:
                 data["tp_1w_pct"] = w1_c.remaining_percentage
-                data["tp_1w_rem"] = f"{w1_c.remaining_percentage:.1f}%" if not w1_c.remaining_percentage.is_integer() else f"{int(w1_c.remaining_percentage)}%"
+                data["tp_1w_rem"] = format_percentage(w1_c.remaining_percentage)
                 cd = w1_c.format_reset_countdown()
                 st, _ = w1_c.get_pacing_status()
                 data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
@@ -979,16 +1021,16 @@ def render_dashboard_html(
         q_extra = extra_info.get("quota_info") or {}
         if q_extra.get("gemini_5h_remaining_percentage") is not None:
             data["gemini_5h_pct"] = q_extra["gemini_5h_remaining_percentage"]
-            data["gemini_5h_rem"] = f"{q_extra['gemini_5h_remaining_percentage']}%"
+            data["gemini_5h_rem"] = format_percentage(q_extra["gemini_5h_remaining_percentage"])
         if q_extra.get("gemini_1w_remaining_percentage") is not None:
             data["gemini_1w_pct"] = q_extra["gemini_1w_remaining_percentage"]
-            data["gemini_1w_rem"] = f"{q_extra['gemini_1w_remaining_percentage']}%"
+            data["gemini_1w_rem"] = format_percentage(q_extra["gemini_1w_remaining_percentage"])
         if q_extra.get("third_party_5h_remaining_percentage") is not None:
             data["tp_5h_pct"] = q_extra["third_party_5h_remaining_percentage"]
-            data["tp_5h_rem"] = f"{q_extra['third_party_5h_remaining_percentage']}%"
+            data["tp_5h_rem"] = format_percentage(q_extra["third_party_5h_remaining_percentage"])
         if q_extra.get("third_party_1w_remaining_percentage") is not None:
             data["tp_1w_pct"] = q_extra["third_party_1w_remaining_percentage"]
-            data["tp_1w_rem"] = f"{q_extra['third_party_1w_remaining_percentage']}%"
+            data["tp_1w_rem"] = format_percentage(q_extra["third_party_1w_remaining_percentage"])
         if q_extra.get("gemini_5h_countdown"):
             data["gemini_5h_details"] = f"Reset: {q_extra['gemini_5h_countdown']} | Pacing: {q_extra.get('gemini_5h_pacing_status', 'OK')}"
         if q_extra.get("gemini_1w_countdown"):
@@ -1020,33 +1062,51 @@ def render_dashboard_html(
     failed_class = "kpi-value text-red" if data["failed_tasks"] > 0 else "kpi-value text-muted"
 
     gemini_color = get_quota_color(data["gemini_pct"])
-    gemini_bar_pct = min(100, max(0, int(data["gemini_pct"]))) if data["gemini_pct"] is not None else 100
+    try:
+        gemini_bar_pct = min(100, max(0, int(float(data["gemini_pct"])))) if data["gemini_pct"] is not None else 100
+    except (ValueError, TypeError):
+        gemini_bar_pct = 100
 
     tp_color = get_quota_color(data["tp_pct"])
-    tp_bar_pct = min(100, max(0, int(data["tp_pct"]))) if data["tp_pct"] is not None else 100
+    try:
+        tp_bar_pct = min(100, max(0, int(float(data["tp_pct"])))) if data["tp_pct"] is not None else 100
+    except (ValueError, TypeError):
+        tp_bar_pct = 100
 
     gemini_5h_pct = data.get("gemini_5h_pct")
     gemini_5h_disp = html.escape(str(data.get("gemini_5h_rem", data["gemini_rem"])))
     gemini_5h_color = get_quota_color(gemini_5h_pct if gemini_5h_pct is not None else data["gemini_pct"])
-    gemini_5h_bar_pct = min(100, max(0, int(gemini_5h_pct))) if gemini_5h_pct is not None else gemini_bar_pct
+    try:
+        gemini_5h_bar_pct = min(100, max(0, int(float(gemini_5h_pct)))) if gemini_5h_pct is not None else gemini_bar_pct
+    except (ValueError, TypeError):
+        gemini_5h_bar_pct = gemini_bar_pct
     gemini_5h_details = html.escape(str(data.get("gemini_5h_details", "Live Gemini burst quota")))
 
     gemini_1w_pct = data.get("gemini_1w_pct")
     gemini_1w_disp = html.escape(str(data.get("gemini_1w_rem", data["gemini_rem"])))
     gemini_1w_color = get_quota_color(gemini_1w_pct if gemini_1w_pct is not None else data["gemini_pct"])
-    gemini_1w_bar_pct = min(100, max(0, int(gemini_1w_pct))) if gemini_1w_pct is not None else gemini_bar_pct
+    try:
+        gemini_1w_bar_pct = min(100, max(0, int(float(gemini_1w_pct)))) if gemini_1w_pct is not None else gemini_bar_pct
+    except (ValueError, TypeError):
+        gemini_1w_bar_pct = gemini_bar_pct
     gemini_1w_details = html.escape(str(data.get("gemini_1w_details", "Live Gemini weekly quota")))
 
     tp_5h_pct = data.get("tp_5h_pct")
     tp_5h_disp = html.escape(str(data.get("tp_5h_rem", data["tp_rem"])))
     tp_5h_color = get_quota_color(tp_5h_pct if tp_5h_pct is not None else data["tp_pct"])
-    tp_5h_bar_pct = min(100, max(0, int(tp_5h_pct))) if tp_5h_pct is not None else tp_bar_pct
+    try:
+        tp_5h_bar_pct = min(100, max(0, int(float(tp_5h_pct)))) if tp_5h_pct is not None else tp_bar_pct
+    except (ValueError, TypeError):
+        tp_5h_bar_pct = tp_bar_pct
     tp_5h_details = html.escape(str(data.get("tp_5h_details", "Fallback burst quota")))
 
     tp_1w_pct = data.get("tp_1w_pct")
     tp_1w_disp = html.escape(str(data.get("tp_1w_rem", data["tp_rem"])))
     tp_1w_color = get_quota_color(tp_1w_pct if tp_1w_pct is not None else data["tp_pct"])
-    tp_1w_bar_pct = min(100, max(0, int(tp_1w_pct))) if tp_1w_pct is not None else tp_bar_pct
+    try:
+        tp_1w_bar_pct = min(100, max(0, int(float(tp_1w_pct)))) if tp_1w_pct is not None else tp_bar_pct
+    except (ValueError, TypeError):
+        tp_1w_bar_pct = tp_bar_pct
     tp_1w_details = html.escape(str(data.get("tp_1w_details", "Fallback weekly quota")))
 
     active_table_html = _render_active_tasks_table(data["active_tasks"])

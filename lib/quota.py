@@ -939,9 +939,10 @@ class QuotaInfo:
                 d["claude_window_1w"] = self.claude_window_1w
         def _extract_win_metrics(w, default_name=None):
             if w is None:
-                return None, None, None
+                return None, None, None, "OK"
             if isinstance(w, QuotaWindow):
-                return round(w.remaining_percentage, 1), w.reset_time, w.format_reset_countdown()
+                st, _ = w.get_pacing_status()
+                return round(w.remaining_percentage, 1), w.reset_time, w.format_reset_countdown(), st
             elif isinstance(w, dict):
                 pct = w.get("remaining_percentage")
                 if pct is not None:
@@ -953,8 +954,9 @@ class QuotaInfo:
                 cd = w.get("reset_countdown")
                 if cd is None and res is not None:
                     cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
-                return pct, res, cd
-            return None, None, None
+                st = w.get("pacing_status", "OK")
+                return pct, res, cd, st
+            return None, None, None, "OK"
 
         p = str(self.quota_pool or "").lower()
         is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
@@ -964,10 +966,10 @@ class QuotaInfo:
         claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
         claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
 
-        g5_pct, g5_res, g5_cd = _extract_win_metrics(gemini_5h, default_name="5H")
-        g1_pct, g1_res, g1_cd = _extract_win_metrics(gemini_1w, default_name="1W")
-        c5_pct, c5_res, c5_cd = _extract_win_metrics(claude_5h, default_name="5H")
-        c1_pct, c1_res, c1_cd = _extract_win_metrics(claude_1w, default_name="1W")
+        g5_pct, g5_res, g5_cd, g5_st = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd, g1_st = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd, c5_st = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd, c1_st = _extract_win_metrics(claude_1w, default_name="1W")
 
         def _to_win_dict(w):
             if w is None:
@@ -988,18 +990,22 @@ class QuotaInfo:
         d["gemini_5h_remaining_percentage"] = g5_pct
         d["gemini_5h_reset_time"] = g5_res
         d["gemini_5h_countdown"] = g5_cd
+        d["gemini_5h_pacing_status"] = g5_st
 
         d["gemini_1w_remaining_percentage"] = g1_pct
         d["gemini_1w_reset_time"] = g1_res
         d["gemini_1w_countdown"] = g1_cd
+        d["gemini_1w_pacing_status"] = g1_st
 
         d["third_party_5h_remaining_percentage"] = c5_pct
         d["third_party_5h_reset_time"] = c5_res
         d["third_party_5h_countdown"] = c5_cd
+        d["third_party_5h_pacing_status"] = c5_st
 
         d["third_party_1w_remaining_percentage"] = c1_pct
         d["third_party_1w_reset_time"] = c1_res
         d["third_party_1w_countdown"] = c1_cd
+        d["third_party_1w_pacing_status"] = c1_st
 
         return d
 
