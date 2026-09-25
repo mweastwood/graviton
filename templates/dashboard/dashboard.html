@@ -408,6 +408,23 @@
             border-radius: 4px;
             color: var(--text-bright);
         }}
+        .target-link {{
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }}
+        .target-link code {{
+            color: var(--accent);
+            cursor: pointer;
+            transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+            border: 1px solid transparent;
+        }}
+        .target-link:hover code {{
+            color: var(--accent-hover);
+            background: rgba(88, 166, 255, 0.15);
+            border-color: rgba(88, 166, 255, 0.3);
+            text-decoration: underline;
+        }}
         .agent-badge {{
             display: inline-block;
             background: rgba(88, 166, 255, 0.12);
@@ -788,6 +805,86 @@
             return clean.startsWith('http://') || clean.startsWith('https://');
         }}
 
+        function resolveTargetUrl(targetStr, agent) {{
+            if (!targetStr) return null;
+            let clean = targetStr.trim();
+            const mdMatch = clean.match(/\[(.*?)\]\((.*?)\)/);
+            if (mdMatch) {{
+                const url = mdMatch[2].trim();
+                return isSafeUrl(url) ? url : null;
+            }}
+            clean = clean.replace(/`/g, '').trim();
+            if (clean.startsWith('http://') || clean.startsWith('https://')) {{
+                return isSafeUrl(clean) ? clean : null;
+            }}
+            if (clean.startsWith('github.com/')) {{
+                const cand = 'https://' + clean;
+                return isSafeUrl(cand) ? cand : null;
+            }}
+            const agentStr = agent ? String(agent).replace(/`/g, '').toLowerCase() : '';
+            const isAgentIssue = agentStr.includes('issue') || agentStr.includes('drafter');
+
+            const repoPathMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/(?:(pr|pulls?|issues?))\/(\d+)$/i);
+            if (repoPathMatch) {{
+                const typeIndicator = repoPathMatch[2].toLowerCase();
+                const subpath = typeIndicator.startsWith('issue') ? 'issues' : 'pull';
+                return `https://github.com/${{repoPathMatch[1]}}/${{subpath}}/${{repoPathMatch[3]}}`;
+            }}
+
+            const repoDelimMatch = clean.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)[\s#:]+(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$/i);
+            if (repoDelimMatch) {{
+                const typeIndicator = repoDelimMatch[2] ? repoDelimMatch[2].toLowerCase() : null;
+                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
+                return `https://github.com/${{repoDelimMatch[1]}}/${{subpath}}/${{repoDelimMatch[3]}}`;
+            }}
+
+            const numMatch = clean.match(/^#?[\s:]*(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$/i);
+            if (numMatch) {{
+                const defaultRepo = "{default_repo}";
+                if (!defaultRepo || defaultRepo === 'None' || !defaultRepo.includes('/') || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(defaultRepo)) {{
+                    return null;
+                }}
+                const typeIndicator = numMatch[1] ? numMatch[1].toLowerCase() : null;
+                const subpath = typeIndicator ? (typeIndicator.startsWith('issue') ? 'issues' : 'pull') : (isAgentIssue ? 'issues' : 'pull');
+                return `https://github.com/${{defaultRepo}}/${{subpath}}/${{numMatch[2]}}`;
+            }}
+
+            if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(clean)) {{
+                return `https://github.com/${{clean}}`;
+            }}
+            return null;
+        }}
+
+        function formatTargetCell(targetRaw, agent) {{
+            if (!targetRaw) return '<code>N/A</code>';
+            const rawStr = String(targetRaw).trim();
+            const norm = rawStr.replace(/`/g, '').trim();
+            if (!norm || norm === 'N/A' || norm === '-' || norm === 'None') {{
+                return '<code>N/A</code>';
+            }}
+            let label = rawStr;
+            let url = null;
+            const mdMatch = rawStr.match(/\[(.*?)\]\((.*?)\)/);
+            if (mdMatch) {{
+                label = mdMatch[1].replace(/`/g, '').trim();
+                const cand = mdMatch[2].trim();
+                if (isSafeUrl(cand)) {{
+                    url = cand;
+                }}
+            }} else {{
+                label = norm;
+                url = resolveTargetUrl(label, agent);
+            }}
+            const cleanLabel = escapeHtml(label.replace(/`/g, '').trim());
+            if (!cleanLabel || cleanLabel === 'N/A' || cleanLabel === '-' || cleanLabel === 'None') {{
+                return '<code>N/A</code>';
+            }}
+            if (url && isSafeUrl(url)) {{
+                return `<a href="${{escapeHtml(url)}}" target="_blank" rel="noopener" class="target-link"><code>${{cleanLabel}}</code></a>`;
+            }}
+            return `<code>${{cleanLabel}}</code>`;
+        }}
+
         function getQuotaColor(pct) {{
             if (pct === null) return '#58a6ff';
             if (pct > 50) return '#3fb950';
@@ -957,7 +1054,8 @@
                 const rows = [];
                 for (const line of lines) {{
                     if (line.startsWith('|') && !line.startsWith('| Metric') && !line.includes('Task ID')) {{
-                        const parts = line.split('|').slice(1, -1).map(c => c.trim());
+                        const rawParts = line.split(/(?<!\\)\|/).slice(1, -1);
+                        const parts = rawParts.map(c => c.trim().replace(/\\\|/g, '|'));
                         if (parts.length > 0 && !parts.every(p => /^:?-+:?$/.test(p))) {{
                             rows.push(parts);
                         }}
@@ -968,7 +1066,7 @@
 
             // Active Tasks Table
             const activeRows = parseTableRows(activeSec);
-            const validActiveRows = activeRows.filter(r => r.length >= 6);
+            const validActiveRows = activeRows.filter(r => r.length >= 5);
             const activeCount = document.getElementById('active-tasks-count');
             if (activeCount) activeCount.textContent = `${{validActiveRows.length}} Active`;
             const activeContainer = document.getElementById('active-tasks-container');
@@ -976,19 +1074,14 @@
                 if (validActiveRows.length === 0) {{
                     activeContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">💤</span><p class="empty-text">No container tasks currently running.</p></div>';
                 }} else {{
-                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead><tbody>';
+                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th></tr></thead><tbody>';
                     for (const r of validActiveRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const target = escapeHtml(r[2].replace(/`/g, ''));
+                        const targetHtml = formatTargetCell(r[2], r[1]);
                         const elapsed = escapeHtml(r[3]);
                         const status = escapeHtml(r[4].replace(/[🔄`]/g, '').trim());
-                        let rcHtml = '<span class="text-muted">Pending...</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
-                        if (urlMatch && isSafeUrl(urlMatch[2])) {{
-                            rcHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>`;
-                        }}
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td><td>${{rcHtml}}</td></tr>`;
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{targetHtml}}</td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     activeContainer.innerHTML = htmlStr;
@@ -1009,11 +1102,11 @@
                     for (const r of validQueuedRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const target = escapeHtml(r[2].replace(/`/g, ''));
+                        const targetHtml = formatTargetCell(r[2], r[1]);
                         const prio = escapeHtml(r[3].replace(/`/g, ''));
                         const prioLabel = prio.startsWith('P') ? prio : `P${{prio}}`;
                         const waitTime = escapeHtml(r[4]);
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="priority-badge">${{prioLabel}}</span></td><td><span class="text-muted">${{waitTime}}</span></td></tr>`;
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{targetHtml}}</td><td><span class="priority-badge">${{prioLabel}}</span></td><td><span class="text-muted">${{waitTime}}</span></td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     queuedContainer.innerHTML = htmlStr;
@@ -1022,7 +1115,7 @@
 
             // History Tasks Table
             const historyRows = parseTableRows(historySec);
-            const validHistoryRows = historyRows.filter(r => r.length >= 6);
+            const validHistoryRows = historyRows.filter(r => r.length >= 5);
             const historyCount = document.getElementById('history-tasks-count');
             if (historyCount) historyCount.textContent = `${{validHistoryRows.length}} Recorded`;
             const historyContainer = document.getElementById('history-tasks-container');
@@ -1034,24 +1127,24 @@
                     for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const target = escapeHtml(r[2].replace(/`/g, ''));
+                        const targetHtml = formatTargetCell(r[2], r[1]);
                         const dur = escapeHtml(r[3]);
                         const isSuccess = r[4].includes('✅') || r[4].toLowerCase().includes('complete') || r[4].toLowerCase().includes('finish');
                         const statusClean = escapeHtml(r[4].replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
                         let detailHtml = '<span class="text-muted">Finished</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
-                        if (urlMatch && isSafeUrl(urlMatch[2])) {{
-                            detailHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
-                        }} else if (r[5].trim() && r[5].trim() !== 'Finished') {{
-                            const rawDetail = r[5].replace(/`/g, '').trim();
-                            const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;
-                            const cleanDetail = escapeHtml(rawDetail);
-                            const trunc = escapeHtml(truncRaw);
-                            detailHtml = `<code class="error-snippet" title="${{cleanDetail}}">${{trunc}}</code>`;
+                        if (r.length >= 6) {{
+                            const rawTrimmed = r[5].trim();
+                            if (rawTrimmed && rawTrimmed !== 'Finished' && !rawTrimmed.toLowerCase().includes('remote')) {{
+                                const rawDetail = r[5].replace(/`/g, '').trim();
+                                const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;
+                                const cleanDetail = escapeHtml(rawDetail);
+                                const trunc = escapeHtml(truncRaw);
+                                detailHtml = `<code class="error-snippet" title="${{cleanDetail}}">${{trunc}}</code>`;
+                            }}
                         }}
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{targetHtml}}</td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     historyContainer.innerHTML = htmlStr;
