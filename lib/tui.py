@@ -156,6 +156,13 @@ def run_graceful_shutdown(
     finally:
         # Step 4: Clean Abort & Termination Teardown
         log.info("Graceful shutdown Step 4/4: Clean abort & termination...")
+        qt = quota_tracker or (getattr(dashboard, "quota_tracker", None) if dashboard else None) or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
+        if qt is not None and hasattr(qt, "stop_background_polling"):
+            try:
+                qt.stop_background_polling()
+            except Exception as e:
+                log.warning(f"Error stopping quota background polling during shutdown: {e}")
+
         if scheduler:
             try:
                 scheduler.stop()

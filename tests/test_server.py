@@ -1463,6 +1463,7 @@ class TestGravitonHandler(unittest.TestCase):
         mock_tm.drain_active_tasks.assert_called_once()
         mock_tm.dump_queue_state.assert_called_once()
         mock_qt.dump_model_selection.assert_called_once()
+        mock_qt.stop_background_polling.assert_called_once()
 
     @patch("graviton_server.sync_repo_and_reload")
     @patch("threading.Thread")
@@ -1561,6 +1562,160 @@ class TestGravitonHandler(unittest.TestCase):
             server_mod.main()
 
         mock_qt_inst.poll_all_pools.assert_called_once()
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_starts_quota_background_polling_custom_interval(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch("sys.argv", ["graviton-server.py", "--quota-poll-interval", "10.0"]):
+            server_mod.main()
+
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=10.0)
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_starts_quota_background_polling_fallback_non_positive_interval(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch("sys.argv", ["graviton-server.py", "--quota-poll-interval", "0.0"]):
+            server_mod.main()
+
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_starts_quota_background_polling_graviton_env_var(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch.dict(os.environ, {"GRAVITON_QUOTA_POLL_INTERVAL": "12.5"}), patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=12.5)
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_disables_quota_background_polling_with_flag(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch("sys.argv", ["graviton-server.py", "--no-quota-background-polling"]):
+            server_mod.main()
+
+        mock_qt_inst.poll_all_pools.assert_called_once()
+        mock_qt_inst.start_background_polling.assert_not_called()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_disables_quota_background_polling_with_env_var(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch.dict(os.environ, {"GRAVITON_QUOTA_BACKGROUND_POLLING": "false"}), patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        mock_qt_inst.poll_all_pools.assert_called_once()
+        mock_qt_inst.start_background_polling.assert_not_called()
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_enables_quota_background_polling_with_flag(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch.dict(os.environ, {"GRAVITON_QUOTA_BACKGROUND_POLLING": "false"}), patch("sys.argv", ["graviton-server.py", "--quota-background-polling"]):
+            server_mod.main()
+
+        mock_qt_inst.poll_all_pools.assert_called_once()
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
 
     @patch("graviton_server.post_emoji_reaction_async")
     @patch("graviton_server.execute_release_async")

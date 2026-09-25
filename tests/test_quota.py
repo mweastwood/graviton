@@ -814,6 +814,26 @@ class TestQuotaTracker(unittest.TestCase):
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
 
+    def test_background_polling_non_positive_interval_fallback(self):
+        tracker = QuotaTracker()
+        w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
+        w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
+        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
+            tracker.start_background_polling(poll_interval=0.0)
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=-1.0)
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval="invalid")
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
     def test_concurrent_poll_live_quota_in_flight_deduplication(self):
         tracker = QuotaTracker()
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
