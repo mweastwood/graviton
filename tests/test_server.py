@@ -1790,6 +1790,9 @@ class TestGravitonHandler(unittest.TestCase):
         handler.task_manager = None
         handler.server_repo_name = "graviton"
 
+        comment_event = threading.Event()
+        mock_comment.side_effect = lambda *args, **kwargs: comment_event.set()
+
         with patch("graviton_server.resolve_repo_dir", return_value=None):
             GravitonHandler.do_POST(handler)
 
@@ -1798,7 +1801,7 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertEqual(status_code, 200)
         mock_exec_release.assert_not_called()
 
-        time.sleep(0.1)
+        self.assertTrue(comment_event.wait(timeout=5.0), "Background comment task did not execute within timeout")
         mock_comment.assert_called_once()
         self.assertEqual(mock_comment.call_args[0][0], "mweastwood/nonexistent_app")
         self.assertEqual(mock_comment.call_args[0][1], 88)
