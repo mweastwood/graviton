@@ -194,6 +194,80 @@ class TestGravitonMCPServer(unittest.TestCase):
         content = resp["result"]["content"][0]["text"]
         self.assertIn("task-50", content)
 
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_submit_task_success(self, mock_http):
+        mock_http.return_value = (200, {"task_id": "task-42"})
+        req = {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "graviton_submit_task",
+                "arguments": {
+                    "prompt": "Fix bug in foo",
+                    "agent": "code_reviewer",
+                    "repo_name": "owner/repo",
+                    "target_id": "#123",
+                },
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("task-42", content)
+        self.assertIn("graviton_get_task(task_id='task-42')", content)
+        expected_payload = {
+            "agent": "code_reviewer",
+            "prompt": "Fix bug in foo",
+            "goal_prompt": "/goal Fix bug in foo",
+            "use_goal": True,
+            "target_id": "#123",
+            "repo_name": "owner/repo",
+        }
+        mock_http.assert_called_once_with("POST", "/tasks/submit", payload=expected_payload)
+
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_submit_task_default_agent(self, mock_http):
+        mock_http.return_value = (200, {"task_id": "task-99"})
+        req = {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "graviton_submit_task",
+                "arguments": {"prompt": "Run security audit"},
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        expected_payload = {
+            "agent": "code_fixer",
+            "prompt": "Run security audit",
+            "goal_prompt": "/goal Run security audit",
+            "use_goal": True,
+            "target_id": None,
+            "repo_name": None,
+        }
+        mock_http.assert_called_once_with("POST", "/tasks/submit", payload=expected_payload)
+
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_submit_task_backend_error(self, mock_http):
+        mock_http.return_value = (500, {"error": "Queue is full"})
+        req = {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "graviton_submit_task",
+                "arguments": {"prompt": "Do work"},
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertTrue(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("Failed to submit task: Queue is full", content)
+
+
     @patch("lib.mcp.ensure_sidecar_running")
     def test_http_request_fast_failure_on_sidecar_error(self, mock_ensure):
         mock_ensure.return_value = (False, "Daemon failed to start: port busy")
@@ -237,16 +311,19 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
         self.assertIn("task_id is required", resp["result"]["content"][0]["text"])
 
-    def test_tool_submit_task_validation(self):
-        req = {
-            "jsonrpc": "2.0",
-            "id": 13,
-            "method": "tools/call",
-            "params": {"name": "graviton_submit_task", "arguments": {"prompt": ""}},
-        }
-        resp = self.server.handle_request(req)
-        self.assertTrue(resp["result"]["isError"])
-        self.assertIn("prompt is required", resp["result"]["content"][0]["text"])
+    @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_submit_task_validation(self, mock_http):
+        for args in [{"prompt": ""}, {"prompt": "   "}, {}]:
+            req = {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "tools/call",
+                "params": {"name": "graviton_submit_task", "arguments": args},
+            }
+            resp = self.server.handle_request(req)
+            self.assertTrue(resp["result"]["isError"])
+            self.assertIn("Error: prompt is required", resp["result"]["content"][0]["text"])
+        mock_http.assert_not_called()
 
     @patch.object(GravitonMCPServer, "_http_request")
     def test_tool_call_null_arguments(self, mock_http):
