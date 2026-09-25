@@ -797,6 +797,7 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_background_polling_lifecycle(self):
         tracker = QuotaTracker()
+        self.addCleanup(tracker.stop_background_polling)
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
 
@@ -816,6 +817,7 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_background_polling_non_positive_interval_fallback(self):
         tracker = QuotaTracker()
+        self.addCleanup(tracker.stop_background_polling)
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
         with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
@@ -830,6 +832,21 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertFalse(tracker.is_polling())
 
             tracker.start_background_polling(poll_interval="invalid")
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("inf"))
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("-inf"))
+            self.assertTrue(tracker.is_polling())
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("nan"))
             self.assertTrue(tracker.is_polling())
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())

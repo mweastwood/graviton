@@ -12,6 +12,7 @@ Uses standard Python library only (0 external dependencies).
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -807,7 +808,7 @@ def main():
     raw_quota_poll_interval = os.getenv("GRAVITON_QUOTA_POLL_INTERVAL") or os.getenv("QUOTA_POLL_INTERVAL", "5.0")
     try:
         default_quota_poll_interval = float(raw_quota_poll_interval)
-        if default_quota_poll_interval <= 0.0:
+        if default_quota_poll_interval <= 0.0 or not math.isfinite(default_quota_poll_interval):
             default_quota_poll_interval = 5.0
     except (ValueError, TypeError):
         default_quota_poll_interval = 5.0
@@ -818,12 +819,13 @@ def main():
         default=default_quota_poll_interval,
         help="Interval in seconds for background quota polling loop (default: 5.0, env: GRAVITON_QUOTA_POLL_INTERVAL or QUOTA_POLL_INTERVAL)",
     )
+    raw_quota_bg = os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING") or os.getenv("QUOTA_BACKGROUND_POLLING", "true")
     parser.add_argument(
         "--quota-background-polling",
         dest="quota_background_polling",
         action="store_true",
-        default=os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING", "true").lower() in ("1", "true", "yes"),
-        help="Enable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING)",
+        default=raw_quota_bg.lower() in ("1", "true", "yes"),
+        help="Enable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING or QUOTA_BACKGROUND_POLLING)",
     )
     parser.add_argument(
         "--no-quota-background-polling",
@@ -942,7 +944,7 @@ def main():
                 poll_interval = getattr(args, "quota_poll_interval", 5.0)
                 try:
                     val = float(poll_interval)
-                    poll_interval = val if val > 0.0 else 5.0
+                    poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
                 except (ValueError, TypeError):
                     poll_interval = 5.0
                 quota_tracker.start_background_polling(
