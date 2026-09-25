@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 from lib.dashboard import (
     DashboardUpdater,
+    _get_dashboard_template,
+    _reset_dashboard_template_cache,
     _render_active_tasks_table,
     _render_history_tasks_table,
     format_dashboard_markdown,
@@ -21,6 +23,11 @@ from lib.dashboard import (
     is_safe_url,
     parse_dashboard_markdown,
     render_dashboard_html,
+    SERVER_PATTERN,
+    STATUS_PATTERN,
+    WORKERS_PATTERN,
+    METRIC_INT_PATTERNS,
+    METRIC_STR_PATTERNS,
 )
 from lib.quota import QuotaTracker
 from lib.tasks import Task, TaskStatus
@@ -612,6 +619,114 @@ class TestDashboardUpdater(unittest.TestCase):
         expected_suffix = f".tmp.{os.getpid()}.{threading.get_ident()}"
         self.assertTrue(captured_tmp[0].endswith(expected_suffix))
 
+    def test_parse_dashboard_markdown_model_selection_fields(self):
+        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-3.6-flash-high` |"
+        parsed = parse_dashboard_markdown(md)
+        self.assertIn("available_gemini_models", parsed)
+        self.assertIn("available_third_party_models", parsed)
+        self.assertEqual(parsed["active_gemini_model"], "gemini-3.6-flash-high")
+        self.assertIn("gemini-3.6-flash-high", parsed["available_gemini_models"])
+
+    def test_render_dashboard_html_model_dropdown_elements(self):
+        tracker = QuotaTracker()
+        tracker.available_gemini_models = ["gemini-3.8-flash-medium", "gemini-3.6-flash-high"]
+        tracker.available_third_party_models = ["claude-sonnet-4-6", "gpt-oss-120b-medium"]
+        tracker.set_active_model("gemini", "gemini-3.6-flash-high")
+        tracker.set_active_model("third_party", "claude-sonnet-4-6")
+
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        html_out = render_dashboard_html(md, quota_tracker=tracker)
+
+        self.assertIn('id="gemini-model-select"', html_out)
+        self.assertIn('id="tp-model-select"', html_out)
+        self.assertIn('data-pool="gemini"', html_out)
+        self.assertIn('data-pool="third_party"', html_out)
+        self.assertIn('value="gemini-3.6-flash-high" selected', html_out)
+        self.assertIn('value="claude-sonnet-4-6" selected', html_out)
+        self.assertIn('id="toast-container"', html_out)
+        self.assertIn('/api/model', html_out)
+
+    def test_format_dashboard_markdown_exposes_both_active_models(self):
+        tracker = QuotaTracker()
+        tracker.set_active_model("gemini", "gemini-3.6-flash-high")
+        tracker.set_active_model("third_party", "claude-opus-4-6-thinking")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+
+        self.assertIn("| **Active Gemini Model** | `gemini-3.6-flash-high` |", md)
+        self.assertIn("| **Active Third-Party Model** | `claude-opus-4-6-thinking` |", md)
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(parsed["active_gemini_model"], "gemini-3.6-flash-high")
+        self.assertEqual(parsed["active_third_party_model"], "claude-opus-4-6-thinking")
+
+    def test_render_dashboard_html_whitespace_active_model_not_prepended(self):
+        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-3.8-flash-medium` |"
+        parsed = parse_dashboard_markdown(md)
+        parsed["active_gemini_model"] = "   "
+        parsed["active_third_party_model"] = ""
+
+        html_out = render_dashboard_html(md)
+        self.assertNotIn('<option value="   "', html_out)
+        self.assertNotIn('<option value=""', html_out)
+
+
+class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
+    """Test template decoupling, caching, fallback mechanism, and regex optimization."""
+
+    def setUp(self):
+        _reset_dashboard_template_cache()
+
+    def tearDown(self):
+        _reset_dashboard_template_cache()
+
+    def test_template_loader_loads_external_html(self):
+        template = _get_dashboard_template()
+        self.assertTrue(template.startswith("<!DOCTYPE html>"))
+        self.assertIn("<!DOCTYPE html>", template)
+        self.assertIn("Graviton Live Dashboard", template)
+        self.assertIn("{effective_host}", template)
+        self.assertIn("{active_workers}", template)
+
+    def test_template_loader_caching(self):
+        t1 = _get_dashboard_template()
+        t2 = _get_dashboard_template()
+        self.assertIs(t1, t2)
+
+    def test_template_loader_fallback_on_missing_file(self):
+        with patch.object(Path, "is_file", return_value=False):
+            _reset_dashboard_template_cache()
+            template = _get_dashboard_template()
+            self.assertIn("<!DOCTYPE html>", template)
+            self.assertIn("{effective_host}", template)
+
+    def test_precompiled_regex_patterns_exist_and_match(self):
+        self.assertIsNotNone(SERVER_PATTERN.search("**Server**: `localhost:8000`"))
+        self.assertIsNotNone(STATUS_PATTERN.search("**Status**: 🟢 **ONLINE**"))
+        self.assertIsNotNone(WORKERS_PATTERN.search("| **Active Workers** | `2 / 4` |"))
+        self.assertIn("Running Tasks", METRIC_INT_PATTERNS)
+        self.assertIn("Active Pool", METRIC_STR_PATTERNS)
+
+    def test_template_js_truncates_raw_detail_before_escape_html(self):
+        template = _get_dashboard_template()
+        self.assertIn("const rawDetail = r[5].replace(/`/g, '').trim();", template)
+        self.assertIn("const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;", template)
+        self.assertIn("const cleanDetail = escapeHtml(rawDetail);", template)
+        self.assertIn("const trunc = escapeHtml(truncRaw);", template)
+
+    def test_possible_paths_has_no_duplicates_and_correct_subdirectories(self):
+        from lib.dashboard import REPO_ROOT
+        expected_template_path = REPO_ROOT / "templates" / "dashboard" / "dashboard.html"
+        self.assertTrue(expected_template_path.is_file(), f"Template file does not exist at {expected_template_path}")
+        template = _get_dashboard_template()
+        self.assertIn("<!DOCTYPE html>", template)
+        self.assertIn("Graviton Live Dashboard", template)
+
+    def test_template_js_handles_finish_status(self):
+        template = _get_dashboard_template()
+        self.assertIn("r[4].toLowerCase().includes('finish')", template)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

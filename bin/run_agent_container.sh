@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export GIT_TERMINAL_PROMPT=0
 
 if [ "$#" -eq 0 ]; then
   echo "Usage: $0 [AGENT_NAME] <PROMPT>"
@@ -36,26 +37,74 @@ RESTORED_FROM_CACHE=false
 EXIT_CODE=1
 USE_CONTAINER_EXEC=false
 
+convert_origin_to_ssh() {
+  local target_workspace="$1"
+  local source_repo="$2"
+
+  local origin_url
+  origin_url="$(git -C "${source_repo}" remote get-url origin 2>/dev/null || echo "")"
+  if [ -z "${origin_url}" ]; then
+    return 0
+  fi
+
+  local has_ssh_keys=false
+  if [ -s "${HOME}/.ssh/config" ]; then
+    has_ssh_keys=true
+  else
+    for k in "${HOME}/.ssh"/id_*; do
+      if [ -s "${k}" ] && [[ "${k}" != *.pub ]]; then
+        has_ssh_keys=true
+        break
+      fi
+    done
+  fi
+
+  if [ "${has_ssh_keys}" = true ]; then
+    local clean_origin="${origin_url}"
+    while [[ "${clean_origin}" == */ ]]; do clean_origin="${clean_origin%/}"; done
+    clean_origin="${clean_origin%.git}"
+    if [[ "${clean_origin}" =~ ^https://([^@/]+@)?github\.com/([^/]+)/([^/]+)$ ]]; then
+      origin_url="git@github.com:${BASH_REMATCH[2]}/${BASH_REMATCH[3]}.git"
+    fi
+  fi
+  git -C "${target_workspace}" remote set-url origin "${origin_url}" &>/dev/null || true
+}
+
 if [ -n "${CACHE_DIR}" ] && [ -d "${CACHE_DIR}" ]; then
   echo "Restoring workspace from cache: ${CACHE_DIR}"
   cp -a "${CACHE_DIR}/." "${TEMP_WORKSPACE}/"
   RESTORED_FROM_CACHE=true
+  convert_origin_to_ssh "${TEMP_WORKSPACE}" "${TEMP_WORKSPACE}"
+  ORIGIN_URL="$(git -C "${TEMP_WORKSPACE}" remote get-url origin 2>/dev/null || echo "")"
 else
   # Fast local git clone to ensure an isolated .git index and working copy
   git clone --local "${WORKSPACE_DIR}" "${TEMP_WORKSPACE}" &>/dev/null || cp -a "${WORKSPACE_DIR}/." "${TEMP_WORKSPACE}/"
 
   # Restore original remote origin URL (git clone --local sets origin to the local host folder)
-  ORIGIN_URL="$(git -C "${WORKSPACE_DIR}" remote get-url origin 2>/dev/null || echo "")"
-  if [ -n "${ORIGIN_URL}" ]; then
-    git -C "${TEMP_WORKSPACE}" remote set-url origin "${ORIGIN_URL}" &>/dev/null || true
-    git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
-    BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
-    if [ "${BASE_BRANCH}" = "HEAD" ]; then
-      BASE_BRANCH="main"
-    fi
-    git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
-    git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
+  convert_origin_to_ssh "${TEMP_WORKSPACE}" "${WORKSPACE_DIR}"
+  ORIGIN_URL="$(git -C "${TEMP_WORKSPACE}" remote get-url origin 2>/dev/null || echo "")"
+fi
+
+# Fallback authentication via token rewrite for HTTPS GitHub URLs (configured for both cached and newly cloned workspaces)
+GH_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || echo "")}"
+if [ -n "${GH_TOKEN}" ]; then
+  INSTEADOF_KEYS="$(git -C "${TEMP_WORKSPACE}" config --get-regexp '^url\.https://.*github\.com/\.instead[oO]f$' 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "${INSTEADOF_KEYS}" ]; then
+    for k in ${INSTEADOF_KEYS}; do
+      git -C "${TEMP_WORKSPACE}" config --unset-all "${k}" 2>/dev/null || true
+    done
   fi
+  git -C "${TEMP_WORKSPACE}" config "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
+fi
+
+if [ "${RESTORED_FROM_CACHE}" = false ] && [ -n "${ORIGIN_URL:-}" ]; then
+  git -C "${TEMP_WORKSPACE}" fetch origin &>/dev/null || true
+  BASE_BRANCH="$(git -C "${TEMP_WORKSPACE}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+  if [ "${BASE_BRANCH}" = "HEAD" ]; then
+    BASE_BRANCH="main"
+  fi
+  git -C "${TEMP_WORKSPACE}" checkout "${BASE_BRANCH}" &>/dev/null || true
+  git -C "${TEMP_WORKSPACE}" reset --hard "origin/${BASE_BRANCH}" &>/dev/null || true
 fi
 
 # Configure git pre-commit hooks if present in workspace
@@ -168,11 +217,12 @@ if docker run -d --name "${CONTAINER_NAME}" \
     "${INSTANCE_NAME_ARG[@]}" \
     -v "${TEMP_WORKSPACE}:/workspace" \
     -w /workspace \
-    -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+    -e GITHUB_TOKEN="${GH_TOKEN}" \
     -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
     -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
     -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
     -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+    -e GIT_TERMINAL_PROMPT=0 \
     -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
     -e MODEL_NAME="${TARGET_MODEL:-}" \
     -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
@@ -209,6 +259,7 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
       -e MODEL_NAME="${TARGET_MODEL:-}" \
       -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
+      -e GIT_TERMINAL_PROMPT=0 \
       "${CONTAINER_NAME}" "${AGY_ARGS[@]}" 2>&1 | tee -a "${AGENT_LOG}"
     EXIT_CODE=${PIPESTATUS[0]}
   else
@@ -223,11 +274,12 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
       "${INSTANCE_NAME_ARG[@]}" \
       -v "${TEMP_WORKSPACE}:/workspace" \
       -w /workspace \
-      -e GITHUB_TOKEN="$(gh auth token 2>/dev/null || echo "")" \
+      -e GITHUB_TOKEN="${GH_TOKEN}" \
       -e GIT_AUTHOR_NAME="${GIT_USER_NAME}" \
       -e GIT_AUTHOR_EMAIL="${GIT_USER_EMAIL}" \
       -e GIT_COMMITTER_NAME="${GIT_USER_NAME}" \
       -e GIT_COMMITTER_EMAIL="${GIT_USER_EMAIL}" \
+      -e GIT_TERMINAL_PROMPT=0 \
       -e ANTIGRAVITY_MODEL="${TARGET_MODEL:-}" \
       -e MODEL_NAME="${TARGET_MODEL:-}" \
       -e ANTIGRAVITY_QUOTA_POOL="${ANTIGRAVITY_QUOTA_POOL:-}" \
