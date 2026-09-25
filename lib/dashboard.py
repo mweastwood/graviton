@@ -351,7 +351,8 @@ def format_dashboard_markdown(
                 pr_cell = "-"
             url_cell = f"[View PR ↗]({url_val})" if url_val and is_safe_url(url_val) else "-"
             author_cell = f"`@{author_text}`" if author_text != "-" else "-"
-            lines.append(f"| {pr_cell} | `{repo_name}` | {title_text} | {author_cell} | {url_cell} |")
+            repo_cell = f"`{repo_name}`" if repo_name != "-" else "-"
+            lines.append(f"| {pr_cell} | {repo_cell} | {title_text} | {author_cell} | {url_cell} |")
         lines.append("")
     else:
         lines.extend(["*(No approved PRs awaiting merge)*", ""])
@@ -564,7 +565,7 @@ def parse_dashboard_markdown(
         elif "Approved Pull Requests" in title_line or "Ready to Merge" in title_line or "Mergeable" in title_line:
             for cells in table_rows:
                 if len(cells) >= 4 and not cells[0].startswith("(") and "PR #" not in cells[0]:
-                    pr_num = 0
+                    pr_num: Optional[int] = None
                     pr_url = ""
                     m_num = re.search(r"\[.*?#?(\d+).*?\]\((.*?)\)", cells[0])
                     if m_num:

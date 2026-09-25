@@ -700,6 +700,27 @@ class TestDashboardUpdater(unittest.TestCase):
         self.assertIn("## 🔀 Approved Pull Requests (Ready to Merge)", md)
         self.assertIn("*(No approved PRs awaiting merge)*", md)
 
+    def test_format_dashboard_markdown_approved_prs_unknown_repo_renders_unadorned_dash(self):
+        mock_pr_tracker = MagicMock()
+        mock_pr_tracker.get_approved_prs.return_value = [
+            {
+                "number": 42,
+                "repo_full_name": "-",
+                "title": "Missing repo PR",
+                "author": "octocat",
+                "url": "https://github.com/owner/repo/pull/42",
+            }
+        ]
+        md = format_dashboard_markdown(pr_tracker=mock_pr_tracker)
+        self.assertIn("## 🔀 Approved Pull Requests (Ready to Merge)", md)
+        self.assertIn("| [`#42`](https://github.com/owner/repo/pull/42) | - | Missing repo PR | `@octocat` | [View PR ↗](https://github.com/owner/repo/pull/42) |", md)
+        self.assertNotIn("`-`", md)
+
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["approved_prs"]), 1)
+        self.assertEqual(parsed["approved_prs"][0]["number"], 42)
+        self.assertEqual(parsed["approved_prs"][0]["repo_full_name"], "-")
+
     def test_render_dashboard_html_with_approved_prs(self):
         mock_pr_tracker = MagicMock()
         mock_pr_tracker.get_approved_prs.return_value = [
