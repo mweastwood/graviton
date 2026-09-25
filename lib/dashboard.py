@@ -289,10 +289,13 @@ def format_dashboard_markdown(
         tp_model = quota_info.get("active_third_party_model")
 
     p_low = str(pool).lower()
+    p_info = str((quota_info.get("quota_pool") if quota_info else None) or p_low).lower()
+    is_tp = "claude" in p_info or "gpt" in p_info or "3p" in p_info or "third" in p_info
+
     if not gemini_model:
-        gemini_model = model if not any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_GEMINI_MODELS[0] if DEFAULT_GEMINI_MODELS else "default")
+        gemini_model = model if not is_tp and model != "default" else (DEFAULT_GEMINI_MODELS[0] if DEFAULT_GEMINI_MODELS else "default")
     if not tp_model:
-        tp_model = model if any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_THIRD_PARTY_MODELS[0] if DEFAULT_THIRD_PARTY_MODELS else "default")
+        tp_model = model if is_tp and model != "default" else (DEFAULT_THIRD_PARTY_MODELS[0] if DEFAULT_THIRD_PARTY_MODELS else "default")
 
     gemini_rem = quota_info.get("gemini_remaining_percentage")
     if gemini_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
@@ -300,8 +303,10 @@ def format_dashboard_markdown(
             gemini_rem = quota_tracker.get_pool_remaining_percentage("gemini")
         except Exception:
             pass
-    if gemini_rem is None:
+    if gemini_rem is None and not is_tp:
         gemini_rem = quota_info.get("remaining_percentage", "N/A")
+    elif gemini_rem is None:
+        gemini_rem = "N/A"
 
     tp_rem = quota_info.get("third_party_remaining_percentage")
     if tp_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
@@ -309,11 +314,13 @@ def format_dashboard_markdown(
             tp_rem = quota_tracker.get_pool_remaining_percentage("claude")
         except Exception:
             pass
-    if tp_rem is None:
+    if tp_rem is None and is_tp:
+        tp_rem = quota_info.get("remaining_percentage", "N/A")
+    elif tp_rem is None:
         tp_rem = "N/A"
 
-    gemini_disp = f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem)
-    tp_disp = f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem)
+    gemini_disp = "N/A" if str(gemini_rem).strip().startswith("N/A") else (f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem))
+    tp_disp = "N/A" if str(tp_rem).strip().startswith("N/A") else (f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem))
 
     w5_g, w1_g = (None, None)
     w5_c, w1_c = (None, None)
@@ -325,15 +332,13 @@ def format_dashboard_markdown(
             pass
     elif quota_tracker:
         p_tr = str(getattr(quota_tracker, "quota_pool", pool) or "").lower()
-        is_tp = "claude" in p_tr or "gpt" in p_tr or "3p" in p_tr or "third" in p_tr
-        w5_g = getattr(quota_tracker, "gemini_window_5h", None) or (None if is_tp else getattr(quota_tracker, "window_5h", None))
-        w1_g = getattr(quota_tracker, "gemini_window_1w", None) or (None if is_tp else getattr(quota_tracker, "window_1w", None))
-        w5_c = getattr(quota_tracker, "claude_window_5h", None) or (getattr(quota_tracker, "window_5h", None) if is_tp else None)
-        w1_c = getattr(quota_tracker, "claude_window_1w", None) or (getattr(quota_tracker, "window_1w", None) if is_tp else None)
+        is_tp_tr = "claude" in p_tr or "gpt" in p_tr or "3p" in p_tr or "third" in p_tr
+        w5_g = getattr(quota_tracker, "gemini_window_5h", None) or (None if is_tp_tr else getattr(quota_tracker, "window_5h", None))
+        w1_g = getattr(quota_tracker, "gemini_window_1w", None) or (None if is_tp_tr else getattr(quota_tracker, "window_1w", None))
+        w5_c = getattr(quota_tracker, "claude_window_5h", None) or (getattr(quota_tracker, "window_5h", None) if is_tp_tr else None)
+        w1_c = getattr(quota_tracker, "claude_window_1w", None) or (getattr(quota_tracker, "window_1w", None) if is_tp_tr else None)
 
     if quota_info:
-        p_info = str(quota_info.get("quota_pool", pool) or "").lower()
-        is_tp = "claude" in p_info or "gpt" in p_info or "3p" in p_info or "third" in p_info
         if w5_g is None:
             w5_g = quota_info.get("gemini_window_5h") or (None if is_tp else quota_info.get("window_5h"))
         if w1_g is None:
@@ -343,28 +348,28 @@ def format_dashboard_markdown(
         if w1_c is None:
             w1_c = quota_info.get("claude_window_1w") or (quota_info.get("window_1w") if is_tp else None)
 
-        if w5_g is None and "gemini_5h_remaining_percentage" in quota_info:
+        if w5_g is None and quota_info.get("gemini_5h_remaining_percentage") is not None:
             w5_g = {
                 "remaining_percentage": quota_info.get("gemini_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_5h_countdown"),
                 "reset_time": quota_info.get("gemini_5h_reset_time"),
                 "pacing_status": quota_info.get("gemini_5h_pacing_status", "OK"),
             }
-        if w1_g is None and "gemini_1w_remaining_percentage" in quota_info:
+        if w1_g is None and quota_info.get("gemini_1w_remaining_percentage") is not None:
             w1_g = {
                 "remaining_percentage": quota_info.get("gemini_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_1w_countdown"),
                 "reset_time": quota_info.get("gemini_1w_reset_time"),
                 "pacing_status": quota_info.get("gemini_1w_pacing_status", "OK"),
             }
-        if w5_c is None and "third_party_5h_remaining_percentage" in quota_info:
+        if w5_c is None and quota_info.get("third_party_5h_remaining_percentage") is not None:
             w5_c = {
                 "remaining_percentage": quota_info.get("third_party_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_5h_countdown"),
                 "reset_time": quota_info.get("third_party_5h_reset_time"),
                 "pacing_status": quota_info.get("third_party_5h_pacing_status", "OK"),
             }
-        if w1_c is None and "third_party_1w_remaining_percentage" in quota_info:
+        if w1_c is None and quota_info.get("third_party_1w_remaining_percentage") is not None:
             w1_c = {
                 "remaining_percentage": quota_info.get("third_party_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_1w_countdown"),
@@ -1031,14 +1036,27 @@ def render_dashboard_html(
         if q_extra.get("third_party_1w_remaining_percentage") is not None:
             data["tp_1w_pct"] = q_extra["third_party_1w_remaining_percentage"]
             data["tp_1w_rem"] = format_percentage(q_extra["third_party_1w_remaining_percentage"])
-        if q_extra.get("gemini_5h_countdown"):
-            data["gemini_5h_details"] = f"Reset: {q_extra['gemini_5h_countdown']} | Pacing: {q_extra.get('gemini_5h_pacing_status', 'OK')}"
-        if q_extra.get("gemini_1w_countdown"):
-            data["gemini_1w_details"] = f"Reset: {q_extra['gemini_1w_countdown']} | Pacing: {q_extra.get('gemini_1w_pacing_status', 'OK')}"
-        if q_extra.get("third_party_5h_countdown"):
-            data["tp_5h_details"] = f"Reset: {q_extra['third_party_5h_countdown']} | Pacing: {q_extra.get('third_party_5h_pacing_status', 'OK')}"
-        if q_extra.get("third_party_1w_countdown"):
-            data["tp_1w_details"] = f"Reset: {q_extra['third_party_1w_countdown']} | Pacing: {q_extra.get('third_party_1w_pacing_status', 'OK')}"
+        for prefix, key_prefix in [
+            ("gemini_5h", "gemini_5h"),
+            ("gemini_1w", "gemini_1w"),
+            ("tp_5h", "third_party_5h"),
+            ("tp_1w", "third_party_1w"),
+        ]:
+            cd = q_extra.get(f"{key_prefix}_countdown")
+            if cd is None and q_extra.get(f"{key_prefix}_reset_time") is not None:
+                try:
+                    cd = format_reset_countdown(
+                        q_extra.get(f"{key_prefix}_reset_time"),
+                        window_name="5H" if "5h" in key_prefix else "1W",
+                    )
+                except Exception:
+                    cd = str(q_extra.get(f"{key_prefix}_reset_time"))
+            st = q_extra.get(f"{key_prefix}_pacing_status")
+            if cd or st:
+                details = f"Reset: {cd or 'N/A'} | Pacing: {st or 'OK'}"
+                data[f"{prefix}_details"] = details
+                if prefix.startswith("tp_"):
+                    data[f"{key_prefix}_details"] = details
 
     g_act = data.get("active_gemini_model")
     if isinstance(g_act, str) and g_act.strip() and g_act not in data["available_gemini_models"]:

@@ -933,18 +933,22 @@
             }}
 
             // 3. Quota & Model
-            function extractStr(label, defVal) {{
-                const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?");
-                const m = md.match(regex);
-                return m ? m[1].trim() : defVal;
+            function extractStr(labels, defVal) {{
+                const list = Array.isArray(labels) ? labels : [labels];
+                for (const label of list) {{
+                    const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
+                    const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?");
+                    const m = md.match(regex);
+                    if (m) return m[1].trim();
+                }}
+                return defVal;
             }}
             const pool = extractStr('Active Pool', 'default');
             const model = extractStr('Active Model', 'default');
             const geminiRem = extractStr('Gemini Remaining', 'N/A');
             const geminiModel = extractStr('Active Gemini Model', '');
             const tpModel = extractStr('Active Third-Party Model', '');
-            const tpRem = extractStr('Third-Party Remaining', 'N/A');
+            const tpRem = extractStr(['Third-Party Remaining', 'Third Party Remaining'], 'N/A');
 
             const quotaPool = document.getElementById('quota-pool');
             if (quotaPool) quotaPool.innerHTML = `Pool: <strong>${{escapeHtml(pool)}}</strong>`;
@@ -977,23 +981,27 @@
             const geminiPct = parsePct(geminiRem);
             const tpPct = parsePct(tpRem);
 
-            const gemini5hRem = extractStr('Gemini (5H)', geminiRem);
-            const gemini1wRem = extractStr('Gemini (1W)', geminiRem);
-            const tp5hRem = extractStr('Third-Party (5H)', tpRem);
-            const tp1wRem = extractStr('Third-Party (1W)', tpRem);
+            const gemini5hRem = extractStr(['Gemini (5H)', 'Gemini Quota (5H)'], geminiRem);
+            const gemini1wRem = extractStr(['Gemini (1W)', 'Gemini Quota (1W)'], geminiRem);
+            const tp5hRem = extractStr(['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)'], tpRem);
+            const tp1wRem = extractStr(['Third-Party (1W)', 'Third Party (1W)', 'Third-Party Quota (1W)'], tpRem);
 
-            function extractDetails(label, defVal) {{
-                const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
-                const regexFull = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*(.*?)\\s*\\|\\s*$", "m");
-                const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*([^|\\n]+)\\|");
-                const m = md.match(regexFull) || md.match(regex);
-                return m ? m[1].trim() : defVal;
+            function extractDetails(labels, defVal) {{
+                const list = Array.isArray(labels) ? labels : [labels];
+                for (const label of list) {{
+                    const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
+                    const regexFull = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*(.*?)\\s*\\|\\s*$", "m");
+                    const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*([^|\\n]+)\\|");
+                    const m = md.match(regexFull) || md.match(regex);
+                    if (m) return m[1].trim();
+                }}
+                return defVal;
             }}
 
-            const gemini5hDetails = extractDetails('Gemini (5H)', 'Live Gemini burst quota');
-            const gemini1wDetails = extractDetails('Gemini (1W)', 'Live Gemini weekly quota');
-            const tp5hDetails = extractDetails('Third-Party (5H)', 'Fallback burst quota');
-            const tp1wDetails = extractDetails('Third-Party (1W)', 'Fallback weekly quota');
+            const gemini5hDetails = extractDetails(['Gemini (5H)', 'Gemini Quota (5H)'], 'Live Gemini burst quota');
+            const gemini1wDetails = extractDetails(['Gemini (1W)', 'Gemini Quota (1W)'], 'Live Gemini weekly quota');
+            const tp5hDetails = extractDetails(['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)'], 'Fallback burst quota');
+            const tp1wDetails = extractDetails(['Third-Party (1W)', 'Third Party (1W)', 'Third-Party Quota (1W)'], 'Fallback weekly quota');
 
             const gemini5hPct = parsePct(gemini5hRem) !== null ? parsePct(gemini5hRem) : geminiPct;
             const gemini1wPct = parsePct(gemini1wRem) !== null ? parsePct(gemini1wRem) : geminiPct;

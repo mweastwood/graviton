@@ -1000,6 +1000,72 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         template = _get_dashboard_template()
         self.assertIn("r[4].toLowerCase().includes('finish')", template)
 
+    def test_format_dashboard_markdown_third_party_pool_capacity_no_leakage(self):
+        """Verify third-party active pool assigns remaining_percentage to Third-Party Remaining and does not leak into Gemini capacity or windows."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "claude_gpt",
+                "remaining_percentage": 60.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Third-Party Remaining** | `60.0%` |", md)
+        self.assertIn("| **Gemini Remaining** | `N/A` |", md)
+        self.assertIn("| **Gemini (5H)** | `N/A` | N/A |", md)
+        self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md)
+        self.assertIn("| **Third-Party (5H)** | `60%` | Live quota capacity |", md)
+        self.assertIn("| **Third-Party (1W)** | `60%` | Live quota capacity |", md)
+        self.assertNotIn("N/A%", md)
+
+    def test_format_dashboard_markdown_missing_null_windows_render_cleanly(self):
+        """Verify missing/null pool windows (e.g. from QuotaInfo.to_dict()) render as N/A without phantom details or N/A%."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "gemini",
+                "remaining_percentage": 75.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "third_party_remaining_percentage": None,
+                "third_party_5h_remaining_percentage": None,
+                "third_party_1w_remaining_percentage": None,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini Remaining** | `75.0%` |", md)
+        self.assertIn("| **Third-Party Remaining** | `N/A` |", md)
+        self.assertNotIn("Reset: N/A | Pacing: OK", md)
+        self.assertNotIn("N/A%", md)
+        self.assertIn("| **Third-Party (5H)** | `N/A` | N/A |", md)
+        self.assertIn("| **Third-Party (1W)** | `N/A` | N/A |", md)
+
+    def test_render_dashboard_html_preserves_pacing_status_without_countdown(self):
+        """Verify render_dashboard_html preserves BEHIND_PACING status even when countdown is None."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "third_party_5h_remaining_percentage": 30.0,
+                "third_party_5h_countdown": None,
+                "third_party_5h_reset_time": "2026-09-25T17:00:00Z",
+                "third_party_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertIn("Pacing: BEHIND_PACING", html_out)
+        self.assertIn("Reset: N/A | Pacing: BEHIND_PACING", html_out)
+
+    def test_dashboard_template_extract_str_and_details_support_array_labels(self):
+        """Verify dashboard HTML template includes label arrays for extractStr and extractDetails."""
+        _reset_dashboard_template_cache()
+        template = _get_dashboard_template()
+        self.assertIn("function extractStr(labels, defVal)", template)
+        self.assertIn("function extractDetails(labels, defVal)", template)
+        self.assertIn("['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)']", template)
+
 
 if __name__ == "__main__":
     unittest.main()
