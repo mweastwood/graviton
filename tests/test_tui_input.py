@@ -186,6 +186,13 @@ class TestTUIInput(unittest.TestCase):
     def test_terminal_dashboard_leftover_bytes_sync(self):
         manager = MagicMock()
         dashboard = TerminalDashboard(task_manager=manager)
+        # Test initial defaults
+        self.assertEqual(dashboard._stored_leftover_bytes, b"")
+        self.assertEqual(dashboard._stored_idle_flush_count, 0)
+        self.assertEqual(dashboard._leftover_bytes, b"")
+        self.assertEqual(dashboard._idle_flush_count, 0)
+
+        # Test sync with _input_listener
         dashboard._leftover_bytes = b"\x1b["
         self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[")
         self.assertEqual(dashboard._input_listener._leftover_bytes, b"\x1b[")
@@ -195,6 +202,17 @@ class TestTUIInput(unittest.TestCase):
         self.assertEqual(dashboard._stored_idle_flush_count, 3)
         self.assertEqual(dashboard._input_listener._idle_flush_count, 3)
         self.assertEqual(dashboard._idle_flush_count, 3)
+
+        # Test fallback when _input_listener is None
+        dashboard._input_listener = None
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[")
+        self.assertEqual(dashboard._idle_flush_count, 3)
+        dashboard._leftover_bytes = b"\x1b[A"
+        dashboard._idle_flush_count = 4
+        self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[A")
+        self.assertEqual(dashboard._stored_idle_flush_count, 4)
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[A")
+        self.assertEqual(dashboard._idle_flush_count, 4)
 
     def test_terminal_input_listener_idle_timeout_flushes_leftover_bytes(self):
         if not HAS_TERMIOS:
@@ -222,16 +240,13 @@ class TestTUIInput(unittest.TestCase):
                     os.write(master, b"\x1b[")
                     self.assertTrue(
                         self._wait_for_condition(
-                            lambda: len(listener.leftover_bytes) > 0 or listener._idle_flush_count > 0,
+                            lambda: "\x1b[" in handled_keys and len(listener.leftover_bytes) == 0 and listener.idle_flush_count > 0,
                             timeout=2.0,
                         )
                     )
-                    self.assertTrue(
-                        self._wait_for_condition(
-                            lambda: len(listener.leftover_bytes) == 0,
-                            timeout=2.0,
-                        )
-                    )
+                    self.assertIn("\x1b[", handled_keys)
+                    self.assertEqual(listener.leftover_bytes, b"")
+                    self.assertGreaterEqual(listener.idle_flush_count, 1)
 
                     os.write(master, b"a")
                     self.assertTrue(self._wait_for_condition(lambda: "a" in handled_keys))
