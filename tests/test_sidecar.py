@@ -530,9 +530,26 @@ class TestEnsureShellEnvironment(unittest.TestCase):
             self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/proxy-alias")
 
     def test_ensure_shell_environment_subprocess_error(self):
-        with patch("subprocess.run", side_effect=OSError("shell not found")):
-            # Should not raise exception
+        env_snapshot = {
+            "WEBHOOK_PROXY_URL": "https://smee.io/fallback-proxy",
+            "EXISTING_VAR": "keep_me",
+        }
+        with patch.dict(os.environ, env_snapshot, clear=True), \
+             patch("subprocess.run", side_effect=OSError("shell not found")), \
+             patch("lib.sidecar.logger.debug") as mock_debug:
             ensure_shell_environment()
+
+            # Verify debug log was emitted with error details
+            mock_debug.assert_called_once()
+            self.assertIn("Could not load shell environment", mock_debug.call_args[0][0])
+            self.assertIn("shell not found", mock_debug.call_args[0][0])
+
+            # Verify fallback resolution continues to execute
+            self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/fallback-proxy")
+
+            # Verify preexisting environment variables remain intact
+            self.assertEqual(os.environ.get("EXISTING_VAR"), "keep_me")
+            self.assertEqual(os.environ.get("WEBHOOK_PROXY_URL"), "https://smee.io/fallback-proxy")
 
 
 if __name__ == "__main__":
