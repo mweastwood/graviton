@@ -276,6 +276,8 @@ class TerminalDashboard:
             on_key=lambda k: self.handle_key(k), escape_timeout=self.ESCAPE_TIMEOUT
         )
         self._stored_old_term_settings: Optional[Any] = None
+        self._stored_leftover_bytes: bytes = b""
+        self._stored_idle_flush_count: int = 0
         self._termios_restored = False
         self._log_redirected = False
         self._detached_handlers: list = []
@@ -300,6 +302,30 @@ class TerminalDashboard:
         self._stored_old_term_settings = value
         if hasattr(self, "_input_listener") and self._input_listener is not None:
             self._input_listener._old_term_settings = value
+
+    @property
+    def _leftover_bytes(self) -> bytes:
+        if hasattr(self, "_input_listener") and self._input_listener is not None:
+            return getattr(self._input_listener, "_leftover_bytes", b"")
+        return getattr(self, "_stored_leftover_bytes", b"")
+
+    @_leftover_bytes.setter
+    def _leftover_bytes(self, value: bytes) -> None:
+        self._stored_leftover_bytes = value
+        if hasattr(self, "_input_listener") and self._input_listener is not None:
+            self._input_listener._leftover_bytes = value
+
+    @property
+    def _idle_flush_count(self) -> int:
+        if hasattr(self, "_input_listener") and self._input_listener is not None:
+            return getattr(self._input_listener, "_idle_flush_count", 0)
+        return getattr(self, "_stored_idle_flush_count", 0)
+
+    @_idle_flush_count.setter
+    def _idle_flush_count(self, value: int) -> None:
+        self._stored_idle_flush_count = value
+        if hasattr(self, "_input_listener") and self._input_listener is not None:
+            self._input_listener._idle_flush_count = value
 
     @property
     def active_screen(self) -> str:

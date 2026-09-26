@@ -183,6 +183,80 @@ class TestTUIInput(unittest.TestCase):
         self.assertIsNone(dashboard._input_listener._old_term_settings)
         self.assertIsNone(dashboard._old_term_settings)
 
+    def test_terminal_dashboard_leftover_bytes_sync(self):
+        manager = MagicMock()
+        dashboard = TerminalDashboard(task_manager=manager)
+        # Test initial defaults
+        self.assertEqual(dashboard._stored_leftover_bytes, b"")
+        self.assertEqual(dashboard._stored_idle_flush_count, 0)
+        self.assertEqual(dashboard._leftover_bytes, b"")
+        self.assertEqual(dashboard._idle_flush_count, 0)
+
+        # Test sync with _input_listener
+        dashboard._leftover_bytes = b"\x1b["
+        self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[")
+        self.assertEqual(dashboard._input_listener._leftover_bytes, b"\x1b[")
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[")
+
+        dashboard._idle_flush_count = 3
+        self.assertEqual(dashboard._stored_idle_flush_count, 3)
+        self.assertEqual(dashboard._input_listener._idle_flush_count, 3)
+        self.assertEqual(dashboard._idle_flush_count, 3)
+
+        # Test fallback when _input_listener is None
+        dashboard._input_listener = None
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[")
+        self.assertEqual(dashboard._idle_flush_count, 3)
+        dashboard._leftover_bytes = b"\x1b[A"
+        dashboard._idle_flush_count = 4
+        self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[A")
+        self.assertEqual(dashboard._stored_idle_flush_count, 4)
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[A")
+        self.assertEqual(dashboard._idle_flush_count, 4)
+
+    def test_terminal_input_listener_idle_timeout_flushes_leftover_bytes(self):
+        if not HAS_TERMIOS:
+            self.skipTest("termios not available on this platform")
+
+        master, slave = pty.openpty()
+        try:
+            handled_keys = []
+            listener = TerminalInputListener(on_key=lambda k: handled_keys.append(k))
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+            with patch("sys.stdin", mock_stdin):
+                thread = threading.Thread(target=listener.run_loop, daemon=True)
+                thread.start()
+
+                self.assertTrue(self._wait_for_condition(lambda: listener._old_term_settings is not None))
+
+                try:
+                    os.write(master, b"\x1b[")
+                    self.assertTrue(
+                        self._wait_for_condition(
+                            lambda: "\x1b[" in handled_keys and len(listener.leftover_bytes) == 0 and listener.idle_flush_count > 0,
+                            timeout=2.0,
+                        )
+                    )
+                    self.assertIn("\x1b[", handled_keys)
+                    self.assertEqual(listener.leftover_bytes, b"")
+                    self.assertGreaterEqual(listener.idle_flush_count, 1)
+
+                    os.write(master, b"a")
+                    self.assertTrue(self._wait_for_condition(lambda: "a" in handled_keys))
+                finally:
+                    listener.stop()
+                    thread.join(timeout=3.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_get_termios_and_tty_mock_lookup(self):
         mock_termios = MagicMock()
         mock_tty = MagicMock()

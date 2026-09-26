@@ -1120,6 +1120,13 @@ class TestTerminalDashboard(unittest.TestCase):
 
             mock_stdin = MockStdin()
 
+            handled_keys = []
+            orig_handle_key = dashboard.handle_key
+            def handle_key_wrapper(key):
+                handled_keys.append(key)
+                orig_handle_key(key)
+            dashboard.handle_key = handle_key_wrapper
+
             with patch("sys.stdin", mock_stdin):
                 dashboard._running = True
                 stdin_thread = threading.Thread(target=dashboard._stdin_loop, daemon=True)
@@ -1129,8 +1136,15 @@ class TestTerminalDashboard(unittest.TestCase):
                 try:
                     # Write an incomplete sequence (b"\x1b[") that gets split into leftover_bytes
                     os.write(master, b"\x1b[")
-                    # Wait long enough for stdin to become idle and select.select to time out (>0.15s)
-                    time.sleep(0.35)
+                    # Wait for idle timeout to flush leftover_bytes and dispatch partial sequence
+                    self.assertTrue(
+                        self._wait_for_condition(
+                            lambda: "\x1b[" in handled_keys and len(getattr(dashboard, "_leftover_bytes", b"")) == 0,
+                            timeout=2.0,
+                        )
+                    )
+                    self.assertEqual(getattr(dashboard, "_leftover_bytes", b""), b"")
+                    self.assertGreaterEqual(getattr(dashboard, "_idle_flush_count", 0), 1)
 
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
