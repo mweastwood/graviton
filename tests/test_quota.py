@@ -2173,6 +2173,19 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNone(parse_reset_time_to_timestamp(True))
         self.assertIsNone(parse_reset_time_to_timestamp(False))
 
+    def test_parse_reset_time_to_timestamp_overflow_and_os_error(self):
+        # Extreme datetimes that may raise OverflowError / OSError on some platforms
+        dt_extreme = datetime(1, 1, 1, tzinfo=timezone.utc)
+        res = parse_reset_time_to_timestamp(dt_extreme)
+        self.assertTrue(res is None or isinstance(res, float))
+
+        # Explicitly verify OverflowError, OSError, and ValueError raised by dt.timestamp() are caught gracefully
+        for exc in (OverflowError("timestamp out of range"), OSError("mktime failed"), ValueError("invalid datetime")):
+            mock_dt = MagicMock(spec=datetime)
+            mock_dt.timestamp.side_effect = exc
+            with patch("lib.quota.parse_reset_time_to_datetime", return_value=mock_dt):
+                self.assertIsNone(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"))
+
 
 if __name__ == "__main__":
     unittest.main()

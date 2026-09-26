@@ -133,8 +133,11 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -
         pass
 
     # 2. Try ISO string parsing (handling trailing 'Z' for Python <= 3.10)
+    if not isinstance(reset_time, str):
+        return None
+
     try:
-        s = str(reset_time).strip()
+        s = reset_time.strip()
         if s.endswith("Z") or s.endswith("z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
@@ -148,7 +151,12 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -
 def parse_reset_time_to_timestamp(reset_time: Optional[Union[str, float, int]]) -> Optional[float]:
     """Parse reset time to epoch float timestamp."""
     dt = parse_reset_time_to_datetime(reset_time)
-    return dt.timestamp() if dt is not None else None
+    if dt is None:
+        return None
+    try:
+        return dt.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optional[datetime]:
