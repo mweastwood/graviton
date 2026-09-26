@@ -315,9 +315,12 @@ def format_dashboard_markdown(
         except Exception:
             pass
     if gemini_rem is None and not is_tp:
-        gemini_rem = quota_info.get("remaining_percentage", "N/A")
-    elif gemini_rem is None:
+        gemini_rem = quota_info.get("remaining_percentage")
+    if gemini_rem is None or str(gemini_rem).strip().lower() in ("none", "null", "n/a", "unknown", "none%"):
         gemini_rem = "N/A"
+        gemini_disp = "N/A"
+    else:
+        gemini_disp = f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem)
 
     tp_rem = quota_info.get("third_party_remaining_percentage")
     if tp_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
@@ -326,12 +329,12 @@ def format_dashboard_markdown(
         except Exception:
             pass
     if tp_rem is None and is_tp:
-        tp_rem = quota_info.get("remaining_percentage", "N/A")
-    elif tp_rem is None:
+        tp_rem = quota_info.get("remaining_percentage")
+    if tp_rem is None or str(tp_rem).strip().lower() in ("none", "null", "n/a", "unknown", "none%"):
         tp_rem = "N/A"
-
-    gemini_disp = "N/A" if str(gemini_rem).strip().startswith("N/A") else (f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem))
-    tp_disp = "N/A" if str(tp_rem).strip().startswith("N/A") else (f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem))
+        tp_disp = "N/A"
+    else:
+        tp_disp = f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem)
 
     w5_g, w1_g = (None, None)
     w5_c, w1_c = (None, None)
@@ -1160,25 +1163,29 @@ def render_dashboard_html(
                 data["gemini_5h_rem"] = format_percentage(w5_g.remaining_percentage)
                 cd = w5_g.format_reset_countdown()
                 st, _ = w5_g.get_pacing_status()
-                data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                if not (w5_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
             if w1_g is not None:
                 data["gemini_1w_pct"] = w1_g.remaining_percentage
                 data["gemini_1w_rem"] = format_percentage(w1_g.remaining_percentage)
                 cd = w1_g.format_reset_countdown()
                 st, _ = w1_g.get_pacing_status()
-                data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                if not (w1_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
             if w5_c is not None:
                 data["tp_5h_pct"] = w5_c.remaining_percentage
                 data["tp_5h_rem"] = format_percentage(w5_c.remaining_percentage)
                 cd = w5_c.format_reset_countdown()
                 st, _ = w5_c.get_pacing_status()
-                data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                if not (w5_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
             if w1_c is not None:
                 data["tp_1w_pct"] = w1_c.remaining_percentage
                 data["tp_1w_rem"] = format_percentage(w1_c.remaining_percentage)
                 cd = w1_c.format_reset_countdown()
                 st, _ = w1_c.get_pacing_status()
-                data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                if not (w1_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
         except Exception as e:
             logger.debug(f"Error enriching window metrics from quota_tracker: {e}")
 
@@ -1253,8 +1260,16 @@ def render_dashboard_html(
     except (ValueError, TypeError):
         tp_bar_pct = 100
 
+    def _safe_disp(val, fallback=None):
+        for candidate in (val, fallback):
+            if candidate is not None:
+                s = str(candidate).strip()
+                if s and s.lower() not in ("none", "null", "none%"):
+                    return s
+        return "N/A"
+
     gemini_5h_pct = data.get("gemini_5h_pct")
-    gemini_5h_disp = html.escape(str(data.get("gemini_5h_rem") or data.get("gemini_rem") or "N/A"))
+    gemini_5h_disp = html.escape(_safe_disp(data.get("gemini_5h_rem"), data.get("gemini_rem")))
     gemini_5h_color = get_quota_color(gemini_5h_pct)
     try:
         gemini_5h_bar_pct = min(100, max(0, int(float(gemini_5h_pct)))) if gemini_5h_pct is not None else 0
@@ -1263,7 +1278,7 @@ def render_dashboard_html(
     gemini_5h_details = html.escape(str(data.get("gemini_5h_details") or "Live Gemini burst quota"))
 
     gemini_1w_pct = data.get("gemini_1w_pct")
-    gemini_1w_disp = html.escape(str(data.get("gemini_1w_rem") or data.get("gemini_rem") or "N/A"))
+    gemini_1w_disp = html.escape(_safe_disp(data.get("gemini_1w_rem"), data.get("gemini_rem")))
     gemini_1w_color = get_quota_color(gemini_1w_pct)
     try:
         gemini_1w_bar_pct = min(100, max(0, int(float(gemini_1w_pct)))) if gemini_1w_pct is not None else 0
@@ -1272,7 +1287,7 @@ def render_dashboard_html(
     gemini_1w_details = html.escape(str(data.get("gemini_1w_details") or "Live Gemini weekly quota"))
 
     tp_5h_pct = data.get("tp_5h_pct")
-    tp_5h_disp = html.escape(str(data.get("tp_5h_rem") or data.get("tp_rem") or "N/A"))
+    tp_5h_disp = html.escape(_safe_disp(data.get("tp_5h_rem"), data.get("tp_rem")))
     tp_5h_color = get_quota_color(tp_5h_pct)
     try:
         tp_5h_bar_pct = min(100, max(0, int(float(tp_5h_pct)))) if tp_5h_pct is not None else 0
@@ -1281,7 +1296,7 @@ def render_dashboard_html(
     tp_5h_details = html.escape(str(data.get("tp_5h_details") or "Fallback burst quota"))
 
     tp_1w_pct = data.get("tp_1w_pct")
-    tp_1w_disp = html.escape(str(data.get("tp_1w_rem") or data.get("tp_rem") or "N/A"))
+    tp_1w_disp = html.escape(_safe_disp(data.get("tp_1w_rem"), data.get("tp_rem")))
     tp_1w_color = get_quota_color(tp_1w_pct)
     try:
         tp_1w_bar_pct = min(100, max(0, int(float(tp_1w_pct)))) if tp_1w_pct is not None else 0
@@ -1309,8 +1324,8 @@ def render_dashboard_html(
     failed_tasks = data["failed_tasks"]
     pool_str = html.escape(data["pool"])
     model_str = html.escape(data["model"])
-    gemini_disp = html.escape(data["gemini_rem"])
-    tp_disp = html.escape(data["tp_rem"])
+    gemini_disp = html.escape(_safe_disp(data.get("gemini_rem")))
+    tp_disp = html.escape(_safe_disp(data.get("tp_rem")))
     active_count = len(data["active_tasks"])
     queued_count = len(data["queued_tasks_list"])
     approved_count = len(valid_approved_prs)

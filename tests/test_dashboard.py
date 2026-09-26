@@ -31,7 +31,7 @@ from lib.dashboard import (
     METRIC_INT_PATTERNS,
     METRIC_STR_PATTERNS,
 )
-from lib.quota import QuotaTracker, QuotaWindow
+from lib.quota import QuotaInfo, QuotaTracker, QuotaWindow
 from lib.tasks import Task, TaskStatus
 
 
@@ -1909,6 +1909,43 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md_out)
         self.assertIn("| **Third-Party (5H)** | `N/A` | N/A |", md_out)
         self.assertIn("| **Third-Party (1W)** | `N/A` | N/A |", md_out)
+
+    def test_format_dashboard_markdown_and_html_none_remaining_percentage_renders_na_not_none_percent(self):
+        """Verifies that QuotaInfo(remaining_percentage=None) renders N/A instead of None% in markdown and HTML across both pools."""
+        for pool in ("gemini", "claude"):
+            info = QuotaInfo(remaining_percentage=None, quota_pool=pool)
+            extra = {"quota_info": info.to_dict()}
+            md_out = format_dashboard_markdown(extra_info=extra)
+            self.assertNotIn("None%", md_out)
+            self.assertIn("| **Gemini Remaining** | `N/A` | Live Gemini API capacity |", md_out)
+            self.assertIn("| **Third-Party Remaining** | `N/A` | Fallback model capacity |", md_out)
+
+            html_out = render_dashboard_html(md_out, quota_tracker=None, extra_info=extra)
+            self.assertNotIn("None%", html_out)
+            self.assertNotIn("none%", html_out.lower())
+            self.assertIn('id="gemini-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+            self.assertIn('id="tp-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+
+    def test_render_dashboard_html_quota_tracker_none_window_metrics_no_phantom_details(self):
+        """Verifies that render_dashboard_html with QuotaTracker containing None window metrics avoids emitting Reset: N/A | Pacing: OK details."""
+        tracker = QuotaTracker()
+        tracker.gemini_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.gemini_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+
+        # Case 1: with empty markdown content
+        html_out_empty = render_dashboard_html("", quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out_empty)
+        self.assertIn('<div class="meter-sub" id="gemini-5h-details">Live Gemini burst quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="gemini-1w-details">Live Gemini weekly quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="tp-5h-details">Fallback burst quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="tp-1w-details">Fallback weekly quota</div>', html_out_empty)
+
+        # Case 2: with markdown generated from the same uninitialized quota tracker
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        html_out = render_dashboard_html(md_out, quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
 
 
 if __name__ == "__main__":
