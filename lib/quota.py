@@ -1758,7 +1758,7 @@ class QuotaTracker:
         """Start asynchronous background polling thread for live quota updates."""
         try:
             val = float(poll_interval)
-            poll_interval = val if val > 0.0 else 5.0
+            poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
         except (ValueError, TypeError):
             poll_interval = 5.0
         with self._lock:
@@ -1800,7 +1800,7 @@ class QuotaTracker:
         """Background thread loop calling poll_live_quota() or poll_all_pools() periodically."""
         try:
             val = float(poll_interval)
-            poll_interval = val if val > 0.0 else 5.0
+            poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
         except (ValueError, TypeError):
             poll_interval = 5.0
         while not self._stop_polling_event.is_set():
@@ -1811,7 +1811,11 @@ class QuotaTracker:
                     self.poll_live_quota(token=token, quota_pool=quota_pool, force=False)
             except Exception as e:
                 logger.warning(f"Error in QuotaTracker background polling loop: {e}")
-            self._stop_polling_event.wait(timeout=poll_interval)
+            try:
+                self._stop_polling_event.wait(timeout=poll_interval)
+            except Exception as e:
+                logger.warning(f"Error waiting in QuotaTracker background polling loop: {e}")
+                time.sleep(1.0)
 
     def parse_quota_headers(self, headers: dict):
         """

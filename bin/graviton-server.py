@@ -12,6 +12,7 @@ Uses standard Python library only (0 external dependencies).
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -273,6 +274,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     task_manager=self.task_manager,
                     quota_tracker=self.quota_tracker,
                     scheduler=self.scheduler,
+                    pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
                 )
@@ -284,6 +286,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 task_manager=self.task_manager,
                 quota_tracker=self.quota_tracker,
                 scheduler=self.scheduler,
+                pr_tracker=self.pr_tracker,
             )
             self._send_html(200, html_page)
         elif path_clean in ("/dashboard/content", "/dashboard/markdown"):
@@ -295,6 +298,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     task_manager=self.task_manager,
                     quota_tracker=self.quota_tracker,
                     scheduler=self.scheduler,
+                    pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
                 )
@@ -807,7 +811,7 @@ def main():
     raw_quota_poll_interval = os.getenv("GRAVITON_QUOTA_POLL_INTERVAL") or os.getenv("QUOTA_POLL_INTERVAL", "5.0")
     try:
         default_quota_poll_interval = float(raw_quota_poll_interval)
-        if default_quota_poll_interval <= 0.0:
+        if default_quota_poll_interval <= 0.0 or not math.isfinite(default_quota_poll_interval):
             default_quota_poll_interval = 5.0
     except (ValueError, TypeError):
         default_quota_poll_interval = 5.0
@@ -818,12 +822,13 @@ def main():
         default=default_quota_poll_interval,
         help="Interval in seconds for background quota polling loop (default: 5.0, env: GRAVITON_QUOTA_POLL_INTERVAL or QUOTA_POLL_INTERVAL)",
     )
+    raw_quota_bg = os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING") or os.getenv("QUOTA_BACKGROUND_POLLING", "true")
     parser.add_argument(
         "--quota-background-polling",
         dest="quota_background_polling",
         action="store_true",
-        default=os.getenv("GRAVITON_QUOTA_BACKGROUND_POLLING", "true").lower() in ("1", "true", "yes"),
-        help="Enable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING)",
+        default=raw_quota_bg.lower() in ("1", "true", "yes"),
+        help="Enable automatic background polling for live model quota (default: True, env: GRAVITON_QUOTA_BACKGROUND_POLLING or QUOTA_BACKGROUND_POLLING)",
     )
     parser.add_argument(
         "--no-quota-background-polling",
@@ -942,8 +947,17 @@ def main():
                 poll_interval = getattr(args, "quota_poll_interval", 5.0)
                 try:
                     val = float(poll_interval)
-                    poll_interval = val if val > 0.0 else 5.0
+                    if val > 0.0 and math.isfinite(val):
+                        poll_interval = val
+                    else:
+                        logger.warning(
+                            f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."
+                        )
+                        poll_interval = 5.0
                 except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."
+                    )
                     poll_interval = 5.0
                 quota_tracker.start_background_polling(
                     poll_interval=poll_interval
@@ -1021,6 +1035,7 @@ def main():
             task_manager=task_manager,
             quota_tracker=quota_tracker,
             scheduler=scheduler,
+            pr_tracker=pr_tracker,
             host=args.host,
             port=args.port,
         )
