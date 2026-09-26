@@ -1737,9 +1737,8 @@ class TestGravitonHandler(unittest.TestCase):
         mock_quota.return_value = mock_qt_inst
 
         env = {"QUOTA_BACKGROUND_POLLING": "false"}
-        if "GRAVITON_QUOTA_BACKGROUND_POLLING" in os.environ:
-            del os.environ["GRAVITON_QUOTA_BACKGROUND_POLLING"]
         with patch.dict(os.environ, env, clear=False), patch("sys.argv", ["graviton-server.py"]):
+            os.environ.pop("GRAVITON_QUOTA_BACKGROUND_POLLING", None)
             server_mod.main()
 
         mock_qt_inst.poll_all_pools.assert_called_once()
@@ -1770,6 +1769,35 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_main_quota_poll_interval_invalid_fallback_warning(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_dashboard_inst = MagicMock()
+        mock_dashboard_cls.return_value = mock_dashboard_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        mock_qt_inst = MagicMock()
+        mock_quota.return_value = mock_qt_inst
+
+        with patch("graviton_server.logger.warning") as mock_warn, patch("sys.argv", ["graviton-server.py", "--quota-poll-interval", "0"]):
+            server_mod.main()
+
+        mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
+        self.assertTrue(
+            any("Invalid quota_poll_interval" in str(c) for c in mock_warn.call_args_list)
+        )
+
 
     @patch("graviton_server.post_emoji_reaction_async")
     @patch("graviton_server.execute_release_async")

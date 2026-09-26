@@ -944,8 +944,17 @@ def main():
                 poll_interval = getattr(args, "quota_poll_interval", 5.0)
                 try:
                     val = float(poll_interval)
-                    poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
+                    if val > 0.0 and math.isfinite(val):
+                        poll_interval = val
+                    else:
+                        logger.warning(
+                            f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."
+                        )
+                        poll_interval = 5.0
                 except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."
+                    )
                     poll_interval = 5.0
                 quota_tracker.start_background_polling(
                     poll_interval=poll_interval

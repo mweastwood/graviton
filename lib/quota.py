@@ -1815,6 +1815,7 @@ class QuotaTracker:
                 self._stop_polling_event.wait(timeout=poll_interval)
             except Exception as e:
                 logger.warning(f"Error waiting in QuotaTracker background polling loop: {e}")
+                time.sleep(1.0)
 
     def parse_quota_headers(self, headers: dict):
         """
