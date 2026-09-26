@@ -276,6 +276,8 @@ class TerminalDashboard:
             on_key=lambda k: self.handle_key(k), escape_timeout=self.ESCAPE_TIMEOUT
         )
         self._stored_old_term_settings: Optional[Any] = None
+        self._stored_leftover_bytes: bytes = b""
+        self._stored_idle_flush_count: int = 0
         self._termios_restored = False
         self._log_redirected = False
         self._detached_handlers: list = []

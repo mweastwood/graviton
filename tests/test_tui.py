@@ -1127,6 +1127,7 @@ class TestTerminalDashboard(unittest.TestCase):
                         )
                     )
                     self.assertEqual(getattr(dashboard, "_leftover_bytes", b""), b"")
+                    self.assertGreaterEqual(getattr(dashboard, "_idle_flush_count", 0), 1)
 
                     # At this point, leftover_bytes should have been flushed/cleared.
                     # Send a valid key (b"e") to switch to logs screen.
