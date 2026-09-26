@@ -746,6 +746,89 @@ class TestTUIPanels(unittest.TestCase):
         lines_no_repo = render_approved_prs_panel(width=80, approved_prs=[prs_none[1]])
         self.assertFalse(any("#None" in l for l in lines_no_repo))
 
+    def test_render_approved_prs_panel_with_zero_dash_none_pr_number(self):
+        for bad_num in ("0", 0, "-", "None"):
+            prs = [
+                {
+                    "number": bad_num,
+                    "repo_full_name": "owner/repo",
+                    "title": "PR with bad number",
+                    "author": "alice",
+                    "url": "https://github.com/owner/repo/pull/1",
+                }
+            ]
+            lines = render_approved_prs_panel(width=80, approved_prs=prs)
+            self.assertFalse(any(f"#{bad_num}" in l for l in lines))
+
+        # Test empty string PR number
+        prs_empty = [
+            {
+                "number": "",
+                "repo_full_name": "owner/repo",
+                "title": "PR with empty number",
+                "author": "alice",
+                "url": "https://github.com/owner/repo/pull/1",
+            }
+        ]
+        lines_empty = render_approved_prs_panel(width=80, approved_prs=prs_empty)
+        # Data row (line 2) shouldn't contain #
+        self.assertNotIn("#", lines_empty[2])
+
+    def test_render_approved_prs_panel_with_dict_author_none_login(self):
+        prs_dict_author = [
+            {
+                "number": 124,
+                "repo_full_name": "owner/repo",
+                "title": "PR with dict author login None",
+                "author": {"login": None},
+                "url": "https://github.com/owner/repo/pull/124",
+            },
+            {
+                "number": 125,
+                "repo_full_name": "owner/repo",
+                "title": "PR with empty dict author",
+                "author": {},
+                "url": "https://github.com/owner/repo/pull/125",
+            },
+        ]
+        lines = render_approved_prs_panel(width=80, approved_prs=prs_dict_author)
+        self.assertTrue(any("#124" in l for l in lines))
+        self.assertTrue(any("#125" in l for l in lines))
+
+    def test_render_approved_prs_panel_skips_non_dict_elements(self):
+        prs = [
+            None,
+            "not-a-dict",
+            9999,
+            {
+                "number": 126,
+                "repo_full_name": "owner/repo",
+                "title": "PR after non-dict entries",
+                "author": "bob",
+                "url": "https://github.com/owner/repo/pull/126",
+            },
+            ["list_item"],
+        ]
+        lines = render_approved_prs_panel(width=80, approved_prs=prs)
+        self.assertTrue(any("#126" in l for l in lines))
+
+        # Also test with exclusively non-dict elements
+        lines_all_non_dict = render_approved_prs_panel(width=80, approved_prs=[None, "invalid", 999])
+        self.assertFalse(any("AttributeError" in l for l in lines_all_non_dict))
+        self.assertTrue(any("(No approved PRs awaiting merge)" in l for l in lines_all_non_dict))
+        self.assertFalse(any("TITLE" in l for l in lines_all_non_dict))
+
+    def test_render_approved_prs_panel_non_string_title(self):
+        prs = [{
+            "number": 99,
+            "repo_full_name": "owner/repo",
+            "title": 12345,
+            "author": "bob",
+            "url": "https://github.com/owner/repo/pull/99",
+        }]
+        lines = render_approved_prs_panel(width=80, approved_prs=prs)
+        self.assertTrue(any("12345" in l for l in lines))
+
     def test_render_history_tasks_panel(self):
         empty_lines = render_history_tasks_panel(width=80, tasks=[], stats={"completed": 0, "failed": 0})
         self.assertTrue(any("No task history" in l for l in empty_lines))

@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 from lib.tasks import TaskManager, Task, TaskStatus
 from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.scheduler import TaskScheduler
+from lib.pr_tracker import PRTracker
 
 logger = logging.getLogger("graviton.dashboard")
 
@@ -107,6 +108,7 @@ def _get_fallback_dashboard_template() -> str:
     <p>Running Tasks: {running_tasks} | Queued: {queued_tasks_count} | Completed: {completed_tasks} | Failed: {failed_tasks}</p>
     <div>{active_table_html}</div>
     <div>{queued_table_html}</div>
+    <div>{approved_table_html}</div>
     <div>{history_table_html}</div>
     <pre id="content">{escaped_md}</pre>
 </body>
@@ -135,6 +137,7 @@ def format_dashboard_markdown(
     host: str = "localhost",
     port: int = 8000,
     extra_info: Optional[Dict[str, Any]] = None,
+    pr_tracker: Optional[PRTracker] = None,
 ) -> str:
     """
     Format live server, task, and quota state as rich GitHub Flavored Markdown
@@ -146,6 +149,14 @@ def format_dashboard_markdown(
     queued_tasks = task_manager.get_queued_tasks() if task_manager else []
     recent_history = task_manager.get_task_history(limit=10) if task_manager else []
     quota_info = quota_tracker.get_info().to_dict() if quota_tracker else {}
+    approved_prs: List[Dict[str, Any]] = []
+    if pr_tracker and hasattr(pr_tracker, "get_approved_prs"):
+        try:
+            approved_prs = pr_tracker.get_approved_prs() or []
+        except Exception as e:
+            logger.debug(f"Error fetching approved PRs from pr_tracker: {e}")
+    if not approved_prs and extra_info and "approved_prs" in extra_info:
+        approved_prs = extra_info.get("approved_prs") or []
 
     # Status indicator
     if active_tasks:
@@ -307,6 +318,48 @@ def format_dashboard_markdown(
     lines.extend([
         "---",
         "",
+        "## 🔀 Approved Pull Requests (Ready to Merge)",
+        "",
+    ])
+
+    valid_prs = [pr for pr in approved_prs if isinstance(pr, dict)]
+    if valid_prs:
+        lines.extend([
+            "| PR # | Repository | Title | Author | URL |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ])
+        for pr in valid_prs:
+            pr_num_raw = pr.get("number")
+            raw_num = str(pr_num_raw).replace("\r", "").replace("\n", "").replace("|", "-").replace("`", "").strip() if pr_num_raw is not None else ""
+            has_num = bool(raw_num and raw_num not in ("0", "-", "None"))
+            num = raw_num if has_num else ""
+            repo_name = (str(pr.get("repo_full_name", "") or "-")).replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() or "-"
+            title_text = (str(pr.get("title") or "")).replace("\r", " ").replace("\n", " ").replace("|", "-").strip()
+            author_raw = pr.get("author")
+            author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+            author_str = str(author_val or "").strip().lstrip("@")
+            author_text = author_str.replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() if author_str else "-"
+            if not author_text:
+                author_text = "-"
+            url_raw = pr.get("url")
+            url_val = str(url_raw or "").replace("|", "").replace("\r", "").replace("\n", "").replace("`", "").replace(")", "%29").replace("(", "%28").strip()
+            if not url_val and repo_name != "-" and has_num:
+                url_val = f"https://github.com/{repo_name}/pull/{num}"
+            if has_num:
+                pr_cell = f"[`#{num}`]({url_val})" if url_val and is_safe_url(url_val) else f"`#{num}`"
+            else:
+                pr_cell = "-"
+            url_cell = f"[View PR ↗]({url_val})" if url_val and is_safe_url(url_val) else "-"
+            author_cell = f"`@{author_text}`" if author_text != "-" else "-"
+            repo_cell = f"`{repo_name}`" if repo_name != "-" else "-"
+            lines.append(f"| {pr_cell} | {repo_cell} | {title_text} | {author_cell} | {url_cell} |")
+        lines.append("")
+    else:
+        lines.extend(["*(No approved PRs awaiting merge)*", ""])
+
+    lines.extend([
+        "---",
+        "",
         "## 📜 Recent Task Execution History",
         "",
     ])
@@ -344,10 +397,13 @@ def format_dashboard_markdown(
 
 def is_safe_url(url: Optional[str]) -> bool:
     """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
-    if not url:
+    if not url or not isinstance(url, str):
         return False
-    clean = url.strip().lower()
-    return clean.startswith("http://") or clean.startswith("https://")
+    clean = url.strip()
+    if any(c in clean for c in (" ", "\t", "\r", "\n", '"', "'", "<", ">")):
+        return False
+    clean_lower = clean.lower()
+    return clean_lower.startswith("http://") or clean_lower.startswith("https://")
 
 
 def get_quota_color(pct: Optional[float]) -> str:
@@ -448,6 +504,7 @@ def parse_dashboard_markdown(
     active_tasks: List[Dict[str, Any]] = []
     queued_tasks: List[Dict[str, Any]] = []
     history_tasks: List[Dict[str, Any]] = []
+    approved_prs_list: List[Dict[str, Any]] = []
 
     sections = SECTION_SPLIT_PATTERN.split(markdown_content)
     for sec in sections:
@@ -459,10 +516,11 @@ def parse_dashboard_markdown(
         table_rows = []
         for line in sec_lines:
             sline = line.strip()
-            if sline.startswith("|") and not sline.startswith("| Metric") and "Task ID" not in sline:
+            if sline.startswith("|"):
                 cells = [c.strip() for c in sline.split("|")[1:-1]]
                 if cells and not all(c.replace(":", "").replace("-", "") == "" for c in cells):
-                    table_rows.append(cells)
+                    if cells[0] not in ("Metric", "Task ID", "PR #"):
+                        table_rows.append(cells)
 
         if "Active Container Tasks" in title_line:
             for cells in table_rows:
@@ -502,6 +560,41 @@ def parse_dashboard_markdown(
                         "target": target,
                         "priority": prio,
                         "wait_time": wait_time,
+                    })
+
+        elif "Approved Pull Requests" in title_line or "Ready to Merge" in title_line or "Mergeable" in title_line:
+            for cells in table_rows:
+                if len(cells) >= 4 and not cells[0].startswith("(") and "PR #" not in cells[0]:
+                    pr_num: Optional[int] = None
+                    pr_url = ""
+                    m_num = re.search(r"\[.*?#?(\d+).*?\]\((.*?)\)", cells[0])
+                    if m_num:
+                        pr_num = int(m_num.group(1))
+                        cand_url = m_num.group(2).strip()
+                        if is_safe_url(cand_url):
+                            pr_url = cand_url
+                    else:
+                        num_digits = re.search(r"\d+", cells[0].strip("`#"))
+                        pr_num = int(num_digits.group(0)) if num_digits else None
+                    repo_cell = cells[1].strip("`") if len(cells) > 1 else ""
+                    title_cell = cells[2] if len(cells) > 2 else ""
+                    author_cell = cells[3].strip("`@") if len(cells) > 3 else ""
+                    if len(cells) >= 5 and not pr_url:
+                        url_m = re.search(r"\[.*?\]\((.*?)\)", cells[4])
+                        if url_m:
+                            cand_url = url_m.group(1).strip()
+                            if is_safe_url(cand_url):
+                                pr_url = cand_url
+                        elif is_safe_url(cells[4].strip()):
+                            pr_url = cells[4].strip()
+                    if not pr_url and repo_cell and repo_cell != "-" and pr_num:
+                        pr_url = f"https://github.com/{repo_cell}/pull/{pr_num}"
+                    approved_prs_list.append({
+                        "number": pr_num,
+                        "repo_full_name": repo_cell,
+                        "title": title_cell,
+                        "author": author_cell,
+                        "url": pr_url,
                     })
 
         elif "Recent Task Execution History" in title_line:
@@ -579,6 +672,7 @@ def parse_dashboard_markdown(
         "active_tasks": active_tasks,
         "queued_tasks_list": queued_tasks,
         "history_tasks": history_tasks,
+        "approved_prs": approved_prs_list,
         "available_gemini_models": available_gemini_models,
         "available_third_party_models": available_third_party_models,
         "active_gemini_model": active_gemini_model,
@@ -643,6 +737,57 @@ def _render_queued_tasks_table(queued_tasks: List[Dict[str, Any]]) -> str:
     )
 
 
+def _render_approved_prs_table(approved_prs: List[Dict[str, Any]]) -> str:
+    """Render HTML table or empty state card for approved PRs ready to merge."""
+    valid_prs = [pr for pr in approved_prs if isinstance(pr, dict)]
+    if not valid_prs:
+        return (
+            '<div class="empty-card">'
+            '<span class="empty-icon">✨</span>'
+            '<p class="empty-text">No approved PRs awaiting merge.</p>'
+            '</div>'
+        )
+    rows = []
+    for pr in valid_prs:
+        pr_num_raw = pr.get("number")
+        raw_num = str(pr_num_raw).strip() if pr_num_raw is not None else ""
+        raw_repo = str(pr.get("repo_full_name", "") or "-").strip() or "-"
+        has_num = bool(raw_num and raw_num not in ("0", "-", "None"))
+        num = html.escape(raw_num) if has_num else ""
+        repo = html.escape(raw_repo)
+        title = html.escape(str(pr.get("title") or ""))
+        author_raw = pr.get("author")
+        author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+        author_str = str(author_val or "").strip().lstrip("@")
+        author = html.escape(author_str) if author_str else "-"
+        url = pr.get("url", "")
+        if not url and raw_repo != "-" and has_num:
+            url = f"https://github.com/{raw_repo}/pull/{raw_num}"
+
+        if url and is_safe_url(url):
+            num_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener"><code>#{num}</code></a>' if has_num else '<span class="text-muted">-</span>'
+            action_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View PR ↗</a>'
+        else:
+            num_html = f'<code>#{num}</code>' if has_num else '<span class="text-muted">-</span>'
+            action_html = '<span class="text-muted">-</span>'
+
+        repo_html = f'<code>{repo}</code>' if repo != "-" else '<span class="text-muted">-</span>'
+        author_html = f'<span class="author-badge">@{author}</span>' if author != "-" else '<span class="text-muted">-</span>'
+
+        rows.append(
+            f'<tr><td>{num_html}</td>'
+            f'<td>{repo_html}</td>'
+            f'<td><span class="pr-title">{title}</span></td>'
+            f'<td>{author_html}</td>'
+            f'<td>{action_html}</td></tr>'
+        )
+    return (
+        '<div class="table-wrapper"><table class="data-table">'
+        '<thead><tr><th>PR #</th><th>Repository</th><th>Title</th><th>Author</th><th>Action</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
 def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
     """Render HTML table or empty state card for execution history."""
     if not history_tasks:
@@ -690,6 +835,7 @@ def render_dashboard_html(
     quota_tracker: Optional[QuotaTracker] = None,
     scheduler: Optional[TaskScheduler] = None,
     extra_info: Optional[Dict[str, Any]] = None,
+    pr_tracker: Optional[PRTracker] = None,
 ) -> str:
     """
     Render a rich, responsive, dark-mode web dashboard page for web browsers.
@@ -701,6 +847,16 @@ def render_dashboard_html(
     data = parse_dashboard_markdown(markdown_content, default_host=host, default_port=port)
 
     # Optional enrichment from live managers if provided
+    if pr_tracker and not data.get("approved_prs"):
+        try:
+            pr_objs = pr_tracker.get_approved_prs()
+            if pr_objs:
+                data["approved_prs"] = list(pr_objs)
+        except Exception as e:
+            logger.debug(f"Error enriching dashboard data from pr_tracker: {e}")
+    if not data.get("approved_prs") and extra_info and "approved_prs" in extra_info:
+        data["approved_prs"] = list(extra_info.get("approved_prs") or [])
+
     if task_manager:
         try:
             stats = task_manager.get_stats()
@@ -811,6 +967,8 @@ def render_dashboard_html(
 
     active_table_html = _render_active_tasks_table(data["active_tasks"])
     queued_table_html = _render_queued_tasks_table(data["queued_tasks_list"])
+    valid_approved_prs = [pr for pr in data.get("approved_prs", []) if isinstance(pr, dict)]
+    approved_table_html = _render_approved_prs_table(valid_approved_prs)
     history_table_html = _render_history_tasks_table(data["history_tasks"])
 
     effective_host = html.escape(data["host"])
@@ -831,6 +989,7 @@ def render_dashboard_html(
     tp_disp = html.escape(data["tp_rem"])
     active_count = len(data["active_tasks"])
     queued_count = len(data["queued_tasks_list"])
+    approved_count = len(valid_approved_prs)
     history_count = len(data["history_tasks"])
 
     template = _get_dashboard_template()
@@ -865,6 +1024,8 @@ def render_dashboard_html(
         active_table_html=active_table_html,
         queued_count=queued_count,
         queued_table_html=queued_table_html,
+        approved_count=approved_count,
+        approved_table_html=approved_table_html,
         history_count=history_count,
         history_table_html=history_table_html,
         escaped_md=escaped_md,
@@ -886,6 +1047,7 @@ class DashboardUpdater:
         task_manager: Optional[TaskManager] = None,
         quota_tracker: Optional[QuotaTracker] = None,
         scheduler: Optional[TaskScheduler] = None,
+        pr_tracker: Optional[PRTracker] = None,
         host: str = "localhost",
         port: int = 8000,
         update_interval: float = 2.0,
@@ -894,6 +1056,7 @@ class DashboardUpdater:
         self.task_manager = task_manager
         self.quota_tracker = quota_tracker
         self.scheduler = scheduler
+        self.pr_tracker = pr_tracker
         self.host = host
         self.port = port
         self.update_interval = update_interval
@@ -965,6 +1128,7 @@ class DashboardUpdater:
             task_manager=self.task_manager,
             quota_tracker=self.quota_tracker,
             scheduler=self.scheduler,
+            pr_tracker=self.pr_tracker,
             host=self.host,
             port=self.port,
         )

@@ -273,6 +273,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     task_manager=self.task_manager,
                     quota_tracker=self.quota_tracker,
                     scheduler=self.scheduler,
+                    pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
                 )
@@ -284,6 +285,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 task_manager=self.task_manager,
                 quota_tracker=self.quota_tracker,
                 scheduler=self.scheduler,
+                pr_tracker=self.pr_tracker,
             )
             self._send_html(200, html_page)
         elif path_clean in ("/dashboard/content", "/dashboard/markdown"):
@@ -295,6 +297,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     task_manager=self.task_manager,
                     quota_tracker=self.quota_tracker,
                     scheduler=self.scheduler,
+                    pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
                 )
@@ -1021,6 +1024,7 @@ def main():
             task_manager=task_manager,
             quota_tracker=quota_tracker,
             scheduler=scheduler,
+            pr_tracker=pr_tracker,
             host=args.host,
             port=args.port,
         )
