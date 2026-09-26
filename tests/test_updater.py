@@ -19,6 +19,8 @@ from lib.updater import (
     set_hot_reload_state,
     get_uptime_seconds,
     get_uptime_str,
+    _SYNC_LOCK,
+    DEFAULT_DRAIN_TIMEOUT,
 )
 
 
@@ -26,9 +28,19 @@ class TestUpdater(unittest.TestCase):
 
     def setUp(self):
         set_hot_reload_state("IDLE")
+        if _SYNC_LOCK.locked():
+            try:
+                _SYNC_LOCK.release()
+            except RuntimeError:
+                pass
 
     def tearDown(self):
         set_hot_reload_state("IDLE")
+        if _SYNC_LOCK.locked():
+            try:
+                _SYNC_LOCK.release()
+            except RuntimeError:
+                pass
 
     def test_check_if_dockerfile_changed_true(self):
         output1 = "Updating 123..456\n Fast-forward\n Dockerfile | 2 +-\n 1 file changed"
@@ -200,6 +212,51 @@ class TestUpdater(unittest.TestCase):
         self.assertIn("Disk read error", output)
         self.assertTrue(any("Failed to execute git pull on branch 'main'" in log for log in cm.output))
 
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_perform_git_pull_retries_on_lock_collision_and_succeeds(self, mock_run, mock_sleep):
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(
+                args=["git", "pull"],
+                returncode=1,
+                stdout="error: cannot lock ref 'refs/remotes/origin/main': is at 123 but expected 456\n! unable to update local ref",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["git", "pull"],
+                returncode=0,
+                stdout="Updating 123..456\nFast-forward",
+                stderr="",
+            ),
+        ]
+        repo_root = Path("/tmp/fake_repo")
+        with self.assertLogs("graviton.updater", level="WARNING") as cm:
+            success, output = perform_git_pull(repo_root, branch="main", max_retries=3, retry_delay=0.5)
+
+        self.assertTrue(success)
+        self.assertIn("Fast-forward", output)
+        self.assertEqual(mock_run.call_count, 2)
+        mock_sleep.assert_called_once_with(0.5)
+        self.assertTrue(any("Git pull encountered lock collision on attempt 1/3" in log for log in cm.output))
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_perform_git_pull_retries_on_lock_collision_and_fails_after_max_retries(self, mock_run, mock_sleep):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=1,
+            stdout="error: cannot lock ref 'refs/remotes/origin/main'\n",
+            stderr="fatal: unable to update local ref",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        with self.assertLogs("graviton.updater", level="WARNING") as cm:
+            success, output = perform_git_pull(repo_root, branch="main", max_retries=2, retry_delay=0.1)
+
+        self.assertFalse(success)
+        self.assertIn("cannot lock ref", output)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
     @patch("subprocess.run")
     def test_rebuild_agent_container(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
@@ -329,7 +386,7 @@ class TestUpdater(unittest.TestCase):
         hot_reload_server(httpd=mock_httpd, task_manager=mock_tm, quota_tracker=mock_qt)
 
         expected_calls = [
-            call.task_manager.drain_active_tasks(),
+            call.task_manager.drain_active_tasks(timeout=30.0),
             call.task_manager.dump_queue_state(),
             call.quota_tracker.dump_model_selection(),
             call.httpd.server_close(),
@@ -392,7 +449,7 @@ class TestUpdater(unittest.TestCase):
         )
 
         expected_calls = [
-            call.task_manager.drain_active_tasks(),
+            call.task_manager.drain_active_tasks(timeout=30.0),
             call.task_manager.dump_queue_state(),
             call.quota_tracker.dump_model_selection(),
             call.stop_smee_listener(mock_listener),
@@ -402,6 +459,12 @@ class TestUpdater(unittest.TestCase):
         actual_calls = [c for c in mock_manager.mock_calls if not c[0].endswith(".__bool__")]
         self.assertEqual(actual_calls, expected_calls)
         mock_execv.assert_called_once_with(sys.executable, [sys.executable] + sys.argv)
+
+    @patch("os.execv")
+    def test_hot_reload_server_custom_drain_timeout(self, mock_execv):
+        mock_tm = MagicMock()
+        hot_reload_server(task_manager=mock_tm, drain_timeout=15.0)
+        mock_tm.drain_active_tasks.assert_called_once_with(timeout=15.0)
 
     @patch("os.execv")
     @patch("lib.updater.perform_git_pull")
@@ -445,6 +508,28 @@ class TestUpdater(unittest.TestCase):
         mock_git_pull.assert_called_once()
         mock_tm.drain_active_tasks.assert_not_called()
         self.assertEqual(get_hot_reload_state(), "IDLE")
+
+    @patch("os.execv")
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_concurrency_lock_skips_concurrent_run(self, mock_git_pull, mock_execv):
+        mock_git_pull.return_value = (True, "Already up to date.")
+        mock_tm = MagicMock()
+
+        _SYNC_LOCK.acquire()
+        try:
+            with self.assertLogs("graviton.updater", level="WARNING") as cm:
+                res = sync_repo_and_reload(
+                    repo_root=Path("/tmp/fake_repo"),
+                    ref="refs/heads/main",
+                    task_manager=mock_tm,
+                )
+            self.assertFalse(res)
+            mock_git_pull.assert_not_called()
+            mock_tm.drain_active_tasks.assert_not_called()
+            mock_execv.assert_not_called()
+            self.assertTrue(any("Self-update/git sync already in progress" in log for log in cm.output))
+        finally:
+            _SYNC_LOCK.release()
 
     @patch("os.execv")
     @patch("lib.updater.perform_git_pull")
@@ -866,6 +951,55 @@ class TestUpdater(unittest.TestCase):
 
         mock_uptime_secs.return_value = 0.8
         self.assertEqual(get_uptime_str(), "00:00:00")
+
+    @patch("os.execv")
+    def test_hot_reload_server_unbounded_drain_timeout_logging(self, mock_execv):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="INFO") as cm:
+            hot_reload_server(task_manager=mock_tm, drain_timeout=None)
+        mock_tm.drain_active_tasks.assert_called_once_with(timeout=None)
+        self.assertTrue(any("timeout=unbounded" in log for log in cm.output))
+        self.assertFalse(any("timeout=Nones" in log for log in cm.output))
+
+    @patch("lib.updater.rebuild_agent_container", return_value=False)
+    @patch("lib.updater.check_if_dockerfile_changed", return_value=True)
+    @patch("lib.updater.perform_git_pull", return_value=(True, "Dockerfile modified"))
+    def test_sync_repo_and_reload_aborts_on_container_rebuild_failure(self, mock_pull, mock_check, mock_rebuild):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            res = sync_repo_and_reload(repo_root=Path("/tmp/fake_repo"), task_manager=mock_tm)
+        self.assertFalse(res)
+        self.assertEqual(get_hot_reload_state(), "IDLE")
+        mock_tm.drain_active_tasks.assert_not_called()
+        self.assertTrue(any("Agent container rebuild failed" in log for log in cm.output))
+
+    @patch("lib.updater.hot_reload_server", side_effect=RuntimeError("exec failure"))
+    @patch("lib.updater.perform_git_pull", return_value=(True, "Already up to date."))
+    def test_sync_repo_and_reload_resets_idle_on_unexpected_exception(self, mock_pull, mock_reload):
+        mock_tm = MagicMock()
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            res = sync_repo_and_reload(repo_root=Path("/tmp/fake_repo"), task_manager=mock_tm)
+        self.assertFalse(res)
+        self.assertEqual(get_hot_reload_state(), "IDLE")
+        self.assertTrue(any("Unexpected error during self-update and reload" in log for log in cm.output))
+
+    @patch("time.sleep")
+    @patch("subprocess.run")
+    def test_perform_git_pull_matches_index_lock_and_logs_exhaustion(self, mock_run, mock_sleep):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "pull"],
+            returncode=1,
+            stdout="fatal: Unable to create '/repo/.git/index.lock': File exists.",
+            stderr="",
+        )
+        repo_root = Path("/tmp/fake_repo")
+        with self.assertLogs("graviton.updater", level="WARNING") as cm:
+            success, output = perform_git_pull(repo_root, branch="main", max_retries=2, retry_delay=0.1)
+
+        self.assertFalse(success)
+        self.assertIn("index.lock", output)
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertTrue(any("lock collision retry limit reached (2/2)" in log for log in cm.output))
 
 
 if __name__ == "__main__":
