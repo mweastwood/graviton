@@ -797,6 +797,7 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_background_polling_lifecycle(self):
         tracker = QuotaTracker()
+        self.addCleanup(tracker.stop_background_polling)
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
 
@@ -816,23 +817,61 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_background_polling_non_positive_interval_fallback(self):
         tracker = QuotaTracker()
+        self.addCleanup(tracker.stop_background_polling)
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
         with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
             tracker.start_background_polling(poll_interval=0.0)
             self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
 
             tracker.start_background_polling(poll_interval=-1.0)
             self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
 
             tracker.start_background_polling(poll_interval="invalid")
             self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("inf"))
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("-inf"))
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=float("nan"))
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+    def test_background_polling_loop_wait_exception_sleeps(self):
+        tracker = QuotaTracker()
+        call_count = 0
+
+        def fake_wait(timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated wait failure")
+            tracker._stop_polling_event.set()
+
+        tracker._stop_polling_event.wait = fake_wait
+        with patch("lib.quota.time.sleep") as mock_sleep, patch.object(tracker, "poll_all_pools"):
+            tracker._background_polling_loop()
+            mock_sleep.assert_called_with(1.0)
 
     def test_concurrent_poll_live_quota_in_flight_deduplication(self):
         tracker = QuotaTracker()
