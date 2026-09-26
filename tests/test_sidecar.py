@@ -563,8 +563,10 @@ class TestEnsureShellEnvironment(unittest.TestCase):
 
     def test_ensure_shell_environment_timeout_expired(self):
         env_snapshot = {
+            "SHELL": "/bin/bash",
             "WEBHOOK_PROXY_URL": "https://smee.io/fallback-proxy",
             "SMEE_URL": "https://smee.io/preexisting",
+            "EXISTING_VAR": "keep_me",
         }
         timeout_err = subprocess.TimeoutExpired(cmd=["/bin/bash", "-i", "-c", "env"], timeout=2.0)
         with patch.dict(os.environ, env_snapshot, clear=True), \
@@ -579,12 +581,17 @@ class TestEnsureShellEnvironment(unittest.TestCase):
                 timeout=2.0,
             )
 
-            # Verify debug log captured timeout
+            # Verify debug log captured timeout details and shell
             mock_debug.assert_called_once()
-            self.assertIn("Could not load shell environment", mock_debug.call_args[0][0])
+            self.assertIn("Could not load shell environment from /bin/bash", mock_debug.call_args[0][0])
+            self.assertIn("timed out after 2.0 seconds", mock_debug.call_args[0][0])
 
             # Verify preexisting SMEE_URL is preserved and not overwritten by WEBHOOK_PROXY_URL
             self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/preexisting")
+
+            # Verify preexisting environment variables remain intact
+            self.assertEqual(os.environ.get("EXISTING_VAR"), "keep_me")
+            self.assertEqual(os.environ.get("WEBHOOK_PROXY_URL"), "https://smee.io/fallback-proxy")
 
 
 if __name__ == "__main__":
