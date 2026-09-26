@@ -460,6 +460,9 @@ DAILY_ANTIGRAVITY_QUOTA_ENDPOINT: str = (
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 )
 
+# Maximum background quota polling interval (24 hours) to prevent timestamp overflow in wait().
+MAX_POLL_INTERVAL: float = 86400.0
+
 
 def normalize_antigravity_quota_endpoint(url: str) -> str:
     """Normalize a quota endpoint URL to ensure proper endpoint path."""
@@ -1758,7 +1761,7 @@ class QuotaTracker:
         """Start asynchronous background polling thread for live quota updates."""
         try:
             val = float(poll_interval)
-            poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
+            poll_interval = val if 0.0 < val <= MAX_POLL_INTERVAL and math.isfinite(val) else 5.0
         except (ValueError, TypeError):
             poll_interval = 5.0
         with self._lock:
@@ -1800,7 +1803,7 @@ class QuotaTracker:
         """Background thread loop calling poll_live_quota() or poll_all_pools() periodically."""
         try:
             val = float(poll_interval)
-            poll_interval = val if val > 0.0 and math.isfinite(val) else 5.0
+            poll_interval = val if 0.0 < val <= MAX_POLL_INTERVAL and math.isfinite(val) else 5.0
         except (ValueError, TypeError):
             poll_interval = 5.0
         while not self._stop_polling_event.is_set():
@@ -1815,7 +1818,8 @@ class QuotaTracker:
                 self._stop_polling_event.wait(timeout=poll_interval)
             except Exception as e:
                 logger.warning(f"Error waiting in QuotaTracker background polling loop: {e}")
-                time.sleep(1.0)
+                poll_interval = 5.0
+                self._stop_polling_event.wait(timeout=1.0)
 
     def parse_quota_headers(self, headers: dict):
         """

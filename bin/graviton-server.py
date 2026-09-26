@@ -36,7 +36,13 @@ from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
 from lib.tui import TerminalDashboard, run_graceful_shutdown
 from lib.pr_tracker import PRTracker
-from lib.quota import QuotaTracker, QuotaState, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
+from lib.quota import (
+    QuotaTracker,
+    QuotaState,
+    DEFAULT_GEMINI_MODELS,
+    DEFAULT_THIRD_PARTY_MODELS,
+    MAX_POLL_INTERVAL,
+)
 from lib.reactions import post_emoji_reaction_async
 from lib.release import (
     DEFAULT_BRANCH,
@@ -944,13 +950,10 @@ def main():
                 poll_interval = getattr(args, "quota_poll_interval", 5.0)
                 try:
                     val = float(poll_interval)
-                    if val > 0.0 and math.isfinite(val):
+                    if 0.0 < val <= MAX_POLL_INTERVAL and math.isfinite(val):
                         poll_interval = val
                     else:
-                        logger.warning(
-                            f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."
-                        )
-                        poll_interval = 5.0
+                        raise ValueError(f"Interval out of bounds: {poll_interval}")
                 except (ValueError, TypeError):
                     logger.warning(
                         f"Invalid quota_poll_interval '{poll_interval}'; falling back to 5.0s."

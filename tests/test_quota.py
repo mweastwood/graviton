@@ -857,21 +857,45 @@ class TestQuotaTracker(unittest.TestCase):
             tracker.stop_background_polling()
             self.assertFalse(tracker.is_polling())
 
+            tracker.start_background_polling(poll_interval=1e20)
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=86400.1)
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 5.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
+            tracker.start_background_polling(poll_interval=86400.0)
+            self.assertTrue(tracker.is_polling())
+            self.assertEqual(tracker._polling_thread._args[2], 86400.0)
+            tracker.stop_background_polling()
+            self.assertFalse(tracker.is_polling())
+
     def test_background_polling_loop_wait_exception_sleeps(self):
         tracker = QuotaTracker()
-        call_count = 0
+        timeouts = []
 
         def fake_wait(timeout=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
                 raise RuntimeError("simulated wait failure")
+            if len(timeouts) == 2:
+                # Recovery wait timeout expired; do not set stop event yet
+                return
             tracker._stop_polling_event.set()
 
         tracker._stop_polling_event.wait = fake_wait
-        with patch("lib.quota.time.sleep") as mock_sleep, patch.object(tracker, "poll_all_pools"):
-            tracker._background_polling_loop()
-            mock_sleep.assert_called_with(1.0)
+        with patch.object(tracker, "poll_all_pools"):
+            tracker._background_polling_loop(poll_interval=10.0)
+
+        # Call 1: wait(timeout=10.0) raises RuntimeError
+        # Call 2: recovery wait(timeout=1.0)
+        # Call 3: subsequent loop iteration uses poll_interval reset to 5.0
+        self.assertEqual(timeouts, [10.0, 1.0, 5.0])
 
     def test_concurrent_poll_live_quota_in_flight_deduplication(self):
         tracker = QuotaTracker()
