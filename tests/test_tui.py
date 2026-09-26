@@ -345,6 +345,23 @@ class TestTerminalDashboard(unittest.TestCase):
         output = stream.getvalue()
         self.assertIn("GRAVITON SERVER DASHBOARD", output)
 
+    def test_dashboard_stop_guards_quota_stop_background_polling_exception(self):
+        manager = TaskManager(max_workers=1)
+        mock_quota = MagicMock()
+        mock_quota.stop_background_polling.side_effect = RuntimeError("Quota tracker stop failed")
+        stream = io.StringIO()
+        dashboard = TerminalDashboard(
+            task_manager=manager,
+            quota_tracker=mock_quota,
+            out_stream=stream,
+            enable_log_redirection=True,
+        )
+
+        with patch.object(dashboard, "_detach_log_redirection") as mock_detach:
+            dashboard.stop()
+            mock_quota.stop_background_polling.assert_called_once()
+            mock_detach.assert_called_once()
+
     def test_git_metadata_caching(self):
         manager = TaskManager(max_workers=2)
         dashboard = TerminalDashboard(

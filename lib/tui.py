@@ -361,7 +361,10 @@ class TerminalDashboard:
             self._atexit_registered = False
         quota_tr = self.quota_tracker or getattr(self.task_manager, "quota_tracker", None)
         if quota_tr and hasattr(quota_tr, "stop_background_polling"):
-            quota_tr.stop_background_polling()
+            try:
+                quota_tr.stop_background_polling()
+            except Exception as e:
+                logger.warning(f"Error stopping QuotaTracker background polling during TUI stop: {e}")
         if self.enable_log_redirection:
             self._detach_log_redirection()
 

@@ -931,15 +931,15 @@ def render_scheduled_jobs_panel(
 def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) -> List[str]:
     """Render approved pull requests panel."""
     inner_w = width - 4
-    approved_cnt = len(approved_prs)
+    approved_cnt = sum(1 for pr in approved_prs if isinstance(pr, dict)) if approved_prs else 0
     panel_title = f"APPROVED PULL REQUESTS (READY TO MERGE) [{approved_cnt} Ready]"
     header_bar = render_panel_header(width, panel_title, "\033[92m\033[1m")
 
-    if not approved_prs:
+    if not approved_prs or approved_cnt == 0:
         msg_styled = "\033[2m(No approved PRs awaiting merge)\033[0m"
         return render_panel_frame(header_bar, [msg_styled], width)
 
-    has_repo = any(bool(pr.get("repo_full_name")) for pr in approved_prs)
+    has_repo = any(bool(pr.get("repo_full_name")) for pr in approved_prs if isinstance(pr, dict))
     cols = allocate_approved_pr_columns(inner_w, has_repo)
 
     content = []
@@ -962,10 +962,15 @@ def render_approved_prs_panel(width: int, approved_prs: List[Dict[str, Any]]) ->
     content.append(f"\033[1m{format_table_row(hdr_cells)}\033[0m")
 
     for pr in approved_prs:
+        if not isinstance(pr, dict):
+            continue
         pr_num = pr.get("number")
-        num_str = f"#{pr_num}" if pr_num is not None and pr_num != "" else ""
-        title_str = pr.get("title") or ""
-        author_str = pr.get("author") or ""
+        has_num = bool(pr_num is not None and str(pr_num).strip() not in ("", "0", "-", "None"))
+        num_str = f"#{pr_num}" if has_num else ""
+        title_str = str(pr.get("title") or "")
+        author_raw = pr.get("author")
+        author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+        author_str = str(author_val or "").strip()
         url_str = pr.get("url") or ""
         if has_repo:
             repo_str = pr.get("repo_full_name", "") or "-"
