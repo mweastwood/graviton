@@ -240,6 +240,9 @@ class TestGravitonMCPServer(unittest.TestCase):
         }
         resp = self.server.handle_request(req)
         self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("task-99", content)
+        self.assertIn("graviton_get_task(task_id='task-99')", content)
         expected_payload = {
             "agent": "code_fixer",
             "prompt": "Run security audit",
@@ -266,7 +269,7 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
         content = resp["result"]["content"][0]["text"]
         self.assertIn("Failed to submit task: Queue is full", content)
-
+        mock_http.assert_called_once()
 
     @patch("lib.mcp.ensure_sidecar_running")
     def test_http_request_fast_failure_on_sidecar_error(self, mock_ensure):
@@ -313,7 +316,7 @@ class TestGravitonMCPServer(unittest.TestCase):
 
     @patch.object(GravitonMCPServer, "_http_request")
     def test_tool_submit_task_validation(self, mock_http):
-        for args in [{"prompt": ""}, {"prompt": "   "}, {}]:
+        for args in [{"prompt": ""}, {"prompt": "   "}, {}, {"prompt": None}, None]:
             req = {
                 "jsonrpc": "2.0",
                 "id": 13,
