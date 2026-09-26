@@ -1016,7 +1016,7 @@
                 g5hLabel.style.color = getQuotaColor(gemini5hPct);
             }}
             if (g5hBar) {{
-                g5hBar.style.width = `${{gemini5hPct !== null ? Math.min(100, Math.max(0, gemini5hPct)) : 100}}%`;
+                g5hBar.style.width = `${{gemini5hPct !== null ? Math.min(100, Math.max(0, gemini5hPct)) : 0}}%`;
                 g5hBar.style.backgroundColor = getQuotaColor(gemini5hPct);
             }}
             if (g5hDet) g5hDet.textContent = gemini5hDetails;
@@ -1029,7 +1029,7 @@
                 g1wLabel.style.color = getQuotaColor(gemini1wPct);
             }}
             if (g1wBar) {{
-                g1wBar.style.width = `${{gemini1wPct !== null ? Math.min(100, Math.max(0, gemini1wPct)) : 100}}%`;
+                g1wBar.style.width = `${{gemini1wPct !== null ? Math.min(100, Math.max(0, gemini1wPct)) : 0}}%`;
                 g1wBar.style.backgroundColor = getQuotaColor(gemini1wPct);
             }}
             if (g1wDet) g1wDet.textContent = gemini1wDetails;
@@ -1042,7 +1042,7 @@
                 t5hLabel.style.color = getQuotaColor(tp5hPct);
             }}
             if (t5hBar) {{
-                t5hBar.style.width = `${{tp5hPct !== null ? Math.min(100, Math.max(0, tp5hPct)) : 100}}%`;
+                t5hBar.style.width = `${{tp5hPct !== null ? Math.min(100, Math.max(0, tp5hPct)) : 0}}%`;
                 t5hBar.style.backgroundColor = getQuotaColor(tp5hPct);
             }}
             if (t5hDet) t5hDet.textContent = tp5hDetails;
@@ -1055,7 +1055,7 @@
                 t1wLabel.style.color = getQuotaColor(tp1wPct);
             }}
             if (t1wBar) {{
-                t1wBar.style.width = `${{tp1wPct !== null ? Math.min(100, Math.max(0, tp1wPct)) : 100}}%`;
+                t1wBar.style.width = `${{tp1wPct !== null ? Math.min(100, Math.max(0, tp1wPct)) : 0}}%`;
                 t1wBar.style.backgroundColor = getQuotaColor(tp1wPct);
             }}
             if (t1wDet) t1wDet.textContent = tp1wDetails;

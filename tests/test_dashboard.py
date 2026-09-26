@@ -1138,6 +1138,67 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
         self.assertIn("Reset: 01h 00m | Pacing: OK", html_out)
 
+    def test_render_dashboard_html_na_submeters_render_zero_width_and_neutral_color(self):
+        """Verifies explicit N/A window submeters render with style="width: 0%; background-color: #58a6ff;" instead of overall pool bar width."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "gemini",
+                "remaining_percentage": 85.0,
+                "gemini_remaining_percentage": 85.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "gemini_1w_reset_time": None,
+                "gemini_1w_countdown": None,
+                "gemini_1w_pacing_status": "OK",
+                "third_party_remaining_percentage": 75.0,
+                "third_party_5h_remaining_percentage": None,
+                "third_party_5h_reset_time": None,
+                "third_party_5h_countdown": None,
+                "third_party_5h_pacing_status": "OK",
+                "third_party_1w_remaining_percentage": None,
+                "third_party_1w_reset_time": None,
+                "third_party_1w_countdown": None,
+                "third_party_1w_pacing_status": "OK",
+            }
+        }
+        md = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.6-flash-high` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.6-flash-high` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `N/A` | N/A |
+| **Gemini (1W)** | `N/A` | N/A |
+| **Third-Party (5H)** | `N/A` | N/A |
+| **Third-Party (1W)** | `N/A` | N/A |
+| **Gemini Remaining** | `85.0%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `75.0%` | Fallback model capacity |
+"""
+        html_out = render_dashboard_html(md, quota_tracker=None, extra_info=extra)
+        self.assertIn('id="gemini-5h-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="gemini-1w-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="tp-5h-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="tp-1w-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+
+    def test_format_dashboard_markdown_quota_window_object_none_metrics_no_phantom_details(self):
+        """Verifies QuotaWindow objects with None metrics do not emit phantom Reset: N/A | Pacing: OK details."""
+        tracker = QuotaTracker()
+        tracker.gemini_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.gemini_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", md_out)
+        self.assertIn("| **Gemini (5H)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Third-Party (5H)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Third-Party (1W)** | `N/A` | N/A |", md_out)
+
 
 if __name__ == "__main__":
     unittest.main()

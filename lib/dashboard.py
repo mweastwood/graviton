@@ -403,6 +403,8 @@ def format_dashboard_markdown(
         pct_disp = format_percentage(pct)
         cd = w.format_reset_countdown()
         status, _ = w.get_pacing_status()
+        if pct is None and cd == "N/A" and (status == "OK" or not status):
+            return "N/A", "N/A"
         return pct_disp, f"Reset: {cd} | Pacing: {status}"
 
     g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem)
@@ -1096,40 +1098,40 @@ def render_dashboard_html(
         tp_bar_pct = 100
 
     gemini_5h_pct = data.get("gemini_5h_pct")
-    gemini_5h_disp = html.escape(str(data.get("gemini_5h_rem", data["gemini_rem"])))
-    gemini_5h_color = get_quota_color(gemini_5h_pct if gemini_5h_pct is not None else data["gemini_pct"])
+    gemini_5h_disp = html.escape(str(data.get("gemini_5h_rem") or data.get("gemini_rem") or "N/A"))
+    gemini_5h_color = get_quota_color(gemini_5h_pct)
     try:
-        gemini_5h_bar_pct = min(100, max(0, int(float(gemini_5h_pct)))) if gemini_5h_pct is not None else gemini_bar_pct
+        gemini_5h_bar_pct = min(100, max(0, int(float(gemini_5h_pct)))) if gemini_5h_pct is not None else 0
     except (ValueError, TypeError):
-        gemini_5h_bar_pct = gemini_bar_pct
-    gemini_5h_details = html.escape(str(data.get("gemini_5h_details", "Live Gemini burst quota")))
+        gemini_5h_bar_pct = 0
+    gemini_5h_details = html.escape(str(data.get("gemini_5h_details") or "Live Gemini burst quota"))
 
     gemini_1w_pct = data.get("gemini_1w_pct")
-    gemini_1w_disp = html.escape(str(data.get("gemini_1w_rem", data["gemini_rem"])))
-    gemini_1w_color = get_quota_color(gemini_1w_pct if gemini_1w_pct is not None else data["gemini_pct"])
+    gemini_1w_disp = html.escape(str(data.get("gemini_1w_rem") or data.get("gemini_rem") or "N/A"))
+    gemini_1w_color = get_quota_color(gemini_1w_pct)
     try:
-        gemini_1w_bar_pct = min(100, max(0, int(float(gemini_1w_pct)))) if gemini_1w_pct is not None else gemini_bar_pct
+        gemini_1w_bar_pct = min(100, max(0, int(float(gemini_1w_pct)))) if gemini_1w_pct is not None else 0
     except (ValueError, TypeError):
-        gemini_1w_bar_pct = gemini_bar_pct
-    gemini_1w_details = html.escape(str(data.get("gemini_1w_details", "Live Gemini weekly quota")))
+        gemini_1w_bar_pct = 0
+    gemini_1w_details = html.escape(str(data.get("gemini_1w_details") or "Live Gemini weekly quota"))
 
     tp_5h_pct = data.get("tp_5h_pct")
-    tp_5h_disp = html.escape(str(data.get("tp_5h_rem", data["tp_rem"])))
-    tp_5h_color = get_quota_color(tp_5h_pct if tp_5h_pct is not None else data["tp_pct"])
+    tp_5h_disp = html.escape(str(data.get("tp_5h_rem") or data.get("tp_rem") or "N/A"))
+    tp_5h_color = get_quota_color(tp_5h_pct)
     try:
-        tp_5h_bar_pct = min(100, max(0, int(float(tp_5h_pct)))) if tp_5h_pct is not None else tp_bar_pct
+        tp_5h_bar_pct = min(100, max(0, int(float(tp_5h_pct)))) if tp_5h_pct is not None else 0
     except (ValueError, TypeError):
-        tp_5h_bar_pct = tp_bar_pct
-    tp_5h_details = html.escape(str(data.get("tp_5h_details", "Fallback burst quota")))
+        tp_5h_bar_pct = 0
+    tp_5h_details = html.escape(str(data.get("tp_5h_details") or "Fallback burst quota"))
 
     tp_1w_pct = data.get("tp_1w_pct")
-    tp_1w_disp = html.escape(str(data.get("tp_1w_rem", data["tp_rem"])))
-    tp_1w_color = get_quota_color(tp_1w_pct if tp_1w_pct is not None else data["tp_pct"])
+    tp_1w_disp = html.escape(str(data.get("tp_1w_rem") or data.get("tp_rem") or "N/A"))
+    tp_1w_color = get_quota_color(tp_1w_pct)
     try:
-        tp_1w_bar_pct = min(100, max(0, int(float(tp_1w_pct)))) if tp_1w_pct is not None else tp_bar_pct
+        tp_1w_bar_pct = min(100, max(0, int(float(tp_1w_pct)))) if tp_1w_pct is not None else 0
     except (ValueError, TypeError):
-        tp_1w_bar_pct = tp_bar_pct
-    tp_1w_details = html.escape(str(data.get("tp_1w_details", "Fallback weekly quota")))
+        tp_1w_bar_pct = 0
+    tp_1w_details = html.escape(str(data.get("tp_1w_details") or "Fallback weekly quota"))
 
     active_table_html = _render_active_tasks_table(data["active_tasks"])
     queued_table_html = _render_queued_tasks_table(data["queued_tasks_list"])

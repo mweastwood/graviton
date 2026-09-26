@@ -2227,6 +2227,37 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(d_tpf["third_party_remaining_percentage"], 55.0)
         self.assertIsNone(d_tpf.get("gemini_remaining_percentage"))
 
+    def test_quota_window_and_info_to_dict_with_none_remaining_percentage(self):
+        """Verifies QuotaWindow.to_dict() and QuotaInfo.to_dict() handle remaining_percentage=None without TypeError."""
+        win = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        self.assertIsNone(win.remaining_percentage)
+        d_win = win.to_dict()
+        self.assertIsNone(d_win["remaining_percentage"])
+
+        # Also verify setting attribute directly to None
+        win_init = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0)
+        win_init.remaining_percentage = None
+        d_win_init = win_init.to_dict()
+        self.assertIsNone(d_win_init["remaining_percentage"])
+
+        # Verify format_quota_badge handles None
+        badge = format_quota_badge(win)
+        self.assertIn("QUOTA: N/A", badge)
+
+        # Verify QuotaInfo.to_dict() with QuotaWindow objects and None remaining_percentage
+        info = QuotaInfo(
+            remaining_percentage=None,
+            quota_pool="gemini",
+            window_5h=win,
+            window_1w=win_init,
+        )
+        d_info = info.to_dict()
+        self.assertIsNone(d_info["remaining_percentage"])
+        self.assertIsNone(d_info["gemini_5h_remaining_percentage"])
+        self.assertIsNone(d_info["gemini_1w_remaining_percentage"])
+        self.assertIsNone(d_info.get("gemini_remaining_percentage"))
+        self.assertIsNone(d_info.get("third_party_remaining_percentage"))
+
 
 if __name__ == "__main__":
     unittest.main()
