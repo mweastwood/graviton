@@ -2093,9 +2093,15 @@ class TestParseResetTime(unittest.TestCase):
         expected_float = datetime.fromtimestamp(ts_float, tz=timezone.utc)
         self.assertEqual(parse_reset_time_to_datetime(ts_float), expected_float)
 
-        # Numeric strings (integer and float)
+        # Negative timestamp
+        ts_neg = -1000
+        expected_neg = datetime.fromtimestamp(ts_neg, tz=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(ts_neg), expected_neg)
+
+        # Numeric strings (integer, float, negative)
         self.assertEqual(parse_reset_time_to_datetime("1786266000"), expected_int)
         self.assertEqual(parse_reset_time_to_datetime("1786266000.5"), expected_float)
+        self.assertEqual(parse_reset_time_to_datetime("-1000"), expected_neg)
 
     def test_iso8601_strings(self):
         expected_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
@@ -2111,6 +2117,10 @@ class TestParseResetTime(unittest.TestCase):
         self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00Z"), expected_utc)
         self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00z"), expected_utc)
 
+        # Microsecond precision with Z
+        expected_micro = datetime(2026, 9, 25, 16, 0, 0, 123456, tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00.123456Z"), expected_micro)
+
         # Leading/trailing whitespace
         self.assertEqual(parse_reset_time_to_datetime("  2026-09-25T16:00:00Z  "), expected_utc)
 
@@ -2119,12 +2129,12 @@ class TestParseResetTime(unittest.TestCase):
 
     def test_invalid_inputs_and_unsupported_types(self):
         # Non-parseable strings
-        for invalid in ["not-a-date", "", "   ", "2026-99-99", "inf", "-inf"]:
+        for invalid in ["not-a-date", "", "   ", "2026-99-99", "inf", "-inf", "nan", "NaN"]:
             self.assertIsNone(parse_reset_time_to_datetime(invalid))
             self.assertIsNone(parse_reset_time_to_timestamp(invalid))
 
-        # Unsupported complex types, booleans, and overflow numbers
-        for unsupported in [[], {}, [123], {"a": 1}, True, False, float("inf"), float("-inf"), 1e30]:
+        # Unsupported complex types, booleans, NaN, and overflow numbers
+        for unsupported in [[], {}, [123], {"a": 1}, True, False, float("inf"), float("-inf"), float("nan"), 1e30, -1e30]:
             self.assertIsNone(parse_reset_time_to_datetime(unsupported))
             self.assertIsNone(parse_reset_time_to_timestamp(unsupported))
 
@@ -2136,8 +2146,10 @@ class TestParseResetTime(unittest.TestCase):
         self.assertEqual(parse_reset_time_to_timestamp(dt_utc), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp(1786266000), 1786266000.0)
         self.assertEqual(parse_reset_time_to_timestamp(1786266000.5), 1786266000.5)
+        self.assertEqual(parse_reset_time_to_timestamp(-1000), -1000.0)
         self.assertEqual(parse_reset_time_to_timestamp("1786266000"), 1786266000.0)
         self.assertEqual(parse_reset_time_to_timestamp("1786266000.5"), 1786266000.5)
+        self.assertEqual(parse_reset_time_to_timestamp("-1000"), -1000.0)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T18:00:00+02:00"), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00"), expected_ts)
@@ -2155,6 +2167,8 @@ class TestParseResetTime(unittest.TestCase):
         # Invalid inputs return None
         self.assertIsNone(parse_reset_time_to_timestamp(None))
         self.assertIsNone(parse_reset_time_to_timestamp("not-a-date"))
+        self.assertIsNone(parse_reset_time_to_timestamp("nan"))
+        self.assertIsNone(parse_reset_time_to_timestamp(float("nan")))
         self.assertIsNone(parse_reset_time_to_timestamp([]))
         self.assertIsNone(parse_reset_time_to_timestamp(True))
         self.assertIsNone(parse_reset_time_to_timestamp(False))
