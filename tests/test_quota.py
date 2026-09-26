@@ -2016,6 +2016,248 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertIsNone(res)
         self.assertEqual(mock_urlopen.call_count, 1)
 
+    def test_quota_info_dual_windows_to_dict(self):
+        w5_g = QuotaWindow(name="5H", remaining_percentage=85.0, reset_time="2026-09-24T10:00:00Z")
+        w1_g = QuotaWindow(name="1W", remaining_percentage=92.5, reset_time="2026-09-30T10:00:00Z")
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0, reset_time="2026-09-24T12:00:00Z")
+        w1_c = QuotaWindow(name="1W", remaining_percentage=98.0, reset_time="2026-09-30T12:00:00Z")
+
+        info = QuotaInfo(
+            remaining_percentage=85.0,
+            state="NORMAL",
+            window_5h=w5_g,
+            window_1w=w1_g,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+            gemini_window_1w=w1_g,
+            claude_window_5h=w5_c,
+            claude_window_1w=w1_c,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_remaining_percentage"], 85.0)
+        self.assertEqual(d["gemini_1w_remaining_percentage"], 92.5)
+        self.assertEqual(d["third_party_5h_remaining_percentage"], 70.0)
+        self.assertEqual(d["third_party_1w_remaining_percentage"], 98.0)
+        self.assertIn("gemini_window_5h", d)
+        self.assertIn("claude_window_1w", d)
+
+    def test_quota_tracker_get_info_exposes_dual_windows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = QuotaTracker(state_path=Path(tmpdir) / ".graviton_model_selection.json")
+            w5_g = QuotaWindow(name="5H", remaining_percentage=88.0, reset_time="2026-09-24T10:00:00Z")
+            w1_g = QuotaWindow(name="1W", remaining_percentage=94.0, reset_time="2026-09-30T10:00:00Z")
+            w5_c = QuotaWindow(name="5H", remaining_percentage=65.0, reset_time="2026-09-24T12:00:00Z")
+            w1_c = QuotaWindow(name="1W", remaining_percentage=99.0, reset_time="2026-09-30T12:00:00Z")
+
+            tracker.gemini_window_5h = w5_g
+            tracker.gemini_window_1w = w1_g
+            tracker.claude_window_5h = w5_c
+            tracker.claude_window_1w = w1_c
+
+            info = tracker.get_info()
+            d = info.to_dict()
+            self.assertEqual(d["gemini_5h_remaining_percentage"], 88.0)
+            self.assertEqual(d["gemini_1w_remaining_percentage"], 94.0)
+            self.assertEqual(d["third_party_5h_remaining_percentage"], 65.0)
+            self.assertEqual(d["third_party_1w_remaining_percentage"], 99.0)
+
+    def test_quota_window_to_dict_includes_reset_countdown(self):
+        win = QuotaWindow(name="5H", remaining_percentage=80.0, reset_time="2026-09-24T15:00:00Z")
+        d = win.to_dict()
+        self.assertIn("reset_countdown", d)
+        self.assertEqual(d["reset_countdown"], win.format_reset_countdown())
+
+    def test_quota_info_dict_windows_preserves_reset_countdown(self):
+        # Window dict with explicit reset_countdown should not be overwritten by pacing cooldown
+        win_dict = {
+            "name": "5H",
+            "remaining_percentage": 75.0,
+            "reset_time": "2026-09-24T18:00:00Z",
+            "reset_countdown": "04h 30m",
+            "pacing_recovery_countdown": "00:00:00",
+        }
+        info = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+            gemini_window_5h=win_dict,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_countdown"], "04h 30m")
+
+        # Window dict without reset_countdown should compute from reset_time, not pacing_recovery_countdown
+        win_dict_no_cd = {
+            "name": "5H",
+            "remaining_percentage": 75.0,
+            "reset_time": "2029-01-01T18:00:00Z",
+            "pacing_recovery_countdown": "00:00:00",
+        }
+        info2 = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+            gemini_window_5h=win_dict_no_cd,
+        )
+        d2 = info2.to_dict()
+        self.assertNotEqual(d2["gemini_5h_countdown"], "00:00:00")
+        self.assertIsNotNone(d2["gemini_5h_countdown"])
+
+    def test_quota_info_third_party_pool_fallback(self):
+        # When active pool is third-party, window_5h and window_1w must NOT fall back to Gemini
+        w5_tp = QuotaWindow(name="5H", remaining_percentage=60.0, reset_time="2026-09-24T14:00:00Z")
+        w1_tp = QuotaWindow(name="1W", remaining_percentage=90.0, reset_time="2026-09-30T14:00:00Z")
+        info = QuotaInfo(
+            remaining_percentage=60.0,
+            quota_pool="claude_gpt",
+            window_5h=w5_tp,
+            window_1w=w1_tp,
+        )
+        d = info.to_dict()
+        # Gemini metrics must be None, NOT Claude's metrics
+        self.assertIsNone(d["gemini_5h_remaining_percentage"])
+        self.assertIsNone(d["gemini_1w_remaining_percentage"])
+        # Third-party metrics must receive the fallback
+        self.assertEqual(d["third_party_5h_remaining_percentage"], 60.0)
+        self.assertEqual(d["third_party_1w_remaining_percentage"], 90.0)
+
+    def test_quota_info_gemini_pool_serializes_resolved_windows(self):
+        w5 = QuotaWindow(name="5H", remaining_percentage=85.0, reset_time="2026-09-24T14:00:00Z")
+        w1 = QuotaWindow(name="1W", remaining_percentage=95.0, reset_time="2026-09-30T14:00:00Z")
+        info = QuotaInfo(
+            remaining_percentage=85.0,
+            quota_pool="gemini",
+            window_5h=w5,
+            window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertIn("gemini_window_5h", d)
+        self.assertIn("gemini_window_1w", d)
+        self.assertEqual(d["gemini_window_5h"]["remaining_percentage"], 85.0)
+        self.assertEqual(d["gemini_window_1w"]["remaining_percentage"], 95.0)
+        self.assertNotIn("claude_window_5h", d)
+        self.assertNotIn("claude_window_1w", d)
+
+        info_tp = QuotaInfo(
+            remaining_percentage=70.0,
+            quota_pool="claude_gpt",
+            window_5h=w5,
+            window_1w=w1,
+        )
+        d_tp = info_tp.to_dict()
+        self.assertIn("claude_window_5h", d_tp)
+        self.assertIn("claude_window_1w", d_tp)
+        self.assertEqual(d_tp["claude_window_5h"]["remaining_percentage"], 85.0)
+        self.assertEqual(d_tp["claude_window_1w"]["remaining_percentage"], 95.0)
+        self.assertNotIn("gemini_window_5h", d_tp)
+        self.assertNotIn("gemini_window_1w", d_tp)
+
+    def test_quota_info_pacing_status_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_status and preserves non-OK status."""
+        w5 = QuotaWindow(name="5H", duration_seconds=18000, remaining_percentage=5.0)
+        w5.get_pacing_status = MagicMock(return_value=("BEHIND_PACING", 5.0))
+        w1 = QuotaWindow(name="1W", duration_seconds=604800, remaining_percentage=80.0)
+        w1.get_pacing_status = MagicMock(return_value=("OK", 0.0))
+
+        info = QuotaInfo(
+            remaining_percentage=5.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertEqual(d["gemini_1w_pacing_status"], "OK")
+        self.assertEqual(d["third_party_5h_pacing_status"], "OK")
+        self.assertEqual(d["third_party_1w_pacing_status"], "OK")
+
+        # Preserving pacing_status from dictionary window
+        win_dict = {
+            "name": "5H",
+            "remaining_percentage": 10.0,
+            "reset_time": "2029-01-01T18:00:00Z",
+            "pacing_status": "BEHIND_PACING",
+        }
+        info2 = QuotaInfo(
+            remaining_percentage=10.0,
+            quota_pool="claude_gpt",
+            claude_window_5h=win_dict,
+        )
+        d2 = info2.to_dict()
+        self.assertEqual(d2["third_party_5h_pacing_status"], "BEHIND_PACING")
+
+    def test_quota_info_to_dict_exposes_pool_remaining_percentages(self):
+        """Verify QuotaInfo.to_dict includes gemini_remaining_percentage and third_party_remaining_percentage."""
+        w5_g = QuotaWindow(name="5H", remaining_percentage=80.0)
+        w1_g = QuotaWindow(name="1W", remaining_percentage=90.0)
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0)
+        w1_c = QuotaWindow(name="1W", remaining_percentage=60.0)
+
+        info = QuotaInfo(
+            remaining_percentage=80.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+            gemini_window_1w=w1_g,
+            claude_window_5h=w5_c,
+            claude_window_1w=w1_c,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_remaining_percentage"], 80.0)
+        self.assertEqual(d["third_party_remaining_percentage"], 60.0)
+
+        info_5h_only = QuotaInfo(
+            remaining_percentage=85.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+        )
+        d_5h = info_5h_only.to_dict()
+        self.assertEqual(d_5h["gemini_remaining_percentage"], 80.0)
+        self.assertIsNone(d_5h.get("third_party_remaining_percentage"))
+
+        info_gemini_fallback = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+        )
+        d_gf = info_gemini_fallback.to_dict()
+        self.assertEqual(d_gf["gemini_remaining_percentage"], 75.0)
+        self.assertIsNone(d_gf.get("third_party_remaining_percentage"))
+
+        info_tp_fallback = QuotaInfo(
+            remaining_percentage=55.0,
+            quota_pool="claude_gpt",
+        )
+        d_tpf = info_tp_fallback.to_dict()
+        self.assertEqual(d_tpf["third_party_remaining_percentage"], 55.0)
+        self.assertIsNone(d_tpf.get("gemini_remaining_percentage"))
+
+    def test_quota_window_and_info_to_dict_with_none_remaining_percentage(self):
+        """Verifies QuotaWindow.to_dict() and QuotaInfo.to_dict() handle remaining_percentage=None without TypeError."""
+        win = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        self.assertIsNone(win.remaining_percentage)
+        d_win = win.to_dict()
+        self.assertIsNone(d_win["remaining_percentage"])
+
+        # Also verify setting attribute directly to None
+        win_init = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0)
+        win_init.remaining_percentage = None
+        d_win_init = win_init.to_dict()
+        self.assertIsNone(d_win_init["remaining_percentage"])
+
+        # Verify format_quota_badge handles None
+        badge = format_quota_badge(win)
+        self.assertIn("QUOTA: N/A", badge)
+
+        # Verify QuotaInfo.to_dict() with QuotaWindow objects and None remaining_percentage
+        info = QuotaInfo(
+            remaining_percentage=None,
+            quota_pool="gemini",
+            window_5h=win,
+            window_1w=win_init,
+        )
+        d_info = info.to_dict()
+        self.assertIsNone(d_info["remaining_percentage"])
+        self.assertIsNone(d_info["gemini_5h_remaining_percentage"])
+        self.assertIsNone(d_info["gemini_1w_remaining_percentage"])
+        self.assertIsNone(d_info.get("gemini_remaining_percentage"))
+        self.assertIsNone(d_info.get("third_party_remaining_percentage"))
+
 
 if __name__ == "__main__":
     unittest.main()

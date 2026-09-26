@@ -310,6 +310,24 @@
             font-size: 0.75rem;
             color: var(--text-muted);
         }}
+        .meter-sub-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }}
+        .submeter-name {{
+            font-size: 0.82rem;
+            color: var(--text);
+            font-weight: 500;
+        }}
+        .submeter-pct {{
+            font-size: 0.88rem;
+            font-weight: 700;
+        }}
+        .submeter-group {{
+            margin-bottom: 12px;
+        }}
         .model-select-row {{
             margin-top: 10px;
             display: flex;
@@ -661,12 +679,31 @@
                 <div class="quota-meter">
                     <div class="meter-header">
                         <span class="meter-name">Gemini API Capacity</span>
-                        <span class="meter-pct" id="gemini-pct-label" style="color: {gemini_color};">{gemini_disp}</span>
+                        <span class="meter-pct" id="gemini-pct-label" style="display: none; color: {gemini_color};">{gemini_disp}</span>
                     </div>
-                    <div class="meter-track">
-                        <div id="gemini-bar" class="meter-fill" style="width: {gemini_bar_pct}%; background-color: {gemini_color};"></div>
+                    <!-- 5-Hour Window Submeter -->
+                    <div class="submeter-group">
+                        <div class="meter-sub-header">
+                            <span class="submeter-name">5-Hour Window (Burst)</span>
+                            <span class="submeter-pct" id="gemini-5h-pct-label" style="color: {gemini_5h_color};">{gemini_5h_disp}</span>
+                        </div>
+                        <div class="meter-track">
+                            <div id="gemini-5h-bar" class="meter-fill" style="width: {gemini_5h_bar_pct}%; background-color: {gemini_5h_color};"></div>
+                        </div>
+                        <div class="meter-sub" id="gemini-5h-details">{gemini_5h_details}</div>
                     </div>
-                    <div class="meter-sub">Live Gemini rate &amp; token pacing</div>
+                    <!-- 1-Week Window Submeter -->
+                    <div class="submeter-group">
+                        <div class="meter-sub-header">
+                            <span class="submeter-name">1-Week Window (Weekly)</span>
+                            <span class="submeter-pct" id="gemini-1w-pct-label" style="color: {gemini_1w_color};">{gemini_1w_disp}</span>
+                        </div>
+                        <div class="meter-track">
+                            <div id="gemini-1w-bar" class="meter-fill" style="width: {gemini_1w_bar_pct}%; background-color: {gemini_1w_color};"></div>
+                        </div>
+                        <div class="meter-sub" id="gemini-1w-details">{gemini_1w_details}</div>
+                    </div>
+                    <div id="gemini-bar" style="display: none; width: {gemini_bar_pct}%; background-color: {gemini_color};"></div>
                     <div class="model-select-row">
                         <label for="gemini-model-select" class="model-select-label">Active Model:</label>
                         <select id="gemini-model-select" class="model-select-dropdown" data-pool="gemini">
@@ -677,12 +714,31 @@
                 <div class="quota-meter">
                     <div class="meter-header">
                         <span class="meter-name">Third-Party (Claude) Capacity</span>
-                        <span class="meter-pct" id="tp-pct-label" style="color: {tp_color};">{tp_disp}</span>
+                        <span class="meter-pct" id="tp-pct-label" style="display: none; color: {tp_color};">{tp_disp}</span>
                     </div>
-                    <div class="meter-track">
-                        <div id="tp-bar" class="meter-fill" style="width: {tp_bar_pct}%; background-color: {tp_color};"></div>
+                    <!-- 5-Hour Window Submeter -->
+                    <div class="submeter-group">
+                        <div class="meter-sub-header">
+                            <span class="submeter-name">5-Hour Window (Burst)</span>
+                            <span class="submeter-pct" id="tp-5h-pct-label" style="color: {tp_5h_color};">{tp_5h_disp}</span>
+                        </div>
+                        <div class="meter-track">
+                            <div id="tp-5h-bar" class="meter-fill" style="width: {tp_5h_bar_pct}%; background-color: {tp_5h_color};"></div>
+                        </div>
+                        <div class="meter-sub" id="tp-5h-details">{tp_5h_details}</div>
                     </div>
-                    <div class="meter-sub">Fallback provider quota budget</div>
+                    <!-- 1-Week Window Submeter -->
+                    <div class="submeter-group">
+                        <div class="meter-sub-header">
+                            <span class="submeter-name">1-Week Window (Weekly)</span>
+                            <span class="submeter-pct" id="tp-1w-pct-label" style="color: {tp_1w_color};">{tp_1w_disp}</span>
+                        </div>
+                        <div class="meter-track">
+                            <div id="tp-1w-bar" class="meter-fill" style="width: {tp_1w_bar_pct}%; background-color: {tp_1w_color};"></div>
+                        </div>
+                        <div class="meter-sub" id="tp-1w-details">{tp_1w_details}</div>
+                    </div>
+                    <div id="tp-bar" style="display: none; width: {tp_bar_pct}%; background-color: {tp_color};"></div>
                     <div class="model-select-row">
                         <label for="tp-model-select" class="model-select-label">Active Model:</label>
                         <select id="tp-model-select" class="model-select-dropdown" data-pool="third_party">
@@ -877,17 +933,22 @@
             }}
 
             // 3. Quota & Model
-            function extractStr(label, defVal) {{
-                const regex = new RegExp("\\\\|\\\\s*\\\\*\\\\*" + label + "\\\\*\\\\*\\\\s*\\\\|\\\\s*`?([^`|\\\\n]+)`?");
-                const m = md.match(regex);
-                return m ? m[1].trim() : defVal;
+            function extractStr(labels, defVal) {{
+                const list = Array.isArray(labels) ? labels : [labels];
+                for (const label of list) {{
+                    const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
+                    const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?");
+                    const m = md.match(regex);
+                    if (m) return m[1].trim();
+                }}
+                return defVal;
             }}
             const pool = extractStr('Active Pool', 'default');
             const model = extractStr('Active Model', 'default');
             const geminiRem = extractStr('Gemini Remaining', 'N/A');
             const geminiModel = extractStr('Active Gemini Model', '');
             const tpModel = extractStr('Active Third-Party Model', '');
-            const tpRem = extractStr('Third-Party Remaining', 'N/A');
+            const tpRem = extractStr(['Third-Party Remaining', 'Third Party Remaining'], 'N/A');
 
             const quotaPool = document.getElementById('quota-pool');
             if (quotaPool) quotaPool.innerHTML = `Pool: <strong>${{escapeHtml(pool)}}</strong>`;
@@ -919,6 +980,85 @@
 
             const geminiPct = parsePct(geminiRem);
             const tpPct = parsePct(tpRem);
+
+            const gemini5hRem = extractStr(['Gemini (5H)', 'Gemini Quota (5H)'], geminiRem);
+            const gemini1wRem = extractStr(['Gemini (1W)', 'Gemini Quota (1W)'], geminiRem);
+            const tp5hRem = extractStr(['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)'], tpRem);
+            const tp1wRem = extractStr(['Third-Party (1W)', 'Third Party (1W)', 'Third-Party Quota (1W)'], tpRem);
+
+            function extractDetails(labels, defVal) {{
+                const list = Array.isArray(labels) ? labels : [labels];
+                for (const label of list) {{
+                    const esc = label.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
+                    const regexFull = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*(.*?)\\s*\\|\\s*$", "m");
+                    const regex = new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?[^`|\\n]+`?\\s*\\|\\s*([^|\\n]+)\\|");
+                    const m = md.match(regexFull) || md.match(regex);
+                    if (m) return m[1].trim();
+                }}
+                return defVal;
+            }}
+
+            const gemini5hDetails = extractDetails(['Gemini (5H)', 'Gemini Quota (5H)'], 'Live Gemini burst quota');
+            const gemini1wDetails = extractDetails(['Gemini (1W)', 'Gemini Quota (1W)'], 'Live Gemini weekly quota');
+            const tp5hDetails = extractDetails(['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)'], 'Fallback burst quota');
+            const tp1wDetails = extractDetails(['Third-Party (1W)', 'Third Party (1W)', 'Third-Party Quota (1W)'], 'Fallback weekly quota');
+
+            const gemini5hPct = parsePct(gemini5hRem);
+            const gemini1wPct = parsePct(gemini1wRem);
+            const tp5hPct = parsePct(tp5hRem);
+            const tp1wPct = parsePct(tp1wRem);
+
+            const g5hLabel = document.getElementById('gemini-5h-pct-label');
+            const g5hBar = document.getElementById('gemini-5h-bar');
+            const g5hDet = document.getElementById('gemini-5h-details');
+            if (g5hLabel) {{
+                g5hLabel.textContent = gemini5hRem;
+                g5hLabel.style.color = getQuotaColor(gemini5hPct);
+            }}
+            if (g5hBar) {{
+                g5hBar.style.width = `${{gemini5hPct !== null ? Math.min(100, Math.max(0, gemini5hPct)) : 0}}%`;
+                g5hBar.style.backgroundColor = getQuotaColor(gemini5hPct);
+            }}
+            if (g5hDet) g5hDet.textContent = gemini5hDetails;
+
+            const g1wLabel = document.getElementById('gemini-1w-pct-label');
+            const g1wBar = document.getElementById('gemini-1w-bar');
+            const g1wDet = document.getElementById('gemini-1w-details');
+            if (g1wLabel) {{
+                g1wLabel.textContent = gemini1wRem;
+                g1wLabel.style.color = getQuotaColor(gemini1wPct);
+            }}
+            if (g1wBar) {{
+                g1wBar.style.width = `${{gemini1wPct !== null ? Math.min(100, Math.max(0, gemini1wPct)) : 0}}%`;
+                g1wBar.style.backgroundColor = getQuotaColor(gemini1wPct);
+            }}
+            if (g1wDet) g1wDet.textContent = gemini1wDetails;
+
+            const t5hLabel = document.getElementById('tp-5h-pct-label');
+            const t5hBar = document.getElementById('tp-5h-bar');
+            const t5hDet = document.getElementById('tp-5h-details');
+            if (t5hLabel) {{
+                t5hLabel.textContent = tp5hRem;
+                t5hLabel.style.color = getQuotaColor(tp5hPct);
+            }}
+            if (t5hBar) {{
+                t5hBar.style.width = `${{tp5hPct !== null ? Math.min(100, Math.max(0, tp5hPct)) : 0}}%`;
+                t5hBar.style.backgroundColor = getQuotaColor(tp5hPct);
+            }}
+            if (t5hDet) t5hDet.textContent = tp5hDetails;
+
+            const t1wLabel = document.getElementById('tp-1w-pct-label');
+            const t1wBar = document.getElementById('tp-1w-bar');
+            const t1wDet = document.getElementById('tp-1w-details');
+            if (t1wLabel) {{
+                t1wLabel.textContent = tp1wRem;
+                t1wLabel.style.color = getQuotaColor(tp1wPct);
+            }}
+            if (t1wBar) {{
+                t1wBar.style.width = `${{tp1wPct !== null ? Math.min(100, Math.max(0, tp1wPct)) : 0}}%`;
+                t1wBar.style.backgroundColor = getQuotaColor(tp1wPct);
+            }}
+            if (t1wDet) t1wDet.textContent = tp1wDetails;
 
             const geminiLabel = document.getElementById('gemini-pct-label');
             const geminiBar = document.getElementById('gemini-bar');
