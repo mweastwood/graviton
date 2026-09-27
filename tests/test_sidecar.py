@@ -6,6 +6,7 @@ Unit tests for lib/sidecar.py
 import json
 import os
 import signal
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -521,6 +522,9 @@ class TestEnsureShellEnvironment(unittest.TestCase):
             self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/test-channel-99")
             self.assertEqual(os.environ.get("EXTRA_VAR"), "graviton_value")
             self.assertIn("/fake/bin", os.environ.get("PATH", ""))
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[1].get("stdin"), subprocess.DEVNULL)
+            self.assertTrue(mock_run.call_args[1].get("start_new_session"))
 
     def test_ensure_shell_environment_webhook_proxy_fallback(self):
         with patch.dict(os.environ, {"WEBHOOK_PROXY_URL": "https://smee.io/proxy-alias"}, clear=True), \
