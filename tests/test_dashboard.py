@@ -1947,6 +1947,21 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         html_out = render_dashboard_html(md_out, quota_tracker=tracker)
         self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
 
+    def test_format_dashboard_markdown_quota_tracker_inactive_pool_none_windows_renders_na_not_leaked_percentage(self):
+        """Verifies that format_dashboard_markdown with QuotaTracker does not leak active pool percentage into inactive pool."""
+        # Active pool is gemini at 42.0%, but Claude windows are uninitialized / None
+        tracker = QuotaTracker(quota_pool="gemini", remaining_percentage=42.0)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertIn("| **Gemini Remaining** | `42.0%` |", md_out)
+        self.assertIn("| **Third-Party Remaining** | `N/A` |", md_out)
+        self.assertNotIn("| **Third-Party Remaining** | `42", md_out)
+
+        html_out = render_dashboard_html(md_out, quota_tracker=tracker)
+        self.assertIn('id="tp-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+
 
 if __name__ == "__main__":
     unittest.main()

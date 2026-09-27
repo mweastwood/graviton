@@ -1178,6 +1178,37 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 20.0)
         self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 90.0)
 
+    def test_get_pool_remaining_percentage_inactive_pool_with_none_windows_returns_none(self):
+        # Case 1: Active pool is Gemini, Claude windows are uninitialized / None
+        tracker = QuotaTracker(quota_pool="gemini", remaining_percentage=42.0)
+        tracker.claude_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker.get_pool_remaining_percentage("claude_gpt"))
+        self.assertIsNone(tracker.get_pool_remaining_percentage("claude"))
+        # Active pool retains its percentage fallback
+        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 42.0)
+        # Quota state for inactive pool with None percentage should be NORMAL
+        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+
+        # Case 2: Active pool is exhausted (0.0%), ensure no false EXHAUSTED leakage
+        tracker_exhausted = QuotaTracker(quota_pool="gemini", remaining_percentage=0.0)
+        tracker_exhausted.claude_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker_exhausted.claude_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker_exhausted.get_pool_remaining_percentage("claude_gpt"))
+        self.assertEqual(tracker_exhausted.get_pool_state("gemini"), QuotaState.EXHAUSTED)
+        self.assertEqual(tracker_exhausted.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+
+        # Case 3: Active pool is Claude/GPT, Gemini windows are uninitialized / None
+        tracker_tp = QuotaTracker(quota_pool="claude_gpt", remaining_percentage=35.0)
+        tracker_tp.gemini_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker_tp.gemini_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker_tp.get_pool_remaining_percentage("gemini"))
+        self.assertEqual(tracker_tp.get_pool_remaining_percentage("claude_gpt"), 35.0)
+        self.assertEqual(tracker_tp.get_pool_state("gemini"), QuotaState.NORMAL)
+
     def test_reset_time_setter_claude_gpt_routing(self):
         t_claude = QuotaTracker(quota_pool="claude_gpt")
         t_claude.reset_time = 1700000000.0

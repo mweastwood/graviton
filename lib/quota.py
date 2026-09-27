@@ -888,7 +888,7 @@ def fetch_live_antigravity_quota(
 
 @dataclass
 class QuotaInfo:
-    remaining_percentage: float = 100.0
+    remaining_percentage: Optional[float] = 100.0
     state: str = QuotaState.NORMAL
     reset_time: Optional[float] = None
     active_backoff_delay: float = 0.0
@@ -1345,7 +1345,13 @@ class QuotaTracker:
                 return p5
             elif p1 is not None:
                 return p1
-            return self._remaining_percentage
+            p = str(pool or "").lower()
+            pool_is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
+            active_p = str(self.quota_pool or "").lower()
+            active_is_tp = "claude" in active_p or "gpt" in active_p or "3p" in active_p or "third" in active_p
+            if pool_is_tp == active_is_tp:
+                return self._remaining_percentage
+            return None
 
     def is_pool_behind_pacing(
         self, pool: str, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
