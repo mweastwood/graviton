@@ -251,11 +251,9 @@ class QuotaWindow:
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> float:
         """
-        Calculate the target quota fraction threshold for pacing: (remaining time fraction) ** 2.
-        This provides an ease-in pacing curve allowing higher quota burn immediately following a reset.
+        Calculate the target quota fraction threshold for linear pacing: remaining time fraction (y = x).
         """
-        t_frac = self.get_time_fraction(now_dt=now_dt, now=now)
-        return t_frac ** 2
+        return self.get_time_fraction(now_dt=now_dt, now=now)
 
     def target_quota_fraction(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
@@ -294,7 +292,7 @@ class QuotaWindow:
             return 0.0
         rem_sec = self.get_remaining_seconds(norm_dt)
         q_frac = self.quota_fraction
-        recovery = rem_sec - (math.sqrt(max(0.0, q_frac)) * self.duration_seconds)
+        recovery = rem_sec - (q_frac * self.duration_seconds)
         return max(0.0, float(recovery))
 
     def pacing_recovery_seconds(
@@ -1399,7 +1397,7 @@ class QuotaTracker:
     ) -> float:
         """
         Calculate proportional pacing backoff delay for a specific window or max across all windows.
-        pacing_deficit = max(0.0, target_quota_fraction - quota_fraction) where target_quota_fraction = (time_fraction) ** 2.
+        pacing_deficit = max(0.0, target_quota_fraction - quota_fraction) where target_quota_fraction = time_fraction.
         """
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
