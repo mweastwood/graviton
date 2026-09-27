@@ -47,8 +47,10 @@ def ensure_shell_environment(timeout: float = 2.0) -> None:
     try:
         res = subprocess.run(
             [shell, "-i", "-c", "env"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            start_new_session=True,
             timeout=timeout,
         )
         if res.returncode == 0:
@@ -108,6 +110,7 @@ def is_graviton_process(pid: int) -> bool:
     try:
         res = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
