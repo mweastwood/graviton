@@ -15,7 +15,14 @@ logger = logging.getLogger("graviton.updater")
 
 SERVER_START_TIME = time.time()
 
-DEFAULT_DRAIN_TIMEOUT: float = 30.0
+def _parse_drain_timeout() -> float:
+    try:
+        return float(os.getenv("GRAVITON_DRAIN_TIMEOUT", "30.0"))
+    except (ValueError, TypeError):
+        return 30.0
+
+
+DEFAULT_DRAIN_TIMEOUT: float = _parse_drain_timeout()
 
 _HOT_RELOAD_STATE = "IDLE"
 _HOT_RELOAD_LOCK = threading.Lock()
@@ -303,7 +310,6 @@ def sync_repo_and_reload(
 
         if not success:
             logger.error(f"Git pull failed for branch '{branch}':\n{git_output}")
-            set_hot_reload_state("IDLE")
             return False
 
         logger.info(f"Git pull output:\n{git_output}")
@@ -312,7 +318,6 @@ def sync_repo_and_reload(
             set_hot_reload_state("REBUILDING_CONTAINER")
             if not rebuild_agent_container(repo_root):
                 logger.error("Agent container rebuild failed; aborting hot reload.")
-                set_hot_reload_state("IDLE")
                 return False
 
         hot_reload_server(
@@ -325,9 +330,9 @@ def sync_repo_and_reload(
         return True
     except Exception as e:
         logger.exception(f"Unexpected error during self-update and reload: {e}")
-        set_hot_reload_state("IDLE")
         return False
     finally:
+        set_hot_reload_state("IDLE")
         if _SYNC_LOCK.locked():
             try:
                 _SYNC_LOCK.release()

@@ -2,6 +2,7 @@
 Unit tests for lib/updater.py
 """
 
+import os
 import subprocess
 import sys
 import unittest
@@ -20,6 +21,7 @@ from lib.updater import (
     get_uptime_seconds,
     get_uptime_str,
     _SYNC_LOCK,
+    _parse_drain_timeout,
     DEFAULT_DRAIN_TIMEOUT,
 )
 
@@ -508,6 +510,44 @@ class TestUpdater(unittest.TestCase):
         mock_git_pull.assert_called_once()
         mock_tm.drain_active_tasks.assert_not_called()
         self.assertEqual(get_hot_reload_state(), "IDLE")
+
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_resets_state_and_releases_lock_in_finally(self, mock_git_pull):
+        lock_state_during_pull = []
+        state_during_pull = []
+
+        def side_effect_pull(*args, **kwargs):
+            lock_state_during_pull.append(_SYNC_LOCK.locked())
+            state_during_pull.append(get_hot_reload_state())
+            return (False, "fatal: error pulling repository")
+
+        mock_git_pull.side_effect = side_effect_pull
+        mock_tm = MagicMock()
+
+        self.assertFalse(_SYNC_LOCK.locked())
+        with self.assertLogs("graviton.updater", level="ERROR") as cm:
+            res = sync_repo_and_reload(
+                repo_root=Path("/tmp/fake_repo"),
+                ref="refs/heads/main",
+                task_manager=mock_tm,
+            )
+
+        self.assertFalse(res)
+        self.assertEqual(lock_state_during_pull, [True])
+        self.assertEqual(state_during_pull, ["PULLING_GIT"])
+        self.assertEqual(get_hot_reload_state(), "IDLE")
+        self.assertFalse(_SYNC_LOCK.locked())
+        self.assertTrue(any("Git pull failed for branch 'main'" in log for log in cm.output))
+
+    def test_default_drain_timeout_env_var_override(self):
+        with patch.dict(os.environ, {"GRAVITON_DRAIN_TIMEOUT": "45.5"}):
+            self.assertEqual(_parse_drain_timeout(), 45.5)
+
+        with patch.dict(os.environ, {"GRAVITON_DRAIN_TIMEOUT": "invalid"}):
+            self.assertEqual(_parse_drain_timeout(), 30.0)
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_parse_drain_timeout(), 30.0)
 
     @patch("os.execv")
     @patch("lib.updater.perform_git_pull")
