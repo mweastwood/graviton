@@ -18,7 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer as HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional, Any
 
@@ -1010,6 +1010,7 @@ def main():
         GravitonHandler.server_host = args.host
         GravitonHandler.server_port = args.port
         httpd = HTTPServer(server_address, GravitonHandler)
+        httpd.daemon_threads = True
         httpd.use_supervisor = args.use_supervisor
 
         def shutdown_signal_handler(signum, frame):

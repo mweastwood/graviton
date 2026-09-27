@@ -831,7 +831,7 @@
             let statusText = 'ONLINE';
             let statusIcon = '🟢';
             let statusClass = 'online';
-            const statusMatch = md.match(/\\*\\*Status\\*\\*:\\s*([^\\n|&]+)/);
+            const statusMatch = md.match(/\*\*Status\*\*:\s*([^\n|&]+)/);
             const statusLine = statusMatch ? statusMatch[1] : md.substring(0, 500);
             if (statusLine.includes('BUSY')) {{
                 statusText = 'BUSY';
@@ -856,14 +856,14 @@
                 statusBadge.textContent = `${{statusIcon}} ${{statusText}}`;
             }}
 
-            const updatedMatch = md.match(/\\*Last updated:\\s*([^(]+)/);
+            const updatedMatch = md.match(/\*Last updated:\s*([^(]+)/);
             if (updatedMatch) {{
                 const metaUpdated = document.getElementById('meta-updated');
                 if (metaUpdated) metaUpdated.textContent = updatedMatch[1].trim();
             }}
 
             // 2. KPI Metrics
-            const workersMatch = md.match(/\\|\\s*\\*\\*Active Workers\\*\\*\\s*\\|\\s*`?(\\d+)\\s*\\/\\s*(\\d+)`?/);
+            const workersMatch = md.match(/\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?/);
             let activeWorkers = 0, maxWorkers = 0;
             if (workersMatch) {{
                 activeWorkers = parseInt(workersMatch[1], 10);
@@ -878,7 +878,7 @@
             }}
 
             function extractInt(label) {{
-                const regex = new RegExp("\\\\|\\\\s*\\\\*\\\\*" + label + "\\\\*\\\\*\\\\s*\\\\|\\\\s*`?(\\\\d+)`?");
+                const regex = new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?");
                 const m = md.match(regex);
                 return m ? parseInt(m[1], 10) : 0;
             }}
@@ -907,7 +907,7 @@
 
             // 3. Quota & Model
             function extractStr(label, defVal) {{
-                const regex = new RegExp("\\\\|\\\\s*\\\\*\\\\*" + label + "\\\\*\\\\*\\\\s*\\\\|\\\\s*`?([^`|\\\\n]+)`?");
+                const regex = new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?");
                 const m = md.match(regex);
                 return m ? m[1].trim() : defVal;
             }}
@@ -1017,7 +1017,7 @@
                         const elapsed = escapeHtml(r[3]);
                         const status = escapeHtml(r[4].replace(/[🔄`]/g, '').trim());
                         let rcHtml = '<span class="text-muted">Pending...</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
+                        const urlMatch = r[5].match(/\[(.*?)\]\((.*?)\)/);
                         if (urlMatch && isSafeUrl(urlMatch[2])) {{
                             rcHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>`;
                         }}
@@ -1133,7 +1133,7 @@
                         const statusIcon = isSuccess ? '✅' : '❌';
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
                         let detailHtml = '<span class="text-muted">Finished</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
+                        const urlMatch = r[5].match(/\[(.*?)\]\((.*?)\)/);
                         if (urlMatch && isSafeUrl(urlMatch[2])) {{
                             detailHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
                         }} else if (r[5].trim() && r[5].trim() !== 'Finished') {{

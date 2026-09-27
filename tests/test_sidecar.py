@@ -246,6 +246,19 @@ class TestSidecarManager(unittest.TestCase):
             smee_url="https://smee.io/forwarded-channel",
         )
 
+    @patch("lib.sidecar.start_sidecar")
+    @patch("lib.sidecar.is_graviton_process", return_value=True)
+    @patch("lib.sidecar.read_sidecar_pid", return_value=4321)
+    @patch("lib.sidecar.check_health")
+    def test_ensure_sidecar_running_retries_on_alive_graviton_process(self, mock_health, mock_pid, mock_is_graviton, mock_start):
+        # First check fails (transient), second retry check succeeds
+        mock_health.side_effect = [(False, {}), (True, {"status": "ok"})]
+        success, msg = ensure_sidecar_running(pid_file=self.pid_file)
+        self.assertTrue(success)
+        self.assertIn("PID 4321", msg)
+        mock_start.assert_not_called()
+        self.assertEqual(mock_health.call_count, 2)
+
     @patch("lib.sidecar.is_pid_alive", return_value=True)
     @patch("lib.sidecar.subprocess.Popen")
     @patch("lib.sidecar.check_health", side_effect=[(False, {}), (True, {"status": "ok"})])

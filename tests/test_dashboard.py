@@ -1436,6 +1436,18 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         template = _get_dashboard_template()
         self.assertIn("r[4].toLowerCase().includes('finish')", template)
 
+    def test_template_js_client_side_update_regexes(self):
+        template = _get_dashboard_template()
+        # Verify status and updated match regexes have valid markdown escaping (not double backslashes)
+        self.assertIn(r"md.match(/\*\*Status\*\*:\s*([^\n|&]+)/)", template)
+        self.assertIn(r"md.match(/\*Last updated:\s*([^(]+)/)", template)
+        self.assertIn(r"md.match(/\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?/)", template)
+        # Verify RegExp string constructor escaping is for literal pipe and asterisks
+        self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?")', template)
+        self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?")', template)
+        # Verify markdown link regex does not look for literal backslashes
+        self.assertIn(r"r[5].match(/\[(.*?)\]\((.*?)\)/)", template)
+
 
 if __name__ == "__main__":
     unittest.main()
