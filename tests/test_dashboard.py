@@ -4,6 +4,7 @@ Unit tests for Graviton Live Dashboard Generator and Auto-Updater (lib/dashboard
 """
 
 import os
+import re
 import tempfile
 import threading
 import time
@@ -1447,6 +1448,160 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?")', template)
         # Verify markdown link regex does not look for literal backslashes
         self.assertIn(r"r[5].match(/\[(.*?)\]\((.*?)\)/)", template)
+
+    def test_client_side_regexes_evaluate_generated_dashboard_markdown(self):
+        """
+        End-to-end verification that the client-side JavaScript regexes in dashboard.html
+        correctly match and parse markdown produced by format_dashboard_markdown().
+        """
+        mock_tm = MagicMock()
+        mock_tm._draining = False
+        mock_tm._paused = False
+        mock_tm.get_stats.return_value = {
+            "active_workers": 2,
+            "max_workers": 4,
+            "active_tasks": 1,
+            "queued_tasks": 3,
+            "completed_tasks": 10,
+            "failed_tasks": 1,
+        }
+
+        # Active task with remote control url
+        t1 = MagicMock()
+        t1.id = "task-001"
+        t1.agent = "code_reviewer"
+        t1.target_id = "PR #100"
+        t1.start_time = time.time() - 30
+        t1.status = "RUNNING"
+        t1.remote_control_url = "https://antigravity.google.com/session/task-001"
+        t1.repo_full_name = "owner/repo"
+        mock_tm.get_active_tasks.return_value = [t1]
+        mock_tm.get_queued_tasks.return_value = []
+
+        # History task with remote control url
+        h1 = MagicMock()
+        h1.id = "task-000"
+        h1.agent = "code_fixer"
+        h1.target_id = "PR #99"
+        h1.start_time = time.time() - 100
+        h1.finish_time = time.time() - 40
+        h1.status = TaskStatus.COMPLETED
+        h1.remote_control_url = "https://antigravity.google.com/session/task-000"
+        h1.error_message = None
+        h1.repo_full_name = "owner/repo"
+        mock_tm.get_task_history.return_value = [h1]
+
+        mock_qt = MagicMock()
+        mock_qt.get_info.return_value.to_dict.return_value = {
+            "quota_pool": "gemini",
+            "selected_model": "gemini-3.1-pro-high",
+            "active_gemini_model": "gemini-3.1-pro-high",
+            "active_third_party_model": "claude-3-5-sonnet",
+            "gemini_remaining_percentage": 85,
+            "third_party_remaining_percentage": 92,
+        }
+        mock_qt.quota_pool = "gemini"
+        mock_qt.get_active_model.side_effect = lambda pool=None: "gemini-3.1-pro-high" if pool == "gemini" else "claude-3-5-sonnet"
+        mock_qt.get_pool_remaining_percentage.side_effect = lambda pool=None: 85 if pool == "gemini" else 92
+
+        md = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+
+        # 1. Status & Updated
+        status_match = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md)
+        self.assertIsNotNone(status_match)
+        self.assertIn("BUSY", status_match.group(1))
+
+        updated_match = re.search(r"\*Last updated:\s*([^(]+)", md)
+        self.assertIsNotNone(updated_match)
+        self.assertIn("UTC", updated_match.group(1))
+
+        # 2. KPI Metrics - Active Workers
+        workers_match = re.search(r"\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?", md)
+        self.assertIsNotNone(workers_match)
+        self.assertEqual(int(workers_match.group(1)), 2)
+        self.assertEqual(int(workers_match.group(2)), 4)
+
+        # 2. KPI Metrics - extractInt equivalent
+        def extract_int(label):
+            pattern = r"\|\s*\*\*" + re.escape(label) + r"\*\*\s*\|\s*`?(\d+)`?"
+            m = re.search(pattern, md)
+            return int(m.group(1)) if m else 0
+
+        self.assertEqual(extract_int("Running Tasks"), 1)
+        self.assertEqual(extract_int("Queued Tasks"), 3)
+        self.assertEqual(extract_int("Completed Tasks"), 10)
+        self.assertEqual(extract_int("Failed Tasks"), 1)
+
+        # 3. Quota & Model - extractStr equivalent
+        def extract_str(label, def_val):
+            pattern = r"\|\s*\*\*" + re.escape(label) + r"\*\*\s*\|\s*`?([^`|\n]+)`?"
+            m = re.search(pattern, md)
+            return m.group(1).strip() if m else def_val
+
+        self.assertEqual(extract_str("Active Pool", "default"), "gemini")
+        self.assertEqual(extract_str("Active Model", "default"), "gemini-3.1-pro-high")
+        self.assertEqual(extract_str("Active Gemini Model", ""), "gemini-3.1-pro-high")
+        self.assertEqual(extract_str("Active Third-Party Model", ""), "claude-3-5-sonnet")
+        self.assertEqual(extract_str("Gemini Remaining", "N/A"), "85%")
+        self.assertEqual(extract_str("Third-Party Remaining", "N/A"), "92%")
+
+        # 4. Table Markdown Links (active tasks & history tasks)
+        active_lines = [l for l in md.splitlines() if "task-001" in l]
+        self.assertEqual(len(active_lines), 1)
+        active_cells = [c.strip() for c in active_lines[0].split("|")[1:-1]]
+        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[5])
+        self.assertIsNotNone(active_link_match)
+        self.assertEqual(active_link_match.group(1), "Remote Control 🌐")
+        self.assertEqual(active_link_match.group(2), "https://antigravity.google.com/session/task-001")
+
+        history_lines = [l for l in md.splitlines() if "task-000" in l]
+        self.assertEqual(len(history_lines), 1)
+        history_cells = [c.strip() for c in history_lines[0].split("|")[1:-1]]
+        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[5])
+        self.assertIsNotNone(history_link_match)
+        self.assertEqual(history_link_match.group(1), "Remote Control 🌐")
+        self.assertEqual(history_link_match.group(2), "https://antigravity.google.com/session/task-000")
+
+        # 5. ONLINE status verification when no active tasks
+        mock_tm.get_active_tasks.return_value = []
+        md_online = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_online = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_online)
+        self.assertIsNotNone(status_match_online)
+        self.assertIn("ONLINE", status_match_online.group(1))
+
+        # 6. DRAINING and PAUSED status verification
+        mock_tm._draining = True
+        md_draining = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_draining = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_draining)
+        self.assertIsNotNone(status_match_draining)
+        self.assertIn("DRAINING", status_match_draining.group(1))
+
+        mock_tm._draining = False
+        mock_tm._paused = True
+        md_paused = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_paused = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_paused)
+        self.assertIsNotNone(status_match_paused)
+        self.assertIn("PAUSED", status_match_paused.group(1))
 
 
 if __name__ == "__main__":

@@ -198,6 +198,7 @@ def start_sidecar(
     startup_timeout: float = 10.0,
     server_script: Optional[Path] = None,
     smee_url: Optional[str] = None,
+    check_existing: bool = True,
 ) -> Tuple[bool, str]:
     """
     Start the Graviton server in the background as a daemon sidecar.
@@ -211,23 +212,25 @@ def start_sidecar(
 
     # Check if already running and healthy
     existing_pid = read_sidecar_pid(pid_path)
-    healthy, _ = check_health(host=host, port=port, timeout=2.0)
-    if healthy:
-        msg = f"Graviton sidecar is already healthy on http://{host}:{port}"
-        if existing_pid:
-            msg += f" (PID {existing_pid})"
-        logger.info(msg)
-        return True, msg
+    if check_existing:
+        healthy, _ = check_health(host=host, port=port, timeout=2.0)
+        if healthy:
+            msg = f"Graviton sidecar is already healthy on http://{host}:{port}"
+            if existing_pid:
+                msg += f" (PID {existing_pid})"
+            logger.info(msg)
+            return True, msg
 
     if existing_pid:
         # Process is alive but not answering health check
         if is_graviton_process(existing_pid):
-            # Retry with slightly longer timeout before killing a live process
-            retry_healthy, _ = check_health(host=host, port=port, timeout=3.0)
-            if retry_healthy:
-                msg = f"Graviton sidecar is already healthy on http://{host}:{port} (PID {existing_pid})"
-                logger.info(msg)
-                return True, msg
+            if check_existing:
+                # Retry with slightly longer timeout before killing a live process
+                retry_healthy, _ = check_health(host=host, port=port, timeout=3.0)
+                if retry_healthy:
+                    msg = f"Graviton sidecar is already healthy on http://{host}:{port} (PID {existing_pid})"
+                    logger.info(msg)
+                    return True, msg
             logger.warning(f"Found alive PID {existing_pid} for sidecar, but health check failed. Attempting restart...")
             stop_sidecar(pid_file=pid_path, timeout=3.0)
         else:
@@ -422,4 +425,5 @@ def ensure_sidecar_running(
         extra_args=extra_args,
         startup_timeout=startup_timeout,
         smee_url=smee_url,
+        check_existing=False,
     )

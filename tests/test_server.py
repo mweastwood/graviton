@@ -319,6 +319,30 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_dashboard_cls.assert_not_called()
 
+    def test_server_uses_threading_http_server(self):
+        import socketserver
+        self.assertTrue(issubclass(server_mod.HTTPServer, socketserver.ThreadingMixIn))
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_server_initializes_daemon_threads(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        self.assertTrue(mock_server.daemon_threads)
+
     @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
