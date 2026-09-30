@@ -197,15 +197,18 @@ def format_dashboard_markdown(
 
     if active_tasks:
         lines.extend([
-            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         now_ts = time.time()
         for t in active_tasks:
             elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
             rc_link = f"[Remote Control 🌐]({t.remote_control_url})" if getattr(t, "remote_control_url", None) else "*Pending...*"
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            lines.append(f"| `{t.id}` | `{t.agent}` | `{target_disp}` | {elapsed} | 🔄 `{t.status}` | {rc_link} |")
+            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+            model_disp = f"`{model_name}`" if model_name != "-" else "-"
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {elapsed} | 🔄 `{t.status}` | {rc_link} |")
         lines.append("")
     else:
         lines.extend(["*No container tasks currently running.*", ""])
@@ -366,20 +369,23 @@ def format_dashboard_markdown(
 
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Target | Duration | Status | Summary / Remote Link |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
             dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
             icon = "✅" if t.status == TaskStatus.COMPLETED else "❌"
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+            model_disp = f"`{model_name}`" if model_name != "-" else "-"
             if getattr(t, "remote_control_url", None):
                 detail = f"[Remote Control 🌐]({t.remote_control_url})"
             elif t.error_message:
                 detail = f"`{t.error_message[:40]}...`" if len(t.error_message) > 40 else f"`{t.error_message}`"
             else:
                 detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | `{target_disp}` | {dur} | {icon} `{t.status}` | {detail} |")
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {dur} | {icon} `{t.status}` | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])
@@ -524,7 +530,30 @@ def parse_dashboard_markdown(
 
         if "Active Container Tasks" in title_line:
             for cells in table_rows:
-                if len(cells) >= 6:
+                if len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    model = cells[2].strip("`")
+                    target = cells[3].strip("`")
+                    elapsed = cells[4]
+                    status = STATUS_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                    rc_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(rc_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                    active_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "elapsed": elapsed,
+                        "status": status,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
@@ -540,6 +569,7 @@ def parse_dashboard_markdown(
                     active_tasks.append({
                         "id": tid,
                         "agent": agent,
+                        "model": "-",
                         "target": target,
                         "elapsed": elapsed,
                         "status": status,
@@ -599,7 +629,36 @@ def parse_dashboard_markdown(
 
         elif "Recent Task Execution History" in title_line:
             for cells in table_rows:
-                if len(cells) >= 6:
+                if len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    model = cells[2].strip("`")
+                    target = cells[3].strip("`")
+                    duration = cells[4]
+                    status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                    detail_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(detail_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                            detail = "Remote Control"
+                        else:
+                            detail = detail_cell.strip("`").strip()
+                    else:
+                        detail = detail_cell.strip("`").strip()
+                    history_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "duration": duration,
+                        "status": status_raw,
+                        "details": detail,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
@@ -620,6 +679,7 @@ def parse_dashboard_markdown(
                     history_tasks.append({
                         "id": tid,
                         "agent": agent,
+                        "model": "-",
                         "target": target,
                         "duration": duration,
                         "status": status_raw,
@@ -688,6 +748,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
     for t in active_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
+        model = html.escape(str(t.get("model", "") or "-"))
         target = html.escape(str(t.get("target", "")))
         elapsed = html.escape(str(t.get("elapsed", "")))
         status = html.escape(str(t.get("status", "")))
@@ -696,9 +757,11 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
             rc_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>'
         else:
             rc_html = '<span class="text-muted">Pending...</span>'
+        model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
+            f'<td>{model_cell}</td>'
             f'<td><code>{target}</code></td>'
             f'<td><span class="text-muted">{elapsed}</span></td>'
             f'<td><span class="status-pill status-running"><span class="spin-icon">🔄</span> {status}</span></td>'
@@ -706,7 +769,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -796,6 +859,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
     for t in history_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
+        model = html.escape(str(t.get("model", "") or "-"))
         target = html.escape(str(t.get("target", "")))
         duration = html.escape(str(t.get("duration", "")))
         raw_status = str(t.get("status", "")).lower()
@@ -812,9 +876,11 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             detail_html = f'<code class="error-snippet" title="{html.escape(detail)}">{html.escape(trunc)}</code>'
         else:
             detail_html = '<span class="text-muted">Finished</span>'
+        model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
+            f'<td>{model_cell}</td>'
             f'<td><code>{target}</code></td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
@@ -822,7 +888,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -873,9 +939,12 @@ def render_dashboard_html(
                     now_ts = time.time()
                     for t in act_objs:
                         elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
+                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
                         data["active_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
+                            "model": model_name,
                             "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
                             "elapsed": elapsed,
                             "status": str(t.status),
@@ -901,9 +970,12 @@ def render_dashboard_html(
                         dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
                         rc_url = getattr(t, "remote_control_url", None)
                         detail = "Remote Control" if rc_url else (t.error_message or "Finished")
+                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
                         data["history_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
+                            "model": model_name,
                             "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
                             "duration": dur,
                             "status": str(t.status),

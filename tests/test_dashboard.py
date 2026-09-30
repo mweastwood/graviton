@@ -1420,7 +1420,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
     def test_template_js_truncates_raw_detail_before_escape_html(self):
         template = _get_dashboard_template()
-        self.assertIn("const rawDetail = r[5].replace(/`/g, '').trim();", template)
+        self.assertIn("const rawDetail = detailRaw.replace(/`/g, '').trim();", template)
         self.assertIn("const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;", template)
         self.assertIn("const cleanDetail = escapeHtml(rawDetail);", template)
         self.assertIn("const trunc = escapeHtml(truncRaw);", template)
@@ -1435,7 +1435,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
     def test_template_js_handles_finish_status(self):
         template = _get_dashboard_template()
-        self.assertIn("r[4].toLowerCase().includes('finish')", template)
+        self.assertIn("rawStatus.toLowerCase().includes('finish')", template)
 
     def test_template_js_client_side_update_regexes(self):
         template = _get_dashboard_template()
@@ -1447,7 +1447,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?")', template)
         self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?")', template)
         # Verify markdown link regex does not look for literal backslashes
-        self.assertIn(r"r[5].match(/\[(.*?)\]\((.*?)\)/)", template)
+        self.assertIn(r"rcRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
+        self.assertIn(r"detailRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
 
     def test_client_side_regexes_evaluate_generated_dashboard_markdown(self):
         """
@@ -1554,7 +1555,11 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         active_lines = [l for l in md.splitlines() if "task-001" in l]
         self.assertEqual(len(active_lines), 1)
         active_cells = [c.strip() for c in active_lines[0].split("|")[1:-1]]
-        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[5])
+        self.assertEqual(active_cells[0], "`task-001`")
+        self.assertEqual(active_cells[1], "`code_reviewer`")
+        self.assertEqual(active_cells[2], "-")
+        self.assertEqual(active_cells[3], "`PR #100`")
+        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[6])
         self.assertIsNotNone(active_link_match)
         self.assertEqual(active_link_match.group(1), "Remote Control 🌐")
         self.assertEqual(active_link_match.group(2), "https://antigravity.google.com/session/task-001")
@@ -1562,7 +1567,11 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         history_lines = [l for l in md.splitlines() if "task-000" in l]
         self.assertEqual(len(history_lines), 1)
         history_cells = [c.strip() for c in history_lines[0].split("|")[1:-1]]
-        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[5])
+        self.assertEqual(history_cells[0], "`task-000`")
+        self.assertEqual(history_cells[1], "`code_fixer`")
+        self.assertEqual(history_cells[2], "-")
+        self.assertEqual(history_cells[3], "`PR #99`")
+        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[6])
         self.assertIsNotNone(history_link_match)
         self.assertEqual(history_link_match.group(1), "Remote Control 🌐")
         self.assertEqual(history_link_match.group(2), "https://antigravity.google.com/session/task-000")
@@ -1602,6 +1611,167 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         status_match_paused = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_paused)
         self.assertIsNotNone(status_match_paused)
         self.assertIn("PAUSED", status_match_paused.group(1))
+
+    def test_format_dashboard_markdown_with_model_column(self):
+        """Verify format_dashboard_markdown includes Model column in active and history tables."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1,
+            "max_workers": 2,
+            "active_tasks": 1,
+            "queued_tasks": 0,
+            "completed_tasks": 2,
+            "failed_tasks": 0,
+        }
+
+        active_task = Task(
+            id="task-act",
+            agent="code_reviewer",
+            prompt="Review PR #50",
+            target_id="#50",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 25.0,
+            selected_model="gemini-3.8-flash-medium",
+        )
+        history_task1 = Task(
+            id="task-hist1",
+            agent="code_fixer",
+            prompt="Fix bug",
+            target_id="#51",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 80.0,
+            finish_time=time.time() - 20.0,
+            selected_model="claude-3-5-sonnet",
+        )
+        history_task2 = Task(
+            id="task-hist2",
+            agent="pr_drafter",
+            prompt="Draft PR",
+            target_id="#52",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 50.0,
+            finish_time=time.time() - 10.0,
+            selected_model=None,
+        )
+
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = [history_task1, history_task2]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+
+        # Check Active Tasks table headers and rows
+        self.assertIn("| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |", md)
+        self.assertIn("| `task-act` | `code_reviewer` | `gemini-3.8-flash-medium` | `#50` |", md)
+
+        # Check History table headers and rows
+        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |", md)
+        self.assertIn("| `task-hist1` | `code_fixer` | `claude-3-5-sonnet` | `#51` |", md)
+        self.assertIn("| `task-hist2` | `pr_drafter` | - | `#52` |", md)
+
+    def test_parse_dashboard_markdown_with_and_without_model_column(self):
+        """Verify parse_dashboard_markdown handles both 7-column (with Model) and 6-column (legacy) tables."""
+        # 7-column markdown
+        md_7col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-1` | `code_reviewer` | `gemini-3.8-flash-medium` | `#10` | 15s | 🔄 RUNNING | [Remote Control 🌐](https://example.com/rc1) |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Model | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-2` | `code_fixer` | `claude-3-5-sonnet` | `#11` | 42s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed_7 = parse_dashboard_markdown(md_7col)
+        self.assertEqual(len(parsed_7["active_tasks"]), 1)
+        self.assertEqual(parsed_7["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed_7["active_tasks"][0]["agent"], "code_reviewer")
+        self.assertEqual(parsed_7["active_tasks"][0]["model"], "gemini-3.8-flash-medium")
+        self.assertEqual(parsed_7["active_tasks"][0]["target"], "#10")
+        self.assertEqual(parsed_7["active_tasks"][0]["remote_control_url"], "https://example.com/rc1")
+
+        self.assertEqual(len(parsed_7["history_tasks"]), 1)
+        self.assertEqual(parsed_7["history_tasks"][0]["id"], "task-2")
+        self.assertEqual(parsed_7["history_tasks"][0]["agent"], "code_fixer")
+        self.assertEqual(parsed_7["history_tasks"][0]["model"], "claude-3-5-sonnet")
+        self.assertEqual(parsed_7["history_tasks"][0]["target"], "#11")
+
+        # 6-column markdown (legacy backwards compatibility)
+        md_6col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-3` | `code_reviewer` | `#12` | 10s | 🔄 RUNNING | [Remote Control 🌐](https://example.com/rc2) |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-4` | `code_fixer` | `#13` | 30s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed_6 = parse_dashboard_markdown(md_6col)
+        self.assertEqual(len(parsed_6["active_tasks"]), 1)
+        self.assertEqual(parsed_6["active_tasks"][0]["id"], "task-3")
+        self.assertEqual(parsed_6["active_tasks"][0]["model"], "-")
+        self.assertEqual(parsed_6["active_tasks"][0]["target"], "#12")
+
+        self.assertEqual(len(parsed_6["history_tasks"]), 1)
+        self.assertEqual(parsed_6["history_tasks"][0]["id"], "task-4")
+        self.assertEqual(parsed_6["history_tasks"][0]["model"], "-")
+        self.assertEqual(parsed_6["history_tasks"][0]["target"], "#13")
+
+    def test_render_html_tables_with_model_column(self):
+        """Verify _render_active_tasks_table and _render_history_tasks_table render Model column."""
+        from lib.dashboard import _render_active_tasks_table, _render_history_tasks_table
+
+        active_data = [
+            {
+                "id": "task-act-1",
+                "agent": "code_reviewer",
+                "model": "gemini-3.8-flash-medium",
+                "target": "#101",
+                "elapsed": "20s",
+                "status": "RUNNING",
+                "remote_control_url": "https://example.com/rc",
+            },
+            {
+                "id": "task-act-2",
+                "agent": "code_fixer",
+                "model": "-",
+                "target": "#102",
+                "elapsed": "5s",
+                "status": "RUNNING",
+                "remote_control_url": None,
+            },
+        ]
+        active_html = _render_active_tasks_table(active_data)
+        self.assertIn("<th>Model</th>", active_html)
+        self.assertIn("<code>gemini-3.8-flash-medium</code>", active_html)
+        self.assertIn('<span class="text-muted">-</span>', active_html)
+
+        history_data = [
+            {
+                "id": "task-hist-1",
+                "agent": "code_fixer",
+                "model": "claude-3-5-sonnet",
+                "target": "#103",
+                "duration": "1m",
+                "status": "COMPLETED",
+                "details": "Finished",
+                "remote_control_url": None,
+            }
+        ]
+        history_html = _render_history_tasks_table(history_data)
+        self.assertIn("<th>Model</th>", history_html)
+        self.assertIn("<code>claude-3-5-sonnet</code>", history_html)
+
+    def test_client_js_renders_model_column_header(self):
+        """Verify render_dashboard_html client JS contains Model column header in active and history tables."""
+        html_out = render_dashboard_html("# Test Dashboard")
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th>", html_out)
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th>", html_out)
 
 
 if __name__ == "__main__":
