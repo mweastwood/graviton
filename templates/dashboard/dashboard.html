@@ -887,7 +887,7 @@
             let statusText = 'ONLINE';
             let statusIcon = '🟢';
             let statusClass = 'online';
-            const statusMatch = md.match(/\\*\\*Status\\*\\*:\\s*([^\\n|&]+)/);
+            const statusMatch = md.match(/\*\*Status\*\*:\s*([^\n|&]+)/);
             const statusLine = statusMatch ? statusMatch[1] : md.substring(0, 500);
             if (statusLine.includes('BUSY')) {{
                 statusText = 'BUSY';
@@ -912,14 +912,14 @@
                 statusBadge.textContent = `${{statusIcon}} ${{statusText}}`;
             }}
 
-            const updatedMatch = md.match(/\\*Last updated:\\s*([^(]+)/);
+            const updatedMatch = md.match(/\*Last updated:\s*([^(]+)/);
             if (updatedMatch) {{
                 const metaUpdated = document.getElementById('meta-updated');
                 if (metaUpdated) metaUpdated.textContent = updatedMatch[1].trim();
             }}
 
             // 2. KPI Metrics
-            const workersMatch = md.match(/\\|\\s*\\*\\*Active Workers\\*\\*\\s*\\|\\s*`?(\\d+)\\s*\\/\\s*(\\d+)`?/);
+            const workersMatch = md.match(/\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?/);
             let activeWorkers = 0, maxWorkers = 0;
             if (workersMatch) {{
                 activeWorkers = parseInt(workersMatch[1], 10);
@@ -934,7 +934,7 @@
             }}
 
             function extractInt(label) {{
-                const regex = new RegExp("\\\\|\\\\s*\\\\*\\\\*" + label + "\\\\*\\\\*\\\\s*\\\\|\\\\s*`?(\\\\d+)`?");
+                const regex = new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?");
                 const m = md.match(regex);
                 return m ? parseInt(m[1], 10) : 0;
             }}
@@ -1149,19 +1149,23 @@
                 if (validActiveRows.length === 0) {{
                     activeContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">💤</span><p class="empty-text">No container tasks currently running.</p></div>';
                 }} else {{
-                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead><tbody>';
+                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead><tbody>';
                     for (const r of validActiveRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const target = escapeHtml(r[2].replace(/`/g, ''));
-                        const elapsed = escapeHtml(r[3]);
-                        const status = escapeHtml(r[4].replace(/[🔄`]/g, '').trim());
+                        const hasModel = r.length >= 7;
+                        const model = hasModel ? escapeHtml(r[2].replace(/`/g, '')) : '-';
+                        const target = escapeHtml((hasModel ? r[3] : r[2]).replace(/`/g, ''));
+                        const elapsed = escapeHtml(hasModel ? r[4] : r[3]);
+                        const status = escapeHtml((hasModel ? r[5] : r[4]).replace(/[🔄`]/g, '').trim());
                         let rcHtml = '<span class="text-muted">Pending...</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
+                        const rcRaw = hasModel ? r[6] : r[5];
+                        const urlMatch = rcRaw.match(/\[(.*?)\]\((.*?)\)/);
                         if (urlMatch && isSafeUrl(urlMatch[2])) {{
                             rcHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>`;
                         }}
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td><td>${{rcHtml}}</td></tr>`;
+                        const modelHtml = model !== '-' ? `<code>${{model}}</code>` : '<span class="text-muted">-</span>';
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td><code>${{target}}</code></td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td><td>${{rcHtml}}</td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     activeContainer.innerHTML = htmlStr;
@@ -1262,28 +1266,33 @@
                 if (validHistoryRows.length === 0) {{
                     historyContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📜</span><p class="empty-text">No completed tasks in history yet.</p></div>';
                 }} else {{
-                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead><tbody>';
+                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead><tbody>';
                     for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const target = escapeHtml(r[2].replace(/`/g, ''));
-                        const dur = escapeHtml(r[3]);
-                        const isSuccess = r[4].includes('✅') || r[4].toLowerCase().includes('complete') || r[4].toLowerCase().includes('finish');
-                        const statusClean = escapeHtml(r[4].replace(/[✅❌`]/g, '').trim());
+                        const hasModel = r.length >= 7;
+                        const model = hasModel ? escapeHtml(r[2].replace(/`/g, '')) : '-';
+                        const target = escapeHtml((hasModel ? r[3] : r[2]).replace(/`/g, ''));
+                        const dur = escapeHtml(hasModel ? r[4] : r[3]);
+                        const rawStatus = hasModel ? r[5] : r[4];
+                        const isSuccess = rawStatus.includes('✅') || rawStatus.toLowerCase().includes('complete') || rawStatus.toLowerCase().includes('finish');
+                        const statusClean = escapeHtml(rawStatus.replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
                         let detailHtml = '<span class="text-muted">Finished</span>';
-                        const urlMatch = r[5].match(/\\[(.*?)\\]\\((.*?)\\)/);
+                        const detailRaw = hasModel ? r[6] : r[5];
+                        const urlMatch = detailRaw.match(/\[(.*?)\]\((.*?)\)/);
                         if (urlMatch && isSafeUrl(urlMatch[2])) {{
                             detailHtml = `<a href="${{escapeHtml(urlMatch[2].trim())}}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>`;
-                        }} else if (r[5].trim() && r[5].trim() !== 'Finished') {{
-                            const rawDetail = r[5].replace(/`/g, '').trim();
+                        }} else if (detailRaw.trim() && detailRaw.trim() !== 'Finished') {{
+                            const rawDetail = detailRaw.replace(/`/g, '').trim();
                             const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;
                             const cleanDetail = escapeHtml(rawDetail);
                             const trunc = escapeHtml(truncRaw);
                             detailHtml = `<code class="error-snippet" title="${{cleanDetail}}">${{trunc}}</code>`;
                         }}
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td><code>${{target}}</code></td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;
+                        const modelHtml = model !== '-' ? `<code>${{model}}</code>` : '<span class="text-muted">-</span>';
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td><code>${{target}}</code></td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     historyContainer.innerHTML = htmlStr;
