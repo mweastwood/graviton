@@ -110,6 +110,8 @@ def has_approval_marker(text: str) -> bool:
     if not text:
         return False
     text_lower = text.lower()
+    if "lgtm" not in text_lower and "approved" not in text_lower:
+        return False
 
     # Reject questions (trailing '?' or question words/phrasing like 'Is this PR approved?', 'Was this approved?', 'Has this been approved?')
     if "?" in text_lower:

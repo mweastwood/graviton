@@ -792,6 +792,59 @@ class TestPRTracker(unittest.TestCase):
         self.assertTrue(has_approval_marker("The team has approved this PR"))
         self.assertTrue(has_approval_marker("I have approved"))
 
+    def test_has_approval_marker_short_circuit_and_filters(self):
+        from lib.pr_tracker import has_approval_marker
+
+        # Immediate rejection of general comments, discussion, punctuation, and code blocks lacking lgtm/approved
+        non_approval_texts = [
+            "Looks good to me overall, but needs minor tweaks.",
+            "Can you please update the documentation?",
+            "Here is the stack trace: KeyError: 'foo'",
+            "```python\ndef test(): pass\n```",
+            "Random comment with symbols !@#$%^&*()",
+            "This fixes issue #123.",
+            "Great work so far!",
+            "Will review later this afternoon.",
+            "Please check the CI logs for details.",
+        ]
+        for text in non_approval_texts:
+            self.assertFalse(
+                has_approval_marker(text),
+                f"Expected has_approval_marker to return False for '{text}'",
+            )
+
+        # Standard positive approvals
+        positive_approvals = [
+            "LGTM",
+            "lgtm",
+            "approved",
+            "Approved!",
+            "glad to see this approved",
+            "Looks great, LGTM!",
+            "Ship it! Approved.",
+        ]
+        for text in positive_approvals:
+            self.assertTrue(
+                has_approval_marker(text),
+                f"Expected has_approval_marker to return True for '{text}'",
+            )
+
+        # Filtered/negated comments containing "lgtm" or "approved"
+        negated_texts = [
+            "not approved",
+            "Is this PR approved?",
+            "disapproved",
+            "unapproved",
+            "not lgtm",
+            "Was this approved?",
+            "in approved prs",
+        ]
+        for text in negated_texts:
+            self.assertFalse(
+                has_approval_marker(text),
+                f"Expected has_approval_marker to return False for '{text}'",
+            )
+
     def test_is_bot_event_agent_logins(self):
         from lib.pr_tracker import is_bot_event
         self.assertTrue(is_bot_event("", {"login": "code_reviewer"}))
