@@ -282,7 +282,7 @@ class TerminalInputListener:
                         break
 
                     raw_bytes = self._leftover_bytes + chunk
-                    self._leftover_bytes = b""
+                    self._leftover_bytes = raw_bytes
 
                     while check_running() and is_incomplete_escape_sequence(raw_bytes):
                         try:
@@ -299,6 +299,7 @@ class TerminalInputListener:
                                 if not seq_bytes:
                                     break
                                 raw_bytes = raw_bytes + seq_bytes
+                                self._leftover_bytes = raw_bytes
                             except (BlockingIOError, InterruptedError):
                                 time.sleep(0.01)
                                 continue

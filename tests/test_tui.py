@@ -1143,7 +1143,9 @@ class TestTerminalDashboard(unittest.TestCase):
                             timeout=2.0,
                         )
                     )
+                    self.assertEqual(dashboard.leftover_bytes, b"")
                     self.assertEqual(getattr(dashboard, "_leftover_bytes", b""), b"")
+                    self.assertGreaterEqual(dashboard.idle_flush_count, 1)
                     self.assertGreaterEqual(getattr(dashboard, "_idle_flush_count", 0), 1)
 
                     # At this point, leftover_bytes should have been flushed/cleared.

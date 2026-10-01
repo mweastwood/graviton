@@ -328,6 +328,22 @@ class TerminalDashboard:
             self._input_listener._idle_flush_count = value
 
     @property
+    def leftover_bytes(self) -> bytes:
+        return self._leftover_bytes
+
+    @leftover_bytes.setter
+    def leftover_bytes(self, value: bytes) -> None:
+        self._leftover_bytes = value
+
+    @property
+    def idle_flush_count(self) -> int:
+        return self._idle_flush_count
+
+    @idle_flush_count.setter
+    def idle_flush_count(self, value: int) -> None:
+        self._idle_flush_count = value
+
+    @property
     def active_screen(self) -> str:
         return self._active_screen
 
@@ -435,6 +451,12 @@ class TerminalDashboard:
             self._input_listener = TerminalInputListener(
                 on_key=self.handle_key, escape_timeout=self.ESCAPE_TIMEOUT
             )
+            if self._stored_old_term_settings is not None:
+                self._input_listener._old_term_settings = self._stored_old_term_settings
+            if self._stored_leftover_bytes:
+                self._input_listener._leftover_bytes = self._stored_leftover_bytes
+            if self._stored_idle_flush_count:
+                self._input_listener._idle_flush_count = self._stored_idle_flush_count
         self._input_listener.run_loop(is_running_func=lambda: self._running)
 
     def select_next_job(self):

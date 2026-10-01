@@ -191,28 +191,61 @@ class TestTUIInput(unittest.TestCase):
         self.assertEqual(dashboard._stored_idle_flush_count, 0)
         self.assertEqual(dashboard._leftover_bytes, b"")
         self.assertEqual(dashboard._idle_flush_count, 0)
+        self.assertEqual(dashboard.leftover_bytes, b"")
+        self.assertEqual(dashboard.idle_flush_count, 0)
 
-        # Test sync with _input_listener
+        # Test sync with _input_listener via private and public properties
         dashboard._leftover_bytes = b"\x1b["
         self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[")
         self.assertEqual(dashboard._input_listener._leftover_bytes, b"\x1b[")
         self.assertEqual(dashboard._leftover_bytes, b"\x1b[")
+        self.assertEqual(dashboard.leftover_bytes, b"\x1b[")
+
+        dashboard.leftover_bytes = b"\x1b[B"
+        self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[B")
+        self.assertEqual(dashboard._input_listener._leftover_bytes, b"\x1b[B")
+        self.assertEqual(dashboard.leftover_bytes, b"\x1b[B")
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[B")
 
         dashboard._idle_flush_count = 3
         self.assertEqual(dashboard._stored_idle_flush_count, 3)
         self.assertEqual(dashboard._input_listener._idle_flush_count, 3)
         self.assertEqual(dashboard._idle_flush_count, 3)
+        self.assertEqual(dashboard.idle_flush_count, 3)
+
+        dashboard.idle_flush_count = 5
+        self.assertEqual(dashboard._stored_idle_flush_count, 5)
+        self.assertEqual(dashboard._input_listener._idle_flush_count, 5)
+        self.assertEqual(dashboard._idle_flush_count, 5)
+        self.assertEqual(dashboard.idle_flush_count, 5)
 
         # Test fallback when _input_listener is None
         dashboard._input_listener = None
-        self.assertEqual(dashboard._leftover_bytes, b"\x1b[")
-        self.assertEqual(dashboard._idle_flush_count, 3)
-        dashboard._leftover_bytes = b"\x1b[A"
-        dashboard._idle_flush_count = 4
+        self.assertEqual(dashboard._leftover_bytes, b"\x1b[B")
+        self.assertEqual(dashboard.leftover_bytes, b"\x1b[B")
+        self.assertEqual(dashboard._idle_flush_count, 5)
+        self.assertEqual(dashboard.idle_flush_count, 5)
+
+        dashboard.leftover_bytes = b"\x1b[A"
+        dashboard.idle_flush_count = 7
         self.assertEqual(dashboard._stored_leftover_bytes, b"\x1b[A")
-        self.assertEqual(dashboard._stored_idle_flush_count, 4)
+        self.assertEqual(dashboard._stored_idle_flush_count, 7)
+        self.assertEqual(dashboard.leftover_bytes, b"\x1b[A")
         self.assertEqual(dashboard._leftover_bytes, b"\x1b[A")
-        self.assertEqual(dashboard._idle_flush_count, 4)
+        self.assertEqual(dashboard.idle_flush_count, 7)
+        self.assertEqual(dashboard._idle_flush_count, 7)
+
+        # Test re-initialization in _stdin_loop propagates stored attributes
+        dashboard._stored_old_term_settings = ["dummy_setting"]
+        with patch.object(TerminalInputListener, "run_loop") as mock_run_loop:
+            dashboard._stdin_loop()
+            self.assertIsNotNone(dashboard._input_listener)
+            self.assertEqual(dashboard._input_listener._old_term_settings, ["dummy_setting"])
+            self.assertEqual(dashboard._input_listener._leftover_bytes, b"\x1b[A")
+            self.assertEqual(dashboard._input_listener._idle_flush_count, 7)
+            self.assertEqual(dashboard.leftover_bytes, b"\x1b[A")
+            self.assertEqual(dashboard.idle_flush_count, 7)
+            mock_run_loop.assert_called_once()
 
     def test_terminal_input_listener_idle_timeout_flushes_leftover_bytes(self):
         if not HAS_TERMIOS:
