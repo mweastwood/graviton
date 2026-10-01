@@ -200,6 +200,24 @@ class TerminalInputListener:
         self.escape_timeout = escape_timeout
         self._old_term_settings: Optional[Any] = None
         self._running: bool = False
+        self._leftover_bytes: bytes = b""
+        self._idle_flush_count: int = 0
+
+    @property
+    def leftover_bytes(self) -> bytes:
+        return self._leftover_bytes
+
+    @leftover_bytes.setter
+    def leftover_bytes(self, value: bytes) -> None:
+        self._leftover_bytes = value
+
+    @property
+    def idle_flush_count(self) -> int:
+        return self._idle_flush_count
+
+    @idle_flush_count.setter
+    def idle_flush_count(self, value: int) -> None:
+        self._idle_flush_count = value
 
     def setup_terminal(self) -> bool:
         """Set up raw termios cbreak mode on stdin if interactive TTY."""
@@ -240,7 +258,8 @@ class TerminalInputListener:
 
         self._running = True
         fd = sys.stdin.fileno()
-        leftover_bytes = b""
+        if not hasattr(self, "_leftover_bytes") or self._leftover_bytes is None:
+            self._leftover_bytes = b""
 
         def check_running():
             if not self._running:
@@ -271,8 +290,8 @@ class TerminalInputListener:
                     if not chunk:
                         break
 
-                    raw_bytes = leftover_bytes + chunk
-                    leftover_bytes = b""
+                    raw_bytes = self._leftover_bytes + chunk
+                    self._leftover_bytes = raw_bytes
 
                     while check_running() and is_incomplete_escape_sequence(raw_bytes):
                         try:
@@ -289,6 +308,7 @@ class TerminalInputListener:
                                 if not seq_bytes:
                                     break
                                 raw_bytes = raw_bytes + seq_bytes
+                                self._leftover_bytes = raw_bytes
                             except (BlockingIOError, InterruptedError):
                                 time.sleep(0.01)
                                 continue
@@ -299,16 +319,18 @@ class TerminalInputListener:
 
                     raw_bytes, leftover_esc = split_incomplete_escape_tail(raw_bytes)
                     prefix, leftover_utf8 = split_incomplete_utf8_tail(raw_bytes)
-                    leftover_bytes = leftover_utf8 + leftover_esc
+                    self._leftover_bytes = leftover_utf8 + leftover_esc
                     for key in parse_keys(prefix):
                         if self.on_key:
                             self.on_key(key)
                 else:
-                    if leftover_bytes:
-                        for key in parse_keys(leftover_bytes):
+                    if self._leftover_bytes:
+                        flush_bytes = self._leftover_bytes
+                        self._leftover_bytes = b""
+                        self._idle_flush_count += 1
+                        for key in parse_keys(flush_bytes):
                             if self.on_key:
                                 self.on_key(key)
-                        leftover_bytes = b""
         except Exception:
             pass
         finally:
