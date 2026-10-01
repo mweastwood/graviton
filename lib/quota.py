@@ -180,7 +180,7 @@ class QuotaWindow:
         name: Optional[str] = None,
         duration_seconds: Optional[float] = None,
         remaining_percentage: Optional[float] = 100.0,
-        reset_time: Optional[Union[str, float, int]] = None,
+        reset_time: Optional[Union[str, float, int, datetime]] = None,
         reset_timestamp: Optional[float] = None,
         window_name: Optional[str] = None,
         total_duration_seconds: Optional[float] = None,
@@ -202,7 +202,10 @@ class QuotaWindow:
         else:
             self.reset_datetime = parse_reset_time_to_datetime(res)
 
-        self.reset_time = str(res) if res is not None else (self.reset_datetime.isoformat() if self.reset_datetime else None)
+        if isinstance(res, datetime):
+            self.reset_time = self.reset_datetime.isoformat() if self.reset_datetime else None
+        else:
+            self.reset_time = str(res) if res is not None else (self.reset_datetime.isoformat() if self.reset_datetime else None)
         self.reset_timestamp = self.reset_datetime.timestamp() if self.reset_datetime is not None else None
         self._last_reset_time = self.reset_time
         self._last_reset_timestamp = self.reset_timestamp
@@ -238,7 +241,7 @@ class QuotaWindow:
             return cur_dt
 
         # 2. Fast-path: no mutations (hot loop)
-        if cur_dt is not None and cur_time == last_time and cur_ts == last_ts:
+        if cur_time == last_time and cur_ts == last_ts and cur_dt == last_dt:
             return cur_dt
 
         # 3. Dynamic mutation of reset_time or reset_timestamp
@@ -250,20 +253,25 @@ class QuotaWindow:
             res = cur_time if cur_time is not None else cur_ts
 
         if res is None:
-            self.reset_datetime = None
+            self.reset_time = None
             self.reset_timestamp = None
-            self._last_reset_time = cur_time
-            self._last_reset_timestamp = cur_ts
+            self.reset_datetime = None
+            self._last_reset_time = None
+            self._last_reset_timestamp = None
             self._last_reset_datetime = None
             return None
 
         dt = parse_reset_time_to_datetime(res)
         self.reset_datetime = dt
         if dt is not None:
+            if isinstance(cur_time, datetime):
+                self.reset_time = dt.isoformat()
+            elif cur_time == last_time and cur_ts != last_ts:
+                self.reset_time = dt.isoformat()
             if cur_ts == last_ts:
                 self.reset_timestamp = dt.timestamp()
-            if cur_time == last_time and cur_ts != last_ts:
-                self.reset_time = dt.isoformat()
+        else:
+            self.reset_timestamp = None
         self._last_reset_time = self.reset_time
         self._last_reset_timestamp = self.reset_timestamp
         self._last_reset_datetime = dt
@@ -390,7 +398,7 @@ class QuotaWindow:
             secs = int(rec_sec % 60)
             return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
-    def format_reset_countdown(self, now: Optional[Union[float, datetime]] = None) -> str:
+    def format_reset_countdown(self, now: Optional[Union[float, int, datetime]] = None) -> str:
         dt = self._sync_reset_datetime()
         target = dt if dt is not None else (self.reset_time if self.reset_time is not None else self.reset_timestamp)
         now_dt = _normalize_now_datetime(now)
@@ -414,7 +422,7 @@ class QuotaWindow:
 
 def format_reset_countdown(
     reset_time: Optional[Union[str, float, int, datetime]] = None,
-    now_dt: Optional[datetime] = None,
+    now_dt: Optional[Union[float, int, datetime]] = None,
     window_name: Optional[str] = None,
 ) -> str:
     """Format reset timestamp into HH:MM:SS or Xd Yh countdown string."""
@@ -423,9 +431,10 @@ def format_reset_countdown(
     dt = parse_reset_time_to_datetime(reset_time)
     if dt is None:
         return str(reset_time)
-    if now_dt is None:
-        now_dt = datetime.now(timezone.utc)
-    diff = (dt - now_dt).total_seconds()
+    now_dt_norm = _normalize_now_datetime(now_dt)
+    if now_dt_norm is None:
+        now_dt_norm = datetime.now(timezone.utc)
+    diff = (dt - now_dt_norm).total_seconds()
     if diff <= 0:
         return "00:00:00"
 
@@ -442,7 +451,7 @@ def format_reset_countdown(
 
 def format_quota_badge(
     window: QuotaWindow,
-    now_dt: Optional[datetime] = None,
+    now_dt: Optional[Union[float, int, datetime]] = None,
     quota_pool: Optional[str] = None,
 ) -> str:
     """Render quota badge string for TUI header/panel."""

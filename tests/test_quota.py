@@ -2416,9 +2416,10 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
         self.assertEqual(win.format_reset_countdown(now=now), "06:00:00")
 
-        # Mutate reset_timestamp
-        win.reset_timestamp = 1790866800.0
-        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+        # Mutate reset_timestamp to a distinct timestamp value (16:00:00 UTC = 7 hours remaining)
+        win.reset_timestamp = 1790870400.0
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 25200.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "07:00:00")
 
         # Mutate reset_datetime directly
         win.reset_datetime = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
@@ -2428,6 +2429,103 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         # Test parse_reset_time_to_timestamp accepts datetime
         dt_sample = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
         self.assertEqual(parse_reset_time_to_timestamp(dt_sample), dt_sample.timestamp())
+
+    def test_quota_window_clearing_reset_timestamp_does_not_resurrect(self):
+        """Verify setting reset_timestamp = None clears all representations and does not resurrect on subsequent calls."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        self.assertIsNotNone(win.reset_datetime)
+        self.assertIsNotNone(win.reset_timestamp)
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00Z")
+
+        # Clear reset_timestamp = None
+        win.reset_timestamp = None
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+        # Subsequent call must not resurrect old string or datetime
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "N/A")
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+    def test_quota_window_clearing_reset_time_does_not_resurrect(self):
+        """Verify setting reset_time = None clears all representations and does not resurrect."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        win.reset_time = None
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+        # Subsequent call
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+    def test_quota_window_invalid_reset_time_clears_timestamps(self):
+        """Verify setting an invalid string to reset_time clears reset_timestamp and reset_datetime."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        self.assertIsNotNone(win.reset_timestamp)
+
+        win.reset_time = "invalid-date-string"
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertEqual(win.reset_time, "invalid-date-string")
+
+        # Second call to ensure fast-path / stable state
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+
+    def test_quota_window_init_with_datetime(self):
+        """Verify QuotaWindow(reset_time=datetime(...)) properly stores reset_datetime and ISO format reset_time."""
+        dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time=dt)
+        self.assertEqual(win.reset_datetime, dt)
+        self.assertEqual(win.reset_time, dt.isoformat())
+        self.assertEqual(win.reset_timestamp, dt.timestamp())
+
+        # Also test with naive datetime (auto-normalized to UTC)
+        naive_dt = datetime(2026, 10, 1, 15, 0, 0)
+        win_naive = QuotaWindow(name="5H", reset_time=naive_dt)
+        self.assertEqual(win_naive.reset_datetime, dt)
+        self.assertEqual(win_naive.reset_time, dt.isoformat())
+        self.assertEqual(win_naive.reset_timestamp, dt.timestamp())
+
+    def test_format_reset_countdown_with_naive_and_numeric_now(self):
+        """Verify format_reset_countdown accepts offset-naive datetime and numeric timestamp for now_dt without TypeError."""
+        reset_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+        # Naive datetime as now_dt (2 hours before reset_dt)
+        naive_now = datetime(2026, 10, 1, 10, 0, 0)
+        self.assertEqual(format_reset_countdown(reset_dt, now_dt=naive_now), "02:00:00")
+
+        # Numeric timestamp as now_dt (2 hours before reset_dt)
+        ts_now = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(format_reset_countdown(reset_dt, now_dt=ts_now), "02:00:00")
+
+        # QuotaWindow.format_reset_countdown with naive datetime and numeric timestamp
+        win = QuotaWindow(name="5H", reset_time=reset_dt)
+        self.assertEqual(win.format_reset_countdown(now=naive_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now=ts_now), "02:00:00")
+
+    def test_quota_window_unconfigured_fast_path(self):
+        """Verify unconfigured windows hit fast path and return 0.0 remaining seconds."""
+        win = QuotaWindow(name="5H")
+        self.assertIsNone(win.reset_time)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertEqual(win.get_remaining_seconds(), 0.0)
+        self.assertEqual(win.get_remaining_seconds(), 0.0)
+        self.assertEqual(win.format_reset_countdown(), "N/A")
 
 
 if __name__ == "__main__":
