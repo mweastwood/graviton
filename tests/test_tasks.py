@@ -2201,15 +2201,63 @@ class TestTaskManager(unittest.TestCase):
         bounded.add("x")
         self.assertIn("x", repr(bounded))
 
-        # Test membership with non-string keys
+        # Test membership with unhashable and non-string keys
         self.assertNotIn(12345, bounded)
         self.assertNotIn(None, bounded)
+        self.assertNotIn(["unhashable"], bounded)
+        self.assertNotIn({"unhashable": "key"}, bounded)
+        self.assertNotIn(set(), bounded)
+
+        # Test reversibility (__reversed__)
+        rev_bounded = _PrunedTaskIds(maxlen=5)
+        for ch in ["first", "second", "third"]:
+            rev_bounded.add(ch)
+        self.assertEqual(list(reversed(rev_bounded)), ["third", "second", "first"])
 
         # Test maxlen=0 behaves cleanly (retains nothing)
         zero_bounded = _PrunedTaskIds(maxlen=0)
         zero_bounded.add("item")
         self.assertEqual(len(zero_bounded), 0)
         self.assertNotIn("item", zero_bounded)
+
+        # Test add() on maxlen <= 0 clears and does not retain existing items
+        zero_drain = _PrunedTaskIds(maxlen=3)
+        zero_drain.add("t-1")
+        zero_drain.add("t-2")
+        self.assertEqual(len(zero_drain), 2)
+        zero_drain.maxlen = 0
+        zero_drain.add("t-2")  # Re-adding existing item when maxlen <= 0
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-2", zero_drain)
+
+        zero_drain.add("t-new")  # Adding new item when maxlen <= 0
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-new", zero_drain)
+
+        # Test negative maxlen
+        neg_bounded = _PrunedTaskIds(maxlen=-1)
+        neg_bounded.add("item")
+        self.assertEqual(len(neg_bounded), 0)
+        self.assertNotIn("item", neg_bounded)
+
+        # Test dynamic maxlen reduction drains existing items down to the new bound
+        drain_bounded = _PrunedTaskIds(maxlen=5)
+        for i in range(5):
+            drain_bounded.add(f"item-{i}")
+        self.assertEqual(len(drain_bounded), 5)
+        self.assertEqual(list(drain_bounded), ["item-0", "item-1", "item-2", "item-3", "item-4"])
+
+        drain_bounded.maxlen = 2
+        # Adding a new item drains older items down to the new maxlen bound
+        drain_bounded.add("item-5")
+        self.assertEqual(len(drain_bounded), 2)
+        self.assertEqual(list(drain_bounded), ["item-4", "item-5"])
+
+        # Re-adding an existing item also drains down to the reduced maxlen
+        drain_bounded.maxlen = 1
+        drain_bounded.add("item-5")
+        self.assertEqual(len(drain_bounded), 1)
+        self.assertEqual(list(drain_bounded), ["item-5"])
 
         # Test maxlen=None (unbounded)
         unbounded = _PrunedTaskIds(maxlen=None)

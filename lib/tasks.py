@@ -361,25 +361,33 @@ class _PrunedTaskIds:
 
     def add(self, item: str) -> None:
         """Add an item to the collection, moving it to the most recent position if present."""
+        if self.maxlen is not None and self.maxlen <= 0:
+            self._items.clear()
+            return
+
         if item in self._items:
             self._items.move_to_end(item)
-            return
+        else:
+            self._items[item] = None
 
-        if self.maxlen is not None and self.maxlen <= 0:
-            return
-
-        if self.maxlen is not None and len(self._items) >= self.maxlen:
-            self._items.popitem(last=False)
-        self._items[item] = None
+        if self.maxlen is not None:
+            while len(self._items) > self.maxlen and self._items:
+                self._items.popitem(last=False)
 
     def __contains__(self, item: object) -> bool:
-        return item in self._items
+        try:
+            return item in self._items
+        except TypeError:
+            return False
 
     def __len__(self) -> int:
         return len(self._items)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._items)
+
+    def __reversed__(self) -> Iterator[str]:
+        return reversed(self._items)
 
     def __repr__(self) -> str:
         return f"_PrunedTaskIds({list(self._items)}, maxlen={self.maxlen})"
