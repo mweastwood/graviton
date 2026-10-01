@@ -1225,10 +1225,14 @@ class TestDashboardFormatting(unittest.TestCase):
         history_rendered = _render_history_tasks_table([
             {"id": "h1", "agent": "code_fixer", "target": "[#55](https://github.com/org/repo/pull/55)", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
             {"id": "h2", "agent": "code_fixer", "target": "N/A", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
+            {"id": "h3", "agent": "code_reviewer", "target": "N/A", "duration": "5s", "status": "COMPLETED", "details": "Remote Session"},
         ])
         self.assertIn('<a href="https://github.com/org/repo/pull/55" target="_blank" rel="noopener" class="target-link"><code>#55</code></a>', history_rendered)
         self.assertNotIn("<code>[#55]", history_rendered)
         self.assertIn("<code>N/A</code>", history_rendered)
+        self.assertIn('<span class="text-muted">Finished</span>', history_rendered)
+        self.assertNotIn("Remote Session", history_rendered)
+        self.assertNotIn("error-snippet", history_rendered)
 
     def test_format_target_markdown_cell(self):
         # Escape pipe characters to preserve table syntax
@@ -1252,6 +1256,20 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(
             _format_target_markdown_cell("`#42`", None),
             "`#42`",
+        )
+        # Reject unsafe schemes
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "javascript:alert(1)"),
+            "`#42`",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "data:text/html,<script>alert(1)</script>"),
+            "`#42`",
+        )
+        # Delimiter encoding for parentheses
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "https://github.com/owner/repo/pull/1(subpath)"),
+            "[`#42`](https://github.com/owner/repo/pull/1%28subpath%29)",
         )
 
     def test_parse_dashboard_markdown_clickable_targets(self):
@@ -3125,6 +3143,15 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertNotIn(r"sec.split('\\n')", template)
         # Target cell pipe and newline unescaping/sanitization in client-side formatTargetCell
         self.assertIn(r"label = label.replace(/\\\|/g, '|').replace(/[\r\n]+/g, ' ');", template)
+
+    def test_template_js_model_column_row_length_guards(self):
+        template = _get_dashboard_template()
+        # Active tasks 5-column backwards compatibility guard
+        self.assertIn("r.length >= 6 && (activeSec.includes('| Model |')", template)
+        self.assertIn("const statusRaw = (hasModel ? r[5] : r[4]) || '';", template)
+        # History tasks 5-column backwards compatibility guard
+        self.assertIn("r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'))", template)
+        self.assertIn("const rawStatus = (hasModel ? r[5] : r[4]) || '';", template)
 
 
 if __name__ == "__main__":

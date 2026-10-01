@@ -1252,12 +1252,13 @@
                     for (const r of validActiveRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const hasModel = activeSec.includes('| Model |') || (r.length >= 6 && !r[5].includes('Remote Control') && !r[5].includes('http'));
+                        const hasModel = r.length >= 6 && (activeSec.includes('| Model |') || (!r[5].includes('Remote Control') && !r[5].includes('http')));
                         const model = hasModel ? escapeHtml(r[2].replace(/`/g, '')) : '-';
                         const targetRaw = hasModel ? r[3] : r[2];
                         const targetHtml = formatTargetCell(targetRaw, r[1]);
                         const elapsed = escapeHtml(hasModel ? r[4] : r[3]);
-                        const status = escapeHtml((hasModel ? r[5] : r[4]).replace(/[🔄`]/g, '').trim());
+                        const statusRaw = (hasModel ? r[5] : r[4]) || '';
+                        const status = escapeHtml(statusRaw.replace(/[🔄`]/g, '').trim());
                         const modelHtml = model !== '-' ? `<code>${{model}}</code>` : '<span class="text-muted">-</span>';
                         htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td>${{targetHtml}}</td><td><span class="text-muted">${{elapsed}}</span></td><td><span class="status-pill status-running"><span class="spin-icon">🔄</span> ${{status}}</span></td></tr>`;
                     }}
@@ -1364,12 +1365,12 @@
                     for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const hasModel = historySec.includes('| Model |') || r.length >= 7;
+                        const hasModel = r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'));
                         const model = hasModel ? escapeHtml(r[2].replace(/`/g, '')) : '-';
                         const targetRaw = hasModel ? r[3] : r[2];
                         const targetHtml = formatTargetCell(targetRaw, r[1]);
                         const dur = escapeHtml(hasModel ? r[4] : r[3]);
-                        const rawStatus = hasModel ? r[5] : r[4];
+                        const rawStatus = (hasModel ? r[5] : r[4]) || '';
                         const isSuccess = rawStatus.includes('✅') || rawStatus.toLowerCase().includes('complete') || rawStatus.toLowerCase().includes('finish');
                         const statusClean = escapeHtml(rawStatus.replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';

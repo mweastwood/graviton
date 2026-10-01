@@ -3,7 +3,7 @@
 Graviton Live Dashboard Generator and Auto-Updater.
 
 Formats real-time server metrics, task queues, active containers, model quota pacing,
-and Remote Control links into GitHub-flavored Markdown for Antigravity side panel
+and clickable GitHub target links into GitHub-flavored Markdown for Antigravity side panel
 artifacts, as well as standalone HTML for web browsers.
 
 Supports automatic continuous updates to registered artifact file paths on disk.
@@ -168,6 +168,17 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         return default
 
 
+def is_safe_url(url: Optional[str]) -> bool:
+    """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.strip()
+    if any(c in clean for c in (" ", "\t", "\r", "\n", '"', "'", "<", ">")):
+        return False
+    clean_lower = clean.lower()
+    return clean_lower.startswith("http://") or clean_lower.startswith("https://")
+
+
 def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
     """Format target cell for markdown table, stripping existing formatting to prevent double-backticks or nested links."""
     clean_disp = str(target_disp or "N/A").replace("\r", " ").replace("\n", " ").strip().strip("`").strip()
@@ -177,7 +188,10 @@ def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) ->
     if not clean_disp:
         clean_disp = "N/A"
     clean_disp = clean_disp.replace("\r", " ").replace("\n", " ").replace("|", "\\|")
-    return f"[`{clean_disp}`]({target_url})" if target_url else f"`{clean_disp}`"
+    if target_url and is_safe_url(target_url):
+        safe_url = target_url.strip().replace(")", "%29").replace("(", "%28").replace("|", "")
+        return f"[`{clean_disp}`]({safe_url})"
+    return f"`{clean_disp}`"
 
 
 def format_dashboard_markdown(
@@ -560,16 +574,6 @@ def format_dashboard_markdown(
 
     return "\n".join(lines)
 
-
-def is_safe_url(url: Optional[str]) -> bool:
-    """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
-    if not url or not isinstance(url, str):
-        return False
-    clean = url.strip()
-    if any(c in clean for c in (" ", "\t", "\r", "\n", '"', "'", "<", ">")):
-        return False
-    clean_lower = clean.lower()
-    return clean_lower.startswith("http://") or clean_lower.startswith("https://")
 
 
 _DETECTED_REPO: Optional[str] = None
@@ -1341,7 +1345,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         status_class = "status-completed" if is_success else "status-failed"
         status_disp = html.escape(str(t.get("status", "")))
         detail = str(t.get("details", ""))
-        if detail and detail not in ("Finished", "Remote Control"):
+        if detail and detail not in ("Finished", "Remote Control", "Remote Session"):
             trunc = detail[:40] + "..." if len(detail) > 40 else detail
             detail_html = f'<code class="error-snippet" title="{html.escape(detail)}">{html.escape(trunc)}</code>'
         else:
