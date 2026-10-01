@@ -449,7 +449,7 @@ class TerminalDashboard:
         """Background thread reading character hotkeys from stdin."""
         if not hasattr(self, "_input_listener") or self._input_listener is None:
             self._input_listener = TerminalInputListener(
-                on_key=self.handle_key, escape_timeout=self.ESCAPE_TIMEOUT
+                on_key=lambda k: self.handle_key(k), escape_timeout=self.ESCAPE_TIMEOUT
             )
             if self._stored_old_term_settings is not None:
                 self._input_listener._old_term_settings = self._stored_old_term_settings

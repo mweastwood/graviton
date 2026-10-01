@@ -207,9 +207,17 @@ class TerminalInputListener:
     def leftover_bytes(self) -> bytes:
         return self._leftover_bytes
 
+    @leftover_bytes.setter
+    def leftover_bytes(self, value: bytes) -> None:
+        self._leftover_bytes = value
+
     @property
     def idle_flush_count(self) -> int:
         return self._idle_flush_count
+
+    @idle_flush_count.setter
+    def idle_flush_count(self, value: int) -> None:
+        self._idle_flush_count = value
 
     def setup_terminal(self) -> bool:
         """Set up raw termios cbreak mode on stdin if interactive TTY."""
@@ -250,7 +258,8 @@ class TerminalInputListener:
 
         self._running = True
         fd = sys.stdin.fileno()
-        self._leftover_bytes = b""
+        if not hasattr(self, "_leftover_bytes") or self._leftover_bytes is None:
+            self._leftover_bytes = b""
 
         def check_running():
             if not self._running:

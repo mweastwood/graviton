@@ -247,6 +247,17 @@ class TestTUIInput(unittest.TestCase):
             self.assertEqual(dashboard.idle_flush_count, 7)
             mock_run_loop.assert_called_once()
 
+        # Test late-binding of handle_key when _input_listener is created in _stdin_loop
+        dashboard._input_listener = None
+        called_keys = []
+        dashboard.handle_key = lambda k: called_keys.append(k)
+        with patch.object(TerminalInputListener, "run_loop"):
+            dashboard._stdin_loop()
+            self.assertIsNotNone(dashboard._input_listener)
+            self.assertTrue(callable(dashboard._input_listener.on_key))
+            dashboard._input_listener.on_key("test_key")
+            self.assertEqual(called_keys, ["test_key"])
+
     def test_terminal_input_listener_idle_timeout_flushes_leftover_bytes(self):
         if not HAS_TERMIOS:
             self.skipTest("termios not available on this platform")
@@ -283,6 +294,61 @@ class TestTUIInput(unittest.TestCase):
 
                     os.write(master, b"a")
                     self.assertTrue(self._wait_for_condition(lambda: "a" in handled_keys))
+                finally:
+                    listener.stop()
+                    thread.join(timeout=3.0)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_terminal_input_listener_property_setters(self):
+        listener = TerminalInputListener()
+        self.assertEqual(listener.leftover_bytes, b"")
+        self.assertEqual(listener.idle_flush_count, 0)
+
+        listener.leftover_bytes = b"\x1b["
+        self.assertEqual(listener.leftover_bytes, b"\x1b[")
+        self.assertEqual(listener._leftover_bytes, b"\x1b[")
+
+        listener.idle_flush_count = 42
+        self.assertEqual(listener.idle_flush_count, 42)
+        self.assertEqual(listener._idle_flush_count, 42)
+
+    def test_terminal_input_listener_run_loop_preserves_prepopulated_leftover_bytes(self):
+        if not HAS_TERMIOS:
+            self.skipTest("termios not available on this platform")
+
+        master, slave = pty.openpty()
+        try:
+            handled_keys = []
+            listener = TerminalInputListener(on_key=lambda k: handled_keys.append(k))
+            listener.leftover_bytes = b"\x1b["
+
+            class MockStdin:
+                def fileno(self):
+                    return slave
+                def isatty(self):
+                    return True
+
+            mock_stdin = MockStdin()
+            with patch("sys.stdin", mock_stdin):
+                thread = threading.Thread(target=listener.run_loop, daemon=True)
+                thread.start()
+
+                self.assertTrue(self._wait_for_condition(lambda: listener._old_term_settings is not None))
+
+                try:
+                    # Without writing to stdin, verify run_loop did NOT wipe pre-populated leftover_bytes
+                    # and idle timeout flushes the leftover bytes
+                    self.assertTrue(
+                        self._wait_for_condition(
+                            lambda: "\x1b[" in handled_keys and len(listener.leftover_bytes) == 0 and listener.idle_flush_count > 0,
+                            timeout=2.0,
+                        )
+                    )
+                    self.assertIn("\x1b[", handled_keys)
+                    self.assertEqual(listener.leftover_bytes, b"")
+                    self.assertGreaterEqual(listener.idle_flush_count, 1)
                 finally:
                     listener.stop()
                     thread.join(timeout=3.0)
