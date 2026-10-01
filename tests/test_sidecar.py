@@ -692,15 +692,39 @@ class TestEnsureShellEnvironment(unittest.TestCase):
 
     def test_ensure_shell_environment_empty_smee_url_fallback(self):
         """Verify WEBHOOK_PROXY_URL populates SMEE_URL when SMEE_URL is set to empty string."""
-        env = {
-            "SHELL": "/bin/bash",
-            "SMEE_URL": "",
-            "WEBHOOK_PROXY_URL": "https://smee.io/fallback-proxy",
-        }
-        with patch.dict(os.environ, env, clear=True), \
-             patch("subprocess.run", side_effect=OSError("shell not found")):
-            ensure_shell_environment()
-            self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/fallback-proxy")
+        for scenario, run_kwargs in [
+            ("subprocess_success", {"return_value": MagicMock(returncode=0, stdout="")}),
+            ("subprocess_error", {"side_effect": OSError("shell not found")}),
+        ]:
+            with self.subTest(scenario=scenario):
+                env = {
+                    "SHELL": "/bin/bash",
+                    "SMEE_URL": "",
+                    "WEBHOOK_PROXY_URL": "https://smee.io/fallback-proxy",
+                    "EXISTING_VAR": "keep_me",
+                }
+                with patch.dict(os.environ, env, clear=True), \
+                     patch("subprocess.run", **run_kwargs) as mock_run, \
+                     patch("lib.sidecar.logger.debug") as mock_debug:
+                    ensure_shell_environment()
+
+                    mock_run.assert_called_once_with(
+                        ["/bin/bash", "-i", "-c", "env"],
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        start_new_session=True,
+                        timeout=2.0,
+                    )
+                    self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/fallback-proxy")
+                    self.assertEqual(os.environ.get("EXISTING_VAR"), "keep_me")
+                    self.assertEqual(os.environ.get("WEBHOOK_PROXY_URL"), "https://smee.io/fallback-proxy")
+                    if scenario == "subprocess_error":
+                        mock_debug.assert_called_once()
+                        self.assertIn("Could not load shell environment from /bin/bash", mock_debug.call_args[0][0])
+                        self.assertIn("shell not found", mock_debug.call_args[0][0])
+                    else:
+                        mock_debug.assert_not_called()
 
 
 if __name__ == "__main__":
