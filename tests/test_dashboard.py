@@ -3167,13 +3167,21 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(parse_countdown_to_seconds("00:00:00"), 0.0)
         self.assertIsNone(parse_countdown_to_seconds("N/A"))
         self.assertIsNone(parse_countdown_to_seconds(None))
+        for word in ("paused", "pending", "invalid", "suspended", "resumed", "closed"):
+            self.assertIsNone(parse_countdown_to_seconds(word))
 
     def test_calculate_target_pacing_from_details(self):
         # 2.5 hours remaining in 5-hour window -> 50%
         self.assertEqual(calculate_target_pacing_from_details("Reset: 02:30:00 | Pacing: OK", 18000.0), 50.0)
+        # Case insensitivity for reset prefix
+        self.assertEqual(calculate_target_pacing_from_details("reset: 02:30:00 | pacing: ok", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("RESET: 02:30:00 | PACING: OK", 18000.0), 50.0)
         # N/A reset details
         self.assertIsNone(calculate_target_pacing_from_details("Reset: N/A | Pacing: OK", 18000.0))
         self.assertIsNone(calculate_target_pacing_from_details(None, 18000.0))
+        # Non-countdown words in reset details return None
+        for word in ("paused", "pending", "invalid", "suspended", "resumed", "closed"):
+            self.assertIsNone(calculate_target_pacing_from_details(f"Reset: {word} | Pacing: OK", 18000.0))
 
     def test_render_dashboard_html_contains_pacing_marks(self):
         _reset_dashboard_template_cache()

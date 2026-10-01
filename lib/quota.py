@@ -355,7 +355,7 @@ class QuotaWindow:
         return self.get_target_quota_fraction(now_dt=now_dt, now=now)
 
     def get_target_pacing_percentage(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> Optional[float]:
         """
         Calculate the target quota percentage threshold for linear pacing (y = x).
@@ -378,7 +378,7 @@ class QuotaWindow:
         return self.get_target_pacing_percentage()
 
     def target_pacing_pct(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> Optional[float]:
         return self.get_target_pacing_percentage(now_dt=now_dt, now=now)
 

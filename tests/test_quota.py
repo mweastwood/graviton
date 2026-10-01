@@ -2840,6 +2840,11 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNone(win_neg_duration.get_target_pacing_percentage(now_dt=now_dt))
         self.assertIsNone(win_neg_duration.target_pacing_percentage)
 
+        # Verify int timestamp support for now_dt and now
+        now_ts_int = int(now_dt.timestamp())
+        self.assertEqual(win.get_target_pacing_percentage(now_dt=now_ts_int), 50.0)
+        self.assertEqual(win.target_pacing_pct(now_dt=now_ts_int), 50.0)
+
         # Check to_dict contains target_pacing_percentage
         d = win.to_dict()
         self.assertIn("target_pacing_percentage", d)
@@ -2848,16 +2853,26 @@ class TestParseResetTime(unittest.TestCase):
         now_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
         reset_dt_5h = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)  # 50%
         reset_dt_1w = datetime(2026, 10, 4, 12, 0, 0, tzinfo=timezone.utc)  # 3 days = 259200 / 604800 = 42.9%
+        reset_dt_tp_5h = datetime(2026, 10, 1, 13, 15, 0, tzinfo=timezone.utc)
+        reset_dt_tp_1w = datetime(2026, 10, 5, 0, 0, 0, tzinfo=timezone.utc)
         w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_datetime=reset_dt_5h)
         w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0, reset_datetime=reset_dt_1w)
+        w5_tp = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=70.0, reset_datetime=reset_dt_tp_5h)
+        w1_tp = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_datetime=reset_dt_tp_1w)
         info = QuotaInfo(
             remaining_percentage=80.0,
             gemini_window_5h=w5,
             gemini_window_1w=w1,
+            claude_window_5h=w5_tp,
+            claude_window_1w=w1_tp,
         )
         d = info.to_dict()
         self.assertIn("gemini_5h_target_pacing_percentage", d)
         self.assertIn("gemini_1w_target_pacing_percentage", d)
+        self.assertIn("third_party_5h_target_pacing_percentage", d)
+        self.assertIn("third_party_1w_target_pacing_percentage", d)
+        self.assertIsNotNone(d["third_party_5h_target_pacing_percentage"])
+        self.assertIsNotNone(d["third_party_1w_target_pacing_percentage"])
 
 
 if __name__ == "__main__":

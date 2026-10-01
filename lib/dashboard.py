@@ -794,6 +794,8 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
         m_h = re.search(r"(\d+)\s*h", s)
         m_m = re.search(r"(\d+)\s*m", s)
         m_s = re.search(r"(\d+)\s*s", s)
+        if not (m_d or m_h or m_m or m_s):
+            return None
         sec = 0.0
         if m_d:
             sec += float(m_d.group(1)) * 86400.0
@@ -810,6 +812,8 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
         m_h = re.search(r"(\d+)\s*h", s)
         m_m = re.search(r"(\d+)\s*m", s)
         m_s = re.search(r"(\d+)\s*s", s)
+        if not (m_h or m_m or m_s):
+            return None
         sec = 0.0
         if m_h:
             sec += float(m_h.group(1)) * 3600.0
@@ -839,7 +843,7 @@ def calculate_target_pacing_from_details(details_str: Optional[str], duration_se
     """Extract reset countdown from details string and calculate linear pacing threshold percentage."""
     if not details_str or duration_seconds <= 0:
         return None
-    m = re.search(r"Reset:\s*([^|\n]+)", details_str)
+    m = re.search(r"Reset:\s*([^|\n]+)", details_str, re.IGNORECASE)
     if not m:
         return None
     cd_val = m.group(1).strip()
@@ -1745,7 +1749,8 @@ def render_dashboard_html(
         if pct is not None:
             try:
                 pct_val = max(0.0, min(100.0, float(pct)))
-                pct_str = f"{pct_val:.1f}%".rstrip("0").rstrip(".") if pct_val != int(pct_val) else f"{int(pct_val)}%"
+                round_val = round(pct_val, 1)
+                pct_str = f"{int(round_val)}%" if round_val.is_integer() else f"{round_val:.1f}%"
                 return f"left: {pct_val}%;", f"Target Pacing: {pct_str} (perfect pacing limit)"
             except (ValueError, TypeError):
                 pass

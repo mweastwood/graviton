@@ -1218,6 +1218,7 @@
                     const h = str.match(/(\d+)\s*h/);
                     const mMin = str.match(/(\d+)\s*m/);
                     const sSec = str.match(/(\d+)\s*s/);
+                    if (!d && !h && !mMin && !sSec) return null;
                     let sec = 0;
                     if (d) sec += parseInt(d[1], 10) * 86400;
                     if (h) sec += parseInt(h[1], 10) * 3600;
@@ -1229,6 +1230,7 @@
                     const h = str.match(/(\d+)\s*h/);
                     const mMin = str.match(/(\d+)\s*m/);
                     const sSec = str.match(/(\d+)\s*s/);
+                    if (!h && !mMin && !sSec) return null;
                     let sec = 0;
                     if (h) sec += parseInt(h[1], 10) * 3600;
                     if (mMin) sec += parseInt(mMin[1], 10) * 60;
