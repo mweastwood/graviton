@@ -2816,6 +2816,40 @@ class TestParseResetTime(unittest.TestCase):
             with patch("lib.quota.parse_reset_time_to_datetime", return_value=mock_dt):
                 self.assertIsNone(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"))
 
+    def test_quota_window_target_pacing_percentage(self):
+        # 5-hour window: 18000s duration
+        # Halfway through: 9000s remaining -> 50.0% target pacing
+        now_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        reset_dt = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)  # 2.5 hours remaining = 9000s
+        win = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=60.0, reset_datetime=reset_dt)
+
+        self.assertEqual(win.get_target_pacing_percentage(now_dt=now_dt), 50.0)
+        self.assertEqual(win.target_pacing_pct(now_dt=now_dt), 50.0)
+
+        # When reset_time is None
+        win_no_reset = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=60.0, reset_time=None)
+        self.assertIsNone(win_no_reset.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_no_reset.target_pacing_percentage)
+
+        # Check to_dict contains target_pacing_percentage
+        d = win.to_dict()
+        self.assertIn("target_pacing_percentage", d)
+
+    def test_quota_info_to_dict_includes_target_pacing_percentage(self):
+        now_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        reset_dt_5h = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)  # 50%
+        reset_dt_1w = datetime(2026, 10, 4, 12, 0, 0, tzinfo=timezone.utc)  # 3 days = 259200 / 604800 = 42.9%
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_datetime=reset_dt_5h)
+        w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0, reset_datetime=reset_dt_1w)
+        info = QuotaInfo(
+            remaining_percentage=80.0,
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertIn("gemini_5h_target_pacing_percentage", d)
+        self.assertIn("gemini_1w_target_pacing_percentage", d)
+
 
 if __name__ == "__main__":
     unittest.main()
