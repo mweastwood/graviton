@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 import urllib.error
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -2676,6 +2676,145 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertIsInstance(win.reset_timestamp, float)
         self.assertEqual(win.reset_timestamp, 1790874000.0)
         self.assertEqual(win.reset_datetime, datetime(2026, 10, 1, 17, 0, 0, tzinfo=timezone.utc))
+
+
+class TestParseResetTime(unittest.TestCase):
+    """Unit tests for parse_reset_time_to_datetime and parse_reset_time_to_timestamp."""
+
+    def test_none_handling(self):
+        self.assertIsNone(parse_reset_time_to_datetime(None))
+        self.assertIsNone(parse_reset_time_to_timestamp(None))
+
+    def test_datetime_inputs(self):
+        # Timezone-aware datetime (UTC)
+        dt_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(dt_utc), dt_utc)
+
+        # Custom timezone datetime is converted and normalized to canonical UTC (tzinfo=timezone.utc)
+        custom_tz = timezone(timedelta(hours=2))
+        dt_custom = datetime(2026, 9, 25, 18, 0, 0, tzinfo=custom_tz)
+        res_custom = parse_reset_time_to_datetime(dt_custom)
+        self.assertEqual(res_custom, dt_custom)
+        self.assertEqual(res_custom.tzinfo, timezone.utc)
+
+        # Naive datetime gets timezone.utc attached
+        dt_naive = datetime(2026, 9, 25, 16, 0, 0)
+        expected_naive = dt_naive.replace(tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(dt_naive), expected_naive)
+
+    def test_numeric_timestamps_and_numeric_strings(self):
+        # Integer timestamp
+        ts_int = 1786266000
+        expected_int = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(ts_int), expected_int)
+
+        # Float timestamp with subsecond precision
+        ts_float = 1786266000.5
+        expected_float = datetime.fromtimestamp(ts_float, tz=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(ts_float), expected_float)
+
+        # Negative timestamp
+        ts_neg = -1000
+        expected_neg = datetime.fromtimestamp(ts_neg, tz=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime(ts_neg), expected_neg)
+
+        # Numeric strings (integer, float, negative)
+        self.assertEqual(parse_reset_time_to_datetime("1786266000"), expected_int)
+        self.assertEqual(parse_reset_time_to_datetime("1786266000.5"), expected_float)
+        self.assertEqual(parse_reset_time_to_datetime("-1000"), expected_neg)
+        self.assertEqual(parse_reset_time_to_datetime("  1786266000  "), expected_int)
+        self.assertEqual(parse_reset_time_to_timestamp("  1786266000  "), 1786266000.0)
+
+    def test_iso8601_strings(self):
+        expected_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
+
+        # Explicit offset (+00:00)
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00+00:00"), expected_utc)
+
+        # Explicit non-zero positive offset
+        res_offset = parse_reset_time_to_datetime("2026-09-25T18:00:00+02:00")
+        self.assertEqual(res_offset, expected_utc)
+        self.assertEqual(res_offset.tzinfo, timezone.utc)
+
+        # Explicit non-zero negative offset
+        res_neg = parse_reset_time_to_datetime("2026-09-25T12:00:00-04:00")
+        self.assertEqual(res_neg, expected_utc)
+        self.assertEqual(res_neg.tzinfo, timezone.utc)
+
+        # Trailing 'Z' and 'z'
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00Z"), expected_utc)
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00z"), expected_utc)
+
+        # Microsecond precision with Z
+        expected_micro = datetime(2026, 9, 25, 16, 0, 0, 123456, tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00.123456Z"), expected_micro)
+
+        # Leading/trailing whitespace
+        self.assertEqual(parse_reset_time_to_datetime("  2026-09-25T16:00:00Z  "), expected_utc)
+
+        # Naive ISO string (without timezone offset)
+        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00"), expected_utc)
+
+    def test_invalid_inputs_and_unsupported_types(self):
+        # Non-parseable strings
+        for invalid in ["not-a-date", "", "   ", "2026-99-99", "inf", "-inf", "nan", "NaN"]:
+            self.assertIsNone(parse_reset_time_to_datetime(invalid))
+            self.assertIsNone(parse_reset_time_to_timestamp(invalid))
+
+        # Unsupported complex types, booleans, NaN, and overflow numbers
+        for unsupported in [[], {}, [123], {"a": 1}, True, False, float("inf"), float("-inf"), float("nan"), 1e30, -1e30]:
+            self.assertIsNone(parse_reset_time_to_datetime(unsupported))
+            self.assertIsNone(parse_reset_time_to_timestamp(unsupported))
+
+    def test_parse_reset_time_to_timestamp(self):
+        dt_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
+        expected_ts = dt_utc.timestamp()
+
+        # Valid inputs
+        self.assertEqual(parse_reset_time_to_timestamp(dt_utc), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp(1786266000), 1786266000.0)
+        self.assertEqual(parse_reset_time_to_timestamp(1786266000.5), 1786266000.5)
+        self.assertEqual(parse_reset_time_to_timestamp(-1000), -1000.0)
+        self.assertEqual(parse_reset_time_to_timestamp("1786266000"), 1786266000.0)
+        self.assertEqual(parse_reset_time_to_timestamp("  1786266000  "), 1786266000.0)
+        self.assertEqual(parse_reset_time_to_timestamp("1786266000.5"), 1786266000.5)
+        self.assertEqual(parse_reset_time_to_timestamp("-1000"), -1000.0)
+        self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T18:00:00+02:00"), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T12:00:00-04:00"), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00"), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp("  2026-09-25T16:00:00Z  "), expected_ts)
+
+        # Naive datetime
+        dt_naive = datetime(2026, 9, 25, 16, 0, 0)
+        self.assertEqual(parse_reset_time_to_timestamp(dt_naive), expected_ts)
+
+        # Custom timezone datetime
+        custom_tz = timezone(timedelta(hours=2))
+        dt_custom = datetime(2026, 9, 25, 18, 0, 0, tzinfo=custom_tz)
+        self.assertEqual(parse_reset_time_to_timestamp(dt_custom), expected_ts)
+
+        # Invalid inputs return None
+        self.assertIsNone(parse_reset_time_to_timestamp(None))
+        self.assertIsNone(parse_reset_time_to_timestamp("not-a-date"))
+        self.assertIsNone(parse_reset_time_to_timestamp("nan"))
+        self.assertIsNone(parse_reset_time_to_timestamp(float("nan")))
+        self.assertIsNone(parse_reset_time_to_timestamp([]))
+        self.assertIsNone(parse_reset_time_to_timestamp(True))
+        self.assertIsNone(parse_reset_time_to_timestamp(False))
+
+    def test_parse_reset_time_to_timestamp_overflow_and_os_error(self):
+        # Extreme datetimes that may raise OverflowError / OSError on some platforms
+        dt_extreme = datetime(1, 1, 1, tzinfo=timezone.utc)
+        res = parse_reset_time_to_timestamp(dt_extreme)
+        self.assertTrue(res is None or isinstance(res, float))
+
+        # Explicitly verify OverflowError, OSError, and ValueError raised by dt.timestamp() are caught gracefully
+        for exc in (OverflowError("timestamp out of range"), OSError("mktime failed"), ValueError("invalid datetime")):
+            mock_dt = MagicMock(spec=datetime)
+            mock_dt.timestamp.side_effect = exc
+            with patch("lib.quota.parse_reset_time_to_datetime", return_value=mock_dt):
+                self.assertIsNone(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"))
 
 
 if __name__ == "__main__":

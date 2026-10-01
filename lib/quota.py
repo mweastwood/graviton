@@ -119,7 +119,7 @@ class QuotaState:
 
 
 def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[datetime]:
-    """Parse numeric timestamp or ISO 8601 string to timezone-aware UTC datetime."""
+    """Parse numeric timestamp, ISO 8601 string, or datetime object to timezone-aware UTC datetime."""
     if reset_time is None or isinstance(reset_time, bool):
         return None
     if isinstance(reset_time, datetime):
@@ -133,8 +133,11 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, dat
         pass
 
     # 2. Try ISO string parsing (handling trailing 'Z' for Python <= 3.10)
+    if not isinstance(reset_time, str):
+        return None
+
     try:
-        s = str(reset_time).strip()
+        s = reset_time.strip()
         if s.endswith("Z") or s.endswith("z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
@@ -143,14 +146,19 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, dat
         else:
             dt = dt.astimezone(timezone.utc)
         return dt
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
 def parse_reset_time_to_timestamp(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[float]:
     """Parse reset time to epoch float timestamp."""
     dt = parse_reset_time_to_datetime(reset_time)
-    return dt.timestamp() if dt is not None else None
+    if dt is None:
+        return None
+    try:
+        return dt.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optional[datetime]:
