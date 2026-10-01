@@ -244,7 +244,67 @@ class TestSidecarManager(unittest.TestCase):
             extra_args=None,
             startup_timeout=8.0,
             smee_url="https://smee.io/forwarded-channel",
+            check_existing=False,
         )
+
+    @patch("lib.sidecar.start_sidecar")
+    @patch("lib.sidecar.is_graviton_process", return_value=True)
+    @patch("lib.sidecar.read_sidecar_pid", return_value=4321)
+    @patch("lib.sidecar.check_health")
+    def test_ensure_sidecar_running_retries_on_alive_graviton_process(self, mock_health, mock_pid, mock_is_graviton, mock_start):
+        # First check fails (transient), second retry check succeeds
+        mock_health.side_effect = [(False, {}), (True, {"status": "ok"})]
+        success, msg = ensure_sidecar_running(pid_file=self.pid_file)
+        self.assertTrue(success)
+        self.assertIn("PID 4321", msg)
+        mock_start.assert_not_called()
+        self.assertEqual(mock_health.call_count, 2)
+
+    @patch("lib.sidecar.is_graviton_process", return_value=True)
+    @patch("lib.sidecar.read_sidecar_pid", return_value=5432)
+    @patch("lib.sidecar.check_health")
+    def test_start_sidecar_retries_on_alive_graviton_process(self, mock_health, mock_pid, mock_graviton):
+        # Initial check fails, retry check with 3.0s timeout succeeds
+        mock_health.side_effect = [(False, {}), (True, {"status": "ok"})]
+        success, msg = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+        )
+        self.assertTrue(success)
+        self.assertIn("PID 5432", msg)
+        self.assertIn("already healthy", msg)
+        self.assertEqual(mock_health.call_count, 2)
+
+    @patch("lib.sidecar.stop_sidecar")
+    @patch("lib.sidecar.is_graviton_process", return_value=True)
+    @patch("lib.sidecar.read_sidecar_pid", return_value=5432)
+    @patch("lib.sidecar.check_health")
+    @patch("lib.sidecar.subprocess.Popen")
+    def test_start_sidecar_skips_health_checks_when_check_existing_false(
+        self, mock_popen, mock_health, mock_pid, mock_graviton, mock_stop
+    ):
+        mock_proc = MagicMock()
+        mock_proc.pid = 9876
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        mock_health.return_value = (True, {"status": "ok"})
+
+        fake_script = self.tmp_path / "server.py"
+        fake_script.write_text("#!/usr/bin/env python3\n")
+
+        success, msg = start_sidecar(
+            host="127.0.0.1",
+            port=8000,
+            pid_file=self.pid_file,
+            log_file=self.log_file,
+            server_script=fake_script,
+            check_existing=False,
+        )
+        self.assertTrue(success)
+        mock_stop.assert_called_once_with(pid_file=self.pid_file, timeout=3.0)
+        self.assertEqual(mock_health.call_count, 1)
 
     @patch("lib.sidecar.is_pid_alive", return_value=True)
     @patch("lib.sidecar.subprocess.Popen")
@@ -522,6 +582,9 @@ class TestEnsureShellEnvironment(unittest.TestCase):
             self.assertEqual(os.environ.get("SMEE_URL"), "https://smee.io/test-channel-99")
             self.assertEqual(os.environ.get("EXTRA_VAR"), "graviton_value")
             self.assertIn("/fake/bin", os.environ.get("PATH", ""))
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[1].get("stdin"), subprocess.DEVNULL)
+            self.assertTrue(mock_run.call_args[1].get("start_new_session"))
 
     def test_ensure_shell_environment_webhook_proxy_fallback(self):
         with patch.dict(os.environ, {"WEBHOOK_PROXY_URL": "https://smee.io/proxy-alias"}, clear=True), \

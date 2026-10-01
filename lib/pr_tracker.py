@@ -107,9 +107,11 @@ def _parse_event_timestamp(ts: Any) -> float:
 
 def has_approval_marker(text: str) -> bool:
     """Check if text contains approval markers like LGTM or Approved."""
-    if not text:
+    if not text or not isinstance(text, str):
         return False
     text_lower = text.lower()
+    if "lgtm" not in text_lower and "approved" not in text_lower:
+        return False
 
     # Reject questions (trailing '?' or question words/phrasing like 'Is this PR approved?', 'Was this approved?', 'Has this been approved?')
     if "?" in text_lower:
@@ -128,9 +130,7 @@ def has_approval_marker(text: str) -> bool:
     if any(neg in text_lower for neg in _NEGATIVE_APPROVAL_PHRASES):
         return False
 
-    if "lgtm" in text_lower or "approved" in text_lower:
-        return True
-    return False
+    return True
 
 
 def has_change_request_marker(text: str) -> bool:

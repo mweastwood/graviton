@@ -55,8 +55,20 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.dashboard_updater = None
         GravitonHandler.server_host = "localhost"
         GravitonHandler.server_port = 8000
+        server_mod.set_hot_reload_state("IDLE")
+        if server_mod._SYNC_LOCK.locked():
+            try:
+                server_mod._SYNC_LOCK.release()
+            except RuntimeError:
+                pass
 
     def tearDown(self):
+        server_mod.set_hot_reload_state("IDLE")
+        if server_mod._SYNC_LOCK.locked():
+            try:
+                server_mod._SYNC_LOCK.release()
+            except RuntimeError:
+                pass
         self._listener_patcher.stop()
         if self._orig_smee_url is None:
             os.environ.pop("SMEE_URL", None)
@@ -318,6 +330,30 @@ class TestGravitonHandler(unittest.TestCase):
             server_mod.main()
 
         mock_dashboard_cls.assert_not_called()
+
+    def test_server_uses_threading_http_server(self):
+        import socketserver
+        self.assertTrue(issubclass(server_mod.HTTPServer, socketserver.ThreadingMixIn))
+
+    @patch("graviton_server.TerminalDashboard")
+    @patch("graviton_server.HTTPServer")
+    @patch("graviton_server.TaskManager")
+    @patch("graviton_server.QuotaTracker")
+    @patch("graviton_server.PRTracker")
+    def test_server_initializes_daemon_threads(
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    ):
+        mock_tm_inst = MagicMock()
+        mock_tm_inst.restore_queue_state.return_value = 0
+        mock_tm.return_value = mock_tm_inst
+        mock_server = MagicMock()
+        mock_http.return_value = mock_server
+        mock_server.serve_forever.side_effect = KeyboardInterrupt
+
+        with patch("sys.argv", ["graviton-server.py"]):
+            server_mod.main()
+
+        self.assertTrue(mock_server.daemon_threads)
 
     @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
@@ -1491,6 +1527,100 @@ class TestGravitonHandler(unittest.TestCase):
         args = kwargs.get("args") or mock_thread.call_args[1].get("args")
         self.assertEqual(target_fn, server_mod.sync_repo_and_reload)
         self.assertIn(mock_qt, args)
+        self.assertEqual(server_mod.get_hot_reload_state(), "PULLING_GIT")
+
+    @patch("graviton_server.get_hot_reload_state", return_value="PULLING_GIT")
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_ignored_when_already_in_progress(self, mock_thread, mock_sync, mock_state):
+        payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "push",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.task_manager = MagicMock()
+        handler.server = MagicMock()
+
+        with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+            GravitonHandler.do_POST(handler)
+
+        mock_thread.assert_not_called()
+        handler._send_json.assert_called_once_with(
+            200,
+            {
+                "status": "ignored",
+                "action": "self_update",
+                "ref": "refs/heads/main",
+                "message": "Self-update already in progress (PULLING_GIT).",
+            },
+        )
+
+    @patch("graviton_server.get_hot_reload_state", return_value="IDLE")
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_ignored_when_sync_lock_held(self, mock_thread, mock_sync, mock_state):
+        server_mod._SYNC_LOCK.acquire()
+        try:
+            payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "push",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.task_manager = MagicMock()
+            handler.server = MagicMock()
+
+            with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+                GravitonHandler.do_POST(handler)
+
+            mock_thread.assert_not_called()
+            handler._send_json.assert_called_once_with(
+                200,
+                {
+                    "status": "ignored",
+                    "action": "self_update",
+                    "ref": "refs/heads/main",
+                    "message": "Self-update already in progress (PULLING_GIT).",
+                },
+            )
+        finally:
+            server_mod._SYNC_LOCK.release()
+
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_resets_idle_on_thread_start_failure(self, mock_thread, mock_sync):
+        mock_thread.return_value.start.side_effect = RuntimeError("thread start failed")
+        payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "push",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.task_manager = MagicMock()
+        handler.server = MagicMock()
+
+        with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+            with self.assertLogs("graviton", level="ERROR") as cm:
+                GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(
+            200,
+            {
+                "status": "accepted",
+                "action": "self_update",
+                "ref": "refs/heads/main",
+                "message": "Self-update triggered. Syncing repository and reloading server...",
+            },
+        )
+        self.assertEqual(server_mod.get_hot_reload_state(), "IDLE")
+        self.assertTrue(any("Failed to start self-update background thread" in log for log in cm.output))
 
     def test_end_to_end_server_quit_and_restart_persists_model_selection(self):
         import tempfile
@@ -1872,6 +2002,9 @@ class TestGravitonHandler(unittest.TestCase):
         handler.task_manager = None
         handler.server_repo_name = "graviton"
 
+        comment_event = threading.Event()
+        mock_comment.side_effect = lambda *args, **kwargs: (comment_event.set(), True)[1]
+
         with patch("graviton_server.resolve_repo_dir", return_value=None):
             GravitonHandler.do_POST(handler)
 
@@ -1880,11 +2013,69 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertEqual(status_code, 200)
         mock_exec_release.assert_not_called()
 
-        time.sleep(0.1)
+        mock_reaction.assert_called_once()
+        self.assertEqual(mock_reaction.call_args[1].get("reaction"), "rocket")
+
+        self.assertTrue(comment_event.wait(timeout=5.0), "Background comment task did not execute within timeout")
         mock_comment.assert_called_once()
         self.assertEqual(mock_comment.call_args[0][0], "mweastwood/nonexistent_app")
         self.assertEqual(mock_comment.call_args[0][1], 88)
         self.assertIn("Repository directory not found", mock_comment.call_args[0][2])
+
+        for thread in threading.enumerate():
+            if thread.name == "ReleaseRepoDirNotFoundThread":
+                thread.join(timeout=1.0)
+
+    @patch("graviton_server.post_issue_comment")
+    @patch("graviton_server.post_emoji_reaction_async")
+    @patch("graviton_server.execute_release_async")
+    def test_do_post_release_action_repo_dir_does_not_exist(self, mock_exec_release, mock_reaction, mock_comment):
+        payload = json.dumps({
+            "action": "created",
+            "issue": {"number": 88, "title": "🚀 Release Controller"},
+            "comment": {
+                "id": 123,
+                "body": "patch",
+                "user": {"login": "mweastwood"},
+                "author_association": "OWNER",
+            },
+            "repository": {"name": "nonexistent_app", "full_name": "mweastwood/nonexistent_app"},
+        }).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "issue_comment",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.repos_dir = None
+        handler.task_manager = None
+        handler.server_repo_name = "graviton"
+
+        comment_event = threading.Event()
+        mock_comment.side_effect = lambda *args, **kwargs: (comment_event.set(), True)[1]
+
+        with patch("graviton_server.resolve_repo_dir", return_value=Path("/nonexistent/repo/path")):
+            GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once()
+        status_code = handler._send_json.call_args[0][0]
+        self.assertEqual(status_code, 200)
+        mock_exec_release.assert_not_called()
+
+        mock_reaction.assert_called_once()
+        self.assertEqual(mock_reaction.call_args[1].get("reaction"), "rocket")
+
+        self.assertTrue(comment_event.wait(timeout=5.0), "Background comment task did not execute within timeout")
+        mock_comment.assert_called_once()
+        self.assertEqual(mock_comment.call_args[0][0], "mweastwood/nonexistent_app")
+        self.assertEqual(mock_comment.call_args[0][1], 88)
+        self.assertIn("Repository directory not found", mock_comment.call_args[0][2])
+
+        for thread in threading.enumerate():
+            if thread.name == "ReleaseRepoDirNotFoundThread":
+                thread.join(timeout=1.0)
+
 
     @patch("graviton_server.post_emoji_reaction_async")
     @patch("graviton_server.post_release_init_async")

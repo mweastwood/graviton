@@ -118,18 +118,18 @@ class QuotaState:
 
 
 
-def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -> Optional[datetime]:
+def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[datetime]:
     """Parse numeric timestamp or ISO 8601 string to timezone-aware UTC datetime."""
-    if reset_time is None:
+    if reset_time is None or isinstance(reset_time, bool):
         return None
     if isinstance(reset_time, datetime):
-        return reset_time if reset_time.tzinfo else reset_time.replace(tzinfo=timezone.utc)
+        return reset_time.astimezone(timezone.utc) if reset_time.tzinfo else reset_time.replace(tzinfo=timezone.utc)
 
     # 1. Try numeric conversion (int, float, or stringified float/int e.g., "1786266000.0")
     try:
         ts = float(reset_time)
         return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         pass
 
     # 2. Try ISO string parsing (handling trailing 'Z' for Python <= 3.10)
@@ -140,12 +140,14 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int]]) -
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         return dt
     except (ValueError, TypeError):
         return None
 
 
-def parse_reset_time_to_timestamp(reset_time: Optional[Union[str, float, int]]) -> Optional[float]:
+def parse_reset_time_to_timestamp(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[float]:
     """Parse reset time to epoch float timestamp."""
     dt = parse_reset_time_to_datetime(reset_time)
     return dt.timestamp() if dt is not None else None
@@ -158,9 +160,12 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     if isinstance(now, bool):
         return None
     if isinstance(now, datetime):
-        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        return now.astimezone(timezone.utc) if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     if isinstance(now, (int, float)):
-        return datetime.fromtimestamp(now, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(now, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
     return None
 
 
@@ -179,11 +184,12 @@ class QuotaWindow:
         self,
         name: Optional[str] = None,
         duration_seconds: Optional[float] = None,
-        remaining_percentage: float = 100.0,
-        reset_time: Optional[Union[str, float, int]] = None,
+        remaining_percentage: Optional[float] = 100.0,
+        reset_time: Optional[Union[str, float, int, datetime]] = None,
         reset_timestamp: Optional[float] = None,
         window_name: Optional[str] = None,
         total_duration_seconds: Optional[float] = None,
+        reset_datetime: Optional[datetime] = None,
     ):
         raw_name = name or window_name or "5H"
         self.name = raw_name.upper()
@@ -193,19 +199,100 @@ class QuotaWindow:
         self.duration_seconds = float(dur if dur is not None else 18000.0)
         self.total_duration_seconds = self.duration_seconds
 
-        self.remaining_percentage = float(remaining_percentage)
+        self.remaining_percentage = float(remaining_percentage) if remaining_percentage is not None else None
 
         res = reset_time if reset_time is not None else reset_timestamp
-        self.reset_time = str(res) if res is not None else None
-        self.reset_timestamp = parse_reset_time_to_timestamp(res)
+        if reset_datetime is not None:
+            self.reset_datetime = parse_reset_time_to_datetime(reset_datetime)
+        else:
+            self.reset_datetime = parse_reset_time_to_datetime(res)
+
+        if isinstance(res, datetime):
+            self.reset_time = self.reset_datetime.isoformat() if self.reset_datetime else None
+        else:
+            self.reset_time = str(res) if res is not None else (self.reset_datetime.isoformat() if self.reset_datetime else None)
+        self.reset_timestamp = self.reset_datetime.timestamp() if self.reset_datetime is not None else None
+        self._last_reset_time = self.reset_time
+        self._last_reset_timestamp = self.reset_timestamp
+        self._last_reset_datetime = self.reset_datetime
+
+    def _sync_reset_datetime(self) -> Optional[datetime]:
+        cur_time = self.reset_time
+        cur_ts = self.reset_timestamp
+        cur_dt = self.reset_datetime
+        last_time = getattr(self, "_last_reset_time", None)
+        last_ts = getattr(self, "_last_reset_timestamp", None)
+        last_dt = getattr(self, "_last_reset_datetime", None)
+
+        # 1. Direct mutation of reset_datetime
+        if cur_dt != last_dt:
+            if cur_dt is None:
+                self.reset_time = None
+                self.reset_timestamp = None
+                self._last_reset_time = None
+                self._last_reset_timestamp = None
+                self._last_reset_datetime = None
+                return None
+            norm_dt = parse_reset_time_to_datetime(cur_dt)
+            self.reset_datetime = norm_dt
+            if norm_dt is None:
+                self.reset_time = None
+                self.reset_timestamp = None
+            else:
+                if cur_time == last_time:
+                    self.reset_time = norm_dt.isoformat()
+                if cur_ts == last_ts:
+                    self.reset_timestamp = norm_dt.timestamp()
+            self._last_reset_time = self.reset_time
+            self._last_reset_timestamp = self.reset_timestamp
+            self._last_reset_datetime = norm_dt
+            return norm_dt
+
+        # 2. Fast-path: no mutations (hot loop)
+        if cur_time == last_time and cur_ts == last_ts and cur_dt == last_dt:
+            return cur_dt
+
+        # 3. Dynamic mutation of reset_time or reset_timestamp
+        if cur_time != last_time:
+            res = cur_time
+        elif cur_ts != last_ts:
+            res = cur_ts
+        else:
+            res = cur_time if cur_time is not None else cur_ts
+
+        if res is None:
+            self.reset_time = None
+            self.reset_timestamp = None
+            self.reset_datetime = None
+            self._last_reset_time = None
+            self._last_reset_timestamp = None
+            self._last_reset_datetime = None
+            return None
+
+        dt = parse_reset_time_to_datetime(res)
+        self.reset_datetime = dt
+        if dt is not None:
+            if isinstance(cur_time, datetime):
+                self.reset_time = dt.isoformat()
+            elif cur_time == last_time and cur_ts != last_ts:
+                self.reset_time = dt.isoformat()
+            self.reset_timestamp = dt.timestamp()
+        else:
+            self.reset_timestamp = None
+        self._last_reset_time = self.reset_time
+        self._last_reset_timestamp = self.reset_timestamp
+        self._last_reset_datetime = dt
+        return dt
 
     def copy(self) -> "QuotaWindow":
+        self._sync_reset_datetime()
         return QuotaWindow(
             name=self.name,
             duration_seconds=self.duration_seconds,
             remaining_percentage=self.remaining_percentage,
             reset_time=self.reset_time,
             reset_timestamp=self.reset_timestamp,
+            reset_datetime=self.reset_datetime,
         )
 
     def clone(self) -> "QuotaWindow":
@@ -214,16 +301,13 @@ class QuotaWindow:
     def get_remaining_seconds(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> float:
-        res = self.reset_time if self.reset_time is not None else self.reset_timestamp
-        if res is None:
+        dt = self._sync_reset_datetime()
+        if dt is None:
             return 0.0
         effective_now = now_dt if now_dt is not None else now
         now_dt_norm = _normalize_now_datetime(effective_now)
         if now_dt_norm is None:
             now_dt_norm = datetime.now(timezone.utc)
-        dt = parse_reset_time_to_datetime(res)
-        if dt is None:
-            return 0.0
         return max(0.0, (dt - now_dt_norm).total_seconds())
 
     def remaining_time_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
@@ -232,6 +316,8 @@ class QuotaWindow:
 
     @property
     def quota_fraction(self) -> float:
+        if self.remaining_percentage is None:
+            return 1.0
         return max(0.0, min(1.0, float(self.remaining_percentage) / 100.0))
 
     def get_time_fraction(
@@ -251,11 +337,9 @@ class QuotaWindow:
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> float:
         """
-        Calculate the target quota fraction threshold for pacing: (remaining time fraction) ** 2.
-        This provides an ease-in pacing curve allowing higher quota burn immediately following a reset.
+        Calculate the target quota fraction threshold for linear pacing: remaining time fraction (y = x).
         """
-        t_frac = self.get_time_fraction(now_dt=now_dt, now=now)
-        return t_frac ** 2
+        return self.get_time_fraction(now_dt=now_dt, now=now)
 
     def target_quota_fraction(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
@@ -265,6 +349,7 @@ class QuotaWindow:
     def get_pacing_status(
         self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
     ) -> Tuple[str, float]:
+        self._sync_reset_datetime()
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
         if res is None:
             return "OK", 0.0
@@ -294,7 +379,7 @@ class QuotaWindow:
             return 0.0
         rem_sec = self.get_remaining_seconds(norm_dt)
         q_frac = self.quota_fraction
-        recovery = rem_sec - (math.sqrt(max(0.0, q_frac)) * self.duration_seconds)
+        recovery = rem_sec - (q_frac * self.duration_seconds)
         return max(0.0, float(recovery))
 
     def pacing_recovery_seconds(
@@ -320,19 +405,26 @@ class QuotaWindow:
             secs = int(rec_sec % 60)
             return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
-    def format_reset_countdown(self, now: Optional[Union[float, datetime]] = None) -> str:
-        res = self.reset_time if self.reset_time is not None else self.reset_timestamp
-        now_dt = _normalize_now_datetime(now)
-        return format_reset_countdown(res, now_dt=now_dt, window_name=self.name)
+    def format_reset_countdown(
+        self,
+        now_dt: Optional[Union[float, int, datetime]] = None,
+        now: Optional[Union[float, int, datetime]] = None,
+    ) -> str:
+        dt = self._sync_reset_datetime()
+        target = dt if dt is not None else (self.reset_time if self.reset_time is not None else self.reset_timestamp)
+        effective_now = now_dt if now_dt is not None else now
+        norm_dt = _normalize_now_datetime(effective_now)
+        return format_reset_countdown(target, now_dt=norm_dt, window_name=self.name)
 
     def to_dict(self) -> dict:
         pacing_status, backoff = self.get_pacing_status()
         return {
             "name": self.name,
             "duration_seconds": self.duration_seconds,
-            "remaining_percentage": round(self.remaining_percentage, 1),
+            "remaining_percentage": round(self.remaining_percentage, 1) if self.remaining_percentage is not None else None,
             "reset_time": self.reset_time,
             "reset_timestamp": self.reset_timestamp,
+            "reset_countdown": self.format_reset_countdown(),
             "pacing_status": pacing_status,
             "backoff_delay": backoff,
             "pacing_recovery_seconds": round(self.get_pacing_recovery_seconds(), 1),
@@ -341,8 +433,8 @@ class QuotaWindow:
 
 
 def format_reset_countdown(
-    reset_time: Optional[Union[str, float, int]] = None,
-    now_dt: Optional[datetime] = None,
+    reset_time: Optional[Union[str, float, int, datetime]] = None,
+    now_dt: Optional[Union[float, int, datetime]] = None,
     window_name: Optional[str] = None,
 ) -> str:
     """Format reset timestamp into HH:MM:SS or Xd Yh countdown string."""
@@ -351,9 +443,10 @@ def format_reset_countdown(
     dt = parse_reset_time_to_datetime(reset_time)
     if dt is None:
         return str(reset_time)
-    if now_dt is None:
-        now_dt = datetime.now(timezone.utc)
-    diff = (dt - now_dt).total_seconds()
+    now_dt_norm = _normalize_now_datetime(now_dt)
+    if now_dt_norm is None:
+        now_dt_norm = datetime.now(timezone.utc)
+    diff = (dt - now_dt_norm).total_seconds()
     if diff <= 0:
         return "00:00:00"
 
@@ -370,12 +463,15 @@ def format_reset_countdown(
 
 def format_quota_badge(
     window: QuotaWindow,
-    now_dt: Optional[datetime] = None,
+    now_dt: Optional[Union[float, int, datetime]] = None,
     quota_pool: Optional[str] = None,
 ) -> str:
     """Render quota badge string for TUI header/panel."""
     pct = window.remaining_percentage
-    pct_str = f"{int(pct)}%" if pct.is_integer() else f"{pct:.1f}%"
+    if pct is None:
+        pct_str = "N/A"
+    else:
+        pct_str = f"{int(pct)}%" if pct.is_integer() else f"{pct:.1f}%"
     countdown = window.format_reset_countdown(now_dt)
     pacing_status, backoff = window.get_pacing_status(now_dt)
 
@@ -882,7 +978,7 @@ def fetch_live_antigravity_quota(
 
 @dataclass
 class QuotaInfo:
-    remaining_percentage: float = 100.0
+    remaining_percentage: Optional[float] = 100.0
     state: str = QuotaState.NORMAL
     reset_time: Optional[float] = None
     active_backoff_delay: float = 0.0
@@ -891,14 +987,18 @@ class QuotaInfo:
     window_5h: Optional[Union[QuotaWindow, dict]] = None
     window_1w: Optional[Union[QuotaWindow, dict]] = None
     quota_pool: str = "gemini"
+    gemini_window_5h: Optional[Union[QuotaWindow, dict]] = None
+    gemini_window_1w: Optional[Union[QuotaWindow, dict]] = None
+    claude_window_5h: Optional[Union[QuotaWindow, dict]] = None
+    claude_window_1w: Optional[Union[QuotaWindow, dict]] = None
 
     def to_dict(self) -> dict:
         d = {
             "quota_pool": self.quota_pool,
-            "remaining_percentage": round(self.remaining_percentage, 1),
+            "remaining_percentage": round(self.remaining_percentage, 1) if self.remaining_percentage is not None else None,
             "state": self.state,
             "reset_time": self.reset_time,
-            "active_backoff_delay": round(self.active_backoff_delay, 2),
+            "active_backoff_delay": round(self.active_backoff_delay, 2) if self.active_backoff_delay is not None else 0.0,
             "requests_remaining": self.requests_remaining,
             "tokens_remaining": self.tokens_remaining,
         }
@@ -912,6 +1012,115 @@ class QuotaInfo:
                 d["window_1w"] = self.window_1w.to_dict()
             else:
                 d["window_1w"] = self.window_1w
+        if self.gemini_window_5h is not None:
+            if isinstance(self.gemini_window_5h, QuotaWindow):
+                d["gemini_window_5h"] = self.gemini_window_5h.to_dict()
+            else:
+                d["gemini_window_5h"] = self.gemini_window_5h
+        if self.gemini_window_1w is not None:
+            if isinstance(self.gemini_window_1w, QuotaWindow):
+                d["gemini_window_1w"] = self.gemini_window_1w.to_dict()
+            else:
+                d["gemini_window_1w"] = self.gemini_window_1w
+        if self.claude_window_5h is not None:
+            if isinstance(self.claude_window_5h, QuotaWindow):
+                d["claude_window_5h"] = self.claude_window_5h.to_dict()
+            else:
+                d["claude_window_5h"] = self.claude_window_5h
+        if self.claude_window_1w is not None:
+            if isinstance(self.claude_window_1w, QuotaWindow):
+                d["claude_window_1w"] = self.claude_window_1w.to_dict()
+            else:
+                d["claude_window_1w"] = self.claude_window_1w
+        def _extract_win_metrics(w, default_name=None):
+            if w is None:
+                return None, None, None, "OK"
+            if isinstance(w, QuotaWindow):
+                st, _ = w.get_pacing_status()
+                pct = round(w.remaining_percentage, 1) if w.remaining_percentage is not None else None
+                return pct, w.reset_time, w.format_reset_countdown(), st
+            elif isinstance(w, dict):
+                pct = w.get("remaining_percentage")
+                if pct is not None:
+                    try:
+                        pct = round(float(pct), 1)
+                    except (ValueError, TypeError):
+                        pass
+                res = w.get("reset_time")
+                cd = w.get("reset_countdown")
+                if cd is None and res is not None:
+                    cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
+                st = w.get("pacing_status", "OK")
+                return pct, res, cd, st
+            return None, None, None, "OK"
+
+        p = str(self.quota_pool or "").lower()
+        is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
+
+        gemini_5h = self.gemini_window_5h if self.gemini_window_5h is not None else (None if is_tp else self.window_5h)
+        gemini_1w = self.gemini_window_1w if self.gemini_window_1w is not None else (None if is_tp else self.window_1w)
+        claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
+        claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
+
+        g5_pct, g5_res, g5_cd, g5_st = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd, g1_st = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd, c5_st = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd, c1_st = _extract_win_metrics(claude_1w, default_name="1W")
+
+        def _to_win_dict(w):
+            if w is None:
+                return None
+            if isinstance(w, QuotaWindow):
+                return w.to_dict()
+            return w
+
+        if gemini_5h is not None and "gemini_window_5h" not in d:
+            d["gemini_window_5h"] = _to_win_dict(gemini_5h)
+        if gemini_1w is not None and "gemini_window_1w" not in d:
+            d["gemini_window_1w"] = _to_win_dict(gemini_1w)
+        if claude_5h is not None and "claude_window_5h" not in d:
+            d["claude_window_5h"] = _to_win_dict(claude_5h)
+        if claude_1w is not None and "claude_window_1w" not in d:
+            d["claude_window_1w"] = _to_win_dict(claude_1w)
+
+        d["gemini_5h_remaining_percentage"] = g5_pct
+        d["gemini_5h_reset_time"] = g5_res
+        d["gemini_5h_countdown"] = g5_cd
+        d["gemini_5h_pacing_status"] = g5_st
+
+        d["gemini_1w_remaining_percentage"] = g1_pct
+        d["gemini_1w_reset_time"] = g1_res
+        d["gemini_1w_countdown"] = g1_cd
+        d["gemini_1w_pacing_status"] = g1_st
+
+        d["third_party_5h_remaining_percentage"] = c5_pct
+        d["third_party_5h_reset_time"] = c5_res
+        d["third_party_5h_countdown"] = c5_cd
+        d["third_party_5h_pacing_status"] = c5_st
+
+        d["third_party_1w_remaining_percentage"] = c1_pct
+        d["third_party_1w_reset_time"] = c1_res
+        d["third_party_1w_countdown"] = c1_cd
+        d["third_party_1w_pacing_status"] = c1_st
+
+        if g5_pct is not None and g1_pct is not None:
+            d["gemini_remaining_percentage"] = min(g5_pct, g1_pct)
+        elif g5_pct is not None:
+            d["gemini_remaining_percentage"] = g5_pct
+        elif g1_pct is not None:
+            d["gemini_remaining_percentage"] = g1_pct
+        elif not is_tp:
+            d["gemini_remaining_percentage"] = d["remaining_percentage"]
+
+        if c5_pct is not None and c1_pct is not None:
+            d["third_party_remaining_percentage"] = min(c5_pct, c1_pct)
+        elif c5_pct is not None:
+            d["third_party_remaining_percentage"] = c5_pct
+        elif c1_pct is not None:
+            d["third_party_remaining_percentage"] = c1_pct
+        elif is_tp:
+            d["third_party_remaining_percentage"] = d["remaining_percentage"]
+
         return d
 
 
@@ -1215,10 +1424,24 @@ class QuotaTracker:
             else:
                 return self.gemini_window_5h, self.gemini_window_1w
 
-    def get_pool_remaining_percentage(self, pool: str) -> float:
+    def get_pool_remaining_percentage(self, pool: str) -> Optional[float]:
         with self._lock:
             w5, w1 = self.get_pool_windows(pool)
-            return min(w5.remaining_percentage, w1.remaining_percentage)
+            p5 = w5.remaining_percentage if w5 else None
+            p1 = w1.remaining_percentage if w1 else None
+            if p5 is not None and p1 is not None:
+                return min(p5, p1)
+            elif p5 is not None:
+                return p5
+            elif p1 is not None:
+                return p1
+            p = str(pool or "").lower()
+            pool_is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
+            active_p = str(self.quota_pool or "").lower()
+            active_is_tp = "claude" in active_p or "gpt" in active_p or "3p" in active_p or "third" in active_p
+            if pool_is_tp == active_is_tp:
+                return self._remaining_percentage
+            return None
 
     def is_pool_behind_pacing(
         self, pool: str, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
@@ -1229,13 +1452,15 @@ class QuotaTracker:
             norm_dt = _normalize_now_datetime(effective_now)
             if norm_dt is None:
                 norm_dt = datetime.now(timezone.utc)
-            s5, _ = w5.get_pacing_status(norm_dt)
-            s1, _ = w1.get_pacing_status(norm_dt)
+            s5 = w5.get_pacing_status(norm_dt)[0] if w5 else "OK"
+            s1 = w1.get_pacing_status(norm_dt)[0] if w1 else "OK"
             return s5 == "BEHIND_PACING" or s1 == "BEHIND_PACING"
 
     def get_pool_state(self, pool: str) -> str:
         with self._lock:
             pct = self.get_pool_remaining_percentage(pool)
+            if pct is None:
+                return QuotaState.NORMAL
             if pct <= self.EXHAUSTED_THRESHOLD:
                 return QuotaState.EXHAUSTED
             elif pct < self.LOW_QUOTA_THRESHOLD:
@@ -1367,6 +1592,7 @@ class QuotaTracker:
                 w5, _ = self.get_pool_windows(self.quota_pool)
                 w5.reset_time = str(val)
                 w5.reset_timestamp = parse_reset_time_to_timestamp(val)
+                w5.reset_datetime = parse_reset_time_to_datetime(val)
 
     @property
     def active_backoff_delay(self) -> float:
@@ -1399,7 +1625,7 @@ class QuotaTracker:
     ) -> float:
         """
         Calculate proportional pacing backoff delay for a specific window or max across all windows.
-        pacing_deficit = max(0.0, target_quota_fraction - quota_fraction) where target_quota_fraction = (time_fraction) ** 2.
+        pacing_deficit = max(0.0, target_quota_fraction - quota_fraction) where target_quota_fraction = time_fraction.
         """
         with self._lock:
             effective_now = now_dt if now_dt is not None else now
@@ -1498,9 +1724,11 @@ class QuotaTracker:
                 if reset_time_5h is not None:
                     w5.reset_time = str(reset_time_5h)
                     w5.reset_timestamp = parse_reset_time_to_timestamp(reset_time_5h)
+                    w5.reset_datetime = parse_reset_time_to_datetime(reset_time_5h)
                 elif reset_time is not None:
                     w5.reset_time = str(reset_time)
                     w5.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
+                    w5.reset_datetime = parse_reset_time_to_datetime(reset_time)
 
                 if remaining_percentage_1w is not None:
                     w1.remaining_percentage = max(0.0, min(100.0, float(remaining_percentage_1w)))
@@ -1510,9 +1738,11 @@ class QuotaTracker:
                 if reset_time_1w is not None:
                     w1.reset_time = str(reset_time_1w)
                     w1.reset_timestamp = parse_reset_time_to_timestamp(reset_time_1w)
+                    w1.reset_datetime = parse_reset_time_to_datetime(reset_time_1w)
                 elif reset_time is not None:
                     w1.reset_time = str(reset_time)
                     w1.reset_timestamp = parse_reset_time_to_timestamp(reset_time)
+                    w1.reset_datetime = parse_reset_time_to_datetime(reset_time)
 
             target_pool = quota_pool if quota_pool is not None else self.quota_pool
             target_w5, target_w1 = self.get_pool_windows(target_pool)
@@ -1881,6 +2111,10 @@ class QuotaTracker:
                 window_5h=self.window_5h,
                 window_1w=self.window_1w,
                 quota_pool=self.quota_pool,
+                gemini_window_5h=self.gemini_window_5h,
+                gemini_window_1w=self.gemini_window_1w,
+                claude_window_5h=self.claude_window_5h,
+                claude_window_1w=self.claude_window_1w,
             )
 
     def get_reset_time_str(self) -> str:
