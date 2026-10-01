@@ -607,8 +607,10 @@ class TestEnsureShellEnvironment(unittest.TestCase):
             # Verify subprocess.run was invoked with shell, flags, and custom timeout
             mock_run.assert_called_once_with(
                 ["/bin/zsh", "-i", "-c", "env"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                start_new_session=True,
                 timeout=3.5,
             )
 
@@ -639,8 +641,10 @@ class TestEnsureShellEnvironment(unittest.TestCase):
 
             mock_run.assert_called_once_with(
                 ["/bin/bash", "-i", "-c", "env"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                start_new_session=True,
                 timeout=2.0,
             )
 
