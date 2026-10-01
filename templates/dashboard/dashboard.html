@@ -734,7 +734,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="gemini-5h-bar" class="meter-fill" style="width: {gemini_5h_bar_pct}%; background-color: {gemini_5h_color};"></div>
-                            <div id="gemini-5h-pacing-mark" class="pacing-mark" style="{gemini_5h_pacing_style}" title="{gemini_5h_pacing_title}"></div>
+                            <div id="gemini-5h-pacing-mark" class="pacing-mark" style="{gemini_5h_pacing_style}" title="{gemini_5h_pacing_title}" aria-label="{gemini_5h_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="gemini-5h-details">{gemini_5h_details}</div>
                     </div>
@@ -746,7 +746,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="gemini-1w-bar" class="meter-fill" style="width: {gemini_1w_bar_pct}%; background-color: {gemini_1w_color};"></div>
-                            <div id="gemini-1w-pacing-mark" class="pacing-mark" style="{gemini_1w_pacing_style}" title="{gemini_1w_pacing_title}"></div>
+                            <div id="gemini-1w-pacing-mark" class="pacing-mark" style="{gemini_1w_pacing_style}" title="{gemini_1w_pacing_title}" aria-label="{gemini_1w_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="gemini-1w-details">{gemini_1w_details}</div>
                     </div>
@@ -771,7 +771,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="tp-5h-bar" class="meter-fill" style="width: {tp_5h_bar_pct}%; background-color: {tp_5h_color};"></div>
-                            <div id="tp-5h-pacing-mark" class="pacing-mark" style="{tp_5h_pacing_style}" title="{tp_5h_pacing_title}"></div>
+                            <div id="tp-5h-pacing-mark" class="pacing-mark" style="{tp_5h_pacing_style}" title="{tp_5h_pacing_title}" aria-label="{tp_5h_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="tp-5h-details">{tp_5h_details}</div>
                     </div>
@@ -783,7 +783,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="tp-1w-bar" class="meter-fill" style="width: {tp_1w_bar_pct}%; background-color: {tp_1w_color};"></div>
-                            <div id="tp-1w-pacing-mark" class="pacing-mark" style="{tp_1w_pacing_style}" title="{tp_1w_pacing_title}"></div>
+                            <div id="tp-1w-pacing-mark" class="pacing-mark" style="{tp_1w_pacing_style}" title="{tp_1w_pacing_title}" aria-label="{tp_1w_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="tp-1w-details">{tp_1w_details}</div>
                     </div>
@@ -1207,23 +1207,25 @@
 
             function parseResetSeconds(detailsStr) {{
                 if (!detailsStr) return null;
-                const m = detailsStr.match(/Reset:\s*([^|\n]+)/);
+                const m = detailsStr.match(/Reset:\s*([^|\n]+)/i);
                 if (!m) return null;
-                const str = m[1].trim();
-                if (str === 'N/A' || str.toLowerCase() === 'none') return null;
+                const str = m[1].trim().toLowerCase();
+                if (str === 'n/a' || str === 'none') return null;
                 if (str === '00:00:00' || str === '0' || str === '0s') return 0;
 
                 if (str.includes('d')) {{
                     const d = str.match(/(\d+)\s*d/);
                     const h = str.match(/(\d+)\s*h/);
                     const mMin = str.match(/(\d+)\s*m/);
+                    const sSec = str.match(/(\d+)\s*s/);
                     let sec = 0;
                     if (d) sec += parseInt(d[1], 10) * 86400;
                     if (h) sec += parseInt(h[1], 10) * 3600;
                     if (mMin) sec += parseInt(mMin[1], 10) * 60;
+                    if (sSec) sec += parseInt(sSec[1], 10);
                     return sec;
                 }}
-                if (str.includes('h') || str.includes('m')) {{
+                if (str.includes('h') || str.includes('m') || str.includes('s')) {{
                     const h = str.match(/(\d+)\s*h/);
                     const mMin = str.match(/(\d+)\s*m/);
                     const sSec = str.match(/(\d+)\s*s/);
@@ -1257,7 +1259,9 @@
                     mark.style.display = 'block';
                     mark.style.left = `${{targetPct}}%`;
                     const dispStr = Number.isInteger(targetPct) ? `${{targetPct}}%` : `${{targetPct.toFixed(1)}}%`;
-                    mark.setAttribute('title', `Target Pacing: ${{dispStr}} (perfect pacing limit)`);
+                    const titleText = `Target Pacing: ${{dispStr}} (perfect pacing limit)`;
+                    mark.setAttribute('title', titleText);
+                    mark.setAttribute('aria-label', titleText);
                 }} else {{
                     mark.style.display = 'none';
                 }}

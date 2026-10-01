@@ -359,8 +359,10 @@ class QuotaWindow:
     ) -> Optional[float]:
         """
         Calculate the target quota percentage threshold for linear pacing (y = x).
-        Returns None if reset time is not set.
+        Returns None if reset time is not set or duration is non-positive.
         """
+        if self.duration_seconds <= 0:
+            return None
         self._sync_reset_datetime()
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
         if res is None:

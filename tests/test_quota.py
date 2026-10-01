@@ -2831,6 +2831,15 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNone(win_no_reset.get_target_pacing_percentage(now_dt=now_dt))
         self.assertIsNone(win_no_reset.target_pacing_percentage)
 
+        # Zero or negative duration_seconds returns None
+        win_zero_duration = QuotaWindow(name="0H", duration_seconds=0, remaining_percentage=60.0, reset_datetime=reset_dt)
+        self.assertIsNone(win_zero_duration.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_zero_duration.target_pacing_percentage)
+
+        win_neg_duration = QuotaWindow(name="Neg", duration_seconds=-100.0, remaining_percentage=60.0, reset_datetime=reset_dt)
+        self.assertIsNone(win_neg_duration.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_neg_duration.target_pacing_percentage)
+
         # Check to_dict contains target_pacing_percentage
         d = win.to_dict()
         self.assertIn("target_pacing_percentage", d)

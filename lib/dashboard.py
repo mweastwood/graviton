@@ -782,8 +782,8 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
     """Parse a countdown string (e.g., '04:51:12', '02h 15m', '5d 04h', '00:00:00') into total seconds."""
     if not cd_str:
         return None
-    s = str(cd_str).strip()
-    if s in ("N/A", "none", "None", ""):
+    s = str(cd_str).strip().lower()
+    if s in ("n/a", "none", ""):
         return None
     if s in ("00:00:00", "0", "0s"):
         return 0.0
@@ -793,6 +793,7 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
         m_d = re.search(r"(\d+)\s*d", s)
         m_h = re.search(r"(\d+)\s*h", s)
         m_m = re.search(r"(\d+)\s*m", s)
+        m_s = re.search(r"(\d+)\s*s", s)
         sec = 0.0
         if m_d:
             sec += float(m_d.group(1)) * 86400.0
@@ -800,10 +801,12 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
             sec += float(m_h.group(1)) * 3600.0
         if m_m:
             sec += float(m_m.group(1)) * 60.0
+        if m_s:
+            sec += float(m_s.group(1))
         return sec
 
-    # Hours and mins: e.g. "02h 15m" or "02h" or "15m"
-    if "h" in s or "m" in s:
+    # Hours, mins, secs: e.g. "02h 15m" or "02h" or "15m" or "45s"
+    if any(u in s for u in ("h", "m", "s")):
         m_h = re.search(r"(\d+)\s*h", s)
         m_m = re.search(r"(\d+)\s*m", s)
         m_s = re.search(r"(\d+)\s*s", s)

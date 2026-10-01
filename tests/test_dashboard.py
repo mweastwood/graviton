@@ -3159,6 +3159,11 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(parse_countdown_to_seconds("02:15:00"), 8100.0)
         self.assertEqual(parse_countdown_to_seconds("02h 15m"), 8100.0)
         self.assertEqual(parse_countdown_to_seconds("5d 04h"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("5D 04H"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("02H 15M"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("45s"), 45.0)
+        self.assertEqual(parse_countdown_to_seconds("45S"), 45.0)
+        self.assertEqual(parse_countdown_to_seconds("5d 04h 30s"), 446430.0)
         self.assertEqual(parse_countdown_to_seconds("00:00:00"), 0.0)
         self.assertIsNone(parse_countdown_to_seconds("N/A"))
         self.assertIsNone(parse_countdown_to_seconds(None))
@@ -3194,8 +3199,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('id="gemini-1w-pacing-mark"', html_out)
         self.assertIn('id="tp-5h-pacing-mark"', html_out)
         self.assertIn('id="tp-1w-pacing-mark"', html_out)
-        # Verify calculated left percentage and title
-        self.assertIn('id="gemini-5h-pacing-mark" class="pacing-mark" style="left: 50.0%;" title="Target Pacing: 50% (perfect pacing limit)"', html_out)
+        # Verify calculated left percentage, title, and aria-label
+        self.assertIn('id="gemini-5h-pacing-mark" class="pacing-mark" style="left: 50.0%;" title="Target Pacing: 50% (perfect pacing limit)" aria-label="Target Pacing: 50% (perfect pacing limit)"', html_out)
 
     def test_template_js_pacing_marks_auto_update(self):
         _reset_dashboard_template_cache()
@@ -3205,6 +3210,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("updatePacingMark('gemini-1w-pacing-mark'", template)
         self.assertIn("updatePacingMark('tp-5h-pacing-mark'", template)
         self.assertIn("updatePacingMark('tp-1w-pacing-mark'", template)
+        self.assertIn("mark.setAttribute('aria-label', titleText)", template)
 
 
 if __name__ == "__main__":
