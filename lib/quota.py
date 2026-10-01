@@ -120,10 +120,10 @@ class QuotaState:
 
 def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[datetime]:
     """Parse numeric timestamp or ISO 8601 string to timezone-aware UTC datetime."""
-    if reset_time is None:
+    if reset_time is None or isinstance(reset_time, bool):
         return None
     if isinstance(reset_time, datetime):
-        return reset_time if reset_time.tzinfo else reset_time.replace(tzinfo=timezone.utc)
+        return reset_time.astimezone(timezone.utc) if reset_time.tzinfo else reset_time.replace(tzinfo=timezone.utc)
 
     # 1. Try numeric conversion (int, float, or stringified float/int e.g., "1786266000.0")
     try:
@@ -140,6 +140,8 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, dat
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         return dt
     except (ValueError, TypeError):
         return None
@@ -158,7 +160,7 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     if isinstance(now, bool):
         return None
     if isinstance(now, datetime):
-        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        return now.astimezone(timezone.utc) if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     if isinstance(now, (int, float)):
         return datetime.fromtimestamp(now, tz=timezone.utc)
     return None
@@ -198,7 +200,11 @@ class QuotaWindow:
 
         res = reset_time if reset_time is not None else reset_timestamp
         if reset_datetime is not None:
-            self.reset_datetime = reset_datetime if reset_datetime.tzinfo else reset_datetime.replace(tzinfo=timezone.utc)
+            self.reset_datetime = (
+                reset_datetime.astimezone(timezone.utc)
+                if reset_datetime.tzinfo
+                else reset_datetime.replace(tzinfo=timezone.utc)
+            )
         else:
             self.reset_datetime = parse_reset_time_to_datetime(res)
 
@@ -230,7 +236,9 @@ class QuotaWindow:
                 return None
             if not cur_dt.tzinfo:
                 cur_dt = cur_dt.replace(tzinfo=timezone.utc)
-                self.reset_datetime = cur_dt
+            else:
+                cur_dt = cur_dt.astimezone(timezone.utc)
+            self.reset_datetime = cur_dt
             if cur_time == last_time:
                 self.reset_time = cur_dt.isoformat()
             if cur_ts == last_ts:
@@ -268,7 +276,7 @@ class QuotaWindow:
                 self.reset_time = dt.isoformat()
             elif cur_time == last_time and cur_ts != last_ts:
                 self.reset_time = dt.isoformat()
-            if cur_ts == last_ts:
+            if cur_ts == last_ts or cur_time != last_time:
                 self.reset_timestamp = dt.timestamp()
         else:
             self.reset_timestamp = None
@@ -398,11 +406,16 @@ class QuotaWindow:
             secs = int(rec_sec % 60)
             return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
-    def format_reset_countdown(self, now: Optional[Union[float, int, datetime]] = None) -> str:
+    def format_reset_countdown(
+        self,
+        now_dt: Optional[Union[float, int, datetime]] = None,
+        now: Optional[Union[float, int, datetime]] = None,
+    ) -> str:
         dt = self._sync_reset_datetime()
         target = dt if dt is not None else (self.reset_time if self.reset_time is not None else self.reset_timestamp)
-        now_dt = _normalize_now_datetime(now)
-        return format_reset_countdown(target, now_dt=now_dt, window_name=self.name)
+        effective_now = now_dt if now_dt is not None else now
+        norm_dt = _normalize_now_datetime(effective_now)
+        return format_reset_countdown(target, now_dt=norm_dt, window_name=self.name)
 
     def to_dict(self) -> dict:
         pacing_status, backoff = self.get_pacing_status()

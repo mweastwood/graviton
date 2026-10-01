@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +35,7 @@ from lib.quota import (
     parse_all_antigravity_quota_json,
     parse_antigravity_quota_json,
     parse_quota_headers,
+    parse_reset_time_to_datetime,
     parse_reset_time_to_timestamp,
     resolve_antigravity_quota_endpoint,
 )
@@ -2512,10 +2513,12 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         ts_now = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp()
         self.assertEqual(format_reset_countdown(reset_dt, now_dt=ts_now), "02:00:00")
 
-        # QuotaWindow.format_reset_countdown with naive datetime and numeric timestamp
+        # QuotaWindow.format_reset_countdown with naive datetime and numeric timestamp (both now and now_dt)
         win = QuotaWindow(name="5H", reset_time=reset_dt)
         self.assertEqual(win.format_reset_countdown(now=naive_now), "02:00:00")
         self.assertEqual(win.format_reset_countdown(now=ts_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now_dt=naive_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now_dt=ts_now), "02:00:00")
 
     def test_quota_window_unconfigured_fast_path(self):
         """Verify unconfigured windows hit fast path and return 0.0 remaining seconds."""
@@ -2526,6 +2529,72 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(win.get_remaining_seconds(), 0.0)
         self.assertEqual(win.get_remaining_seconds(), 0.0)
         self.assertEqual(win.format_reset_countdown(), "N/A")
+
+    def test_parse_reset_time_to_datetime_booleans(self):
+        """Verify booleans are not treated as epoch timestamps (1970) and return None."""
+        self.assertIsNone(parse_reset_time_to_datetime(True))
+        self.assertIsNone(parse_reset_time_to_datetime(False))
+        self.assertIsNone(parse_reset_time_to_timestamp(True))
+        self.assertIsNone(parse_reset_time_to_timestamp(False))
+        self.assertIsNone(_normalize_now_datetime(True))
+        self.assertIsNone(_normalize_now_datetime(False))
+
+    def test_quota_timezone_normalization_to_canonical_utc(self):
+        """Verify non-UTC timezone-aware datetimes and ISO strings are normalized to canonical UTC."""
+        tz_plus5 = timezone(timedelta(hours=5))
+        dt_plus5 = datetime(2026, 10, 1, 15, 0, 0, tzinfo=tz_plus5)
+        expected_utc = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+        # 1. parse_reset_time_to_datetime with non-UTC datetime object
+        res_dt = parse_reset_time_to_datetime(dt_plus5)
+        self.assertEqual(res_dt, expected_utc)
+        self.assertEqual(res_dt.tzinfo, timezone.utc)
+
+        # 2. parse_reset_time_to_datetime with ISO string containing offset (+05:00)
+        iso_plus5 = "2026-10-01T15:00:00+05:00"
+        res_iso = parse_reset_time_to_datetime(iso_plus5)
+        self.assertEqual(res_iso, expected_utc)
+        self.assertEqual(res_iso.tzinfo, timezone.utc)
+
+        # 3. QuotaWindow init with reset_datetime in non-UTC timezone
+        win_dt = QuotaWindow(name="5H", reset_datetime=dt_plus5)
+        self.assertEqual(win_dt.reset_datetime, expected_utc)
+        self.assertEqual(win_dt.reset_datetime.tzinfo, timezone.utc)
+        self.assertEqual(win_dt.reset_timestamp, expected_utc.timestamp())
+
+        # 4. QuotaWindow init with reset_time string in non-UTC timezone
+        win_str = QuotaWindow(name="5H", reset_time=iso_plus5)
+        self.assertEqual(win_str.reset_datetime, expected_utc)
+        self.assertEqual(win_str.reset_datetime.tzinfo, timezone.utc)
+        self.assertEqual(win_str.reset_timestamp, expected_utc.timestamp())
+
+        # 5. Direct mutation of win.reset_datetime to non-UTC datetime
+        win_mut = QuotaWindow(name="5H", reset_time="2026-10-01T12:00:00Z")
+        win_mut.reset_datetime = dt_plus5
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win_mut.get_remaining_seconds(now_dt=now), 3600.0)
+        self.assertEqual(win_mut.reset_datetime, expected_utc)
+        self.assertEqual(win_mut.reset_datetime.tzinfo, timezone.utc)
+
+    def test_quota_window_simultaneous_reset_time_and_timestamp_mutation(self):
+        """Verify simultaneous mutation of reset_time and reset_timestamp synchronizes all three representations."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 3600.0)
+
+        # Simultaneously mutate reset_time and reset_timestamp
+        win.reset_time = "2026-10-01T15:00:00Z"
+        win.reset_timestamp = 1790870400.0  # 16:00:00 UTC (intentionally mismatched)
+
+        # Trigger synchronization via format_reset_countdown using now_dt keyword
+        countdown = win.format_reset_countdown(now_dt=now)
+        self.assertEqual(countdown, "06:00:00")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+
+        expected_dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win.reset_datetime, expected_dt)
+        self.assertEqual(win.reset_timestamp, expected_dt.timestamp())
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00Z")
 
 
 if __name__ == "__main__":
