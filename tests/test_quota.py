@@ -2690,7 +2690,7 @@ class TestParseResetTime(unittest.TestCase):
         dt_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
         self.assertEqual(parse_reset_time_to_datetime(dt_utc), dt_utc)
 
-        # Custom timezone datetime
+        # Custom timezone datetime is converted and normalized to canonical UTC (tzinfo=timezone.utc)
         custom_tz = timezone(timedelta(hours=2))
         dt_custom = datetime(2026, 9, 25, 18, 0, 0, tzinfo=custom_tz)
         res_custom = parse_reset_time_to_datetime(dt_custom)
@@ -2731,9 +2731,15 @@ class TestParseResetTime(unittest.TestCase):
         # Explicit offset (+00:00)
         self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00+00:00"), expected_utc)
 
-        # Explicit non-zero offset
-        expected_offset = datetime(2026, 9, 25, 18, 0, 0, tzinfo=timezone(timedelta(hours=2)))
-        self.assertEqual(parse_reset_time_to_datetime("2026-09-25T18:00:00+02:00"), expected_offset)
+        # Explicit non-zero positive offset
+        res_offset = parse_reset_time_to_datetime("2026-09-25T18:00:00+02:00")
+        self.assertEqual(res_offset, expected_utc)
+        self.assertEqual(res_offset.tzinfo, timezone.utc)
+
+        # Explicit non-zero negative offset
+        res_neg = parse_reset_time_to_datetime("2026-09-25T12:00:00-04:00")
+        self.assertEqual(res_neg, expected_utc)
+        self.assertEqual(res_neg.tzinfo, timezone.utc)
 
         # Trailing 'Z' and 'z'
         self.assertEqual(parse_reset_time_to_datetime("2026-09-25T16:00:00Z"), expected_utc)
@@ -2775,6 +2781,7 @@ class TestParseResetTime(unittest.TestCase):
         self.assertEqual(parse_reset_time_to_timestamp("-1000"), -1000.0)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T18:00:00+02:00"), expected_ts)
+        self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T12:00:00-04:00"), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00"), expected_ts)
         self.assertEqual(parse_reset_time_to_timestamp("  2026-09-25T16:00:00Z  "), expected_ts)
 

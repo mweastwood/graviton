@@ -119,7 +119,7 @@ class QuotaState:
 
 
 def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, datetime]]) -> Optional[datetime]:
-    """Parse numeric timestamp, ISO 8601 string, or datetime object to timezone-aware datetime (defaulting to UTC)."""
+    """Parse numeric timestamp, ISO 8601 string, or datetime object to timezone-aware UTC datetime."""
     if reset_time is None or isinstance(reset_time, bool):
         return None
     if isinstance(reset_time, datetime):
