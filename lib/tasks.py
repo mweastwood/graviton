@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Collection, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
@@ -352,14 +352,41 @@ def prune_abandoned_workspaces(
     return pruned_count
 
 
-class _PrunedTaskIds(collections.deque):
-    """Bounded collection tracking pruned task IDs with FIFO eviction."""
+class _PrunedTaskIds:
+    """Bounded collection tracking pruned task IDs with O(1) lookups and FIFO eviction."""
+
+    def __init__(self, maxlen: Optional[int] = 10000):
+        self.maxlen = maxlen
+        self._items: collections.OrderedDict[str, None] = collections.OrderedDict()
 
     def add(self, item: str) -> None:
         """Add an item to the collection, moving it to the most recent position if present."""
-        if item in self:
-            self.remove(item)
-        self.append(item)
+        if item in self._items:
+            self._items.move_to_end(item)
+            return
+
+        if self.maxlen is not None and self.maxlen <= 0:
+            return
+
+        if self.maxlen is not None and len(self._items) >= self.maxlen:
+            self._items.popitem(last=False)
+        self._items[item] = None
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __repr__(self) -> str:
+        return f"_PrunedTaskIds({list(self._items)}, maxlen={self.maxlen})"
+
+    def clear(self) -> None:
+        """Remove all items from the collection."""
+        self._items.clear()
 
 
 class TaskManager:
@@ -422,7 +449,7 @@ class TaskManager:
         self._task_state_cond = threading.Condition(self._lock)
         self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
-        self._pruned_task_ids: collections.deque[str] = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
+        self._pruned_task_ids: _PrunedTaskIds = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
         self._active_processes: Dict[str, subprocess.Popen] = {}
         self._active_supervisors: Dict[str, Any] = {}
         self._task_counter = 0

@@ -2178,6 +2178,56 @@ class TestTaskManager(unittest.TestCase):
         # Adding existing item moves it to the most recent position
         bounded.add("task-2")
         self.assertEqual(list(bounded), ["task-3", "task-4", "task-2"])
+        self.assertEqual(len(bounded), 3)
+
+    def test_pruned_task_ids_ordered_dict_properties(self):
+        import collections
+        from lib.tasks import _PrunedTaskIds
+
+        # Verify it is no longer a subclass of deque
+        self.assertFalse(issubclass(_PrunedTaskIds, collections.deque))
+
+        # Test clear
+        bounded = _PrunedTaskIds(maxlen=3)
+        bounded.add("a")
+        bounded.add("b")
+        self.assertEqual(len(bounded), 2)
+        bounded.clear()
+        self.assertEqual(len(bounded), 0)
+        self.assertEqual(list(bounded), [])
+        self.assertNotIn("a", bounded)
+
+        # Test repr
+        bounded.add("x")
+        self.assertIn("x", repr(bounded))
+
+        # Test membership with non-string keys
+        self.assertNotIn(12345, bounded)
+        self.assertNotIn(None, bounded)
+
+        # Test maxlen=0 behaves cleanly (retains nothing)
+        zero_bounded = _PrunedTaskIds(maxlen=0)
+        zero_bounded.add("item")
+        self.assertEqual(len(zero_bounded), 0)
+        self.assertNotIn("item", zero_bounded)
+
+        # Test maxlen=None (unbounded)
+        unbounded = _PrunedTaskIds(maxlen=None)
+        for i in range(100):
+            unbounded.add(f"item-{i}")
+        self.assertEqual(len(unbounded), 100)
+        self.assertIn("item-0", unbounded)
+        self.assertIn("item-99", unbounded)
+
+        # Performance / O(1) scale check: 5000 items in bounded history
+        scale = _PrunedTaskIds(maxlen=5000)
+        for i in range(5000):
+            scale.add(f"t-{i}")
+        self.assertEqual(len(scale), 5000)
+        self.assertIn("t-0", scale)
+        self.assertIn("t-4999", scale)
+        self.assertNotIn("t-5000", scale)
+
 
     def test_wait_for_all_and_join(self):
         manager = TaskManager(max_workers=2)
