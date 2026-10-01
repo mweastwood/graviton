@@ -14,11 +14,17 @@ from unittest.mock import MagicMock, patch
 
 from lib.dashboard import (
     DashboardUpdater,
+    REPO_ROOT,
+    _detect_git_repo_full_name,
+    _format_target_html_cell,
+    _format_target_markdown_cell,
     _get_dashboard_template,
-    _reset_dashboard_template_cache,
     _render_active_tasks_table,
     _render_approved_prs_table,
     _render_history_tasks_table,
+    _render_queued_tasks_table,
+    _reset_dashboard_template_cache,
+    _reset_detected_repo_cache,
     format_dashboard_markdown,
     format_duration,
     format_percentage,
@@ -26,6 +32,7 @@ from lib.dashboard import (
     is_safe_url,
     parse_dashboard_markdown,
     render_dashboard_html,
+    resolve_target_url,
     SERVER_PATTERN,
     STATUS_PATTERN,
     WORKERS_PATTERN,
@@ -41,6 +48,8 @@ class TestDashboardFormatting(unittest.TestCase):
 
     def setUp(self):
         super().setUp()
+        _reset_detected_repo_cache()
+        self.addCleanup(_reset_detected_repo_cache)
         self._models_patcher = patch(
             "lib.quota.fetch_cli_models",
             return_value=(["gemini-3.8-flash-medium"], ["claude-sonnet-4-6"]),
@@ -115,7 +124,7 @@ class TestDashboardFormatting(unittest.TestCase):
             self.assertIn("| **Active Pool** | `claude` |", md3)
             self.assertIn("| **Active Model** | `claude-sonnet-4-6` |", md3)
 
-    def test_format_dashboard_markdown_with_tasks_and_remote_control(self):
+    def test_format_dashboard_markdown_with_clickable_targets(self):
         mock_tm = MagicMock()
         mock_tm.get_stats.return_value = {
             "active_workers": 1,
@@ -141,6 +150,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Fix bug",
             target_id="#43",
+            repo_full_name="owner/repo",
             status=TaskStatus.QUEUED,
             priority=2,
             enqueue_time=time.time() - 10.0,
@@ -150,6 +160,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Completed task",
             target_id="#40",
+            repo_full_name="owner/repo",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 100.0,
             finish_time=time.time() - 40.0,
@@ -168,18 +179,120 @@ class TestDashboardFormatting(unittest.TestCase):
 
         self.assertIn("🟡 **BUSY**", md)
         self.assertIn("`task-101`", md)
-        self.assertIn("[Remote Control 🌐](https://antigravity.google.com/c/conv-101)", md)
+        self.assertIn("[`#42`](https://github.com/owner/repo/pull/42)", md)
+        self.assertNotIn("Remote Control", md)
         self.assertIn("`task-102`", md)
+        self.assertIn("[`#43`](https://github.com/owner/repo/pull/43)", md)
         self.assertIn("`task-100`", md)
+        self.assertIn("[`#40`](https://github.com/owner/repo/pull/40)", md)
         self.assertIn("✅ `COMPLETED`", md)
+
+    def test_format_dashboard_markdown_target_cell_normalization(self):
+        """Verify backticked and markdown-linked targets do not produce double-backticks or nested links."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1,
+            "max_workers": 2,
+            "active_tasks": 1,
+            "queued_tasks": 1,
+            "completed_tasks": 1,
+            "failed_tasks": 0,
+        }
+        active_task = Task(
+            id="task-backtick",
+            agent="code_reviewer",
+            prompt="Review PR #42",
+            target_id="`#42`",
+            repo_full_name="owner/repo",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 30.0,
+        )
+        queued_task = Task(
+            id="task-mdlink",
+            agent="issue_triager",
+            prompt="Triage issue",
+            target_id="[#99](https://github.com/owner/repo/issues/99)",
+            repo_full_name="owner/repo",
+            status=TaskStatus.QUEUED,
+            priority=1,
+            enqueue_time=time.time() - 10.0,
+        )
+        history_task = Task(
+            id="task-hyphen",
+            agent="pr_drafter",
+            prompt="Draft PR",
+            target_id="`owner/repo#pr-77`",
+            repo_full_name="owner/repo",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 50.0,
+            finish_time=time.time() - 10.0,
+        )
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = [queued_task]
+        mock_tm.get_task_history.return_value = [history_task]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertNotIn("``", md)
+        self.assertNotIn("[[", md)
+        self.assertIn("[`#42`](https://github.com/owner/repo/pull/42)", md)
+        self.assertIn("[`#99`](https://github.com/owner/repo/issues/99)", md)
+        self.assertIn("[`owner/repo#pr-77`](https://github.com/owner/repo/pull/77)", md)
+
+    def test_format_dashboard_markdown_history_error_message_pipe_escaping(self):
+        """Verify pipe characters in error messages are escaped and newlines replaced to preserve table structure."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 0,
+            "max_workers": 2,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "completed_tasks": 0,
+            "failed_tasks": 1,
+        }
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        history_task = Task(
+            id="task-err-pipe",
+            agent="code_fixer",
+            prompt="Fix bug",
+            target_id="#42",
+            repo_full_name="owner/repo",
+            status=TaskStatus.FAILED,
+            start_time=time.time() - 30.0,
+            finish_time=time.time() - 10.0,
+            error_message="ValueError: expected a | b or c\r\nsecond line",
+        )
+        mock_tm.get_task_history.return_value = [history_task]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        # Verify pipe is escaped in markdown table row and newlines are sanitized
+        self.assertIn("ValueError: expected a \\| b or c  second...", md)
+        self.assertNotIn("c\r\nsecond line", md)
+
+        # Verify parsing table rows does not split into an extra 7th column
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        h = parsed["history_tasks"][0]
+        self.assertEqual(h["id"], "task-err-pipe")
+        self.assertEqual(h["agent"], "code_fixer")
+        self.assertEqual(h["status"], "FAILED")
+        self.assertIn("ValueError: expected a | b or c  second", h["details"])
+
+        # Test short error message under 40 characters
+        history_task.error_message = "Err: a | b\r\nc"
+        md_short = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("`Err: a \\| b  c`", md_short)
+        parsed_short = parse_dashboard_markdown(md_short)
+        self.assertEqual(parsed_short["history_tasks"][0]["details"], "Err: a | b  c")
 
     def test_render_dashboard_html(self):
         md = "# Sample Markdown"
         html_out = render_dashboard_html(md, host="localhost", port=8000)
         self.assertIn("<!DOCTYPE html>", html_out)
         self.assertIn("Graviton Live Dashboard", html_out)
-        self.assertIn("# Sample Markdown", html_out)
         self.assertIn("/dashboard/content", html_out)
+        self.assertIn("(pr|pulls?|issues?)", html_out)
+        self.assertIn("[\\s#:]+", html_out)
 
     def test_get_quota_color_thresholds(self):
         # > 50%: Green (#3fb950)
@@ -265,12 +378,13 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("class=\"markdown-view\"", html_out)
         self.assertIn("setInterval(refreshDashboard, 3000)", html_out)
 
-    def test_render_dashboard_html_with_active_tasks_and_remote_control(self):
+    def test_render_dashboard_html_with_active_tasks_and_clickable_target(self):
         active_task = Task(
             id="task-live-1",
             agent="code_reviewer",
             prompt="Review PR #99",
             target_id="#99",
+            repo_full_name="owner/repo",
             status=TaskStatus.RUNNING,
             start_time=time.time() - 45.0,
             remote_control_url="https://antigravity.google.com/c/live-sess-1",
@@ -287,8 +401,11 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("task-live-1", html_out)
         self.assertIn("code_reviewer", html_out)
         self.assertIn("#99", html_out)
-        self.assertIn("https://antigravity.google.com/c/live-sess-1", html_out)
-        self.assertIn("🌐 Remote Control", html_out)
+        self.assertIn('href="https://github.com/owner/repo/pull/99"', html_out)
+        self.assertIn('class="target-link"', html_out)
+        self.assertNotIn("🌐 Remote Control", html_out)
+        self.assertNotIn("<th>Remote Control</th>", html_out)
+        self.assertNotIn("https://antigravity.google.com/c/live-sess-1", html_out)
         self.assertIn("target=\"_blank\"", html_out)
         self.assertIn("rel=\"noopener\"", html_out)
 
@@ -323,6 +440,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="pr_drafter",
             prompt="Draft PR",
             target_id="#55",
+            repo_full_name="owner/repo",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 60.0,
             finish_time=time.time() - 10.0,
@@ -333,6 +451,7 @@ class TestDashboardFormatting(unittest.TestCase):
             agent="code_fixer",
             prompt="Failing fix",
             target_id="#56",
+            repo_full_name="owner/repo",
             status=TaskStatus.FAILED,
             start_time=time.time() - 30.0,
             finish_time=time.time() - 5.0,
@@ -349,9 +468,12 @@ class TestDashboardFormatting(unittest.TestCase):
 
         self.assertIn("task-hist-1", html_out)
         self.assertIn("status-completed", html_out)
-        self.assertIn("https://antigravity.google.com/c/sess-hist", html_out)
+        self.assertIn('href="https://github.com/owner/repo/issues/55"', html_out)
+        self.assertNotIn("Remote Session", html_out)
+        self.assertNotIn("https://antigravity.google.com/c/sess-hist", html_out)
         self.assertIn("task-hist-2", html_out)
         self.assertIn("status-failed", html_out)
+        self.assertIn('href="https://github.com/owner/repo/pull/56"', html_out)
         self.assertIn("Compilation failed on line 42", html_out)
 
     def test_render_dashboard_html_empty_states(self):
@@ -512,7 +634,7 @@ class TestDashboardFormatting(unittest.TestCase):
             id="task-xss-1",
             agent="code_reviewer",
             prompt="Malicious task",
-            target_id="#99",
+            target_id="javascript:alert(1)",
             status=TaskStatus.RUNNING,
             start_time=time.time() - 30.0,
             remote_control_url="javascript:alert(document.cookie)",
@@ -521,11 +643,12 @@ class TestDashboardFormatting(unittest.TestCase):
             id="task-xss-2",
             agent="code_fixer",
             prompt="Malicious history",
-            target_id="#100",
+            target_id="javascript:alert(2)",
             status=TaskStatus.COMPLETED,
             start_time=time.time() - 60.0,
             finish_time=time.time() - 10.0,
             remote_control_url="javascript:alert('pwned')",
+            error_message="Test error",
         )
         mock_tm = MagicMock()
         mock_tm.get_stats.return_value = {"active_workers": 1, "max_workers": 1, "active_tasks": 1, "completed_tasks": 1}
@@ -539,20 +662,18 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertNotIn('href="javascript:', html_out)
         self.assertNotIn("href='javascript:", html_out)
         self.assertNotIn('<a href="javascript', html_out)
-        self.assertIn("Pending...", html_out)
         self.assertIn('class="error-snippet"', html_out)
 
         # Direct table rendering verification
         active_rendered = _render_active_tasks_table([{
-            "id": "t1", "agent": "a", "target": "b", "elapsed": "1s", "status": "RUNNING",
+            "id": "t1", "agent": "a", "target": "javascript:alert(1)", "elapsed": "1s", "status": "RUNNING",
             "remote_control_url": "javascript:alert(1)"
         }])
         self.assertNotIn("<a ", active_rendered)
-        self.assertIn("Pending...", active_rendered)
 
         history_rendered = _render_history_tasks_table([{
-            "id": "t2", "agent": "a", "target": "b", "duration": "1s", "status": "COMPLETED",
-            "remote_control_url": "javascript:alert(1)", "details": "Remote Control"
+            "id": "t2", "agent": "a", "target": "javascript:alert(2)", "duration": "1s", "status": "COMPLETED",
+            "remote_control_url": "javascript:alert(1)", "details": "Finished"
         }])
         self.assertNotIn("<a ", history_rendered)
 
@@ -601,6 +722,708 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
         self.assertEqual(len(parsed["history_tasks"]), 1)
         self.assertEqual(parsed["history_tasks"][0]["id"], "task-3")
+
+    def test_resolve_target_url_various_formats(self):
+        # Full repo#number format
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="code_reviewer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="issue_triager"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        # pr_drafter routes bare targets or issue targets to issues/
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="pr_drafter"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#42", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+        self.assertEqual(
+            resolve_target_url("42", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+        self.assertEqual(
+            resolve_target_url("PR #123", repo="my-org/my-repo", agent="pr_drafter"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="code_fixer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#123", agent="arbitrary_agent"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+
+        # Flexible prefixes and spacing (PR #123, Issue #45, PR 123, Issue 45)
+        self.assertEqual(
+            resolve_target_url("PR #123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("Issue #45", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("PR 123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("Issue 45", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo PR #123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo Issue #45"),
+            "https://github.com/owner/repo/issues/45",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo PR 123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo Issue 45"),
+            "https://github.com/owner/repo/issues/45",
+        )
+
+        # Bare #number with explicit repo
+        self.assertEqual(
+            resolve_target_url("#42", repo="my-org/my-repo", agent="code_reviewer"),
+            "https://github.com/my-org/my-repo/pull/42",
+        )
+        self.assertEqual(
+            resolve_target_url("42", repo="my-org/my-repo", agent="issue_triager"),
+            "https://github.com/my-org/my-repo/issues/42",
+        )
+
+        # Direct HTTP/HTTPS URLs and bare github.com
+        self.assertEqual(
+            resolve_target_url("https://github.com/foo/bar/pull/99"),
+            "https://github.com/foo/bar/pull/99",
+        )
+        self.assertEqual(
+            resolve_target_url("http://github.com/foo/bar/issues/100"),
+            "http://github.com/foo/bar/issues/100",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/foo/bar/pull/99"),
+            "https://github.com/foo/bar/pull/99",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/foo/bar/issues/100"),
+            "https://github.com/foo/bar/issues/100",
+        )
+        self.assertEqual(
+            resolve_target_url("github.com/owner/repo"),
+            "https://github.com/owner/repo",
+        )
+
+        # Whole repository
+        self.assertEqual(
+            resolve_target_url("owner/repo"),
+            "https://github.com/owner/repo",
+        )
+
+        # Markdown links
+        self.assertEqual(
+            resolve_target_url("[#42](https://github.com/owner/repo/pull/42)"),
+            "https://github.com/owner/repo/pull/42",
+        )
+
+        # Backticked targets
+        self.assertEqual(
+            resolve_target_url("`#42`", repo="my-org/my-repo", agent="code_reviewer"),
+            "https://github.com/my-org/my-repo/pull/42",
+        )
+        self.assertEqual(
+            resolve_target_url("`octocat/Hello-World#123`", agent="code_reviewer"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`octocat/Hello-World#123`", agent="issue_triager"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`owner/repo`"),
+            "https://github.com/owner/repo",
+        )
+        self.assertEqual(
+            resolve_target_url("`https://github.com/foo/bar/pull/99`"),
+            "https://github.com/foo/bar/pull/99",
+        )
+
+        # Hyphenated target formats
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#pr-123"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#pull-123"),
+            "https://github.com/octocat/Hello-World/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#issue-123"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("octocat/Hello-World#issues-123"),
+            "https://github.com/octocat/Hello-World/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#pr-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("#issue-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("pr-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("issue-123", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`#pr-123`", repo="my-org/my-repo"),
+            "https://github.com/my-org/my-repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("`owner/repo#issue-456`"),
+            "https://github.com/owner/repo/issues/456",
+        )
+
+        # Substring collision resistance with repo names containing "pr", "pull", or "issue"
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot#123", agent="issue_triager"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot#123", agent="pr_drafter"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("expressjs/express#123", agent="issue_triager"),
+            "https://github.com/expressjs/express/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("cypress-io/cypress#123", agent="issue_triager"),
+            "https://github.com/cypress-io/cypress/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/pulley#123", agent="issue_triager"),
+            "https://github.com/owner/pulley/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("org/enterprise-app#123", agent="issue_triager"),
+            "https://github.com/org/enterprise-app/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker#123", agent="code_reviewer"),
+            "https://github.com/owner/issue-tracker/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker#123", agent="code_fixer"),
+            "https://github.com/owner/issue-tracker/pull/123",
+        )
+        # Explicit prefix overrides agent defaults on repos with substrings
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot PR #123", agent="issue_triager"),
+            "https://github.com/spring-projects/spring-boot/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker Issue #123", agent="code_reviewer"),
+            "https://github.com/owner/issue-tracker/issues/123",
+        )
+
+        # Path-style targets (e.g. owner/repo/pull/123, owner/repo/issues/123)
+        self.assertEqual(
+            resolve_target_url("owner/repo/pull/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo/issues/123"),
+            "https://github.com/owner/repo/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot/pull/123"),
+            "https://github.com/spring-projects/spring-boot/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("spring-projects/spring-boot/issues/123"),
+            "https://github.com/spring-projects/spring-boot/issues/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/issue-tracker/pull/456"),
+            "https://github.com/owner/issue-tracker/pull/456",
+        )
+
+        # Path notation with repo and plural pulls
+        self.assertEqual(
+            resolve_target_url("owner/repo/pulls/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+        self.assertEqual(
+            resolve_target_url("owner/repo/pull/123"),
+            "https://github.com/owner/repo/pull/123",
+        )
+
+        # Bare path targets with eff_repo (pull/123, pulls/123, issues/123, pr/123)
+        self.assertEqual(
+            resolve_target_url("pull/1234", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("pulls/1234", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("issues/456", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+        self.assertEqual(
+            resolve_target_url("issue/456", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+        self.assertEqual(
+            resolve_target_url("pr/789", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/789",
+        )
+        self.assertEqual(
+            resolve_target_url("`pull/1234`", repo="owner/repo"),
+            "https://github.com/owner/repo/pull/1234",
+        )
+        self.assertEqual(
+            resolve_target_url("`issues/456`", repo="owner/repo"),
+            "https://github.com/owner/repo/issues/456",
+        )
+
+        # Invalid repo parameter validation
+        self.assertIsNone(resolve_target_url("#42", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("#42", repo="owner/repo/extra"))
+        self.assertIsNone(resolve_target_url("42", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("PR #123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("Issue #123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("pull/123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("issues/123", repo="owner/repo/extra"))
+
+        # Unsafe / non-target inputs
+        self.assertIsNone(resolve_target_url(None))
+        self.assertIsNone(resolve_target_url(""))
+        self.assertIsNone(resolve_target_url("   "))
+        self.assertIsNone(resolve_target_url("N/A"))
+        self.assertIsNone(resolve_target_url("javascript:alert(1)"))
+        self.assertIsNone(resolve_target_url("[click](javascript:alert(1))"))
+        self.assertIsNone(resolve_target_url("random text without issue"))
+
+    def test_format_target_html_cell(self):
+        # Markdown link unwrapping
+        self.assertEqual(
+            _format_target_html_cell("[#42](https://github.com/owner/repo/pull/42)"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell("[`#42`](https://github.com/owner/repo/pull/42)"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell("`[#42](https://github.com/owner/repo/pull/42)`"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell(" `[#42](https://github.com/owner/repo/pull/42)` "),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell("`[`#42`](https://github.com/owner/repo/pull/42)`"),
+            '<a href="https://github.com/owner/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>',
+        )
+        # Pipe unescaping in HTML target cell labels
+        self.assertEqual(
+            _format_target_html_cell("feature\\|branch"),
+            "<code>feature|branch</code>",
+        )
+        self.assertEqual(
+            _format_target_html_cell("`feature\\|branch`"),
+            "<code>feature|branch</code>",
+        )
+        self.assertEqual(
+            _format_target_html_cell("[feature\\|branch](https://github.com/owner/repo/pull/1)"),
+            '<a href="https://github.com/owner/repo/pull/1" target="_blank" rel="noopener" class="target-link"><code>feature|branch</code></a>',
+        )
+        self.assertEqual(
+            _format_target_html_cell("`[feature\\|branch](https://github.com/owner/repo/pull/1)`"),
+            '<a href="https://github.com/owner/repo/pull/1" target="_blank" rel="noopener" class="target-link"><code>feature|branch</code></a>',
+        )
+        # Empty / None / fallback cases
+        self.assertEqual(_format_target_html_cell(None), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell(""), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("   "), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("N/A"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("-"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("None"), "<code>N/A</code>")
+        # Backticked placeholders
+        self.assertEqual(_format_target_html_cell("`None`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`-`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`N/A`"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("``"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("`   `"), "<code>N/A</code>")
+        # Empty label guard
+        self.assertEqual(_format_target_html_cell("[ ](https://github.com/owner/repo/pull/42)"), "<code>N/A</code>")
+        self.assertEqual(_format_target_html_cell("[` `](https://github.com/owner/repo/pull/42)"), "<code>N/A</code>")
+        # Standard target string with agent resolution
+        self.assertEqual(
+            _format_target_html_cell("owner/repo#123", agent="issue_triager"),
+            '<a href="https://github.com/owner/repo/issues/123" target="_blank" rel="noopener" class="target-link"><code>owner/repo#123</code></a>',
+        )
+        # Explicit target_url override
+        self.assertEqual(
+            _format_target_html_cell("Custom Label", target_url="https://github.com/foo/bar/pull/1"),
+            '<a href="https://github.com/foo/bar/pull/1" target="_blank" rel="noopener" class="target-link"><code>Custom Label</code></a>',
+        )
+        # Unresolvable target string
+        self.assertEqual(
+            _format_target_html_cell("arbitrary non-target string"),
+            "<code>arbitrary non-target string</code>",
+        )
+        # Newline and carriage return sanitization
+        self.assertEqual(
+            _format_target_html_cell("feat\r\nbranch"),
+            "<code>feat  branch</code>",
+        )
+        self.assertEqual(
+            _format_target_html_cell("[feat\nbranch](https://github.com/owner/repo/pull/1)"),
+            '<a href="https://github.com/owner/repo/pull/1" target="_blank" rel="noopener" class="target-link"><code>feat branch</code></a>',
+        )
+
+    def test_format_target_markdown_cell_type_safety(self):
+        # None and non-string handling
+        self.assertEqual(_format_target_markdown_cell(None, None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell(None, "https://github.com/owner/repo/pull/1"), "[`N/A`](https://github.com/owner/repo/pull/1)")
+        self.assertEqual(_format_target_markdown_cell("", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell("   ", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell("``", None), "`N/A`")
+        self.assertEqual(_format_target_markdown_cell(1234, None), "`1234`")
+        self.assertEqual(_format_target_markdown_cell(1234, "https://github.com/owner/repo/pull/1234"), "[`1234`](https://github.com/owner/repo/pull/1234)")
+        # Escaped pipes
+        self.assertEqual(_format_target_markdown_cell("feat | fix", None), "`feat \\| fix`")
+        self.assertEqual(_format_target_markdown_cell("feat | fix", "https://github.com/owner/repo/pull/1"), "[`feat \\| fix`](https://github.com/owner/repo/pull/1)")
+        # Newline and carriage return sanitization
+        self.assertEqual(_format_target_markdown_cell("line1\nline2", None), "`line1 line2`")
+        self.assertEqual(_format_target_markdown_cell("line1\r\nline2", None), "`line1  line2`")
+        self.assertEqual(_format_target_markdown_cell("line1\rline2", None), "`line1 line2`")
+        self.assertEqual(
+            _format_target_markdown_cell("line1\nline2", "https://github.com/owner/repo/pull/1"),
+            "[`line1 line2`](https://github.com/owner/repo/pull/1)",
+        )
+
+    def test_parse_dashboard_markdown_escaped_pipe_in_table_rows(self):
+        md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            "| `task-1` | `code_reviewer` | [`feat \\| fix`](https://github.com/owner/repo/pull/1) | 42s | 🔄 Running |\n\n"
+            "## ⏳ Queued Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Priority | Wait Time |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            "| `task-2` | `code_fixer` | [`fix \\| patch`](https://github.com/owner/repo/pull/2) | P1 | 5s |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "|:---|:---|:---|:---|:---|:---|\n"
+            "| `task-3` | `codebase_auditor` | [`audit \\| check`](https://github.com/owner/repo/pull/3) | 1m 20s | ✅ Completed | Finished |\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+
+        # Active task checks (no shifted columns)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        act = parsed["active_tasks"][0]
+        self.assertEqual(act["id"], "task-1")
+        self.assertEqual(act["agent"], "code_reviewer")
+        self.assertEqual(act["target"], "feat | fix")
+        self.assertEqual(act["target_url"], "https://github.com/owner/repo/pull/1")
+        self.assertEqual(act["elapsed"], "42s")
+        self.assertEqual(act["status"], "Running")
+
+        # Queued task checks
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        q = parsed["queued_tasks_list"][0]
+        self.assertEqual(q["id"], "task-2")
+        self.assertEqual(q["agent"], "code_fixer")
+        self.assertEqual(q["target"], "fix | patch")
+        self.assertEqual(q["target_url"], "https://github.com/owner/repo/pull/2")
+        self.assertEqual(q["priority"], "P1")
+        self.assertEqual(q["wait_time"], "5s")
+
+        # History task checks
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        h = parsed["history_tasks"][0]
+        self.assertEqual(h["id"], "task-3")
+        self.assertEqual(h["agent"], "codebase_auditor")
+        self.assertEqual(h["target"], "audit | check")
+        self.assertEqual(h["target_url"], "https://github.com/owner/repo/pull/3")
+        self.assertEqual(h["duration"], "1m 20s")
+        self.assertEqual(h["status"], "Completed")
+        self.assertEqual(h["details"], "Finished")
+
+        # Render HTML with escaped pipes
+        html_out = render_dashboard_html(md)
+        self.assertIn("feat | fix", html_out)
+        self.assertIn("fix | patch", html_out)
+        self.assertIn("audit | check", html_out)
+
+    def test_parse_dashboard_markdown_multiline_target_sanitization(self):
+        # When target contains newlines or carriage returns, _format_target_markdown_cell
+        # strips/replaces them, ensuring the generated markdown table row does not split
+        # across multiple lines, which allows parse_dashboard_markdown to parse active tasks cleanly.
+        multiline_target = "Task prompt with\r\nmultiple\nlines"
+        cell = _format_target_markdown_cell(multiline_target, "https://github.com/owner/repo/pull/1")
+        self.assertNotIn("\n", cell)
+        self.assertNotIn("\r", cell)
+
+        md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            f"| `task-1` | `code_reviewer` | {cell} | 42s | 🔄 Running |\n\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed["active_tasks"][0]["agent"], "code_reviewer")
+        self.assertEqual(parsed["active_tasks"][0]["target"], "Task prompt with  multiple lines")
+        self.assertEqual(parsed["active_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/1")
+
+    def test_table_rendering_target_unwrapping_and_fallback(self):
+        active_rendered = _render_active_tasks_table([
+            {"id": "t1", "agent": "code_reviewer", "target": "[#42](https://github.com/org/repo/pull/42)", "elapsed": "1s", "status": "RUNNING"},
+            {"id": "t2", "agent": "code_reviewer", "target": "", "elapsed": "1s", "status": "RUNNING"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/pull/42" target="_blank" rel="noopener" class="target-link"><code>#42</code></a>', active_rendered)
+        self.assertNotIn("<code>[#42]", active_rendered)
+        self.assertIn("<code>N/A</code>", active_rendered)
+
+        queued_rendered = _render_queued_tasks_table([
+            {"id": "q1", "agent": "issue_triager", "target": "[#99](https://github.com/org/repo/issues/99)", "priority": "1", "wait_time": "5s"},
+            {"id": "q2", "agent": "issue_triager", "target": None, "priority": "1", "wait_time": "5s"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/issues/99" target="_blank" rel="noopener" class="target-link"><code>#99</code></a>', queued_rendered)
+        self.assertNotIn("<code>[#99]", queued_rendered)
+        self.assertIn("<code>N/A</code>", queued_rendered)
+
+        history_rendered = _render_history_tasks_table([
+            {"id": "h1", "agent": "code_fixer", "target": "[#55](https://github.com/org/repo/pull/55)", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
+            {"id": "h2", "agent": "code_fixer", "target": "N/A", "duration": "10s", "status": "COMPLETED", "details": "Finished"},
+            {"id": "h3", "agent": "code_reviewer", "target": "N/A", "duration": "5s", "status": "COMPLETED", "details": "Remote Session"},
+        ])
+        self.assertIn('<a href="https://github.com/org/repo/pull/55" target="_blank" rel="noopener" class="target-link"><code>#55</code></a>', history_rendered)
+        self.assertNotIn("<code>[#55]", history_rendered)
+        self.assertIn("<code>N/A</code>", history_rendered)
+        self.assertIn('<span class="text-muted">Finished</span>', history_rendered)
+        self.assertNotIn("Remote Session", history_rendered)
+        self.assertNotIn("error-snippet", history_rendered)
+
+    def test_format_target_markdown_cell(self):
+        # Escape pipe characters to preserve table syntax
+        self.assertEqual(
+            _format_target_markdown_cell("feat | fix", "https://github.com/owner/repo/pull/1"),
+            "[`feat \\| fix`](https://github.com/owner/repo/pull/1)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("a|b|c", None),
+            "`a\\|b\\|c`",
+        )
+        # Strips existing markdown or backticks cleanly
+        self.assertEqual(
+            _format_target_markdown_cell("[`#42`](https://github.com/foo/bar)", "https://github.com/foo/bar"),
+            "[`#42`](https://github.com/foo/bar)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("`#42`", "https://github.com/foo/bar"),
+            "[`#42`](https://github.com/foo/bar)",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("`#42`", None),
+            "`#42`",
+        )
+        # Reject unsafe schemes
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "javascript:alert(1)"),
+            "`#42`",
+        )
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "data:text/html,<script>alert(1)</script>"),
+            "`#42`",
+        )
+        # Delimiter encoding for parentheses
+        self.assertEqual(
+            _format_target_markdown_cell("#42", "https://github.com/owner/repo/pull/1(subpath)"),
+            "[`#42`](https://github.com/owner/repo/pull/1%28subpath%29)",
+        )
+
+    def test_parse_dashboard_markdown_clickable_targets(self):
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-1` | `code_reviewer` | [`#42`](https://github.com/owner/repo/pull/42) | 12s | 🔄 RUNNING |\n\n"
+            "## ⏳ Queued Tasks\n\n"
+            "| Task ID | Agent | Target | Priority | Queued Duration |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-2` | `issue_triager` | [`#43`](https://github.com/owner/repo/issues/43) | 1 | 30s |\n\n"
+            "## 📜 Recent Task Execution History\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-3` | `pr_drafter` | [`#44`](https://github.com/owner/repo/pull/44) | 45s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed["active_tasks"][0]["target"], "#42")
+        self.assertEqual(parsed["active_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/42")
+
+        self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+        self.assertEqual(parsed["queued_tasks_list"][0]["id"], "task-2")
+        self.assertEqual(parsed["queued_tasks_list"][0]["target"], "#43")
+        self.assertEqual(parsed["queued_tasks_list"][0]["target_url"], "https://github.com/owner/repo/issues/43")
+
+        self.assertEqual(len(parsed["history_tasks"]), 1)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-3")
+        self.assertEqual(parsed["history_tasks"][0]["target"], "#44")
+        self.assertEqual(parsed["history_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/44")
+        self.assertEqual(parsed["history_tasks"][0]["details"], "Finished")
+
+    def test_parse_dashboard_markdown_5_column_history(self):
+        sample_md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History\n\n"
+            "| Task ID | Agent | Target | Duration | Status |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-comp` | `pr_drafter` | [`#44`](https://github.com/owner/repo/pull/44) | 45s | ✅ COMPLETED |\n"
+            "| `task-fail` | `code_reviewer` | `#45` | 10s | ❌ FAILED |\n"
+        )
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(len(parsed["history_tasks"]), 2)
+        self.assertEqual(parsed["history_tasks"][0]["id"], "task-comp")
+        self.assertEqual(parsed["history_tasks"][0]["status"], "COMPLETED")
+        self.assertEqual(parsed["history_tasks"][0]["details"], "Finished")
+        self.assertEqual(parsed["history_tasks"][1]["id"], "task-fail")
+        self.assertEqual(parsed["history_tasks"][1]["status"], "FAILED")
+        self.assertEqual(parsed["history_tasks"][1]["details"], "Finished")
+
+        # Verify rendered HTML does not render the status string as an error-snippet under details
+        rendered_html = _render_history_tasks_table(parsed["history_tasks"])
+        self.assertIn('<span class="text-muted">Finished</span>', rendered_html)
+        self.assertNotIn('class="error-snippet"', rendered_html)
+        self.assertNotIn('title="COMPLETED"', rendered_html)
+
+    def test_detect_git_repo_full_name(self):
+        # 1. Test GITHUB_REPOSITORY environment variable
+        _reset_detected_repo_cache()
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "env-owner/env-repo"}):
+            self.assertEqual(_detect_git_repo_full_name(), "env-owner/env-repo")
+            # Caching check: even if env changes, cached value is retained until reset
+            with patch.dict(os.environ, {"GITHUB_REPOSITORY": "other/repo"}):
+                self.assertEqual(_detect_git_repo_full_name(), "env-owner/env-repo")
+
+        # 1b. Test invalid GITHUB_REPOSITORY environment variable is ignored/rejected
+        _reset_detected_repo_cache()
+        mock_proc_git = MagicMock()
+        mock_proc_git.returncode = 0
+        mock_proc_git.stdout = "https://github.com/valid-owner/valid-repo.git\n"
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "invalid;repo/injection\n"}):
+            with patch("subprocess.run", return_value=mock_proc_git):
+                self.assertEqual(_detect_git_repo_full_name(), "valid-owner/valid-repo")
+
+        # 2. Reset cache and test git remote origin URL (HTTPS) with cwd=str(REPO_ROOT)
+        _reset_detected_repo_cache()
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/git-owner/git-repo.git\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc) as mock_subproc:
+            self.assertEqual(_detect_git_repo_full_name(), "git-owner/git-repo")
+            mock_subproc.assert_called_once_with(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+
+        # 3. Test git remote origin URL (SSH)
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-owner/ssh-repo.git\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-owner/ssh-repo")
+
+        # 4. Test git failure / no remote
+        _reset_detected_repo_cache()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertIsNone(_detect_git_repo_full_name())
+
+        # 5. Test trailing slash git remote URLs
+        _reset_detected_repo_cache()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/trailing-owner/trailing-repo/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "trailing-owner/trailing-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "https://github.com/trailing-owner/trailing-repo.git/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "trailing-owner/trailing-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-trailing/ssh-repo/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-trailing/ssh-repo")
+
+        _reset_detected_repo_cache()
+        mock_proc.stdout = "git@github.com:ssh-trailing/ssh-repo.git/\n"
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run", return_value=mock_proc):
+            self.assertEqual(_detect_git_repo_full_name(), "ssh-trailing/ssh-repo")
+
+        # Cleanup cache after test
+        _reset_detected_repo_cache()
+
+    def test_render_dashboard_html_default_repo_handling(self):
+        # When repo cannot be detected, defaultRepo in JS template is empty string
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value=None):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "";', html_out)
+            self.assertNotIn('const defaultRepo = "None";', html_out)
+
+        # When repo is detected, defaultRepo is populated
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="my-org/my-repo"):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "my-org/my-repo";', html_out)
+
+        # When repo detection returns invalid/malicious string, it is sanitized to empty string
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value='"; alert("xss");//'):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "";', html_out)
+            self.assertNotIn('alert("xss")', html_out)
+
+        _reset_detected_repo_cache()
 
 
 class TestDashboardUpdater(unittest.TestCase):
@@ -1302,7 +2125,7 @@ class TestDashboardUpdater(unittest.TestCase):
 
     def test_client_js_parsetablerows_header_filtering(self):
         html_out = render_dashboard_html("# Dashboard")
-        self.assertIn("if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #')", html_out)
+        self.assertIn("parts[0] !== 'PR #' && !parts[0].startsWith('PR #')", html_out)
         self.assertNotIn("!line.includes('PR #')", html_out)
 
     def test_client_js_section_header_parsing_avoids_history_misattribution(self):
@@ -1733,8 +2556,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?")', template)
         self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?")', template)
         # Verify markdown link regex does not look for literal backslashes
-        self.assertIn(r"rcRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
-        self.assertIn(r"detailRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
+        self.assertIn(r"rawStr.match(/\[(.*?)\]\((.*?)\)/)", template)
 
     def test_client_side_regexes_evaluate_generated_dashboard_markdown(self):
         """
@@ -1844,11 +2666,11 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(active_cells[0], "`task-001`")
         self.assertEqual(active_cells[1], "`code_reviewer`")
         self.assertEqual(active_cells[2], "-")
-        self.assertEqual(active_cells[3], "`PR #100`")
-        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[6])
+        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[3])
         self.assertIsNotNone(active_link_match)
-        self.assertEqual(active_link_match.group(1), "Remote Control 🌐")
-        self.assertEqual(active_link_match.group(2), "https://antigravity.google.com/session/task-001")
+        self.assertEqual(active_link_match.group(1), "`PR #100`")
+        self.assertEqual(active_link_match.group(2), "https://github.com/owner/repo/pull/100")
+        self.assertEqual(len(active_cells), 6)
 
         history_lines = [l for l in md.splitlines() if "task-000" in l]
         self.assertEqual(len(history_lines), 1)
@@ -1856,11 +2678,11 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(history_cells[0], "`task-000`")
         self.assertEqual(history_cells[1], "`code_fixer`")
         self.assertEqual(history_cells[2], "-")
-        self.assertEqual(history_cells[3], "`PR #99`")
-        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[6])
+        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[3])
         self.assertIsNotNone(history_link_match)
-        self.assertEqual(history_link_match.group(1), "Remote Control 🌐")
-        self.assertEqual(history_link_match.group(2), "https://antigravity.google.com/session/task-000")
+        self.assertEqual(history_link_match.group(1), "`PR #99`")
+        self.assertEqual(history_link_match.group(2), "https://github.com/owner/repo/pull/99")
+        self.assertEqual(history_cells[6], "Finished")
 
         # 5. ONLINE status verification when no active tasks
         mock_tm.get_active_tasks.return_value = []
@@ -1947,13 +2769,13 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         md = format_dashboard_markdown(task_manager=mock_tm)
 
         # Check Active Tasks table headers and rows
-        self.assertIn("| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |", md)
-        self.assertIn("| `task-act` | `code_reviewer` | `gemini-3.8-flash-medium` | `#50` |", md)
+        self.assertIn("| Task ID | Agent | Model | Target | Elapsed | Status |", md)
+        self.assertIn("| `task-act` | `code_reviewer` | `gemini-3.8-flash-medium` | [`#50`](", md)
 
         # Check History table headers and rows
-        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |", md)
-        self.assertIn("| `task-hist1` | `code_fixer` | `claude-3-5-sonnet` | `#51` |", md)
-        self.assertIn("| `task-hist2` | `pr_drafter` | - | `#52` |", md)
+        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Details |", md)
+        self.assertIn("| `task-hist1` | `code_fixer` | `claude-3-5-sonnet` | [`#51`](", md)
+        self.assertIn("| `task-hist2` | `pr_drafter` | - | [`#52`](", md)
 
     def test_parse_dashboard_markdown_with_and_without_model_column(self):
         """Verify parse_dashboard_markdown handles both 7-column (with Model) and 6-column (legacy) tables."""
@@ -2056,7 +2878,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
     def test_client_js_renders_model_column_header(self):
         """Verify render_dashboard_html client JS contains Model column header in active and history tables."""
         html_out = render_dashboard_html("# Test Dashboard")
-        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th>", html_out)
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th>", html_out)
         self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th>", html_out)
 
     def test_format_dashboard_markdown_third_party_pool_capacity_no_leakage(self):
@@ -2298,6 +3120,38 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
         html_out = render_dashboard_html(md_out, quota_tracker=tracker)
         self.assertIn('id="tp-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+
+    def test_template_js_escaped_pipe_and_target_resolution(self):
+        template = _get_dashboard_template()
+        # Escaped pipe splitting
+        self.assertIn("line.split(/(?<!\\\\)\\|/).slice(1, -1)", template)
+        self.assertIn("c.trim().replace(/\\\\\\|/g, '|')", template)
+        # Target resolution regexes
+        self.assertIn("(pr|pulls?|issues?)", template)
+        self.assertIn("repoPathMatch", template)
+        self.assertIn("repoDelimMatch", template)
+        # Backtick placeholder stripping
+        self.assertIn("rawStr.replace(/`/g, '').trim()", template)
+
+    def test_template_js_section_and_line_splitting_and_target_unescaping(self):
+        template = _get_dashboard_template()
+        # Section header splitting uses /^##\s+/m (not faulty /^##\\s+/m)
+        self.assertIn(r"md.split(/^##\s+/m)", template)
+        self.assertNotIn(r"md.split(/^##\\s+/m)", template)
+        # Line splitting uses /\r?\n/ (not faulty split('\\n'))
+        self.assertIn(r"sec.split(/\r?\n/).map", template)
+        self.assertNotIn(r"sec.split('\\n')", template)
+        # Target cell pipe and newline unescaping/sanitization in client-side formatTargetCell
+        self.assertIn(r"label = label.replace(/\\\|/g, '|').replace(/[\r\n]+/g, ' ');", template)
+
+    def test_template_js_model_column_row_length_guards(self):
+        template = _get_dashboard_template()
+        # Active tasks 5-column backwards compatibility guard
+        self.assertIn("r.length >= 6 && (activeSec.includes('| Model |')", template)
+        self.assertIn("const statusRaw = (hasModel ? r[5] : r[4]) || '';", template)
+        # History tasks 5-column backwards compatibility guard
+        self.assertIn("r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'))", template)
+        self.assertIn("const rawStatus = (hasModel ? r[5] : r[4]) || '';", template)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Graviton Live Dashboard Generator and Auto-Updater.
 
 Formats real-time server metrics, task queues, active containers, model quota pacing,
-and Remote Control links into GitHub-flavored Markdown for Antigravity side panel
+and clickable GitHub target links into GitHub-flavored Markdown for Antigravity side panel
 artifacts, as well as standalone HTML for web browsers.
 
 Supports automatic continuous updates to registered artifact file paths on disk.
@@ -16,11 +16,12 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -167,6 +168,32 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         return default
 
 
+def is_safe_url(url: Optional[str]) -> bool:
+    """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.strip()
+    if any(c in clean for c in (" ", "\t", "\r", "\n", '"', "'", "<", ">")):
+        return False
+    clean_lower = clean.lower()
+    return clean_lower.startswith("http://") or clean_lower.startswith("https://")
+
+
+def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
+    """Format target cell for markdown table, stripping existing formatting to prevent double-backticks or nested links."""
+    clean_disp = str(target_disp or "N/A").replace("\r", " ").replace("\n", " ").strip().strip("`").strip()
+    md_m = re.match(r"^\[(.*?)\]\((.*?)\)$", clean_disp)
+    if md_m:
+        clean_disp = md_m.group(1).strip("` ").strip()
+    if not clean_disp:
+        clean_disp = "N/A"
+    clean_disp = clean_disp.replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+    if target_url and is_safe_url(target_url):
+        safe_url = target_url.strip().replace(")", "%29").replace("(", "%28").replace("|", "")
+        return f"[`{clean_disp}`]({safe_url})"
+    return f"`{clean_disp}`"
+
+
 def format_dashboard_markdown(
     task_manager: Optional[TaskManager] = None,
     quota_tracker: Optional[QuotaTracker] = None,
@@ -236,18 +263,19 @@ def format_dashboard_markdown(
 
     if active_tasks:
         lines.extend([
-            "| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Elapsed | Status |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         now_ts = time.time()
         for t in active_tasks:
             elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
-            rc_link = f"[Remote Control 🌐]({t.remote_control_url})" if getattr(t, "remote_control_url", None) else "*Pending...*"
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
             model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
             model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
-            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {elapsed} | 🔄 `{t.status}` | {rc_link} |")
+            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            target_cell = _format_target_markdown_cell(target_disp, target_url)
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | {target_cell} | {elapsed} | 🔄 `{t.status}` |")
         lines.append("")
     else:
         lines.extend(["*No container tasks currently running.*", ""])
@@ -456,7 +484,9 @@ def format_dashboard_markdown(
         for t in queued_tasks:
             queued_dur = format_duration(now_ts - t.enqueue_time)
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            lines.append(f"| `{t.id}` | `{t.agent}` | `{target_disp}` | `{t.priority}` | {queued_dur} |")
+            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            target_cell = _format_target_markdown_cell(target_disp, target_url)
+            lines.append(f"| `{t.id}` | `{t.agent}` | {target_cell} | `{t.priority}` | {queued_dur} |")
         lines.append("")
     else:
         lines.extend(["*Queue is empty.*", ""])
@@ -512,7 +542,7 @@ def format_dashboard_markdown(
 
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Details |",
             "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
@@ -522,13 +552,14 @@ def format_dashboard_markdown(
             model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
             model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
-            if getattr(t, "remote_control_url", None):
-                detail = f"[Remote Control 🌐]({t.remote_control_url})"
-            elif t.error_message:
-                detail = f"`{t.error_message[:40]}...`" if len(t.error_message) > 40 else f"`{t.error_message}`"
+            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            target_cell = _format_target_markdown_cell(target_disp, target_url)
+            if t.error_message:
+                clean_err = str(t.error_message).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+                detail = f"`{clean_err[:40]}...`" if len(clean_err) > 40 else f"`{clean_err}`"
             else:
                 detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {dur} | {icon} `{t.status}` | {detail} |")
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t.status}` | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])
@@ -544,15 +575,188 @@ def format_dashboard_markdown(
     return "\n".join(lines)
 
 
-def is_safe_url(url: Optional[str]) -> bool:
-    """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
-    if not url or not isinstance(url, str):
-        return False
-    clean = url.strip()
-    if any(c in clean for c in (" ", "\t", "\r", "\n", '"', "'", "<", ">")):
-        return False
-    clean_lower = clean.lower()
-    return clean_lower.startswith("http://") or clean_lower.startswith("https://")
+
+_DETECTED_REPO: Optional[str] = None
+_DETECTED_REPO_CHECKED: bool = False
+
+
+def _reset_detected_repo_cache() -> None:
+    """Reset the cached repository detection state (primarily for unit tests)."""
+    global _DETECTED_REPO, _DETECTED_REPO_CHECKED
+    _DETECTED_REPO = None
+    _DETECTED_REPO_CHECKED = False
+
+
+def _detect_git_repo_full_name() -> Optional[str]:
+    """Detect current repository full name (e.g. 'owner/repo') from git remote or env."""
+    global _DETECTED_REPO, _DETECTED_REPO_CHECKED
+    if _DETECTED_REPO_CHECKED:
+        return _DETECTED_REPO
+    repo = os.getenv("GITHUB_REPOSITORY")
+    if repo and repo.strip():
+        val = repo.strip()
+        if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", val):
+            _DETECTED_REPO = val
+            _DETECTED_REPO_CHECKED = True
+            return _DETECTED_REPO
+    try:
+        res = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            m = re.search(r"github\.com[:/]([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git)?/?$", res.stdout.strip())
+            if m:
+                _DETECTED_REPO = m.group(1)
+    except Exception:
+        pass
+    _DETECTED_REPO_CHECKED = True
+    return _DETECTED_REPO
+
+
+def resolve_target_url(
+    target: Optional[str],
+    repo: Optional[str] = None,
+    agent: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve a task target into a clickable GitHub URL (PR or Issue).
+    Agent heuristics default pr_drafter and issue_triager to /issues/ (since
+    their target is the input issue being implemented or triaged), while
+    code_reviewer and code_fixer default to /pull/.
+    Returns None if target cannot be resolved to a valid safe URL.
+    """
+    if not target or not isinstance(target, str):
+        return None
+    raw = target.strip().strip("`").strip()
+    if not raw or raw in ("N/A", "-", "None"):
+        return None
+
+    # Markdown link check [text](url)
+    m_md = re.match(r"^\[(.*?)\]\((.*?)\)$", raw)
+    if m_md:
+        extracted = m_md.group(2).strip()
+        return extracted if is_safe_url(extracted) else None
+
+    # Direct URL or bare github.com
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw if is_safe_url(raw) else None
+    if raw.startswith("github.com/"):
+        cand = f"https://{raw}"
+        return cand if is_safe_url(cand) else None
+
+    eff_repo = repo or _detect_git_repo_full_name()
+    if eff_repo:
+        eff_repo = eff_repo.strip()
+        if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", eff_repo):
+            eff_repo = None
+    agent_str = str(agent).lower() if agent else ""
+    is_agent_issue = "issue" in agent_str or "drafter" in agent_str
+
+    # Path-style with repo: owner/repo/pull/123, owner/repo/pulls/123, owner/repo/issues/123, owner/repo/pr/123
+    m = re.match(
+        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)/(?:(pr|pulls?|issues?))/(\d+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if m:
+        target_repo = m.group(1)
+        type_prefix = m.group(2).lower()
+        num = m.group(3)
+        subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        return f"https://github.com/{target_repo}/{subpath}/{num}"
+
+    # Delimiter-style with repo: owner/repo#number, owner/repo PR #123, owner/repo:123
+    m = re.match(
+        r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)[\s#:]+(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if m:
+        target_repo = m.group(1)
+        type_prefix = m.group(2).lower() if m.group(2) else ""
+        num = m.group(3)
+        if type_prefix:
+            subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        else:
+            subpath = "issues" if is_agent_issue else "pull"
+        return f"https://github.com/{target_repo}/{subpath}/{num}"
+
+    # #number, PR #123, Issue #123, pull/123, pulls/123, issues/123, #pr-123, pr-123, or bare number with eff_repo
+    m = re.match(
+        r"^#?[\s:]*(?:(pr|pulls?|issues?)[\s\-/:]*)?#?(\d+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if m:
+        if not eff_repo:
+            return None
+        type_prefix = m.group(1).lower() if m.group(1) else ""
+        num = m.group(2)
+        if type_prefix:
+            subpath = "issues" if type_prefix.startswith("issue") else "pull"
+        else:
+            subpath = "issues" if is_agent_issue else "pull"
+        return f"https://github.com/{eff_repo}/{subpath}/{num}"
+
+    # owner/repo without number
+    m = re.match(r"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)$", raw)
+    if m:
+        return f"https://github.com/{m.group(1)}"
+
+    return None
+
+
+def _format_target_html_cell(
+    target_raw: Any,
+    target_url: Optional[str] = None,
+    agent: Optional[str] = None,
+) -> str:
+    """Format target cell for HTML table, resolving URL and unwrapping markdown link labels."""
+    if not target_raw:
+        return '<code>N/A</code>'
+    raw_str = str(target_raw).replace("\r", " ").replace("\n", " ").strip()
+    norm = raw_str.strip("`").strip()
+    if not norm or norm in ("N/A", "-", "None"):
+        return '<code>N/A</code>'
+
+    label = norm
+    url = target_url
+    md_m = re.match(r"^\[(.*?)\]\((.*?)\)$", norm)
+    if md_m:
+        label = md_m.group(1).strip("` ").strip()
+        if not url:
+            extracted_url = md_m.group(2).strip()
+            if is_safe_url(extracted_url):
+                url = extracted_url
+    else:
+        label = norm
+        if not url:
+            url = resolve_target_url(label, agent=agent)
+
+    label = label.replace(r"\|", "|").replace("\r", " ").replace("\n", " ")
+    clean_label = html.escape(label.strip("` ").strip())
+    if not clean_label or clean_label in ("N/A", "-", "None"):
+        return '<code>N/A</code>'
+    if url and is_safe_url(url):
+        return f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="target-link"><code>{clean_label}</code></a>'
+    return f'<code>{clean_label}</code>'
+
+
+def _parse_target_cell(cell: str, agent: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Parse a target table cell, returning (display_text, resolved_url)."""
+    cell_str = cell.strip()
+    m = re.search(r"\[(.*?)\]\((.*?)\)", cell_str)
+    if m:
+        disp = m.group(1).strip("` ")
+        url = m.group(2).strip()
+        safe_url = url if is_safe_url(url) else None
+        return disp, safe_url
+    cleaned = cell_str.strip("` ")
+    return cleaned, resolve_target_url(cleaned, agent=agent)
 
 
 def get_quota_color(pct: Optional[Union[float, int, str]]) -> str:
@@ -715,18 +919,20 @@ def parse_dashboard_markdown(
         for line in sec_lines:
             sline = line.strip()
             if sline.startswith("|"):
-                cells = [c.strip() for c in sline.split("|")[1:-1]]
+                raw_cells = re.split(r"(?<!\\)\|", sline)[1:-1]
+                cells = [c.strip().replace(r"\|", "|") for c in raw_cells]
                 if cells and not all(c.replace(":", "").replace("-", "") == "" for c in cells):
                     if cells[0] not in ("Metric", "Task ID", "PR #"):
                         table_rows.append(cells)
 
         if "Active Container Tasks" in title_line:
+            has_model_hdr = any("Model" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line)
             for cells in table_rows:
                 if len(cells) >= 7:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     model = cells[2].strip("`")
-                    target = cells[3].strip("`")
+                    target, target_url = _parse_target_cell(cells[3], agent=agent)
                     elapsed = cells[4]
                     status = STATUS_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
                     rc_cell = cells[6]
@@ -741,6 +947,7 @@ def parse_dashboard_markdown(
                         "agent": agent,
                         "model": model,
                         "target": target,
+                        "target_url": target_url,
                         "elapsed": elapsed,
                         "status": status,
                         "remote_control_url": rc_url,
@@ -748,24 +955,50 @@ def parse_dashboard_markdown(
                 elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
-                    target = cells[2].strip("`")
+                    is_rc_last = bool(MD_LINK_PATTERN.search(cells[5])) or "Remote Control" in cells[5]
+                    if has_model_hdr or (not is_rc_last and not any(p in cells[2] for p in ("#", "/", "issues", "pull"))):
+                        model = cells[2].strip("`")
+                        target, target_url = _parse_target_cell(cells[3], agent=agent)
+                        elapsed = cells[4]
+                        status = STATUS_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        rc_url = None
+                    else:
+                        model = "-"
+                        target, target_url = _parse_target_cell(cells[2], agent=agent)
+                        elapsed = cells[3]
+                        status = STATUS_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        rc_cell = cells[5]
+                        rc_url = None
+                        url_m = MD_LINK_PATTERN.search(rc_cell)
+                        if url_m:
+                            cand = url_m.group(1).strip()
+                            if is_safe_url(cand):
+                                rc_url = cand
+                    active_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "target_url": target_url,
+                        "elapsed": elapsed,
+                        "status": status,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 5:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    target, target_url = _parse_target_cell(cells[2], agent=agent)
                     elapsed = cells[3]
                     status = STATUS_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
-                    rc_cell = cells[5]
-                    rc_url = None
-                    url_m = MD_LINK_PATTERN.search(rc_cell)
-                    if url_m:
-                        cand = url_m.group(1).strip()
-                        if is_safe_url(cand):
-                            rc_url = cand
                     active_tasks.append({
                         "id": tid,
                         "agent": agent,
                         "model": "-",
                         "target": target,
+                        "target_url": target_url,
                         "elapsed": elapsed,
                         "status": status,
-                        "remote_control_url": rc_url,
+                        "remote_control_url": None,
                     })
 
         elif "Queued Tasks" in title_line:
@@ -773,13 +1006,14 @@ def parse_dashboard_markdown(
                 if len(cells) >= 5:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
-                    target = cells[2].strip("`")
+                    target, target_url = _parse_target_cell(cells[2], agent=agent)
                     prio = cells[3].strip("`")
                     wait_time = cells[4]
                     queued_tasks.append({
                         "id": tid,
                         "agent": agent,
                         "target": target,
+                        "target_url": target_url,
                         "priority": prio,
                         "wait_time": wait_time,
                     })
@@ -820,12 +1054,13 @@ def parse_dashboard_markdown(
                     })
 
         elif "Recent Task Execution History" in title_line:
+            has_model_hdr = any("Model" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line)
             for cells in table_rows:
                 if len(cells) >= 7:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     model = cells[2].strip("`")
-                    target = cells[3].strip("`")
+                    target, target_url = _parse_target_cell(cells[3], agent=agent)
                     duration = cells[4]
                     status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
                     detail_cell = cells[6]
@@ -840,11 +1075,14 @@ def parse_dashboard_markdown(
                             detail = detail_cell.strip("`").strip()
                     else:
                         detail = detail_cell.strip("`").strip()
+                    if detail in ("Remote Control", "Remote Session"):
+                        detail = "Finished"
                     history_tasks.append({
                         "id": tid,
                         "agent": agent,
                         "model": model,
                         "target": target,
+                        "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
                         "details": detail,
@@ -853,30 +1091,59 @@ def parse_dashboard_markdown(
                 elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
-                    target = cells[2].strip("`")
-                    duration = cells[3]
-                    status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
-                    detail_cell = cells[5]
-                    rc_url = None
-                    url_m = MD_LINK_PATTERN.search(detail_cell)
-                    if url_m:
-                        cand = url_m.group(1).strip()
-                        if is_safe_url(cand):
-                            rc_url = cand
-                            detail = "Remote Control"
+                    if has_model_hdr:
+                        model = cells[2].strip("`")
+                        target, target_url = _parse_target_cell(cells[3], agent=agent)
+                        duration = cells[4]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        detail = "Finished"
+                        rc_url = None
+                    else:
+                        model = "-"
+                        target, target_url = _parse_target_cell(cells[2], agent=agent)
+                        duration = cells[3]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        detail_cell = cells[5]
+                        rc_url = None
+                        url_m = MD_LINK_PATTERN.search(detail_cell)
+                        if url_m:
+                            cand = url_m.group(1).strip()
+                            if is_safe_url(cand):
+                                rc_url = cand
+                                detail = "Finished"
+                            else:
+                                detail = detail_cell.strip("`").strip()
                         else:
                             detail = detail_cell.strip("`").strip()
-                    else:
-                        detail = detail_cell.strip("`").strip()
+                        if detail in ("Remote Control", "Remote Session"):
+                            detail = "Finished"
+                    history_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "target_url": target_url,
+                        "duration": duration,
+                        "status": status_raw,
+                        "details": detail,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 5:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    target, target_url = _parse_target_cell(cells[2], agent=agent)
+                    duration = cells[3]
+                    status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
                     history_tasks.append({
                         "id": tid,
                         "agent": agent,
                         "model": "-",
                         "target": target,
+                        "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
-                        "details": detail,
-                        "remote_control_url": rc_url,
+                        "details": "Finished",
+                        "remote_control_url": None,
                     })
 
     active_gemini_model = _extract_metric_str("Active Gemini Model", "")
@@ -965,27 +1232,21 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
         model = html.escape(str(t.get("model", "") or "-"))
-        target = html.escape(str(t.get("target", "")))
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         elapsed = html.escape(str(t.get("elapsed", "")))
         status = html.escape(str(t.get("status", "")))
-        rc_url = t.get("remote_control_url")
-        if rc_url and is_safe_url(rc_url):
-            rc_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>'
-        else:
-            rc_html = '<span class="text-muted">Pending...</span>'
         model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
             f'<td>{model_cell}</td>'
-            f'<td><code>{target}</code></td>'
+            f'<td>{target_html}</td>'
             f'<td><span class="text-muted">{elapsed}</span></td>'
-            f'<td><span class="status-pill status-running"><span class="spin-icon">🔄</span> {status}</span></td>'
-            f'<td>{rc_html}</td></tr>'
+            f'<td><span class="status-pill status-running"><span class="spin-icon">🔄</span> {status}</span></td></tr>'
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -998,14 +1259,14 @@ def _render_queued_tasks_table(queued_tasks: List[Dict[str, Any]]) -> str:
     for t in queued_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
-        target = html.escape(str(t.get("target", "")))
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         prio = html.escape(str(t.get("priority", "")))
         prio_label = prio if prio.startswith("P") else f"P{prio}"
         wait_time = html.escape(str(t.get("wait_time", "")))
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
-            f'<td><code>{target}</code></td>'
+            f'<td>{target_html}</td>'
             f'<td><span class="priority-badge">{prio_label}</span></td>'
             f'<td><span class="text-muted">{wait_time}</span></td></tr>'
         )
@@ -1076,18 +1337,15 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
         model = html.escape(str(t.get("model", "") or "-"))
-        target = html.escape(str(t.get("target", "")))
+        target_html = _format_target_html_cell(t.get("target"), t.get("target_url"), agent=str(t.get("agent", "")))
         duration = html.escape(str(t.get("duration", "")))
         raw_status = str(t.get("status", "")).lower()
         is_success = "complete" in raw_status or "finish" in raw_status
         status_icon = "✅" if is_success else "❌"
         status_class = "status-completed" if is_success else "status-failed"
         status_disp = html.escape(str(t.get("status", "")))
-        rc_url = t.get("remote_control_url")
         detail = str(t.get("details", ""))
-        if rc_url and is_safe_url(rc_url):
-            detail_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">🌐 Remote Session</a>'
-        elif detail and detail != "Finished":
+        if detail and detail not in ("Finished", "Remote Control", "Remote Session"):
             trunc = detail[:40] + "..." if len(detail) > 40 else detail
             detail_html = f'<code class="error-snippet" title="{html.escape(detail)}">{html.escape(trunc)}</code>'
         else:
@@ -1097,7 +1355,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
             f'<td>{model_cell}</td>'
-            f'<td><code>{target}</code></td>'
+            f'<td>{target_html}</td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
             f'<td>{detail_html}</td></tr>'
@@ -1122,7 +1380,7 @@ def render_dashboard_html(
     """
     Render a rich, responsive, dark-mode web dashboard page for web browsers.
     Includes KPI metric cards, model quota capacity progress meters, interactive
-    task tables with Remote Control links, collapsible raw markdown, and smooth
+    task tables with clickable target links to GitHub PRs and issues, collapsible raw markdown, and smooth
     client-side auto-refresh (3-second cadence).
     """
     escaped_md = html.escape(markdown_content)
@@ -1157,14 +1415,15 @@ def render_dashboard_html(
                         elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
                         model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
                         data["active_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
                             "model": model_name,
-                            "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
+                            "target": target_id,
+                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
                             "elapsed": elapsed,
                             "status": str(t.status),
-                            "remote_control_url": getattr(t, "remote_control_url", None),
                         })
             if not data["queued_tasks_list"]:
                 q_objs = task_manager.get_queued_tasks()
@@ -1172,10 +1431,12 @@ def render_dashboard_html(
                     now_ts = time.time()
                     for t in q_objs:
                         q_dur = format_duration(now_ts - t.enqueue_time)
+                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
                         data["queued_tasks_list"].append({
                             "id": t.id,
                             "agent": t.agent,
-                            "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
+                            "target": target_id,
+                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
                             "priority": str(t.priority),
                             "wait_time": q_dur,
                         })
@@ -1184,19 +1445,19 @@ def render_dashboard_html(
                 if h_objs:
                     for t in h_objs:
                         dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-                        rc_url = getattr(t, "remote_control_url", None)
-                        detail = "Remote Control" if rc_url else (t.error_message or "Finished")
+                        detail = t.error_message or "Finished"
                         model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
                         data["history_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
                             "model": model_name,
-                            "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
+                            "target": target_id,
+                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
                             "duration": dur,
                             "status": str(t.status),
                             "details": detail,
-                            "remote_control_url": rc_url,
                         })
         except Exception as e:
             logger.debug(f"Error enriching dashboard data from task_manager: {e}")
@@ -1402,6 +1663,8 @@ def render_dashboard_html(
     queued_count = len(data["queued_tasks_list"])
     approved_count = len(valid_approved_prs)
     history_count = len(data["history_tasks"])
+    raw_repo = _detect_git_repo_full_name() or ""
+    default_repo = raw_repo if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", raw_repo) else ""
 
     template = _get_dashboard_template()
 
@@ -1456,8 +1719,8 @@ def render_dashboard_html(
         history_count=history_count,
         history_table_html=history_table_html,
         escaped_md=escaped_md,
+        default_repo=default_repo,
     )
-
 
 class DashboardUpdater:
     """
