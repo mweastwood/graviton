@@ -2596,6 +2596,87 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(win.reset_timestamp, expected_dt.timestamp())
         self.assertEqual(win.reset_time, "2026-10-01T15:00:00Z")
 
+    def test_parse_reset_time_extreme_and_special_values(self):
+        """Verify parse_reset_time_to_datetime handles extreme and special float/numeric values without raising."""
+        for val in [float("inf"), float("-inf"), "inf", "-inf", float("nan"), "nan", 1e18, -1e18, "1e18", "-1e18"]:
+            self.assertIsNone(parse_reset_time_to_datetime(val))
+            self.assertIsNone(parse_reset_time_to_timestamp(val))
+
+    def test_normalize_now_datetime_extreme_and_special_values(self):
+        """Verify _normalize_now_datetime returns None on extreme or NaN/Inf inputs without raising."""
+        for val in [float("nan"), float("inf"), float("-inf"), 1e18, -1e18]:
+            self.assertIsNone(_normalize_now_datetime(val))
+
+    def test_countdown_and_remaining_seconds_with_nan_and_inf_now(self):
+        """Verify get_remaining_seconds, format_reset_countdown, and format_quota_badge handle NaN and Inf now_dt safely."""
+        dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time=dt)
+        for bad_now in [float("nan"), float("inf"), float("-inf"), 1e18, -1e18]:
+            rem = win.get_remaining_seconds(now_dt=bad_now)
+            self.assertIsInstance(rem, float)
+            cd = win.format_reset_countdown(now_dt=bad_now)
+            self.assertIsInstance(cd, str)
+            badge = format_quota_badge(win, now_dt=bad_now)
+            self.assertIsInstance(badge, str)
+
+    def test_quota_window_reset_datetime_non_datetime_types(self):
+        """Verify QuotaWindow initialized or mutated with non-datetime reset_datetime parses cleanly without AttributeError."""
+        # Initialized with ISO string
+        iso_str = "2026-10-01T15:00:00Z"
+        expected_dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_datetime=iso_str)
+        self.assertEqual(win.reset_datetime, expected_dt)
+        self.assertEqual(win.reset_timestamp, expected_dt.timestamp())
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00+00:00")
+
+        # Initialized with numeric timestamp
+        ts = expected_dt.timestamp()
+        win_ts = QuotaWindow(name="5H", reset_datetime=ts)
+        self.assertEqual(win_ts.reset_datetime, expected_dt)
+        self.assertEqual(win_ts.reset_timestamp, ts)
+
+        # Initialized with invalid string
+        win_invalid = QuotaWindow(name="5H", reset_datetime="invalid")
+        self.assertIsNone(win_invalid.reset_datetime)
+        self.assertIsNone(win_invalid.reset_timestamp)
+
+        # Dynamic mutation to ISO string
+        win2 = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        win2.reset_datetime = "2026-10-01T16:00:00Z"
+        dt2 = datetime(2026, 10, 1, 16, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win2.get_remaining_seconds(now_dt=datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)), 3600.0)
+        self.assertEqual(win2.reset_datetime, dt2)
+        self.assertEqual(win2.reset_timestamp, dt2.timestamp())
+        self.assertEqual(win2.reset_time, dt2.isoformat())
+
+        # Dynamic mutation to invalid value
+        win2.reset_datetime = "not-a-datetime"
+        self.assertEqual(win2.get_remaining_seconds(), 0.0)
+        self.assertIsNone(win2.reset_datetime)
+        self.assertIsNone(win2.reset_timestamp)
+        self.assertIsNone(win2.reset_time)
+
+    def test_quota_window_reset_timestamp_mutation_normalizes_to_float(self):
+        """Verify mutating win.reset_timestamp with an int or string normalizes win.reset_timestamp to float."""
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+
+        # Mutate with integer
+        win.reset_timestamp = 1790870400  # 2026-10-01T16:00:00 UTC
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 25200.0)
+        self.assertIsInstance(win.reset_timestamp, float)
+        self.assertEqual(win.reset_timestamp, 1790870400.0)
+        self.assertEqual(win.reset_datetime, datetime(2026, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        # Mutate with string timestamp
+        win.reset_timestamp = "1790874000.0"  # 2026-10-01T17:00:00 UTC
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 28800.0)
+        self.assertIsInstance(win.reset_timestamp, float)
+        self.assertEqual(win.reset_timestamp, 1790874000.0)
+        self.assertEqual(win.reset_datetime, datetime(2026, 10, 1, 17, 0, 0, tzinfo=timezone.utc))
+
 
 if __name__ == "__main__":
     unittest.main()

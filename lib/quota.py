@@ -129,7 +129,7 @@ def parse_reset_time_to_datetime(reset_time: Optional[Union[str, float, int, dat
     try:
         ts = float(reset_time)
         return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         pass
 
     # 2. Try ISO string parsing (handling trailing 'Z' for Python <= 3.10)
@@ -162,7 +162,10 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     if isinstance(now, datetime):
         return now.astimezone(timezone.utc) if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     if isinstance(now, (int, float)):
-        return datetime.fromtimestamp(now, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(now, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
     return None
 
 
@@ -200,11 +203,7 @@ class QuotaWindow:
 
         res = reset_time if reset_time is not None else reset_timestamp
         if reset_datetime is not None:
-            self.reset_datetime = (
-                reset_datetime.astimezone(timezone.utc)
-                if reset_datetime.tzinfo
-                else reset_datetime.replace(tzinfo=timezone.utc)
-            )
+            self.reset_datetime = parse_reset_time_to_datetime(reset_datetime)
         else:
             self.reset_datetime = parse_reset_time_to_datetime(res)
 
@@ -234,19 +233,20 @@ class QuotaWindow:
                 self._last_reset_timestamp = None
                 self._last_reset_datetime = None
                 return None
-            if not cur_dt.tzinfo:
-                cur_dt = cur_dt.replace(tzinfo=timezone.utc)
+            norm_dt = parse_reset_time_to_datetime(cur_dt)
+            self.reset_datetime = norm_dt
+            if norm_dt is None:
+                self.reset_time = None
+                self.reset_timestamp = None
             else:
-                cur_dt = cur_dt.astimezone(timezone.utc)
-            self.reset_datetime = cur_dt
-            if cur_time == last_time:
-                self.reset_time = cur_dt.isoformat()
-            if cur_ts == last_ts:
-                self.reset_timestamp = cur_dt.timestamp()
+                if cur_time == last_time:
+                    self.reset_time = norm_dt.isoformat()
+                if cur_ts == last_ts:
+                    self.reset_timestamp = norm_dt.timestamp()
             self._last_reset_time = self.reset_time
             self._last_reset_timestamp = self.reset_timestamp
-            self._last_reset_datetime = cur_dt
-            return cur_dt
+            self._last_reset_datetime = norm_dt
+            return norm_dt
 
         # 2. Fast-path: no mutations (hot loop)
         if cur_time == last_time and cur_ts == last_ts and cur_dt == last_dt:
@@ -276,8 +276,7 @@ class QuotaWindow:
                 self.reset_time = dt.isoformat()
             elif cur_time == last_time and cur_ts != last_ts:
                 self.reset_time = dt.isoformat()
-            if cur_ts == last_ts or cur_time != last_time:
-                self.reset_timestamp = dt.timestamp()
+            self.reset_timestamp = dt.timestamp()
         else:
             self.reset_timestamp = None
         self._last_reset_time = self.reset_time
