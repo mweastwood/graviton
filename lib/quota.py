@@ -307,7 +307,7 @@ class QuotaWindow:
         return self.copy()
 
     def get_remaining_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         dt = self._sync_reset_datetime()
         if dt is None:
@@ -318,7 +318,7 @@ class QuotaWindow:
             now_dt_norm = datetime.now(timezone.utc)
         return max(0.0, (dt - now_dt_norm).total_seconds())
 
-    def remaining_time_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
+    def remaining_time_seconds(self, now: Optional[Union[float, int, datetime]] = None) -> float:
         now_dt = _normalize_now_datetime(now)
         return self.get_remaining_seconds(now_dt)
 
@@ -329,7 +329,7 @@ class QuotaWindow:
         return max(0.0, min(1.0, float(self.remaining_percentage) / 100.0))
 
     def get_time_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         effective_now = now_dt if now_dt is not None else now
         rem_sec = self.get_remaining_seconds(effective_now)
@@ -337,12 +337,12 @@ class QuotaWindow:
             return 0.0
         return max(0.0, min(1.0, rem_sec / self.duration_seconds))
 
-    def time_fraction(self, now: Optional[Union[float, datetime]] = None) -> float:
+    def time_fraction(self, now: Optional[Union[float, int, datetime]] = None) -> float:
         now_dt = _normalize_now_datetime(now)
         return self.get_time_fraction(now_dt)
 
     def get_target_quota_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         """
         Calculate the target quota fraction threshold for linear pacing: remaining time fraction (y = x).
@@ -350,7 +350,7 @@ class QuotaWindow:
         return self.get_time_fraction(now_dt=now_dt, now=now)
 
     def target_quota_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         return self.get_target_quota_fraction(now_dt=now_dt, now=now)
 
@@ -383,7 +383,7 @@ class QuotaWindow:
         return self.get_target_pacing_percentage(now_dt=now_dt, now=now)
 
     def get_pacing_status(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> Tuple[str, float]:
         self._sync_reset_datetime()
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
@@ -400,13 +400,13 @@ class QuotaWindow:
         else:
             return "OK", 0.0
 
-    def pacing_status(self, now: Optional[Union[float, datetime]] = None) -> str:
+    def pacing_status(self, now: Optional[Union[float, int, datetime]] = None) -> str:
         now_dt = _normalize_now_datetime(now)
         status, _ = self.get_pacing_status(now_dt)
         return status
 
     def get_pacing_recovery_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)
@@ -419,12 +419,12 @@ class QuotaWindow:
         return max(0.0, float(recovery))
 
     def pacing_recovery_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         return self.get_pacing_recovery_seconds(now_dt=now_dt, now=now)
 
     def format_pacing_countdown(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> str:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)

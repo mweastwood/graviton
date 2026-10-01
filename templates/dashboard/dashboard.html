@@ -318,7 +318,7 @@
             z-index: 2;
             box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
             transition: left 0.4s ease;
-            cursor: pointer;
+            cursor: default;
         }}
         .meter-sub {{
             font-size: 0.75rem;
@@ -1209,9 +1209,25 @@
                 if (!detailsStr) return null;
                 const m = detailsStr.match(/Reset:\s*([^|\n]+)/i);
                 if (!m) return null;
-                const str = m[1].trim().toLowerCase();
-                if (str === 'n/a' || str === 'none') return null;
+                const str = m[1].replace(/[`]/g, "").trim().toLowerCase();
+                if (str === 'n/a' || str === 'none' || str === '') return null;
                 if (str === '00:00:00' || str === '0' || str === '0s') return 0;
+
+                // Colon-separated: "02:15:00" or "02:15" (supports descriptive words/suffixes, e.g. "02:15:00 est", "02:15:00 remaining")
+                const mHms = str.match(/(\d+):(\d{{1,2}}):(\d{{1,2}})/);
+                if (mHms) {{
+                    let sec = parseInt(mHms[1], 10) * 3600 + parseInt(mHms[2], 10) * 60 + parseInt(mHms[3], 10);
+                    const d = str.match(/(\d+)\s*d/);
+                    if (d) sec += parseInt(d[1], 10) * 86400;
+                    return sec;
+                }}
+                const mMs = str.match(/(\d+):(\d{{1,2}})/);
+                if (mMs) {{
+                    let sec = parseInt(mMs[1], 10) * 60 + parseInt(mMs[2], 10);
+                    const d = str.match(/(\d+)\s*d/);
+                    if (d) sec += parseInt(d[1], 10) * 86400;
+                    return sec;
+                }}
 
                 if (str.includes('d')) {{
                     const d = str.match(/(\d+)\s*d/);
@@ -1236,12 +1252,6 @@
                     if (mMin) sec += parseInt(mMin[1], 10) * 60;
                     if (sSec) sec += parseInt(sSec[1], 10);
                     return sec;
-                }}
-                const parts = str.split(':');
-                if (parts.length === 3) {{
-                    return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseInt(parts[2], 10);
-                }} else if (parts.length === 2) {{
-                    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
                 }}
                 return null;
             }}

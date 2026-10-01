@@ -782,11 +782,28 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
     """Parse a countdown string (e.g., '04:51:12', '02h 15m', '5d 04h', '00:00:00') into total seconds."""
     if not cd_str:
         return None
-    s = str(cd_str).strip().lower()
+    s = str(cd_str).replace("`", "").strip().lower()
     if s in ("n/a", "none", ""):
         return None
     if s in ("00:00:00", "0", "0s"):
         return 0.0
+
+    # Colon-separated: "02:15:00" or "02:15" (supports descriptive words/suffixes, e.g. "02:15:00 est", "02:15:00 remaining")
+    m_hms = re.search(r"(\d+):(\d{1,2}):(\d{1,2})", s)
+    if m_hms:
+        sec = float(m_hms.group(1)) * 3600.0 + float(m_hms.group(2)) * 60.0 + float(m_hms.group(3))
+        m_d = re.search(r"(\d+)\s*d", s)
+        if m_d:
+            sec += float(m_d.group(1)) * 86400.0
+        return sec
+
+    m_ms = re.search(r"(\d+):(\d{1,2})", s)
+    if m_ms:
+        sec = float(m_ms.group(1)) * 60.0 + float(m_ms.group(2))
+        m_d = re.search(r"(\d+)\s*d", s)
+        if m_d:
+            sec += float(m_d.group(1)) * 86400.0
+        return sec
 
     # Days and hours: e.g. "5d 04h" or "5d"
     if "d" in s:
@@ -823,19 +840,17 @@ def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
             sec += float(m_s.group(1))
         return sec
 
-    # Colon-separated: "02:15:00" or "02:15"
-    parts = s.split(":")
-    if len(parts) == 3:
-        try:
-            return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
-        except ValueError:
-            return None
-    elif len(parts) == 2:
-        try:
-            return float(parts[0]) * 60.0 + float(parts[1])
-        except ValueError:
-            return None
+    return None
 
+
+def _extract_countdown(details_str: Optional[str]) -> Optional[str]:
+    """Extract countdown string from details string (e.g. 'Reset: 02:30:00 | Pacing: OK')."""
+    if not details_str:
+        return None
+    m = re.search(r"Reset:\s*([^|\n]+)", details_str, re.IGNORECASE)
+    if m:
+        val = m.group(1).replace("`", "").strip()
+        return val if val and val.upper() != "N/A" and val.lower() != "none" else None
     return None
 
 
@@ -843,10 +858,9 @@ def calculate_target_pacing_from_details(details_str: Optional[str], duration_se
     """Extract reset countdown from details string and calculate linear pacing threshold percentage."""
     if not details_str or duration_seconds <= 0:
         return None
-    m = re.search(r"Reset:\s*([^|\n]+)", details_str, re.IGNORECASE)
-    if not m:
+    cd_val = _extract_countdown(details_str)
+    if not cd_val:
         return None
-    cd_val = m.group(1).strip()
     rem_sec = parse_countdown_to_seconds(cd_val)
     if rem_sec is None:
         return None
@@ -948,15 +962,6 @@ def parse_dashboard_markdown(
     gemini_1w_details = _extract_metric_details(["Gemini (1W)", "Gemini Quota (1W)"], "Live Gemini weekly quota")
     tp_5h_details = _extract_metric_details(["Third-Party (5H)", "Third Party (5H)", "Third-Party Quota (5H)"], "Fallback burst quota")
     tp_1w_details = _extract_metric_details(["Third-Party (1W)", "Third Party (1W)", "Third-Party Quota (1W)"], "Fallback weekly quota")
-
-    def _extract_countdown(details_str: str) -> Optional[str]:
-        if not details_str:
-            return None
-        m = re.search(r"Reset:\s*([^|\n]+)", details_str)
-        if m:
-            val = m.group(1).strip()
-            return val if val != "N/A" else None
-        return None
 
     gemini_5h_countdown = _extract_countdown(gemini_5h_details)
     gemini_1w_countdown = _extract_countdown(gemini_1w_details)

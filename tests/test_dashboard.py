@@ -16,6 +16,7 @@ from lib.dashboard import (
     DashboardUpdater,
     REPO_ROOT,
     _detect_git_repo_full_name,
+    _extract_countdown,
     _format_target_html_cell,
     _format_target_markdown_cell,
     _get_dashboard_template,
@@ -3167,8 +3168,35 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(parse_countdown_to_seconds("00:00:00"), 0.0)
         self.assertIsNone(parse_countdown_to_seconds("N/A"))
         self.assertIsNone(parse_countdown_to_seconds(None))
+        # Backtick stripping
+        self.assertEqual(parse_countdown_to_seconds("`02:15:00`"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`02h 15m`"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`5d 04h`"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("`00:00:00`"), 0.0)
+        # Countdowns with descriptive suffixes or words (e.g. est, remaining, approx)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 est"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 remaining"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 approx"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`02:15:00` est"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15 est"), 135.0)
         for word in ("paused", "pending", "invalid", "suspended", "resumed", "closed"):
             self.assertIsNone(parse_countdown_to_seconds(word))
+
+    def test_extract_countdown(self):
+        # Case insensitivity
+        self.assertEqual(_extract_countdown("Reset: 02:30:00 | Pacing: OK"), "02:30:00")
+        self.assertEqual(_extract_countdown("reset: 02:30:00 | pacing: ok"), "02:30:00")
+        self.assertEqual(_extract_countdown("RESET: 02:30:00 | PACING: OK"), "02:30:00")
+        # Backtick stripping
+        self.assertEqual(_extract_countdown("Reset: `02:30:00` | Pacing: OK"), "02:30:00")
+        self.assertEqual(_extract_countdown("reset: `02:30:00`"), "02:30:00")
+        self.assertEqual(_extract_countdown("RESET: `02:30:00`"), "02:30:00")
+        # Edge cases
+        self.assertIsNone(_extract_countdown(None))
+        self.assertIsNone(_extract_countdown(""))
+        self.assertIsNone(_extract_countdown("Reset: N/A | Pacing: OK"))
+        self.assertIsNone(_extract_countdown("reset: none"))
+        self.assertIsNone(_extract_countdown("No reset details"))
 
     def test_calculate_target_pacing_from_details(self):
         # 2.5 hours remaining in 5-hour window -> 50%
@@ -3176,6 +3204,12 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         # Case insensitivity for reset prefix
         self.assertEqual(calculate_target_pacing_from_details("reset: 02:30:00 | pacing: ok", 18000.0), 50.0)
         self.assertEqual(calculate_target_pacing_from_details("RESET: 02:30:00 | PACING: OK", 18000.0), 50.0)
+        # Backtick stripping in reset details
+        self.assertEqual(calculate_target_pacing_from_details("Reset: `02:30:00` | Pacing: OK", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("reset: `02:30:00` | pacing: ok", 18000.0), 50.0)
+        # Countdowns with descriptive suffixes in reset details
+        self.assertEqual(calculate_target_pacing_from_details("Reset: 02:30:00 est | Pacing: OK", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("Reset: `02:30:00` remaining | Pacing: OK", 18000.0), 50.0)
         # N/A reset details
         self.assertIsNone(calculate_target_pacing_from_details("Reset: N/A | Pacing: OK", 18000.0))
         self.assertIsNone(calculate_target_pacing_from_details(None, 18000.0))

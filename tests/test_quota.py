@@ -2840,10 +2840,17 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNone(win_neg_duration.get_target_pacing_percentage(now_dt=now_dt))
         self.assertIsNone(win_neg_duration.target_pacing_percentage)
 
-        # Verify int timestamp support for now_dt and now
+        # Verify int timestamp support for now_dt and now across pacing methods
         now_ts_int = int(now_dt.timestamp())
         self.assertEqual(win.get_target_pacing_percentage(now_dt=now_ts_int), 50.0)
         self.assertEqual(win.target_pacing_pct(now_dt=now_ts_int), 50.0)
+        self.assertAlmostEqual(win.get_time_fraction(now_dt=now_ts_int), 0.5)
+        self.assertAlmostEqual(win.time_fraction(now_ts_int), 0.5)
+        self.assertAlmostEqual(win.get_target_quota_fraction(now_dt=now_ts_int), 0.5)
+        self.assertAlmostEqual(win.target_quota_fraction(now_dt=now_ts_int), 0.5)
+        status, _ = win.get_pacing_status(now_dt=now_ts_int)
+        self.assertEqual(status, "OK")
+        self.assertEqual(win.pacing_status(now_ts_int), "OK")
 
         # Check to_dict contains target_pacing_percentage
         d = win.to_dict()
