@@ -21,6 +21,7 @@ from lib.tasks import (
     Task,
     TaskManager,
     TaskStatus,
+    _PrunedTaskIds,
     clean_workspace_dir,
     prune_abandoned_workspaces,
     resolve_task_pool_and_model,
@@ -2162,7 +2163,6 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(manager.max_pruned_tasks, 1000)
         self.assertEqual(manager._pruned_task_ids.maxlen, 1000)
 
-        from lib.tasks import _PrunedTaskIds
         bounded = _PrunedTaskIds(maxlen=3)
         bounded.add("task-1")
         bounded.add("task-2")
@@ -2182,7 +2182,6 @@ class TestTaskManager(unittest.TestCase):
 
     def test_pruned_task_ids_ordered_dict_properties(self):
         import collections
-        from lib.tasks import _PrunedTaskIds
 
         # Verify it is no longer a subclass of deque
         self.assertFalse(issubclass(_PrunedTaskIds, collections.deque))
@@ -2394,6 +2393,57 @@ class TestTaskManager(unittest.TestCase):
         pos_int = _PrunedTaskIds(42)
         self.assertEqual(len(pos_int), 0)
         self.assertEqual(pos_int.maxlen, 42)
+
+        # Test positional int with explicit maxlen
+        pos_kw = _PrunedTaskIds(500, maxlen=500)
+        self.assertEqual(pos_kw.maxlen, 500)
+
+        pos_override = _PrunedTaskIds(42, 100)
+        self.assertEqual(pos_override.maxlen, 100)
+
+        pos_zero = _PrunedTaskIds(0, maxlen=0)
+        self.assertEqual(pos_zero.maxlen, 0)
+
+        pos_none = _PrunedTaskIds(42, maxlen=None)
+        self.assertEqual(pos_none.maxlen, 42)
+
+        # Booleans should not be treated as int maxlen
+        with self.assertRaises(TypeError):
+            _PrunedTaskIds(True)
+        with self.assertRaises(TypeError):
+            _PrunedTaskIds(False)
+
+        # Test discard and remove methods
+        del_coll = _PrunedTaskIds(["a", "b", "c"], maxlen=5)
+        self.assertEqual(len(del_coll), 3)
+
+        # discard existing item
+        del_coll.discard("b")
+        self.assertEqual(list(del_coll), ["a", "c"])
+        self.assertEqual(len(del_coll), 2)
+
+        # discard nonexistent item does nothing
+        del_coll.discard("not_in_collection")
+        self.assertEqual(list(del_coll), ["a", "c"])
+
+        # discard unhashable object does not raise error
+        del_coll.discard(["unhashable"])
+        del_coll.discard({"unhashable": 1})
+
+        # remove existing item
+        del_coll.remove("a")
+        self.assertEqual(list(del_coll), ["c"])
+        self.assertEqual(len(del_coll), 1)
+
+        # remove nonexistent item raises KeyError
+        with self.assertRaises(KeyError):
+            del_coll.remove("not_in_collection")
+
+        # remove unhashable item raises KeyError
+        with self.assertRaises(KeyError):
+            del_coll.remove(["unhashable"])
+        with self.assertRaises(KeyError):
+            del_coll.remove({"unhashable": 1})
 
         # Test subclass polymorphism in copy() and __repr__()
         class SubPrunedTaskIds(_PrunedTaskIds):

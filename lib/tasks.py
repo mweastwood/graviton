@@ -357,11 +357,15 @@ class _PrunedTaskIds:
 
     def __init__(
         self,
-        iterable: Optional[Iterable[str]] = None,
+        iterable: Optional[Union[Iterable[str], int]] = None,
         maxlen: Optional[int] = 10000,
     ):
-        if isinstance(iterable, int) and maxlen == 10000:
-            self._maxlen = iterable
+        # Backwards compatibility when maxlen is passed positionally as first argument
+        if isinstance(iterable, int) and not isinstance(iterable, bool):
+            if maxlen == 10000 or maxlen is None or maxlen == iterable:
+                self._maxlen = iterable
+            else:
+                self._maxlen = maxlen
             iterable = None
         else:
             self._maxlen = maxlen
@@ -398,6 +402,20 @@ class _PrunedTaskIds:
         if self.maxlen is not None:
             while len(self._items) > self.maxlen and self._items:
                 self._items.popitem(last=False)
+
+    def discard(self, item: object) -> None:
+        """Remove an item from the collection if it is present."""
+        try:
+            self._items.pop(item, None)
+        except TypeError:
+            pass
+
+    def remove(self, item: object) -> None:
+        """Remove an item from the collection. Raises KeyError if not present."""
+        try:
+            del self._items[item]
+        except (KeyError, TypeError):
+            raise KeyError(item) from None
 
     def __contains__(self, item: object) -> bool:
         try:
