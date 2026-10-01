@@ -795,6 +795,14 @@ class TestPRTracker(unittest.TestCase):
     def test_has_approval_marker_short_circuit_and_filters(self):
         from lib.pr_tracker import has_approval_marker
 
+        # Non-string and invalid inputs safely return False without raising AttributeError
+        invalid_inputs = [None, "", 123, 45.6, True, False, {}, [], set(), object()]
+        for invalid_input in invalid_inputs:
+            self.assertFalse(
+                has_approval_marker(invalid_input),
+                f"Expected has_approval_marker to return False for '{invalid_input}'",
+            )
+
         # Immediate rejection of general comments, discussion, punctuation, and code blocks lacking lgtm/approved
         non_approval_texts = [
             "Looks good to me overall, but needs minor tweaks.",
