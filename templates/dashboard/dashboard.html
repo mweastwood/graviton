@@ -294,17 +294,31 @@
             font-weight: 700;
         }}
         .meter-track {{
+            position: relative;
             width: 100%;
             height: 8px;
             background: var(--table-header);
             border-radius: 4px;
-            overflow: hidden;
+            overflow: visible;
             margin-bottom: 6px;
         }}
         .meter-fill {{
             height: 100%;
             border-radius: 4px;
             transition: width 0.4s ease, background-color 0.4s ease;
+        }}
+        .pacing-mark {{
+            position: absolute;
+            top: -2px;
+            height: 12px;
+            width: 2px;
+            background-color: var(--text-bright, #ffffff);
+            border-radius: 1px;
+            transform: translateX(-50%);
+            z-index: 2;
+            box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+            transition: left 0.4s ease;
+            cursor: default;
         }}
         .meter-sub {{
             font-size: 0.75rem;
@@ -720,6 +734,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="gemini-5h-bar" class="meter-fill" style="width: {gemini_5h_bar_pct}%; background-color: {gemini_5h_color};"></div>
+                            <div id="gemini-5h-pacing-mark" class="pacing-mark" style="{gemini_5h_pacing_style}" title="{gemini_5h_pacing_title}" aria-label="{gemini_5h_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="gemini-5h-details">{gemini_5h_details}</div>
                     </div>
@@ -731,6 +746,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="gemini-1w-bar" class="meter-fill" style="width: {gemini_1w_bar_pct}%; background-color: {gemini_1w_color};"></div>
+                            <div id="gemini-1w-pacing-mark" class="pacing-mark" style="{gemini_1w_pacing_style}" title="{gemini_1w_pacing_title}" aria-label="{gemini_1w_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="gemini-1w-details">{gemini_1w_details}</div>
                     </div>
@@ -755,6 +771,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="tp-5h-bar" class="meter-fill" style="width: {tp_5h_bar_pct}%; background-color: {tp_5h_color};"></div>
+                            <div id="tp-5h-pacing-mark" class="pacing-mark" style="{tp_5h_pacing_style}" title="{tp_5h_pacing_title}" aria-label="{tp_5h_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="tp-5h-details">{tp_5h_details}</div>
                     </div>
@@ -766,6 +783,7 @@
                         </div>
                         <div class="meter-track">
                             <div id="tp-1w-bar" class="meter-fill" style="width: {tp_1w_bar_pct}%; background-color: {tp_1w_color};"></div>
+                            <div id="tp-1w-pacing-mark" class="pacing-mark" style="{tp_1w_pacing_style}" title="{tp_1w_pacing_title}" aria-label="{tp_1w_pacing_title}"></div>
                         </div>
                         <div class="meter-sub" id="tp-1w-details">{tp_1w_details}</div>
                     </div>
@@ -1186,6 +1204,85 @@
                 t1wBar.style.backgroundColor = getQuotaColor(tp1wPct);
             }}
             if (t1wDet) t1wDet.textContent = tp1wDetails;
+
+            function parseResetSeconds(detailsStr) {{
+                if (!detailsStr) return null;
+                const m = detailsStr.match(/Reset:\s*([^|\n]+)/i);
+                if (!m) return null;
+                const str = m[1].replace(/[`]/g, "").trim().toLowerCase();
+                if (str === 'n/a' || str === 'none' || str === '') return null;
+                if (str === '00:00:00' || str === '0' || str === '0s') return 0;
+
+                // Colon-separated: "02:15:00" or "02:15" (supports descriptive words/suffixes, e.g. "02:15:00 est", "02:15:00 remaining")
+                const mHms = str.match(/(\d+):(\d{{1,2}}):(\d{{1,2}})/);
+                if (mHms) {{
+                    let sec = parseInt(mHms[1], 10) * 3600 + parseInt(mHms[2], 10) * 60 + parseInt(mHms[3], 10);
+                    const d = str.match(/(\d+)\s*d/);
+                    if (d) sec += parseInt(d[1], 10) * 86400;
+                    return sec;
+                }}
+                const mMs = str.match(/(\d+):(\d{{1,2}})/);
+                if (mMs) {{
+                    let sec = parseInt(mMs[1], 10) * 60 + parseInt(mMs[2], 10);
+                    const d = str.match(/(\d+)\s*d/);
+                    if (d) sec += parseInt(d[1], 10) * 86400;
+                    return sec;
+                }}
+
+                if (str.includes('d')) {{
+                    const d = str.match(/(\d+)\s*d/);
+                    const h = str.match(/(\d+)\s*h/);
+                    const mMin = str.match(/(\d+)\s*m/);
+                    const sSec = str.match(/(\d+)\s*s/);
+                    if (!d && !h && !mMin && !sSec) return null;
+                    let sec = 0;
+                    if (d) sec += parseInt(d[1], 10) * 86400;
+                    if (h) sec += parseInt(h[1], 10) * 3600;
+                    if (mMin) sec += parseInt(mMin[1], 10) * 60;
+                    if (sSec) sec += parseInt(sSec[1], 10);
+                    return sec;
+                }}
+                if (str.includes('h') || str.includes('m') || str.includes('s')) {{
+                    const h = str.match(/(\d+)\s*h/);
+                    const mMin = str.match(/(\d+)\s*m/);
+                    const sSec = str.match(/(\d+)\s*s/);
+                    if (!h && !mMin && !sSec) return null;
+                    let sec = 0;
+                    if (h) sec += parseInt(h[1], 10) * 3600;
+                    if (mMin) sec += parseInt(mMin[1], 10) * 60;
+                    if (sSec) sec += parseInt(sSec[1], 10);
+                    return sec;
+                }}
+                return null;
+            }}
+
+            function calculateTargetPacing(detailsStr, durationSeconds) {{
+                const remSec = parseResetSeconds(detailsStr);
+                if (remSec === null || isNaN(remSec) || durationSeconds <= 0) return null;
+                const frac = Math.min(1.0, Math.max(0.0, remSec / durationSeconds));
+                return Math.round(frac * 1000) / 10;
+            }}
+
+            function updatePacingMark(markId, detailsStr, durationSeconds) {{
+                const mark = document.getElementById(markId);
+                if (!mark) return;
+                const targetPct = calculateTargetPacing(detailsStr, durationSeconds);
+                if (targetPct !== null) {{
+                    mark.style.display = 'block';
+                    mark.style.left = `${{targetPct}}%`;
+                    const dispStr = Number.isInteger(targetPct) ? `${{targetPct}}%` : `${{targetPct.toFixed(1)}}%`;
+                    const titleText = `Target Pacing: ${{dispStr}} (perfect pacing limit)`;
+                    mark.setAttribute('title', titleText);
+                    mark.setAttribute('aria-label', titleText);
+                }} else {{
+                    mark.style.display = 'none';
+                }}
+            }}
+
+            updatePacingMark('gemini-5h-pacing-mark', gemini5hDetails, 18000);
+            updatePacingMark('gemini-1w-pacing-mark', gemini1wDetails, 604800);
+            updatePacingMark('tp-5h-pacing-mark', tp5hDetails, 18000);
+            updatePacingMark('tp-1w-pacing-mark', tp1wDetails, 604800);
 
             const geminiLabel = document.getElementById('gemini-pct-label');
             const geminiBar = document.getElementById('gemini-bar');

@@ -778,6 +778,96 @@ def get_quota_color(pct: Optional[Union[float, int, str]]) -> str:
     return "#f85149"
 
 
+def parse_countdown_to_seconds(cd_str: Optional[str]) -> Optional[float]:
+    """Parse a countdown string (e.g., '04:51:12', '02h 15m', '5d 04h', '00:00:00') into total seconds."""
+    if not cd_str:
+        return None
+    s = str(cd_str).replace("`", "").strip().lower()
+    if s in ("n/a", "none", ""):
+        return None
+    if s in ("00:00:00", "0", "0s"):
+        return 0.0
+
+    # Colon-separated: "02:15:00" or "02:15" (supports descriptive words/suffixes, e.g. "02:15:00 est", "02:15:00 remaining")
+    m_hms = re.search(r"(\d+):(\d{1,2}):(\d{1,2})", s)
+    if m_hms:
+        sec = float(m_hms.group(1)) * 3600.0 + float(m_hms.group(2)) * 60.0 + float(m_hms.group(3))
+        m_d = re.search(r"(\d+)\s*d", s)
+        if m_d:
+            sec += float(m_d.group(1)) * 86400.0
+        return sec
+
+    m_ms = re.search(r"(\d+):(\d{1,2})", s)
+    if m_ms:
+        sec = float(m_ms.group(1)) * 60.0 + float(m_ms.group(2))
+        m_d = re.search(r"(\d+)\s*d", s)
+        if m_d:
+            sec += float(m_d.group(1)) * 86400.0
+        return sec
+
+    # Days and hours: e.g. "5d 04h" or "5d"
+    if "d" in s:
+        m_d = re.search(r"(\d+)\s*d", s)
+        m_h = re.search(r"(\d+)\s*h", s)
+        m_m = re.search(r"(\d+)\s*m", s)
+        m_s = re.search(r"(\d+)\s*s", s)
+        if not (m_d or m_h or m_m or m_s):
+            return None
+        sec = 0.0
+        if m_d:
+            sec += float(m_d.group(1)) * 86400.0
+        if m_h:
+            sec += float(m_h.group(1)) * 3600.0
+        if m_m:
+            sec += float(m_m.group(1)) * 60.0
+        if m_s:
+            sec += float(m_s.group(1))
+        return sec
+
+    # Hours, mins, secs: e.g. "02h 15m" or "02h" or "15m" or "45s"
+    if any(u in s for u in ("h", "m", "s")):
+        m_h = re.search(r"(\d+)\s*h", s)
+        m_m = re.search(r"(\d+)\s*m", s)
+        m_s = re.search(r"(\d+)\s*s", s)
+        if not (m_h or m_m or m_s):
+            return None
+        sec = 0.0
+        if m_h:
+            sec += float(m_h.group(1)) * 3600.0
+        if m_m:
+            sec += float(m_m.group(1)) * 60.0
+        if m_s:
+            sec += float(m_s.group(1))
+        return sec
+
+    return None
+
+
+def _extract_countdown(details_str: Optional[str]) -> Optional[str]:
+    """Extract countdown string from details string (e.g. 'Reset: 02:30:00 | Pacing: OK')."""
+    if not details_str:
+        return None
+    m = re.search(r"Reset:\s*([^|\n]+)", details_str, re.IGNORECASE)
+    if m:
+        val = m.group(1).replace("`", "").strip()
+        return val if val and val.upper() != "N/A" and val.lower() != "none" else None
+    return None
+
+
+def calculate_target_pacing_from_details(details_str: Optional[str], duration_seconds: float) -> Optional[float]:
+    """Extract reset countdown from details string and calculate linear pacing threshold percentage."""
+    if not details_str or duration_seconds <= 0:
+        return None
+    cd_val = _extract_countdown(details_str)
+    if not cd_val:
+        return None
+    rem_sec = parse_countdown_to_seconds(cd_val)
+    if rem_sec is None:
+        return None
+    frac = max(0.0, min(1.0, rem_sec / duration_seconds))
+    return round(frac * 100.0, 1)
+
+
 def parse_dashboard_markdown(
     markdown_content: str,
     default_host: str = "localhost",
@@ -872,15 +962,6 @@ def parse_dashboard_markdown(
     gemini_1w_details = _extract_metric_details(["Gemini (1W)", "Gemini Quota (1W)"], "Live Gemini weekly quota")
     tp_5h_details = _extract_metric_details(["Third-Party (5H)", "Third Party (5H)", "Third-Party Quota (5H)"], "Fallback burst quota")
     tp_1w_details = _extract_metric_details(["Third-Party (1W)", "Third Party (1W)", "Third-Party Quota (1W)"], "Fallback weekly quota")
-
-    def _extract_countdown(details_str: str) -> Optional[str]:
-        if not details_str:
-            return None
-        m = re.search(r"Reset:\s*([^|\n]+)", details_str)
-        if m:
-            val = m.group(1).strip()
-            return val if val != "N/A" else None
-        return None
 
     gemini_5h_countdown = _extract_countdown(gemini_5h_details)
     gemini_1w_countdown = _extract_countdown(gemini_1w_details)
@@ -1169,6 +1250,11 @@ def parse_dashboard_markdown(
     else:
         active_third_party_model = active_third_party_model.strip()
 
+    gemini_5h_target_pacing_pct = calculate_target_pacing_from_details(gemini_5h_details, 18000.0)
+    gemini_1w_target_pacing_pct = calculate_target_pacing_from_details(gemini_1w_details, 604800.0)
+    tp_5h_target_pacing_pct = calculate_target_pacing_from_details(tp_5h_details, 18000.0)
+    tp_1w_target_pacing_pct = calculate_target_pacing_from_details(tp_1w_details, 604800.0)
+
     return {
         "host": host,
         "port": port,
@@ -1190,28 +1276,34 @@ def parse_dashboard_markdown(
         "gemini_5h_pct": gemini_5h_pct,
         "gemini_5h_details": gemini_5h_details,
         "gemini_5h_countdown": gemini_5h_countdown,
+        "gemini_5h_target_pacing_pct": gemini_5h_target_pacing_pct,
         "gemini_1w_rem": gemini_1w_rem,
         "gemini_1w_pct": gemini_1w_pct,
         "gemini_1w_details": gemini_1w_details,
         "gemini_1w_countdown": gemini_1w_countdown,
+        "gemini_1w_target_pacing_pct": gemini_1w_target_pacing_pct,
         "tp_rem": tp_rem,
         "tp_pct": tp_pct,
         "tp_5h_rem": tp_5h_rem,
         "tp_5h_pct": tp_5h_pct,
         "tp_5h_details": tp_5h_details,
         "tp_5h_countdown": tp_5h_countdown,
+        "tp_5h_target_pacing_pct": tp_5h_target_pacing_pct,
         "tp_1w_rem": tp_1w_rem,
         "tp_1w_pct": tp_1w_pct,
         "tp_1w_details": tp_1w_details,
         "tp_1w_countdown": tp_1w_countdown,
+        "tp_1w_target_pacing_pct": tp_1w_target_pacing_pct,
         "third_party_5h_rem": tp_5h_rem,
         "third_party_5h_pct": tp_5h_pct,
         "third_party_5h_details": tp_5h_details,
         "third_party_5h_countdown": tp_5h_countdown,
+        "third_party_5h_target_pacing_pct": tp_5h_target_pacing_pct,
         "third_party_1w_rem": tp_1w_rem,
         "third_party_1w_pct": tp_1w_pct,
         "third_party_1w_details": tp_1w_details,
         "third_party_1w_countdown": tp_1w_countdown,
+        "third_party_1w_target_pacing_pct": tp_1w_target_pacing_pct,
         "active_tasks": active_tasks,
         "queued_tasks_list": queued_tasks,
         "history_tasks": history_tasks,
@@ -1498,6 +1590,7 @@ def render_dashboard_html(
                 st, _ = w5_g.get_pacing_status()
                 if not (w5_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
                     data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                data["gemini_5h_target_pacing_pct"] = w5_g.get_target_pacing_percentage()
             if w1_g is not None:
                 data["gemini_1w_pct"] = w1_g.remaining_percentage
                 data["gemini_1w_rem"] = format_percentage(w1_g.remaining_percentage)
@@ -1505,6 +1598,7 @@ def render_dashboard_html(
                 st, _ = w1_g.get_pacing_status()
                 if not (w1_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
                     data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                data["gemini_1w_target_pacing_pct"] = w1_g.get_target_pacing_percentage()
             if w5_c is not None:
                 data["tp_5h_pct"] = w5_c.remaining_percentage
                 data["tp_5h_rem"] = format_percentage(w5_c.remaining_percentage)
@@ -1512,6 +1606,7 @@ def render_dashboard_html(
                 st, _ = w5_c.get_pacing_status()
                 if not (w5_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
                     data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                data["tp_5h_target_pacing_pct"] = w5_c.get_target_pacing_percentage()
             if w1_c is not None:
                 data["tp_1w_pct"] = w1_c.remaining_percentage
                 data["tp_1w_rem"] = format_percentage(w1_c.remaining_percentage)
@@ -1519,6 +1614,7 @@ def render_dashboard_html(
                 st, _ = w1_c.get_pacing_status()
                 if not (w1_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
                     data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                data["tp_1w_target_pacing_pct"] = w1_c.get_target_pacing_percentage()
         except Exception as e:
             logger.debug(f"Error enriching window metrics from quota_tracker: {e}")
 
@@ -1536,6 +1632,14 @@ def render_dashboard_html(
         if q_extra.get("third_party_1w_remaining_percentage") is not None:
             data["tp_1w_pct"] = q_extra["third_party_1w_remaining_percentage"]
             data["tp_1w_rem"] = format_percentage(q_extra["third_party_1w_remaining_percentage"])
+        if q_extra.get("gemini_5h_target_pacing_percentage") is not None:
+            data["gemini_5h_target_pacing_pct"] = q_extra["gemini_5h_target_pacing_percentage"]
+        if q_extra.get("gemini_1w_target_pacing_percentage") is not None:
+            data["gemini_1w_target_pacing_pct"] = q_extra["gemini_1w_target_pacing_percentage"]
+        if q_extra.get("third_party_5h_target_pacing_percentage") is not None:
+            data["tp_5h_target_pacing_pct"] = q_extra["third_party_5h_target_pacing_percentage"]
+        if q_extra.get("third_party_1w_target_pacing_percentage") is not None:
+            data["tp_1w_target_pacing_pct"] = q_extra["third_party_1w_target_pacing_percentage"]
         for prefix, key_prefix in [
             ("gemini_5h", "gemini_5h"),
             ("gemini_1w", "gemini_1w"),
@@ -1559,6 +1663,15 @@ def render_dashboard_html(
                 data[f"{prefix}_details"] = details
                 if prefix.startswith("tp_"):
                     data[f"{key_prefix}_details"] = details
+
+    if data.get("gemini_5h_target_pacing_pct") is None:
+        data["gemini_5h_target_pacing_pct"] = calculate_target_pacing_from_details(data.get("gemini_5h_details"), 18000.0)
+    if data.get("gemini_1w_target_pacing_pct") is None:
+        data["gemini_1w_target_pacing_pct"] = calculate_target_pacing_from_details(data.get("gemini_1w_details"), 604800.0)
+    if data.get("tp_5h_target_pacing_pct") is None:
+        data["tp_5h_target_pacing_pct"] = calculate_target_pacing_from_details(data.get("tp_5h_details"), 18000.0)
+    if data.get("tp_1w_target_pacing_pct") is None:
+        data["tp_1w_target_pacing_pct"] = calculate_target_pacing_from_details(data.get("tp_1w_details"), 604800.0)
 
     g_act = data.get("active_gemini_model")
     if isinstance(g_act, str) and g_act.strip() and g_act not in data["available_gemini_models"]:
@@ -1637,6 +1750,22 @@ def render_dashboard_html(
         tp_1w_bar_pct = 0
     tp_1w_details = html.escape(str(data.get("tp_1w_details") or "Fallback weekly quota"))
 
+    def _pacing_style_and_title(pct):
+        if pct is not None:
+            try:
+                pct_val = max(0.0, min(100.0, float(pct)))
+                round_val = round(pct_val, 1)
+                pct_str = f"{int(round_val)}%" if round_val.is_integer() else f"{round_val:.1f}%"
+                return f"left: {pct_val}%;", f"Target Pacing: {pct_str} (perfect pacing limit)"
+            except (ValueError, TypeError):
+                pass
+        return "display: none;", ""
+
+    gemini_5h_pacing_style, gemini_5h_pacing_title = _pacing_style_and_title(data.get("gemini_5h_target_pacing_pct"))
+    gemini_1w_pacing_style, gemini_1w_pacing_title = _pacing_style_and_title(data.get("gemini_1w_target_pacing_pct"))
+    tp_5h_pacing_style, tp_5h_pacing_title = _pacing_style_and_title(data.get("tp_5h_target_pacing_pct"))
+    tp_1w_pacing_style, tp_1w_pacing_title = _pacing_style_and_title(data.get("tp_1w_target_pacing_pct"))
+
     active_table_html = _render_active_tasks_table(data["active_tasks"])
     queued_table_html = _render_queued_tasks_table(data["queued_tasks_list"])
     valid_approved_prs = [pr for pr in data.get("approved_prs", []) if isinstance(pr, dict)]
@@ -1694,10 +1823,14 @@ def render_dashboard_html(
         gemini_5h_color=gemini_5h_color,
         gemini_5h_bar_pct=gemini_5h_bar_pct,
         gemini_5h_details=gemini_5h_details,
+        gemini_5h_pacing_style=gemini_5h_pacing_style,
+        gemini_5h_pacing_title=html.escape(gemini_5h_pacing_title),
         gemini_1w_disp=gemini_1w_disp,
         gemini_1w_color=gemini_1w_color,
         gemini_1w_bar_pct=gemini_1w_bar_pct,
         gemini_1w_details=gemini_1w_details,
+        gemini_1w_pacing_style=gemini_1w_pacing_style,
+        gemini_1w_pacing_title=html.escape(gemini_1w_pacing_title),
         tp_color=tp_color,
         tp_disp=tp_disp,
         tp_bar_pct=tp_bar_pct,
@@ -1706,10 +1839,14 @@ def render_dashboard_html(
         tp_5h_color=tp_5h_color,
         tp_5h_bar_pct=tp_5h_bar_pct,
         tp_5h_details=tp_5h_details,
+        tp_5h_pacing_style=tp_5h_pacing_style,
+        tp_5h_pacing_title=html.escape(tp_5h_pacing_title),
         tp_1w_disp=tp_1w_disp,
         tp_1w_color=tp_1w_color,
         tp_1w_bar_pct=tp_1w_bar_pct,
         tp_1w_details=tp_1w_details,
+        tp_1w_pacing_style=tp_1w_pacing_style,
+        tp_1w_pacing_title=html.escape(tp_1w_pacing_title),
         active_count=active_count,
         active_table_html=active_table_html,
         queued_count=queued_count,

@@ -2816,6 +2816,71 @@ class TestParseResetTime(unittest.TestCase):
             with patch("lib.quota.parse_reset_time_to_datetime", return_value=mock_dt):
                 self.assertIsNone(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"))
 
+    def test_quota_window_target_pacing_percentage(self):
+        # 5-hour window: 18000s duration
+        # Halfway through: 9000s remaining -> 50.0% target pacing
+        now_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        reset_dt = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)  # 2.5 hours remaining = 9000s
+        win = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=60.0, reset_datetime=reset_dt)
+
+        self.assertEqual(win.get_target_pacing_percentage(now_dt=now_dt), 50.0)
+        self.assertEqual(win.target_pacing_pct(now_dt=now_dt), 50.0)
+
+        # When reset_time is None
+        win_no_reset = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=60.0, reset_time=None)
+        self.assertIsNone(win_no_reset.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_no_reset.target_pacing_percentage)
+
+        # Zero or negative duration_seconds returns None
+        win_zero_duration = QuotaWindow(name="0H", duration_seconds=0, remaining_percentage=60.0, reset_datetime=reset_dt)
+        self.assertIsNone(win_zero_duration.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_zero_duration.target_pacing_percentage)
+
+        win_neg_duration = QuotaWindow(name="Neg", duration_seconds=-100.0, remaining_percentage=60.0, reset_datetime=reset_dt)
+        self.assertIsNone(win_neg_duration.get_target_pacing_percentage(now_dt=now_dt))
+        self.assertIsNone(win_neg_duration.target_pacing_percentage)
+
+        # Verify int timestamp support for now_dt and now across pacing methods
+        now_ts_int = int(now_dt.timestamp())
+        self.assertEqual(win.get_target_pacing_percentage(now_dt=now_ts_int), 50.0)
+        self.assertEqual(win.target_pacing_pct(now_dt=now_ts_int), 50.0)
+        self.assertAlmostEqual(win.get_time_fraction(now_dt=now_ts_int), 0.5)
+        self.assertAlmostEqual(win.time_fraction(now_ts_int), 0.5)
+        self.assertAlmostEqual(win.get_target_quota_fraction(now_dt=now_ts_int), 0.5)
+        self.assertAlmostEqual(win.target_quota_fraction(now_dt=now_ts_int), 0.5)
+        status, _ = win.get_pacing_status(now_dt=now_ts_int)
+        self.assertEqual(status, "OK")
+        self.assertEqual(win.pacing_status(now_ts_int), "OK")
+
+        # Check to_dict contains target_pacing_percentage
+        d = win.to_dict()
+        self.assertIn("target_pacing_percentage", d)
+
+    def test_quota_info_to_dict_includes_target_pacing_percentage(self):
+        now_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        reset_dt_5h = datetime(2026, 10, 1, 14, 30, 0, tzinfo=timezone.utc)  # 50%
+        reset_dt_1w = datetime(2026, 10, 4, 12, 0, 0, tzinfo=timezone.utc)  # 3 days = 259200 / 604800 = 42.9%
+        reset_dt_tp_5h = datetime(2026, 10, 1, 13, 15, 0, tzinfo=timezone.utc)
+        reset_dt_tp_1w = datetime(2026, 10, 5, 0, 0, 0, tzinfo=timezone.utc)
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_datetime=reset_dt_5h)
+        w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0, reset_datetime=reset_dt_1w)
+        w5_tp = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=70.0, reset_datetime=reset_dt_tp_5h)
+        w1_tp = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0, reset_datetime=reset_dt_tp_1w)
+        info = QuotaInfo(
+            remaining_percentage=80.0,
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+            claude_window_5h=w5_tp,
+            claude_window_1w=w1_tp,
+        )
+        d = info.to_dict()
+        self.assertIn("gemini_5h_target_pacing_percentage", d)
+        self.assertIn("gemini_1w_target_pacing_percentage", d)
+        self.assertIn("third_party_5h_target_pacing_percentage", d)
+        self.assertIn("third_party_1w_target_pacing_percentage", d)
+        self.assertIsNotNone(d["third_party_5h_target_pacing_percentage"])
+        self.assertIsNotNone(d["third_party_1w_target_pacing_percentage"])
+
 
 if __name__ == "__main__":
     unittest.main()

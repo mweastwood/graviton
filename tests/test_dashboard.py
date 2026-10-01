@@ -16,6 +16,7 @@ from lib.dashboard import (
     DashboardUpdater,
     REPO_ROOT,
     _detect_git_repo_full_name,
+    _extract_countdown,
     _format_target_html_cell,
     _format_target_markdown_cell,
     _get_dashboard_template,
@@ -30,6 +31,8 @@ from lib.dashboard import (
     format_percentage,
     get_quota_color,
     is_safe_url,
+    parse_countdown_to_seconds,
+    calculate_target_pacing_from_details,
     parse_dashboard_markdown,
     render_dashboard_html,
     resolve_target_url,
@@ -3152,6 +3155,104 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         # History tasks 5-column backwards compatibility guard
         self.assertIn("r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'))", template)
         self.assertIn("const rawStatus = (hasModel ? r[5] : r[4]) || '';", template)
+
+    def test_parse_countdown_to_seconds(self):
+        self.assertEqual(parse_countdown_to_seconds("02:15:00"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02h 15m"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("5d 04h"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("5D 04H"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("02H 15M"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("45s"), 45.0)
+        self.assertEqual(parse_countdown_to_seconds("45S"), 45.0)
+        self.assertEqual(parse_countdown_to_seconds("5d 04h 30s"), 446430.0)
+        self.assertEqual(parse_countdown_to_seconds("00:00:00"), 0.0)
+        self.assertIsNone(parse_countdown_to_seconds("N/A"))
+        self.assertIsNone(parse_countdown_to_seconds(None))
+        # Backtick stripping
+        self.assertEqual(parse_countdown_to_seconds("`02:15:00`"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`02h 15m`"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`5d 04h`"), 446400.0)
+        self.assertEqual(parse_countdown_to_seconds("`00:00:00`"), 0.0)
+        # Countdowns with descriptive suffixes or words (e.g. est, remaining, approx)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 est"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 remaining"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15:00 approx"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("`02:15:00` est"), 8100.0)
+        self.assertEqual(parse_countdown_to_seconds("02:15 est"), 135.0)
+        for word in ("paused", "pending", "invalid", "suspended", "resumed", "closed"):
+            self.assertIsNone(parse_countdown_to_seconds(word))
+
+    def test_extract_countdown(self):
+        # Case insensitivity
+        self.assertEqual(_extract_countdown("Reset: 02:30:00 | Pacing: OK"), "02:30:00")
+        self.assertEqual(_extract_countdown("reset: 02:30:00 | pacing: ok"), "02:30:00")
+        self.assertEqual(_extract_countdown("RESET: 02:30:00 | PACING: OK"), "02:30:00")
+        # Backtick stripping
+        self.assertEqual(_extract_countdown("Reset: `02:30:00` | Pacing: OK"), "02:30:00")
+        self.assertEqual(_extract_countdown("reset: `02:30:00`"), "02:30:00")
+        self.assertEqual(_extract_countdown("RESET: `02:30:00`"), "02:30:00")
+        # Edge cases
+        self.assertIsNone(_extract_countdown(None))
+        self.assertIsNone(_extract_countdown(""))
+        self.assertIsNone(_extract_countdown("Reset: N/A | Pacing: OK"))
+        self.assertIsNone(_extract_countdown("reset: none"))
+        self.assertIsNone(_extract_countdown("No reset details"))
+
+    def test_calculate_target_pacing_from_details(self):
+        # 2.5 hours remaining in 5-hour window -> 50%
+        self.assertEqual(calculate_target_pacing_from_details("Reset: 02:30:00 | Pacing: OK", 18000.0), 50.0)
+        # Case insensitivity for reset prefix
+        self.assertEqual(calculate_target_pacing_from_details("reset: 02:30:00 | pacing: ok", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("RESET: 02:30:00 | PACING: OK", 18000.0), 50.0)
+        # Backtick stripping in reset details
+        self.assertEqual(calculate_target_pacing_from_details("Reset: `02:30:00` | Pacing: OK", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("reset: `02:30:00` | pacing: ok", 18000.0), 50.0)
+        # Countdowns with descriptive suffixes in reset details
+        self.assertEqual(calculate_target_pacing_from_details("Reset: 02:30:00 est | Pacing: OK", 18000.0), 50.0)
+        self.assertEqual(calculate_target_pacing_from_details("Reset: `02:30:00` remaining | Pacing: OK", 18000.0), 50.0)
+        # N/A reset details
+        self.assertIsNone(calculate_target_pacing_from_details("Reset: N/A | Pacing: OK", 18000.0))
+        self.assertIsNone(calculate_target_pacing_from_details(None, 18000.0))
+        # Non-countdown words in reset details return None
+        for word in ("paused", "pending", "invalid", "suspended", "resumed", "closed"):
+            self.assertIsNone(calculate_target_pacing_from_details(f"Reset: {word} | Pacing: OK", 18000.0))
+
+    def test_render_dashboard_html_contains_pacing_marks(self):
+        _reset_dashboard_template_cache()
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `85%` | Reset: 02:30:00 | Pacing: OK |
+| **Gemini (1W)** | `92%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70%` | Reset: 01:15:00 | Pacing: OK |
+| **Third-Party (1W)** | `95%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `85%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70%` | Fallback model capacity |
+"""
+        html_out = render_dashboard_html(sample_md)
+        self.assertIn('id="gemini-5h-pacing-mark"', html_out)
+        self.assertIn('id="gemini-1w-pacing-mark"', html_out)
+        self.assertIn('id="tp-5h-pacing-mark"', html_out)
+        self.assertIn('id="tp-1w-pacing-mark"', html_out)
+        # Verify calculated left percentage, title, and aria-label
+        self.assertIn('id="gemini-5h-pacing-mark" class="pacing-mark" style="left: 50.0%;" title="Target Pacing: 50% (perfect pacing limit)" aria-label="Target Pacing: 50% (perfect pacing limit)"', html_out)
+
+    def test_template_js_pacing_marks_auto_update(self):
+        _reset_dashboard_template_cache()
+        template = _get_dashboard_template()
+        self.assertIn(".pacing-mark", template)
+        self.assertIn("updatePacingMark('gemini-5h-pacing-mark'", template)
+        self.assertIn("updatePacingMark('gemini-1w-pacing-mark'", template)
+        self.assertIn("updatePacingMark('tp-5h-pacing-mark'", template)
+        self.assertIn("updatePacingMark('tp-1w-pacing-mark'", template)
+        self.assertIn("mark.setAttribute('aria-label', titleText)", template)
 
 
 if __name__ == "__main__":

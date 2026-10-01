@@ -307,7 +307,7 @@ class QuotaWindow:
         return self.copy()
 
     def get_remaining_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         dt = self._sync_reset_datetime()
         if dt is None:
@@ -318,7 +318,7 @@ class QuotaWindow:
             now_dt_norm = datetime.now(timezone.utc)
         return max(0.0, (dt - now_dt_norm).total_seconds())
 
-    def remaining_time_seconds(self, now: Optional[Union[float, datetime]] = None) -> float:
+    def remaining_time_seconds(self, now: Optional[Union[float, int, datetime]] = None) -> float:
         now_dt = _normalize_now_datetime(now)
         return self.get_remaining_seconds(now_dt)
 
@@ -329,7 +329,7 @@ class QuotaWindow:
         return max(0.0, min(1.0, float(self.remaining_percentage) / 100.0))
 
     def get_time_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         effective_now = now_dt if now_dt is not None else now
         rem_sec = self.get_remaining_seconds(effective_now)
@@ -337,12 +337,12 @@ class QuotaWindow:
             return 0.0
         return max(0.0, min(1.0, rem_sec / self.duration_seconds))
 
-    def time_fraction(self, now: Optional[Union[float, datetime]] = None) -> float:
+    def time_fraction(self, now: Optional[Union[float, int, datetime]] = None) -> float:
         now_dt = _normalize_now_datetime(now)
         return self.get_time_fraction(now_dt)
 
     def get_target_quota_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         """
         Calculate the target quota fraction threshold for linear pacing: remaining time fraction (y = x).
@@ -350,12 +350,40 @@ class QuotaWindow:
         return self.get_time_fraction(now_dt=now_dt, now=now)
 
     def target_quota_fraction(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         return self.get_target_quota_fraction(now_dt=now_dt, now=now)
 
+    def get_target_pacing_percentage(
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
+    ) -> Optional[float]:
+        """
+        Calculate the target quota percentage threshold for linear pacing (y = x).
+        Returns None if reset time is not set or duration is non-positive.
+        """
+        if self.duration_seconds <= 0:
+            return None
+        self._sync_reset_datetime()
+        res = self.reset_time if self.reset_time is not None else self.reset_timestamp
+        if res is None:
+            return None
+        dt = getattr(self, "reset_datetime", None)
+        if dt is None:
+            return None
+        frac = self.get_target_quota_fraction(now_dt=now_dt, now=now)
+        return round(max(0.0, min(100.0, frac * 100.0)), 1)
+
+    @property
+    def target_pacing_percentage(self) -> Optional[float]:
+        return self.get_target_pacing_percentage()
+
+    def target_pacing_pct(
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
+    ) -> Optional[float]:
+        return self.get_target_pacing_percentage(now_dt=now_dt, now=now)
+
     def get_pacing_status(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> Tuple[str, float]:
         self._sync_reset_datetime()
         res = self.reset_time if self.reset_time is not None else self.reset_timestamp
@@ -372,13 +400,13 @@ class QuotaWindow:
         else:
             return "OK", 0.0
 
-    def pacing_status(self, now: Optional[Union[float, datetime]] = None) -> str:
+    def pacing_status(self, now: Optional[Union[float, int, datetime]] = None) -> str:
         now_dt = _normalize_now_datetime(now)
         status, _ = self.get_pacing_status(now_dt)
         return status
 
     def get_pacing_recovery_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)
@@ -391,12 +419,12 @@ class QuotaWindow:
         return max(0.0, float(recovery))
 
     def pacing_recovery_seconds(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         return self.get_pacing_recovery_seconds(now_dt=now_dt, now=now)
 
     def format_pacing_countdown(
-        self, now_dt: Optional[Union[float, datetime]] = None, now: Optional[Union[float, datetime]] = None
+        self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> str:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)
@@ -434,6 +462,7 @@ class QuotaWindow:
             "reset_timestamp": self.reset_timestamp,
             "reset_countdown": self.format_reset_countdown(),
             "pacing_status": pacing_status,
+            "target_pacing_percentage": self.get_target_pacing_percentage(),
             "backoff_delay": backoff,
             "pacing_recovery_seconds": round(self.get_pacing_recovery_seconds(), 1),
             "pacing_recovery_countdown": self.format_pacing_countdown(),
@@ -1042,11 +1071,12 @@ class QuotaInfo:
                 d["claude_window_1w"] = self.claude_window_1w
         def _extract_win_metrics(w, default_name=None):
             if w is None:
-                return None, None, None, "OK"
+                return None, None, None, "OK", None
             if isinstance(w, QuotaWindow):
                 st, _ = w.get_pacing_status()
                 pct = round(w.remaining_percentage, 1) if w.remaining_percentage is not None else None
-                return pct, w.reset_time, w.format_reset_countdown(), st
+                tgt = w.get_target_pacing_percentage()
+                return pct, w.reset_time, w.format_reset_countdown(), st, tgt
             elif isinstance(w, dict):
                 pct = w.get("remaining_percentage")
                 if pct is not None:
@@ -1059,8 +1089,9 @@ class QuotaInfo:
                 if cd is None and res is not None:
                     cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
                 st = w.get("pacing_status", "OK")
-                return pct, res, cd, st
-            return None, None, None, "OK"
+                tgt = w.get("target_pacing_percentage")
+                return pct, res, cd, st, tgt
+            return None, None, None, "OK", None
 
         p = str(self.quota_pool or "").lower()
         is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
@@ -1070,10 +1101,10 @@ class QuotaInfo:
         claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
         claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
 
-        g5_pct, g5_res, g5_cd, g5_st = _extract_win_metrics(gemini_5h, default_name="5H")
-        g1_pct, g1_res, g1_cd, g1_st = _extract_win_metrics(gemini_1w, default_name="1W")
-        c5_pct, c5_res, c5_cd, c5_st = _extract_win_metrics(claude_5h, default_name="5H")
-        c1_pct, c1_res, c1_cd, c1_st = _extract_win_metrics(claude_1w, default_name="1W")
+        g5_pct, g5_res, g5_cd, g5_st, g5_tgt = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd, g1_st, g1_tgt = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd, c5_st, c5_tgt = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd, c1_st, c1_tgt = _extract_win_metrics(claude_1w, default_name="1W")
 
         def _to_win_dict(w):
             if w is None:
@@ -1095,21 +1126,25 @@ class QuotaInfo:
         d["gemini_5h_reset_time"] = g5_res
         d["gemini_5h_countdown"] = g5_cd
         d["gemini_5h_pacing_status"] = g5_st
+        d["gemini_5h_target_pacing_percentage"] = g5_tgt
 
         d["gemini_1w_remaining_percentage"] = g1_pct
         d["gemini_1w_reset_time"] = g1_res
         d["gemini_1w_countdown"] = g1_cd
         d["gemini_1w_pacing_status"] = g1_st
+        d["gemini_1w_target_pacing_percentage"] = g1_tgt
 
         d["third_party_5h_remaining_percentage"] = c5_pct
         d["third_party_5h_reset_time"] = c5_res
         d["third_party_5h_countdown"] = c5_cd
         d["third_party_5h_pacing_status"] = c5_st
+        d["third_party_5h_target_pacing_percentage"] = c5_tgt
 
         d["third_party_1w_remaining_percentage"] = c1_pct
         d["third_party_1w_reset_time"] = c1_res
         d["third_party_1w_countdown"] = c1_cd
         d["third_party_1w_pacing_status"] = c1_st
+        d["third_party_1w_target_pacing_percentage"] = c1_tgt
 
         if g5_pct is not None and g1_pct is not None:
             d["gemini_remaining_percentage"] = min(g5_pct, g1_pct)
