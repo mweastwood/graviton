@@ -30,7 +30,13 @@ if str(REPO_ROOT) not in sys.path:
 from lib.security import verify_signature, is_valid_repo_name
 from lib.router import route_webhook_event, format_event_summary, get_server_repo_name
 from lib.runner import run_agent_async
-from lib.updater import sync_repo_and_reload, stop_smee_listener, set_hot_reload_state
+from lib.updater import (
+    sync_repo_and_reload,
+    stop_smee_listener,
+    set_hot_reload_state,
+    get_hot_reload_state,
+    _SYNC_LOCK,
+)
 from lib.sidecar import ensure_shell_environment
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
@@ -536,17 +542,34 @@ class GravitonHandler(BaseHTTPRequestHandler):
 
             if decision.get("action") == "self_update":
                 ref = decision.get("ref", "refs/heads/main")
+                current_state = get_hot_reload_state()
+                if current_state != "IDLE" or _SYNC_LOCK.locked():
+                    effective_state = current_state if current_state != "IDLE" else "PULLING_GIT"
+                    logger.info("Self-update already in progress (state=%s); ignoring duplicate webhook.", effective_state)
+                    self._send_json(200, {
+                        "status": "ignored",
+                        "action": "self_update",
+                        "ref": ref,
+                        "message": f"Self-update already in progress ({effective_state}).",
+                    })
+                    return
+
+                set_hot_reload_state("PULLING_GIT")
                 self._send_json(200, {
                     "status": "accepted",
                     "action": "self_update",
                     "ref": ref,
                     "message": "Self-update triggered. Syncing repository and reloading server...",
                 })
-                threading.Thread(
-                    target=sync_repo_and_reload,
-                    args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None), getattr(self, "quota_tracker", None)),
-                    daemon=True,
-                ).start()
+                try:
+                    threading.Thread(
+                        target=sync_repo_and_reload,
+                        args=(REPO_ROOT, ref, self.server, self.task_manager, getattr(self, "listener_proc", None), getattr(self, "quota_tracker", None)),
+                        daemon=True,
+                    ).start()
+                except Exception as e:
+                    logger.exception("Failed to start self-update background thread: %s", e)
+                    set_hot_reload_state("IDLE")
                 return
 
             if decision.get("action") == "release":

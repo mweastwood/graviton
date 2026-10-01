@@ -55,8 +55,20 @@ class TestGravitonHandler(unittest.TestCase):
         GravitonHandler.dashboard_updater = None
         GravitonHandler.server_host = "localhost"
         GravitonHandler.server_port = 8000
+        server_mod.set_hot_reload_state("IDLE")
+        if server_mod._SYNC_LOCK.locked():
+            try:
+                server_mod._SYNC_LOCK.release()
+            except RuntimeError:
+                pass
 
     def tearDown(self):
+        server_mod.set_hot_reload_state("IDLE")
+        if server_mod._SYNC_LOCK.locked():
+            try:
+                server_mod._SYNC_LOCK.release()
+            except RuntimeError:
+                pass
         self._listener_patcher.stop()
         if self._orig_smee_url is None:
             os.environ.pop("SMEE_URL", None)
@@ -1515,6 +1527,100 @@ class TestGravitonHandler(unittest.TestCase):
         args = kwargs.get("args") or mock_thread.call_args[1].get("args")
         self.assertEqual(target_fn, server_mod.sync_repo_and_reload)
         self.assertIn(mock_qt, args)
+        self.assertEqual(server_mod.get_hot_reload_state(), "PULLING_GIT")
+
+    @patch("graviton_server.get_hot_reload_state", return_value="PULLING_GIT")
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_ignored_when_already_in_progress(self, mock_thread, mock_sync, mock_state):
+        payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "push",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.task_manager = MagicMock()
+        handler.server = MagicMock()
+
+        with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+            GravitonHandler.do_POST(handler)
+
+        mock_thread.assert_not_called()
+        handler._send_json.assert_called_once_with(
+            200,
+            {
+                "status": "ignored",
+                "action": "self_update",
+                "ref": "refs/heads/main",
+                "message": "Self-update already in progress (PULLING_GIT).",
+            },
+        )
+
+    @patch("graviton_server.get_hot_reload_state", return_value="IDLE")
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_ignored_when_sync_lock_held(self, mock_thread, mock_sync, mock_state):
+        server_mod._SYNC_LOCK.acquire()
+        try:
+            payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+            handler = MagicMock(spec=GravitonHandler)
+            handler.headers = {
+                "Content-Length": str(len(payload)),
+                "X-GitHub-Event": "push",
+            }
+            handler.rfile = BytesIO(payload)
+            handler.secret = ""
+            handler.task_manager = MagicMock()
+            handler.server = MagicMock()
+
+            with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+                GravitonHandler.do_POST(handler)
+
+            mock_thread.assert_not_called()
+            handler._send_json.assert_called_once_with(
+                200,
+                {
+                    "status": "ignored",
+                    "action": "self_update",
+                    "ref": "refs/heads/main",
+                    "message": "Self-update already in progress (PULLING_GIT).",
+                },
+            )
+        finally:
+            server_mod._SYNC_LOCK.release()
+
+    @patch("graviton_server.sync_repo_and_reload")
+    @patch("threading.Thread")
+    def test_do_post_self_update_resets_idle_on_thread_start_failure(self, mock_thread, mock_sync):
+        mock_thread.return_value.start.side_effect = RuntimeError("thread start failed")
+        payload = json.dumps({"action": "push", "ref": "refs/heads/main"}).encode("utf-8")
+        handler = MagicMock(spec=GravitonHandler)
+        handler.headers = {
+            "Content-Length": str(len(payload)),
+            "X-GitHub-Event": "push",
+        }
+        handler.rfile = BytesIO(payload)
+        handler.secret = ""
+        handler.task_manager = MagicMock()
+        handler.server = MagicMock()
+
+        with patch("graviton_server.route_webhook_event", return_value={"status": "accepted", "action": "self_update", "ref": "refs/heads/main"}):
+            with self.assertLogs("graviton", level="ERROR") as cm:
+                GravitonHandler.do_POST(handler)
+
+        handler._send_json.assert_called_once_with(
+            200,
+            {
+                "status": "accepted",
+                "action": "self_update",
+                "ref": "refs/heads/main",
+                "message": "Self-update triggered. Syncing repository and reloading server...",
+            },
+        )
+        self.assertEqual(server_mod.get_hot_reload_state(), "IDLE")
+        self.assertTrue(any("Failed to start self-update background thread" in log for log in cm.output))
 
     def test_end_to_end_server_quit_and_restart_persists_model_selection(self):
         import tempfile
