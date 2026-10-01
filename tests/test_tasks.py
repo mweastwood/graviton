@@ -21,6 +21,7 @@ from lib.tasks import (
     Task,
     TaskManager,
     TaskStatus,
+    _PrunedTaskIds,
     clean_workspace_dir,
     prune_abandoned_workspaces,
     resolve_task_pool_and_model,
@@ -2162,7 +2163,6 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(manager.max_pruned_tasks, 1000)
         self.assertEqual(manager._pruned_task_ids.maxlen, 1000)
 
-        from lib.tasks import _PrunedTaskIds
         bounded = _PrunedTaskIds(maxlen=3)
         bounded.add("task-1")
         bounded.add("task-2")
@@ -2178,6 +2178,285 @@ class TestTaskManager(unittest.TestCase):
         # Adding existing item moves it to the most recent position
         bounded.add("task-2")
         self.assertEqual(list(bounded), ["task-3", "task-4", "task-2"])
+        self.assertEqual(len(bounded), 3)
+
+    def test_pruned_task_ids_ordered_dict_properties(self):
+        import collections
+
+        # Verify it is no longer a subclass of deque
+        self.assertFalse(issubclass(_PrunedTaskIds, collections.deque))
+
+        # Test clear
+        bounded = _PrunedTaskIds(maxlen=3)
+        bounded.add("a")
+        bounded.add("b")
+        self.assertEqual(len(bounded), 2)
+        bounded.clear()
+        self.assertEqual(len(bounded), 0)
+        self.assertEqual(list(bounded), [])
+        self.assertNotIn("a", bounded)
+
+        # Test repr
+        bounded.add("x")
+        self.assertIn("x", repr(bounded))
+
+        # Test membership with unhashable and non-string keys
+        self.assertNotIn(12345, bounded)
+        self.assertNotIn(None, bounded)
+        self.assertNotIn(["unhashable"], bounded)
+        self.assertNotIn({"unhashable": "key"}, bounded)
+        self.assertNotIn(set(), bounded)
+
+        # Test reversibility (__reversed__)
+        rev_bounded = _PrunedTaskIds(maxlen=5)
+        for ch in ["first", "second", "third"]:
+            rev_bounded.add(ch)
+        self.assertEqual(list(reversed(rev_bounded)), ["third", "second", "first"])
+
+        # Test maxlen=0 behaves cleanly (retains nothing)
+        zero_bounded = _PrunedTaskIds(maxlen=0)
+        zero_bounded.add("item")
+        self.assertEqual(len(zero_bounded), 0)
+        self.assertNotIn("item", zero_bounded)
+
+        # Test add() on maxlen <= 0 clears and does not retain existing items
+        zero_drain = _PrunedTaskIds(maxlen=3)
+        zero_drain.add("t-1")
+        zero_drain.add("t-2")
+        self.assertEqual(len(zero_drain), 2)
+        zero_drain.maxlen = 0
+        # Dynamic assignment immediately clears all items
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-1", zero_drain)
+        self.assertNotIn("t-2", zero_drain)
+        zero_drain.add("t-2")  # Re-adding existing item when maxlen <= 0
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-2", zero_drain)
+
+        zero_drain.add("t-new")  # Adding new item when maxlen <= 0
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-new", zero_drain)
+
+        # Test negative maxlen
+        neg_bounded = _PrunedTaskIds(maxlen=-1)
+        neg_bounded.add("item")
+        self.assertEqual(len(neg_bounded), 0)
+        self.assertNotIn("item", neg_bounded)
+
+        # Dynamic assignment to negative maxlen immediately clears all items
+        neg_drain = _PrunedTaskIds(maxlen=3)
+        neg_drain.add("n-1")
+        neg_drain.maxlen = -1
+        self.assertEqual(len(neg_drain), 0)
+
+        # Test dynamic maxlen reduction drains existing items down to the new bound immediately
+        drain_bounded = _PrunedTaskIds(maxlen=5)
+        for i in range(5):
+            drain_bounded.add(f"item-{i}")
+        self.assertEqual(len(drain_bounded), 5)
+        self.assertEqual(list(drain_bounded), ["item-0", "item-1", "item-2", "item-3", "item-4"])
+
+        drain_bounded.maxlen = 2
+        # Dynamic maxlen assignment immediately purges excess entries without requiring an extra .add() call
+        self.assertEqual(len(drain_bounded), 2)
+        self.assertEqual(list(drain_bounded), ["item-3", "item-4"])
+
+        # Adding a new item continues bounded FIFO eviction
+        drain_bounded.add("item-5")
+        self.assertEqual(len(drain_bounded), 2)
+        self.assertEqual(list(drain_bounded), ["item-4", "item-5"])
+
+        # Dynamic maxlen reduction down to 1 immediately purges down to 1
+        drain_bounded.maxlen = 1
+        self.assertEqual(len(drain_bounded), 1)
+        self.assertEqual(list(drain_bounded), ["item-5"])
+        drain_bounded.add("item-5")
+        self.assertEqual(len(drain_bounded), 1)
+        self.assertEqual(list(drain_bounded), ["item-5"])
+
+        # Test maxlen=None (unbounded)
+        unbounded = _PrunedTaskIds(maxlen=None)
+        for i in range(100):
+            unbounded.add(f"item-{i}")
+        self.assertEqual(len(unbounded), 100)
+        self.assertIn("item-0", unbounded)
+        self.assertIn("item-99", unbounded)
+
+        # Performance / O(1) scale check: 5000 items in bounded history
+        scale = _PrunedTaskIds(maxlen=5000)
+        for i in range(5000):
+            scale.add(f"t-{i}")
+        self.assertEqual(len(scale), 5000)
+        self.assertIn("t-0", scale)
+        self.assertIn("t-4999", scale)
+        self.assertNotIn("t-5000", scale)
+
+        # FIFO eviction under scale: adding t-5000 evicts oldest (t-0)
+        scale.add("t-5000")
+        self.assertEqual(len(scale), 5000)
+        self.assertNotIn("t-0", scale)
+        self.assertIn("t-5000", scale)
+
+        # Test __eq__ value equality
+        eq1 = _PrunedTaskIds(maxlen=3)
+        eq1.add("x")
+        eq1.add("y")
+
+        eq2 = _PrunedTaskIds(maxlen=3)
+        eq2.add("x")
+        eq2.add("y")
+
+        self.assertEqual(eq1, eq2)
+        self.assertTrue(eq1 == eq2)
+        self.assertFalse(eq1 != eq2)
+
+        # Different elements
+        eq3 = _PrunedTaskIds(maxlen=3)
+        eq3.add("x")
+        eq3.add("z")
+        self.assertNotEqual(eq1, eq3)
+
+        # Different element order
+        eq3_order = _PrunedTaskIds(maxlen=3)
+        eq3_order.add("y")
+        eq3_order.add("x")
+        self.assertNotEqual(eq1, eq3_order)
+
+        # Different maxlen
+        eq4 = _PrunedTaskIds(maxlen=5)
+        eq4.add("x")
+        eq4.add("y")
+        self.assertNotEqual(eq1, eq4)
+
+        # Non-_PrunedTaskIds objects return False / NotImplemented
+        self.assertNotEqual(eq1, ["x", "y"])
+        self.assertNotEqual(eq1, {"x": None, "y": None})
+        self.assertNotEqual(eq1, None)
+        self.assertFalse(eq1 == "string")
+
+        # Test copy() and copy.copy()
+        import copy
+        orig = _PrunedTaskIds(maxlen=3)
+        orig.add("a")
+        orig.add("b")
+
+        # copy.copy()
+        shallow_copy = copy.copy(orig)
+        self.assertEqual(shallow_copy, orig)
+        self.assertEqual(shallow_copy.maxlen, orig.maxlen)
+        self.assertIsNot(shallow_copy, orig)
+        self.assertIsNot(shallow_copy._items, orig._items)
+
+        # Mutating copy does not mutate orig
+        shallow_copy.add("c")
+        self.assertIn("c", shallow_copy)
+        self.assertNotIn("c", orig)
+        self.assertNotEqual(shallow_copy, orig)
+
+        # Mutating orig does not mutate copy
+        orig.add("d")
+        self.assertIn("d", orig)
+        self.assertNotIn("d", shallow_copy)
+
+        # method .copy()
+        method_copy = orig.copy()
+        self.assertEqual(method_copy, orig)
+        self.assertEqual(method_copy.maxlen, orig.maxlen)
+        self.assertIsNot(method_copy, orig)
+        self.assertIsNot(method_copy._items, orig._items)
+
+        method_copy.clear()
+        self.assertEqual(len(method_copy), 0)
+        self.assertEqual(len(orig), 3)
+
+        # Test initialization with iterable and maxlen capping
+        init_iter = _PrunedTaskIds(["a", "b", "c"], maxlen=2)
+        self.assertEqual(len(init_iter), 2)
+        self.assertEqual(list(init_iter), ["b", "c"])
+        self.assertNotIn("a", init_iter)
+        self.assertIn("b", init_iter)
+        self.assertIn("c", init_iter)
+
+        # Test initialization with iterable without maxlen (defaults to 10000)
+        init_default = _PrunedTaskIds(["x", "y"])
+        self.assertEqual(len(init_default), 2)
+        self.assertEqual(list(init_default), ["x", "y"])
+        self.assertEqual(init_default.maxlen, 10000)
+
+        # Test initialization matching own repr
+        repr_eval = eval(repr(init_iter))
+        self.assertEqual(repr_eval, init_iter)
+        self.assertEqual(list(repr_eval), ["b", "c"])
+        self.assertEqual(repr_eval.maxlen, 2)
+
+        # Test backwards compatibility for positional int constructor
+        pos_int = _PrunedTaskIds(42)
+        self.assertEqual(len(pos_int), 0)
+        self.assertEqual(pos_int.maxlen, 42)
+
+        # Test positional int with explicit maxlen
+        pos_kw = _PrunedTaskIds(500, maxlen=500)
+        self.assertEqual(pos_kw.maxlen, 500)
+
+        pos_override = _PrunedTaskIds(42, 100)
+        self.assertEqual(pos_override.maxlen, 100)
+
+        pos_zero = _PrunedTaskIds(0, maxlen=0)
+        self.assertEqual(pos_zero.maxlen, 0)
+
+        pos_none = _PrunedTaskIds(42, maxlen=None)
+        self.assertEqual(pos_none.maxlen, 42)
+
+        # Booleans should not be treated as int maxlen
+        with self.assertRaises(TypeError):
+            _PrunedTaskIds(True)
+        with self.assertRaises(TypeError):
+            _PrunedTaskIds(False)
+
+        # Test discard and remove methods
+        del_coll = _PrunedTaskIds(["a", "b", "c"], maxlen=5)
+        self.assertEqual(len(del_coll), 3)
+
+        # discard existing item
+        del_coll.discard("b")
+        self.assertEqual(list(del_coll), ["a", "c"])
+        self.assertEqual(len(del_coll), 2)
+
+        # discard nonexistent item does nothing
+        del_coll.discard("not_in_collection")
+        self.assertEqual(list(del_coll), ["a", "c"])
+
+        # discard unhashable object does not raise error
+        del_coll.discard(["unhashable"])
+        del_coll.discard({"unhashable": 1})
+
+        # remove existing item
+        del_coll.remove("a")
+        self.assertEqual(list(del_coll), ["c"])
+        self.assertEqual(len(del_coll), 1)
+
+        # remove nonexistent item raises KeyError
+        with self.assertRaises(KeyError):
+            del_coll.remove("not_in_collection")
+
+        # remove unhashable item raises KeyError
+        with self.assertRaises(KeyError):
+            del_coll.remove(["unhashable"])
+        with self.assertRaises(KeyError):
+            del_coll.remove({"unhashable": 1})
+
+        # Test subclass polymorphism in copy() and __repr__()
+        class SubPrunedTaskIds(_PrunedTaskIds):
+            pass
+
+        sub = SubPrunedTaskIds(["alpha", "beta"], maxlen=5)
+        self.assertIsInstance(sub, SubPrunedTaskIds)
+        self.assertIn("SubPrunedTaskIds", repr(sub))
+        sub_copy = sub.copy()
+        self.assertIsInstance(sub_copy, SubPrunedTaskIds)
+        self.assertEqual(sub_copy, sub)
+        self.assertEqual(sub_copy.maxlen, 5)
+
 
     def test_wait_for_all_and_join(self):
         manager = TaskManager(max_workers=2)

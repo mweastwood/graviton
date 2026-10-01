@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Collection, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
@@ -352,14 +352,106 @@ def prune_abandoned_workspaces(
     return pruned_count
 
 
-class _PrunedTaskIds(collections.deque):
-    """Bounded collection tracking pruned task IDs with FIFO eviction."""
+class _PrunedTaskIds:
+    """Bounded collection tracking pruned task IDs with O(1) lookups and FIFO eviction."""
+
+    def __init__(
+        self,
+        iterable: Optional[Union[Iterable[str], int]] = None,
+        maxlen: Optional[int] = 10000,
+    ):
+        # Backwards compatibility when maxlen is passed positionally as first argument
+        if isinstance(iterable, int) and not isinstance(iterable, bool):
+            if maxlen == 10000 or maxlen is None or maxlen == iterable:
+                self._maxlen = iterable
+            else:
+                self._maxlen = maxlen
+            iterable = None
+        else:
+            self._maxlen = maxlen
+        self._items: collections.OrderedDict[str, None] = collections.OrderedDict()
+        if iterable is not None:
+            for item in iterable:
+                self.add(item)
+
+    @property
+    def maxlen(self) -> Optional[int]:
+        return self._maxlen
+
+    @maxlen.setter
+    def maxlen(self, value: Optional[int]) -> None:
+        self._maxlen = value
+        if self._maxlen is not None:
+            if self._maxlen <= 0:
+                self._items.clear()
+            else:
+                while len(self._items) > self._maxlen and self._items:
+                    self._items.popitem(last=False)
 
     def add(self, item: str) -> None:
         """Add an item to the collection, moving it to the most recent position if present."""
-        if item in self:
-            self.remove(item)
-        self.append(item)
+        if self.maxlen is not None and self.maxlen <= 0:
+            self._items.clear()
+            return
+
+        if item in self._items:
+            self._items.move_to_end(item)
+        else:
+            self._items[item] = None
+
+        if self.maxlen is not None:
+            while len(self._items) > self.maxlen and self._items:
+                self._items.popitem(last=False)
+
+    def discard(self, item: object) -> None:
+        """Remove an item from the collection if it is present."""
+        try:
+            self._items.pop(item, None)
+        except TypeError:
+            pass
+
+    def remove(self, item: object) -> None:
+        """Remove an item from the collection. Raises KeyError if not present."""
+        try:
+            del self._items[item]
+        except (KeyError, TypeError):
+            raise KeyError(item) from None
+
+    def __contains__(self, item: object) -> bool:
+        try:
+            return item in self._items
+        except TypeError:
+            return False
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __reversed__(self) -> Iterator[str]:
+        return reversed(self._items)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({list(self._items)}, maxlen={self.maxlen})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _PrunedTaskIds):
+            return NotImplemented
+        return self.maxlen == other.maxlen and self._items == other._items
+
+    def copy(self) -> "_PrunedTaskIds":
+        """Return a shallow copy of the collection with an independent underlying items dictionary."""
+        new_instance = self.__class__(maxlen=self.maxlen)
+        new_instance._items = self._items.copy()
+        return new_instance
+
+    def __copy__(self) -> "_PrunedTaskIds":
+        return self.copy()
+
+    def clear(self) -> None:
+        """Remove all items from the collection."""
+        self._items.clear()
 
 
 class TaskManager:
@@ -422,7 +514,7 @@ class TaskManager:
         self._task_state_cond = threading.Condition(self._lock)
         self._clone_lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
-        self._pruned_task_ids: collections.deque[str] = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
+        self._pruned_task_ids: _PrunedTaskIds = _PrunedTaskIds(maxlen=self.max_pruned_tasks)
         self._active_processes: Dict[str, subprocess.Popen] = {}
         self._active_supervisors: Dict[str, Any] = {}
         self._task_counter = 0
