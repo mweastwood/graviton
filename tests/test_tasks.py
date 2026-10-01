@@ -2276,6 +2276,84 @@ class TestTaskManager(unittest.TestCase):
         self.assertIn("t-4999", scale)
         self.assertNotIn("t-5000", scale)
 
+        # FIFO eviction under scale: adding t-5000 evicts oldest (t-0)
+        scale.add("t-5000")
+        self.assertEqual(len(scale), 5000)
+        self.assertNotIn("t-0", scale)
+        self.assertIn("t-5000", scale)
+
+        # Test __eq__ value equality
+        eq1 = _PrunedTaskIds(maxlen=3)
+        eq1.add("x")
+        eq1.add("y")
+
+        eq2 = _PrunedTaskIds(maxlen=3)
+        eq2.add("x")
+        eq2.add("y")
+
+        self.assertEqual(eq1, eq2)
+        self.assertTrue(eq1 == eq2)
+        self.assertFalse(eq1 != eq2)
+
+        # Different elements
+        eq3 = _PrunedTaskIds(maxlen=3)
+        eq3.add("x")
+        eq3.add("z")
+        self.assertNotEqual(eq1, eq3)
+
+        # Different element order
+        eq3_order = _PrunedTaskIds(maxlen=3)
+        eq3_order.add("y")
+        eq3_order.add("x")
+        self.assertNotEqual(eq1, eq3_order)
+
+        # Different maxlen
+        eq4 = _PrunedTaskIds(maxlen=5)
+        eq4.add("x")
+        eq4.add("y")
+        self.assertNotEqual(eq1, eq4)
+
+        # Non-_PrunedTaskIds objects return False / NotImplemented
+        self.assertNotEqual(eq1, ["x", "y"])
+        self.assertNotEqual(eq1, {"x": None, "y": None})
+        self.assertNotEqual(eq1, None)
+        self.assertFalse(eq1 == "string")
+
+        # Test copy() and copy.copy()
+        import copy
+        orig = _PrunedTaskIds(maxlen=3)
+        orig.add("a")
+        orig.add("b")
+
+        # copy.copy()
+        shallow_copy = copy.copy(orig)
+        self.assertEqual(shallow_copy, orig)
+        self.assertEqual(shallow_copy.maxlen, orig.maxlen)
+        self.assertIsNot(shallow_copy, orig)
+        self.assertIsNot(shallow_copy._items, orig._items)
+
+        # Mutating copy does not mutate orig
+        shallow_copy.add("c")
+        self.assertIn("c", shallow_copy)
+        self.assertNotIn("c", orig)
+        self.assertNotEqual(shallow_copy, orig)
+
+        # Mutating orig does not mutate copy
+        orig.add("d")
+        self.assertIn("d", orig)
+        self.assertNotIn("d", shallow_copy)
+
+        # method .copy()
+        method_copy = orig.copy()
+        self.assertEqual(method_copy, orig)
+        self.assertEqual(method_copy.maxlen, orig.maxlen)
+        self.assertIsNot(method_copy, orig)
+        self.assertIsNot(method_copy._items, orig._items)
+
+        method_copy.clear()
+        self.assertEqual(len(method_copy), 0)
+        self.assertEqual(len(orig), 3)
+
 
     def test_wait_for_all_and_join(self):
         manager = TaskManager(max_workers=2)

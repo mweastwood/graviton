@@ -392,6 +392,20 @@ class _PrunedTaskIds:
     def __repr__(self) -> str:
         return f"_PrunedTaskIds({list(self._items)}, maxlen={self.maxlen})"
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _PrunedTaskIds):
+            return NotImplemented
+        return self.maxlen == other.maxlen and self._items == other._items
+
+    def copy(self) -> "_PrunedTaskIds":
+        """Return a shallow copy of the collection with an independent underlying items dictionary."""
+        new_instance = _PrunedTaskIds(maxlen=self.maxlen)
+        new_instance._items = self._items.copy()
+        return new_instance
+
+    def __copy__(self) -> "_PrunedTaskIds":
+        return self.copy()
+
     def clear(self) -> None:
         """Remove all items from the collection."""
         self._items.clear()
