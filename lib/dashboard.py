@@ -27,7 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.tasks import TaskManager, Task, TaskStatus
-from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
+from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, format_reset_countdown
 from lib.scheduler import TaskScheduler
 from lib.pr_tracker import PRTracker
 
@@ -47,8 +47,21 @@ METRIC_INT_PATTERNS = {
 METRIC_STR_PATTERNS = {
     "Active Pool": re.compile(r"\|\s*\*\*Active Pool\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Active Model": re.compile(r"\|\s*\*\*Active Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Active Gemini Model": re.compile(r"\|\s*\*\*Active Gemini Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Active Third-Party Model": re.compile(r"\|\s*\*\*Active Third-Party Model\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Gemini Remaining": re.compile(r"\|\s*\*\*Gemini Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
     "Third-Party Remaining": re.compile(r"\|\s*\*\*Third-Party Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party Remaining": re.compile(r"\|\s*\*\*Third Party Remaining\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini (5H)": re.compile(r"\|\s*\*\*Gemini \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini Quota (5H)": re.compile(r"\|\s*\*\*Gemini Quota \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini (1W)": re.compile(r"\|\s*\*\*Gemini \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Gemini Quota (1W)": re.compile(r"\|\s*\*\*Gemini Quota \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party (5H)": re.compile(r"\|\s*\*\*Third-Party \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party (5H)": re.compile(r"\|\s*\*\*Third Party \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party Quota (5H)": re.compile(r"\|\s*\*\*Third-Party Quota \(5H\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party (1W)": re.compile(r"\|\s*\*\*Third-Party \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third Party (1W)": re.compile(r"\|\s*\*\*Third Party \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
+    "Third-Party Quota (1W)": re.compile(r"\|\s*\*\*Third-Party Quota \(1W\)\*\*\s*\|\s*`?([^`|\n]+)`?"),
 }
 SECTION_SPLIT_PATTERN = re.compile(r"(?m)^##\s+")
 STATUS_CLEANUP_PATTERN = re.compile(r"[🔄`\s]+")
@@ -130,6 +143,30 @@ def format_duration(seconds: Optional[float]) -> str:
     return f"{h}h {m}m"
 
 
+def format_percentage(val: Any, default: str = "N/A") -> str:
+    """
+    Format a percentage value (float, int, or string) cleanly without trailing .0%.
+    Handles numbers, whole floats, decimal floats, and strings with or without trailing '%'.
+    Safe across Python 3.10, 3.11, and 3.12.
+    """
+    if val is None or val == "":
+        return default
+    if isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        flt = float(val)
+        return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
+    val_str = str(val).strip()
+    if val_str.lower() in ("n/a", "n/a%", "none", "null", "unknown"):
+        return default
+    clean_str = val_str[:-1].strip() if val_str.endswith("%") else val_str
+    try:
+        flt = float(clean_str)
+        return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
+    except (ValueError, TypeError):
+        return default
+
+
 def format_dashboard_markdown(
     task_manager: Optional[TaskManager] = None,
     quota_tracker: Optional[QuotaTracker] = None,
@@ -149,6 +186,8 @@ def format_dashboard_markdown(
     queued_tasks = task_manager.get_queued_tasks() if task_manager else []
     recent_history = task_manager.get_task_history(limit=10) if task_manager else []
     quota_info = quota_tracker.get_info().to_dict() if quota_tracker else {}
+    if not quota_info and extra_info and "quota_info" in extra_info:
+        quota_info = extra_info.get("quota_info") or {}
     approved_prs: List[Dict[str, Any]] = []
     if pr_tracker and hasattr(pr_tracker, "get_approved_prs"):
         try:
@@ -197,15 +236,18 @@ def format_dashboard_markdown(
 
     if active_tasks:
         lines.extend([
-            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         now_ts = time.time()
         for t in active_tasks:
             elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
             rc_link = f"[Remote Control 🌐]({t.remote_control_url})" if getattr(t, "remote_control_url", None) else "*Pending...*"
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            lines.append(f"| `{t.id}` | `{t.agent}` | `{target_disp}` | {elapsed} | 🔄 `{t.status}` | {rc_link} |")
+            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+            model_disp = f"`{model_name}`" if model_name != "-" else "-"
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {elapsed} | 🔄 `{t.status}` | {rc_link} |")
         lines.append("")
     else:
         lines.extend(["*No container tasks currently running.*", ""])
@@ -261,10 +303,13 @@ def format_dashboard_markdown(
         tp_model = quota_info.get("active_third_party_model")
 
     p_low = str(pool).lower()
+    p_info = str((quota_info.get("quota_pool") if quota_info else None) or p_low).lower()
+    is_tp = "claude" in p_info or "gpt" in p_info or "3p" in p_info or "third" in p_info
+
     if not gemini_model:
-        gemini_model = model if not any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_GEMINI_MODELS[0] if DEFAULT_GEMINI_MODELS else "default")
+        gemini_model = model if not is_tp and model != "default" else (DEFAULT_GEMINI_MODELS[0] if DEFAULT_GEMINI_MODELS else "default")
     if not tp_model:
-        tp_model = model if any(k in p_low for k in ("claude", "gpt", "3p", "third")) and model != "default" else (DEFAULT_THIRD_PARTY_MODELS[0] if DEFAULT_THIRD_PARTY_MODELS else "default")
+        tp_model = model if is_tp and model != "default" else (DEFAULT_THIRD_PARTY_MODELS[0] if DEFAULT_THIRD_PARTY_MODELS else "default")
 
     gemini_rem = quota_info.get("gemini_remaining_percentage")
     if gemini_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
@@ -272,8 +317,13 @@ def format_dashboard_markdown(
             gemini_rem = quota_tracker.get_pool_remaining_percentage("gemini")
         except Exception:
             pass
-    if gemini_rem is None:
-        gemini_rem = quota_info.get("remaining_percentage", "N/A")
+    if gemini_rem is None and not is_tp:
+        gemini_rem = quota_info.get("remaining_percentage")
+    if gemini_rem is None or str(gemini_rem).strip().lower() in ("none", "null", "n/a", "unknown", "none%"):
+        gemini_rem = "N/A"
+        gemini_disp = "N/A"
+    else:
+        gemini_disp = f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem)
 
     tp_rem = quota_info.get("third_party_remaining_percentage")
     if tp_rem is None and quota_tracker and hasattr(quota_tracker, "get_pool_remaining_percentage"):
@@ -281,17 +331,113 @@ def format_dashboard_markdown(
             tp_rem = quota_tracker.get_pool_remaining_percentage("claude")
         except Exception:
             pass
-    if tp_rem is None:
+    if tp_rem is None and is_tp:
+        tp_rem = quota_info.get("remaining_percentage")
+    if tp_rem is None or str(tp_rem).strip().lower() in ("none", "null", "n/a", "unknown", "none%"):
         tp_rem = "N/A"
+        tp_disp = "N/A"
+    else:
+        tp_disp = f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem)
 
-    gemini_disp = f"{gemini_rem}%" if not str(gemini_rem).endswith("%") else str(gemini_rem)
-    tp_disp = f"{tp_rem}%" if not str(tp_rem).endswith("%") else str(tp_rem)
+    w5_g, w1_g = (None, None)
+    w5_c, w1_c = (None, None)
+    if quota_tracker and hasattr(quota_tracker, "get_pool_windows"):
+        try:
+            w5_g, w1_g = quota_tracker.get_pool_windows("gemini")
+            w5_c, w1_c = quota_tracker.get_pool_windows("claude_gpt")
+        except Exception:
+            pass
+    elif quota_tracker:
+        p_tr = str(getattr(quota_tracker, "quota_pool", pool) or "").lower()
+        is_tp_tr = "claude" in p_tr or "gpt" in p_tr or "3p" in p_tr or "third" in p_tr
+        w5_g = getattr(quota_tracker, "gemini_window_5h", None) or (None if is_tp_tr else getattr(quota_tracker, "window_5h", None))
+        w1_g = getattr(quota_tracker, "gemini_window_1w", None) or (None if is_tp_tr else getattr(quota_tracker, "window_1w", None))
+        w5_c = getattr(quota_tracker, "claude_window_5h", None) or (getattr(quota_tracker, "window_5h", None) if is_tp_tr else None)
+        w1_c = getattr(quota_tracker, "claude_window_1w", None) or (getattr(quota_tracker, "window_1w", None) if is_tp_tr else None)
+
+    if quota_info:
+        if w5_g is None:
+            w5_g = quota_info.get("gemini_window_5h") or (None if is_tp else quota_info.get("window_5h"))
+        if w1_g is None:
+            w1_g = quota_info.get("gemini_window_1w") or (None if is_tp else quota_info.get("window_1w"))
+        if w5_c is None:
+            w5_c = quota_info.get("claude_window_5h") or (quota_info.get("window_5h") if is_tp else None)
+        if w1_c is None:
+            w1_c = quota_info.get("claude_window_1w") or (quota_info.get("window_1w") if is_tp else None)
+
+        if w5_g is None and quota_info.get("gemini_5h_remaining_percentage") is not None:
+            w5_g = {
+                "remaining_percentage": quota_info.get("gemini_5h_remaining_percentage"),
+                "reset_countdown": quota_info.get("gemini_5h_countdown"),
+                "reset_time": quota_info.get("gemini_5h_reset_time"),
+                "pacing_status": quota_info.get("gemini_5h_pacing_status", "OK"),
+            }
+        if w1_g is None and quota_info.get("gemini_1w_remaining_percentage") is not None:
+            w1_g = {
+                "remaining_percentage": quota_info.get("gemini_1w_remaining_percentage"),
+                "reset_countdown": quota_info.get("gemini_1w_countdown"),
+                "reset_time": quota_info.get("gemini_1w_reset_time"),
+                "pacing_status": quota_info.get("gemini_1w_pacing_status", "OK"),
+            }
+        if w5_c is None and quota_info.get("third_party_5h_remaining_percentage") is not None:
+            w5_c = {
+                "remaining_percentage": quota_info.get("third_party_5h_remaining_percentage"),
+                "reset_countdown": quota_info.get("third_party_5h_countdown"),
+                "reset_time": quota_info.get("third_party_5h_reset_time"),
+                "pacing_status": quota_info.get("third_party_5h_pacing_status", "OK"),
+            }
+        if w1_c is None and quota_info.get("third_party_1w_remaining_percentage") is not None:
+            w1_c = {
+                "remaining_percentage": quota_info.get("third_party_1w_remaining_percentage"),
+                "reset_countdown": quota_info.get("third_party_1w_countdown"),
+                "reset_time": quota_info.get("third_party_1w_reset_time"),
+                "pacing_status": quota_info.get("third_party_1w_pacing_status", "OK"),
+            }
+
+    def _fmt_window_val_and_details(w, fallback_pct=None):
+        if w is None:
+            if fallback_pct is not None and fallback_pct != "N/A":
+                disp = format_percentage(fallback_pct)
+                return disp, "Live quota capacity"
+            return "N/A", "N/A"
+        if isinstance(w, dict):
+            pct = w.get("remaining_percentage")
+            pct_disp = format_percentage(pct) if pct is not None else "N/A"
+            cd = w.get("reset_countdown")
+            if cd is None and w.get("reset_time") is not None:
+                try:
+                    cd = format_reset_countdown(w.get("reset_time"), window_name=w.get("name"))
+                except Exception:
+                    cd = str(w.get("reset_time"))
+            if not cd:
+                cd = "N/A"
+            status = w.get("pacing_status", "OK")
+            if pct is None and cd == "N/A" and (status == "OK" or not status):
+                return "N/A", "N/A"
+            return pct_disp, f"Reset: {cd} | Pacing: {status}"
+        # QuotaWindow object
+        pct = w.remaining_percentage
+        pct_disp = format_percentage(pct)
+        cd = w.format_reset_countdown()
+        status, _ = w.get_pacing_status()
+        if pct is None and cd == "N/A" and (status == "OK" or not status):
+            return "N/A", "N/A"
+        return pct_disp, f"Reset: {cd} | Pacing: {status}"
+
+    g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem)
+    g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem)
+    c_5h_val, c_5h_details = _fmt_window_val_and_details(w5_c, fallback_pct=tp_rem)
+    c_1w_val, c_1w_details = _fmt_window_val_and_details(w1_c, fallback_pct=tp_rem)
 
     lines.extend([
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
         f"| **Active Model** | `{model}` | Active Gemini / LLM persona |",
         f"| **Active Gemini Model** | `{gemini_model}` | Active Gemini model persona |",
         f"| **Active Third-Party Model** | `{tp_model}` | Active Third-Party model persona |",
+        f"| **Gemini (5H)** | `{g_5h_val}` | {g_5h_details} |",
+        f"| **Gemini (1W)** | `{g_1w_val}` | {g_1w_details} |",
+        f"| **Third-Party (5H)** | `{c_5h_val}` | {c_5h_details} |",
+        f"| **Third-Party (1W)** | `{c_1w_val}` | {c_1w_details} |",
         f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |",
         f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |",
         "",
@@ -366,20 +512,23 @@ def format_dashboard_markdown(
 
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Target | Duration | Status | Summary / Remote Link |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
             dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
             icon = "✅" if t.status == TaskStatus.COMPLETED else "❌"
             target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+            model_disp = f"`{model_name}`" if model_name != "-" else "-"
             if getattr(t, "remote_control_url", None):
                 detail = f"[Remote Control 🌐]({t.remote_control_url})"
             elif t.error_message:
                 detail = f"`{t.error_message[:40]}...`" if len(t.error_message) > 40 else f"`{t.error_message}`"
             else:
                 detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | `{target_disp}` | {dur} | {icon} `{t.status}` | {detail} |")
+            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | `{target_disp}` | {dur} | {icon} `{t.status}` | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])
@@ -406,13 +555,21 @@ def is_safe_url(url: Optional[str]) -> bool:
     return clean_lower.startswith("http://") or clean_lower.startswith("https://")
 
 
-def get_quota_color(pct: Optional[float]) -> str:
+def get_quota_color(pct: Optional[Union[float, int, str]]) -> str:
     """Return adaptive status color for quota percentage thresholds."""
     if pct is None:
         return "#58a6ff"
-    if pct > 50:
+    try:
+        if isinstance(pct, str):
+            pct_clean = pct[:-1].strip() if pct.strip().endswith("%") else pct.strip()
+            pct_val = float(pct_clean)
+        else:
+            pct_val = float(pct)
+    except (ValueError, TypeError):
+        return "#58a6ff"
+    if pct_val > 50:
         return "#3fb950"
-    if pct >= 20:
+    if pct_val >= 20:
         return "#d29922"
     return "#f85149"
 
@@ -478,16 +635,53 @@ def parse_dashboard_markdown(
     queued_tasks_count = _extract_metric_int("Queued Tasks")
     completed_tasks = _extract_metric_int("Completed Tasks")
     failed_tasks = _extract_metric_int("Failed Tasks")
-
-    def _extract_metric_str(label: str, default: str = "default") -> str:
-        pat = METRIC_STR_PATTERNS.get(label)
-        m = pat.search(markdown_content) if pat else re.search(rf"\|\s*\*\*{re.escape(label)}\*\*\s*\|\s*`?([^`|\n]+)`?", markdown_content)
-        return m.group(1).strip() if m else default
+    def _extract_metric_str(label_or_patterns, default: str = "default") -> str:
+        patterns = [label_or_patterns] if isinstance(label_or_patterns, str) else label_or_patterns
+        for p in patterns:
+            pat = METRIC_STR_PATTERNS.get(p)
+            m = pat.search(markdown_content) if pat else re.search(rf"\|\s*\*\*{re.escape(p)}\*\*\s*\|\s*`?([^`|\n]+)`?", markdown_content)
+            if m:
+                return m.group(1).strip()
+        return default
 
     pool = _extract_metric_str("Active Pool", "default")
     model = _extract_metric_str("Active Model", "default")
     gemini_rem = _extract_metric_str("Gemini Remaining", "N/A")
-    tp_rem = _extract_metric_str("Third-Party Remaining", "N/A")
+    tp_rem = _extract_metric_str(["Third-Party Remaining", "Third Party Remaining"], "N/A")
+
+    gemini_5h_rem = _extract_metric_str(["Gemini (5H)", "Gemini Quota (5H)"], gemini_rem)
+    gemini_1w_rem = _extract_metric_str(["Gemini (1W)", "Gemini Quota (1W)"], gemini_rem)
+    tp_5h_rem = _extract_metric_str(["Third-Party (5H)", "Third Party (5H)", "Third-Party Quota (5H)"], tp_rem)
+    tp_1w_rem = _extract_metric_str(["Third-Party (1W)", "Third Party (1W)", "Third-Party Quota (1W)"], tp_rem)
+
+    def _extract_metric_details(label_or_patterns, default: str = "") -> str:
+        patterns = [label_or_patterns] if isinstance(label_or_patterns, str) else label_or_patterns
+        for p in patterns:
+            m = re.search(rf"\|\s*\*\*{re.escape(p)}\*\*\s*\|\s*`?[^`|\n]+`?\s*\|\s*(.*?)\s*\|(?:\s*$)", markdown_content, re.MULTILINE)
+            if not m:
+                m = re.search(rf"\|\s*\*\*{re.escape(p)}\*\*\s*\|\s*`?[^`|\n]+`?\s*\|\s*([^|\n]+)\|", markdown_content)
+            if m:
+                return m.group(1).strip()
+        return default
+
+    gemini_5h_details = _extract_metric_details(["Gemini (5H)", "Gemini Quota (5H)"], "Live Gemini burst quota")
+    gemini_1w_details = _extract_metric_details(["Gemini (1W)", "Gemini Quota (1W)"], "Live Gemini weekly quota")
+    tp_5h_details = _extract_metric_details(["Third-Party (5H)", "Third Party (5H)", "Third-Party Quota (5H)"], "Fallback burst quota")
+    tp_1w_details = _extract_metric_details(["Third-Party (1W)", "Third Party (1W)", "Third-Party Quota (1W)"], "Fallback weekly quota")
+
+    def _extract_countdown(details_str: str) -> Optional[str]:
+        if not details_str:
+            return None
+        m = re.search(r"Reset:\s*([^|\n]+)", details_str)
+        if m:
+            val = m.group(1).strip()
+            return val if val != "N/A" else None
+        return None
+
+    gemini_5h_countdown = _extract_countdown(gemini_5h_details)
+    gemini_1w_countdown = _extract_countdown(gemini_1w_details)
+    tp_5h_countdown = _extract_countdown(tp_5h_details)
+    tp_1w_countdown = _extract_countdown(tp_1w_details)
 
     def _parse_pct(s: str) -> Optional[float]:
         if not s or s.startswith("N/A"):
@@ -500,6 +694,10 @@ def parse_dashboard_markdown(
 
     gemini_pct = _parse_pct(gemini_rem)
     tp_pct = _parse_pct(tp_rem)
+    gemini_5h_pct = _parse_pct(gemini_5h_rem)
+    gemini_1w_pct = _parse_pct(gemini_1w_rem)
+    tp_5h_pct = _parse_pct(tp_5h_rem)
+    tp_1w_pct = _parse_pct(tp_1w_rem)
 
     active_tasks: List[Dict[str, Any]] = []
     queued_tasks: List[Dict[str, Any]] = []
@@ -524,7 +722,30 @@ def parse_dashboard_markdown(
 
         if "Active Container Tasks" in title_line:
             for cells in table_rows:
-                if len(cells) >= 6:
+                if len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    model = cells[2].strip("`")
+                    target = cells[3].strip("`")
+                    elapsed = cells[4]
+                    status = STATUS_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                    rc_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(rc_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                    active_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "elapsed": elapsed,
+                        "status": status,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
@@ -540,6 +761,7 @@ def parse_dashboard_markdown(
                     active_tasks.append({
                         "id": tid,
                         "agent": agent,
+                        "model": "-",
                         "target": target,
                         "elapsed": elapsed,
                         "status": status,
@@ -599,7 +821,36 @@ def parse_dashboard_markdown(
 
         elif "Recent Task Execution History" in title_line:
             for cells in table_rows:
-                if len(cells) >= 6:
+                if len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    model = cells[2].strip("`")
+                    target = cells[3].strip("`")
+                    duration = cells[4]
+                    status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                    detail_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(detail_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                            detail = "Remote Control"
+                        else:
+                            detail = detail_cell.strip("`").strip()
+                    else:
+                        detail = detail_cell.strip("`").strip()
+                    history_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "duration": duration,
+                        "status": status_raw,
+                        "details": detail,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 6:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     target = cells[2].strip("`")
@@ -620,6 +871,7 @@ def parse_dashboard_markdown(
                     history_tasks.append({
                         "id": tid,
                         "agent": agent,
+                        "model": "-",
                         "target": target,
                         "duration": duration,
                         "status": status_raw,
@@ -667,8 +919,32 @@ def parse_dashboard_markdown(
         "model": model,
         "gemini_rem": gemini_rem,
         "gemini_pct": gemini_pct,
+        "gemini_5h_rem": gemini_5h_rem,
+        "gemini_5h_pct": gemini_5h_pct,
+        "gemini_5h_details": gemini_5h_details,
+        "gemini_5h_countdown": gemini_5h_countdown,
+        "gemini_1w_rem": gemini_1w_rem,
+        "gemini_1w_pct": gemini_1w_pct,
+        "gemini_1w_details": gemini_1w_details,
+        "gemini_1w_countdown": gemini_1w_countdown,
         "tp_rem": tp_rem,
         "tp_pct": tp_pct,
+        "tp_5h_rem": tp_5h_rem,
+        "tp_5h_pct": tp_5h_pct,
+        "tp_5h_details": tp_5h_details,
+        "tp_5h_countdown": tp_5h_countdown,
+        "tp_1w_rem": tp_1w_rem,
+        "tp_1w_pct": tp_1w_pct,
+        "tp_1w_details": tp_1w_details,
+        "tp_1w_countdown": tp_1w_countdown,
+        "third_party_5h_rem": tp_5h_rem,
+        "third_party_5h_pct": tp_5h_pct,
+        "third_party_5h_details": tp_5h_details,
+        "third_party_5h_countdown": tp_5h_countdown,
+        "third_party_1w_rem": tp_1w_rem,
+        "third_party_1w_pct": tp_1w_pct,
+        "third_party_1w_details": tp_1w_details,
+        "third_party_1w_countdown": tp_1w_countdown,
         "active_tasks": active_tasks,
         "queued_tasks_list": queued_tasks,
         "history_tasks": history_tasks,
@@ -688,6 +964,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
     for t in active_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
+        model = html.escape(str(t.get("model", "") or "-"))
         target = html.escape(str(t.get("target", "")))
         elapsed = html.escape(str(t.get("elapsed", "")))
         status = html.escape(str(t.get("status", "")))
@@ -696,9 +973,11 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
             rc_html = f'<a href="{html.escape(rc_url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">🌐 Remote Control</a>'
         else:
             rc_html = '<span class="text-muted">Pending...</span>'
+        model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
+            f'<td>{model_cell}</td>'
             f'<td><code>{target}</code></td>'
             f'<td><span class="text-muted">{elapsed}</span></td>'
             f'<td><span class="status-pill status-running"><span class="spin-icon">🔄</span> {status}</span></td>'
@@ -706,7 +985,7 @@ def _render_active_tasks_table(active_tasks: List[Dict[str, Any]]) -> str:
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -796,6 +1075,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
     for t in history_tasks:
         tid = html.escape(str(t.get("id", "")))
         agent = html.escape(str(t.get("agent", "")))
+        model = html.escape(str(t.get("model", "") or "-"))
         target = html.escape(str(t.get("target", "")))
         duration = html.escape(str(t.get("duration", "")))
         raw_status = str(t.get("status", "")).lower()
@@ -812,9 +1092,11 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             detail_html = f'<code class="error-snippet" title="{html.escape(detail)}">{html.escape(trunc)}</code>'
         else:
             detail_html = '<span class="text-muted">Finished</span>'
+        model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
+            f'<td>{model_cell}</td>'
             f'<td><code>{target}</code></td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
@@ -822,7 +1104,7 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -873,9 +1155,12 @@ def render_dashboard_html(
                     now_ts = time.time()
                     for t in act_objs:
                         elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
+                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
                         data["active_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
+                            "model": model_name,
                             "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
                             "elapsed": elapsed,
                             "status": str(t.status),
@@ -901,9 +1186,12 @@ def render_dashboard_html(
                         dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
                         rc_url = getattr(t, "remote_control_url", None)
                         detail = "Remote Control" if rc_url else (t.error_message or "Finished")
+                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
                         data["history_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
+                            "model": model_name,
                             "target": t.target_id or (t.repo_full_name if t.repo_full_name else "N/A"),
                             "duration": dur,
                             "status": str(t.status),
@@ -938,6 +1226,79 @@ def render_dashboard_html(
         except Exception as e:
             logger.debug(f"Error enriching dashboard data from quota_tracker: {e}")
 
+    if quota_tracker and hasattr(quota_tracker, "get_pool_windows"):
+        try:
+            w5_g, w1_g = quota_tracker.get_pool_windows("gemini")
+            w5_c, w1_c = quota_tracker.get_pool_windows("claude_gpt")
+            if w5_g is not None:
+                data["gemini_5h_pct"] = w5_g.remaining_percentage
+                data["gemini_5h_rem"] = format_percentage(w5_g.remaining_percentage)
+                cd = w5_g.format_reset_countdown()
+                st, _ = w5_g.get_pacing_status()
+                if not (w5_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+            if w1_g is not None:
+                data["gemini_1w_pct"] = w1_g.remaining_percentage
+                data["gemini_1w_rem"] = format_percentage(w1_g.remaining_percentage)
+                cd = w1_g.format_reset_countdown()
+                st, _ = w1_g.get_pacing_status()
+                if not (w1_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+            if w5_c is not None:
+                data["tp_5h_pct"] = w5_c.remaining_percentage
+                data["tp_5h_rem"] = format_percentage(w5_c.remaining_percentage)
+                cd = w5_c.format_reset_countdown()
+                st, _ = w5_c.get_pacing_status()
+                if not (w5_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+            if w1_c is not None:
+                data["tp_1w_pct"] = w1_c.remaining_percentage
+                data["tp_1w_rem"] = format_percentage(w1_c.remaining_percentage)
+                cd = w1_c.format_reset_countdown()
+                st, _ = w1_c.get_pacing_status()
+                if not (w1_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
+                    data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+        except Exception as e:
+            logger.debug(f"Error enriching window metrics from quota_tracker: {e}")
+
+    if not quota_tracker and extra_info and "quota_info" in extra_info:
+        q_extra = extra_info.get("quota_info") or {}
+        if q_extra.get("gemini_5h_remaining_percentage") is not None:
+            data["gemini_5h_pct"] = q_extra["gemini_5h_remaining_percentage"]
+            data["gemini_5h_rem"] = format_percentage(q_extra["gemini_5h_remaining_percentage"])
+        if q_extra.get("gemini_1w_remaining_percentage") is not None:
+            data["gemini_1w_pct"] = q_extra["gemini_1w_remaining_percentage"]
+            data["gemini_1w_rem"] = format_percentage(q_extra["gemini_1w_remaining_percentage"])
+        if q_extra.get("third_party_5h_remaining_percentage") is not None:
+            data["tp_5h_pct"] = q_extra["third_party_5h_remaining_percentage"]
+            data["tp_5h_rem"] = format_percentage(q_extra["third_party_5h_remaining_percentage"])
+        if q_extra.get("third_party_1w_remaining_percentage") is not None:
+            data["tp_1w_pct"] = q_extra["third_party_1w_remaining_percentage"]
+            data["tp_1w_rem"] = format_percentage(q_extra["third_party_1w_remaining_percentage"])
+        for prefix, key_prefix in [
+            ("gemini_5h", "gemini_5h"),
+            ("gemini_1w", "gemini_1w"),
+            ("tp_5h", "third_party_5h"),
+            ("tp_1w", "third_party_1w"),
+        ]:
+            cd = q_extra.get(f"{key_prefix}_countdown")
+            if cd is None and q_extra.get(f"{key_prefix}_reset_time") is not None:
+                try:
+                    cd = format_reset_countdown(
+                        q_extra.get(f"{key_prefix}_reset_time"),
+                        window_name="5H" if "5h" in key_prefix else "1W",
+                    )
+                except Exception:
+                    cd = str(q_extra.get(f"{key_prefix}_reset_time"))
+            st = q_extra.get(f"{key_prefix}_pacing_status")
+            has_pct = q_extra.get(f"{key_prefix}_remaining_percentage") is not None
+            has_res = q_extra.get(f"{key_prefix}_reset_time") is not None
+            if cd or has_res or has_pct or (st and st != "OK"):
+                details = f"Reset: {cd or 'N/A'} | Pacing: {st or 'OK'}"
+                data[f"{prefix}_details"] = details
+                if prefix.startswith("tp_"):
+                    data[f"{key_prefix}_details"] = details
+
     g_act = data.get("active_gemini_model")
     if isinstance(g_act, str) and g_act.strip() and g_act not in data["available_gemini_models"]:
         data["available_gemini_models"].insert(0, g_act)
@@ -960,10 +1321,60 @@ def render_dashboard_html(
     failed_class = "kpi-value text-red" if data["failed_tasks"] > 0 else "kpi-value text-muted"
 
     gemini_color = get_quota_color(data["gemini_pct"])
-    gemini_bar_pct = min(100, max(0, int(data["gemini_pct"]))) if data["gemini_pct"] is not None else 100
+    try:
+        gemini_bar_pct = min(100, max(0, int(float(data["gemini_pct"])))) if data["gemini_pct"] is not None else 100
+    except (ValueError, TypeError):
+        gemini_bar_pct = 100
 
     tp_color = get_quota_color(data["tp_pct"])
-    tp_bar_pct = min(100, max(0, int(data["tp_pct"]))) if data["tp_pct"] is not None else 100
+    try:
+        tp_bar_pct = min(100, max(0, int(float(data["tp_pct"])))) if data["tp_pct"] is not None else 100
+    except (ValueError, TypeError):
+        tp_bar_pct = 100
+
+    def _safe_disp(val, fallback=None):
+        for candidate in (val, fallback):
+            if candidate is not None:
+                s = str(candidate).strip()
+                if s and s.lower() not in ("none", "null", "none%"):
+                    return s
+        return "N/A"
+
+    gemini_5h_pct = data.get("gemini_5h_pct")
+    gemini_5h_disp = html.escape(_safe_disp(data.get("gemini_5h_rem"), data.get("gemini_rem")))
+    gemini_5h_color = get_quota_color(gemini_5h_pct)
+    try:
+        gemini_5h_bar_pct = min(100, max(0, int(float(gemini_5h_pct)))) if gemini_5h_pct is not None else 0
+    except (ValueError, TypeError):
+        gemini_5h_bar_pct = 0
+    gemini_5h_details = html.escape(str(data.get("gemini_5h_details") or "Live Gemini burst quota"))
+
+    gemini_1w_pct = data.get("gemini_1w_pct")
+    gemini_1w_disp = html.escape(_safe_disp(data.get("gemini_1w_rem"), data.get("gemini_rem")))
+    gemini_1w_color = get_quota_color(gemini_1w_pct)
+    try:
+        gemini_1w_bar_pct = min(100, max(0, int(float(gemini_1w_pct)))) if gemini_1w_pct is not None else 0
+    except (ValueError, TypeError):
+        gemini_1w_bar_pct = 0
+    gemini_1w_details = html.escape(str(data.get("gemini_1w_details") or "Live Gemini weekly quota"))
+
+    tp_5h_pct = data.get("tp_5h_pct")
+    tp_5h_disp = html.escape(_safe_disp(data.get("tp_5h_rem"), data.get("tp_rem")))
+    tp_5h_color = get_quota_color(tp_5h_pct)
+    try:
+        tp_5h_bar_pct = min(100, max(0, int(float(tp_5h_pct)))) if tp_5h_pct is not None else 0
+    except (ValueError, TypeError):
+        tp_5h_bar_pct = 0
+    tp_5h_details = html.escape(str(data.get("tp_5h_details") or "Fallback burst quota"))
+
+    tp_1w_pct = data.get("tp_1w_pct")
+    tp_1w_disp = html.escape(_safe_disp(data.get("tp_1w_rem"), data.get("tp_rem")))
+    tp_1w_color = get_quota_color(tp_1w_pct)
+    try:
+        tp_1w_bar_pct = min(100, max(0, int(float(tp_1w_pct)))) if tp_1w_pct is not None else 0
+    except (ValueError, TypeError):
+        tp_1w_bar_pct = 0
+    tp_1w_details = html.escape(str(data.get("tp_1w_details") or "Fallback weekly quota"))
 
     active_table_html = _render_active_tasks_table(data["active_tasks"])
     queued_table_html = _render_queued_tasks_table(data["queued_tasks_list"])
@@ -985,8 +1396,8 @@ def render_dashboard_html(
     failed_tasks = data["failed_tasks"]
     pool_str = html.escape(data["pool"])
     model_str = html.escape(data["model"])
-    gemini_disp = html.escape(data["gemini_rem"])
-    tp_disp = html.escape(data["tp_rem"])
+    gemini_disp = html.escape(_safe_disp(data.get("gemini_rem")))
+    tp_disp = html.escape(_safe_disp(data.get("tp_rem")))
     active_count = len(data["active_tasks"])
     queued_count = len(data["queued_tasks_list"])
     approved_count = len(valid_approved_prs)
@@ -1016,10 +1427,26 @@ def render_dashboard_html(
         gemini_disp=gemini_disp,
         gemini_bar_pct=gemini_bar_pct,
         gemini_options_html=gemini_options_html,
+        gemini_5h_disp=gemini_5h_disp,
+        gemini_5h_color=gemini_5h_color,
+        gemini_5h_bar_pct=gemini_5h_bar_pct,
+        gemini_5h_details=gemini_5h_details,
+        gemini_1w_disp=gemini_1w_disp,
+        gemini_1w_color=gemini_1w_color,
+        gemini_1w_bar_pct=gemini_1w_bar_pct,
+        gemini_1w_details=gemini_1w_details,
         tp_color=tp_color,
         tp_disp=tp_disp,
         tp_bar_pct=tp_bar_pct,
         tp_options_html=tp_options_html,
+        tp_5h_disp=tp_5h_disp,
+        tp_5h_color=tp_5h_color,
+        tp_5h_bar_pct=tp_5h_bar_pct,
+        tp_5h_details=tp_5h_details,
+        tp_1w_disp=tp_1w_disp,
+        tp_1w_color=tp_1w_color,
+        tp_1w_bar_pct=tp_1w_bar_pct,
+        tp_1w_details=tp_1w_details,
         active_count=active_count,
         active_table_html=active_table_html,
         queued_count=queued_count,

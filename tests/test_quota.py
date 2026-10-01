@@ -256,7 +256,7 @@ class TestQuotaTracker(unittest.TestCase):
         )
         self.assertEqual(tracker.window_1w.pacing_status(now=now), "BEHIND_PACING")
         backoff = tracker.get_pacing_backoff_delay(tracker.window_1w, now=now)
-        self.assertAlmostEqual(backoff, 1.6)
+        self.assertAlmostEqual(backoff, 4.0)
         self.assertTrue(tracker.is_behind_pacing(now=now))
         now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
         self.assertTrue(tracker.is_behind_pacing(now=now_dt))
@@ -347,7 +347,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
         self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
-        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 1d 04h)", badge_1w)
+        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 2d 22h)", badge_1w)
 
     def test_pacing_recovery_seconds_and_countdown(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
@@ -358,30 +358,30 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(w_ok.pacing_recovery_seconds(now_dt), 0.0)
         self.assertEqual(w_ok.format_pacing_countdown(now_dt), "00:00:00")
 
-        # 2. 5H Window BEHIND pacing: 16% remaining (q=0.16), 2h 30m reset remaining (9000s)
-        # T_recovery = 9000 - (sqrt(0.16) * 18000) = 9000 - 7200 = 1800s (30 mins)
-        w_5h_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z")
+        # 2. 5H Window BEHIND pacing: 40% remaining (q=0.4), 2h 30m reset remaining (9000s)
+        # T_recovery = 9000 - (0.4 * 18000) = 9000 - 7200 = 1800s (30 mins)
+        w_5h_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z")
         self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt), 1800.0)
         self.assertAlmostEqual(w_5h_behind.pacing_recovery_seconds(now_dt), 1800.0)
         self.assertEqual(w_5h_behind.format_pacing_countdown(now_dt), "00:30:00")
         badge_5h = format_quota_badge(w_5h_behind, now_dt=now_dt, quota_pool="gemini")
         self.assertEqual(
             badge_5h,
-            "[ GEMINI 5H QUOTA: 16% | RESET: 02:30:00 | PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 00:30:00) ]",
+            "[ GEMINI 5H QUOTA: 40% | RESET: 02:30:00 | PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 00:30:00) ]",
         )
 
         # 3. 1W Window BEHIND pacing: 20% remaining (q=0.2), 4d 8h reset remaining (374400s)
-        # T_recovery = 374400 - (sqrt(0.2) * 604800) = 103925.21744...s (1d 04h)
+        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
         w_1w_behind = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
-        self.assertAlmostEqual(w_1w_behind.get_pacing_recovery_seconds(now_dt), 103925.2, places=1)
-        self.assertEqual(w_1w_behind.format_pacing_countdown(now_dt), "1d 04h")
+        self.assertAlmostEqual(w_1w_behind.get_pacing_recovery_seconds(now_dt), 253440.0)
+        self.assertEqual(w_1w_behind.format_pacing_countdown(now_dt), "2d 22h")
 
         # 4. QuotaTracker recovery calculation across dual windows
         tracker = QuotaTracker()
         tracker.update_windows(w_5h_behind, w_1w_behind)
-        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
-        self.assertAlmostEqual(tracker.pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
-        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "1d 04h")
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
+        self.assertAlmostEqual(tracker.pacing_recovery_seconds(now=now_dt), 253440.0)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
         self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(window=w_5h_behind, now=now_dt), 1800.0)
         self.assertEqual(tracker.format_pacing_countdown(window=w_5h_behind, now=now_dt), "00:30:00")
 
@@ -389,21 +389,21 @@ class TestQuotaTracker(unittest.TestCase):
         # 1W window with sub-day recovery duration (e.g., 30 minutes / 1800s recovery)
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
         # reset in 3h 30m (12600s), remaining_percentage = 80.0% (q=0.8)
-        # recovery = 12600 - (sqrt(0.8) * 604800) -> 0
+        # recovery = 12600 - (0.8 * 604800) -> 0
         w_1w_subday = QuotaWindow(
             name="1W",
             duration_seconds=604800.0,
             remaining_percentage=99.0,  # q = 0.99
             reset_time="2026-08-09T08:36:00Z",  # rem = 12600s, t_frac = 12600/604800 = 0.020833
         )
-        # 99.0% > (0.020833)^2, so pacing is OK
+        # 99.0% > 2.08%, so pacing is OK
         # For exactly 30 minutes recovery (1800s):
-        # recovery = rem_sec - (sqrt(q_frac) * 604800) = 1800
-        # If q_frac = 0.01 (1.0%), sqrt(q_frac) * 604800 = 60480. rem_sec = 62280s.
+        # recovery = rem_sec - (q_frac * 604800) = 1800
+        # If q_frac = 0.10 (10%), q_frac * 604800 = 60480. rem_sec = 62280s.
         w_1w_30m = QuotaWindow(
             name="1W",
             duration_seconds=604800.0,
-            remaining_percentage=1.0,
+            remaining_percentage=10.0,
             reset_time="2026-08-09T22:24:00Z",  # rem = 62280s (17h 18m)
         )
         rec_sec = w_1w_30m.get_pacing_recovery_seconds(now_dt)
@@ -417,7 +417,7 @@ class TestQuotaTracker(unittest.TestCase):
         naive_dt = datetime(2026, 8, 9, 5, 6, 0)
 
         w_5h_behind = QuotaWindow(
-            name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z"
+            name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z"
         )
         # Passing float timestamp, int timestamp, and naive datetime as now_dt must not raise TypeError
         self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt=ts_float), 1800.0)
@@ -426,7 +426,7 @@ class TestQuotaTracker(unittest.TestCase):
 
     def test_quota_tracker_now_dt_keyword_argument_support(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
-        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=16.0, reset_time="2026-08-09T07:36:00Z")
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time="2026-08-09T07:36:00Z")
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
 
         tracker = QuotaTracker()
@@ -434,79 +434,59 @@ class TestQuotaTracker(unittest.TestCase):
 
         # Call QuotaTracker methods passing now_dt=... as keyword parameter
         self.assertTrue(tracker.is_behind_pacing(now_dt=now_dt))
-        self.assertAlmostEqual(tracker.get_pacing_backoff_delay(now_dt=now_dt), 0.9)
+        self.assertAlmostEqual(tracker.get_pacing_backoff_delay(now_dt=now_dt), 1.0)
         self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now_dt=now_dt), 1800.0)
         self.assertAlmostEqual(tracker.pacing_recovery_seconds(now_dt=now_dt), 1800.0)
         self.assertEqual(tracker.format_pacing_countdown(now_dt=now_dt), "00:30:00")
 
-    def test_quadratic_target_quota_fraction_calculation(self):
+    def test_linear_target_quota_fraction_calculation(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
         # 5H window (18000s duration): 9000s remaining -> time_fraction = 0.5
         w = QuotaWindow(name="5H", duration_seconds=18000.0, reset_time=str(now_dt.timestamp() + 9000.0))
         self.assertAlmostEqual(w.get_time_fraction(now_dt), 0.5)
-        self.assertAlmostEqual(w.get_target_quota_fraction(now_dt), 0.25)
-        self.assertAlmostEqual(w.target_quota_fraction(now_dt), 0.25)
+        self.assertAlmostEqual(w.get_target_quota_fraction(now_dt), 0.5)
+        self.assertAlmostEqual(w.target_quota_fraction(now_dt), 0.5)
 
-    def test_quadratic_pacing_ease_in_after_reset(self):
+    def test_linear_pacing_status_and_backoff(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
-        # 1. Immediately following reset: 99% time remaining (T = 0.99)
-        # Consuming 1% leaves Q = 0.99.
-        # Target = 0.99^2 = 0.9801. Since 0.99 >= 0.9801, pacing status is OK (easing in!).
-        w_early = QuotaWindow(
+        # 1. On pace: 90% time remaining (T = 0.90), remaining_percentage = 95.0% (Q = 0.95)
+        # Target = 0.90 <= 0.95 -> OK
+        w_ok = QuotaWindow(
             name="5H",
             duration_seconds=18000.0,
-            remaining_percentage=99.0,
-            reset_time=str(now_dt.timestamp() + (0.99 * 18000.0)),
+            remaining_percentage=95.0,
+            reset_time=str(now_dt.timestamp() + (0.90 * 18000.0)),
         )
-        self.assertEqual(w_early.pacing_status(now_dt), "OK")
-        status, backoff = w_early.get_pacing_status(now_dt)
+        self.assertEqual(w_ok.pacing_status(now_dt), "OK")
+        status, backoff = w_ok.get_pacing_status(now_dt)
         self.assertEqual(status, "OK")
         self.assertEqual(backoff, 0.0)
-        self.assertEqual(w_early.get_pacing_recovery_seconds(now_dt), 0.0)
 
-        # 2. Early in window: 90% time remaining (T = 0.90)
-        # Consuming 15% leaves Q = 0.85.
-        # Under linear pacing: Q (0.85) < T (0.90) -> would be BEHIND_PACING.
-        # Under quadratic pacing: Target = 0.90^2 = 0.81. Since 0.85 >= 0.81, pacing is OK!
-        w_mid_early = QuotaWindow(
+        # 2. Behind pace: 90% time remaining (T = 0.90), remaining_percentage = 85.0% (Q = 0.85)
+        # Under linear pacing: Q (0.85) < T (0.90) -> BEHIND_PACING
+        # Deficit = 0.90 - 0.85 = 0.05 -> backoff = round(0.05 * 10, 1) = 0.5
+        w_behind = QuotaWindow(
             name="5H",
             duration_seconds=18000.0,
             remaining_percentage=85.0,
             reset_time=str(now_dt.timestamp() + (0.90 * 18000.0)),
         )
-        self.assertEqual(w_mid_early.pacing_status(now_dt), "OK")
-        status, backoff = w_mid_early.get_pacing_status(now_dt)
-        self.assertEqual(status, "OK")
-        self.assertEqual(backoff, 0.0)
-
-    def test_quadratic_pacing_late_window_throttling(self):
-        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
-        # Late in window: 20% time remaining (T = 0.20).
-        # Target = 0.20^2 = 0.04 (4%).
-        # Consuming 98% leaves Q = 0.02 (2%).
-        # Target is 0.04 > 0.02 -> BEHIND_PACING.
-        # Deficit = 0.04 - 0.02 = 0.02 -> backoff = round(0.02 * 10, 1) = 0.2.
-        w_late = QuotaWindow(
-            name="5H",
-            duration_seconds=18000.0,
-            remaining_percentage=2.0,
-            reset_time=str(now_dt.timestamp() + (0.20 * 18000.0)),
-        )
-        status, backoff = w_late.get_pacing_status(now_dt)
+        self.assertEqual(w_behind.pacing_status(now_dt), "BEHIND_PACING")
+        status, backoff = w_behind.get_pacing_status(now_dt)
         self.assertEqual(status, "BEHIND_PACING")
-        self.assertAlmostEqual(backoff, 0.2)
+        self.assertAlmostEqual(backoff, 0.5)
 
-    def test_quadratic_pacing_recovery_exactness(self):
+    def test_linear_pacing_recovery_exactness(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
         # Set up a window behind pacing:
-        # T = 0.5 (9000s remaining of 18000s), remaining_percentage = 9.0% (Q = 0.09)
-        # Target = 0.5^2 = 0.25 > 0.09 -> BEHIND_PACING.
-        # Recovery seconds = rem_sec - sqrt(Q) * duration
-        # = 9000 - sqrt(0.09) * 18000 = 9000 - 0.3 * 18000 = 9000 - 5400 = 3600.0s (1 hour).
+        # T = 0.5 (9000s remaining of 18000s), remaining_percentage = 30.0% (Q = 0.30)
+        # Target = 0.5 > 0.30 -> BEHIND_PACING.
+        # Recovery seconds = rem_sec - Q * duration
+        # = 9000 - 0.30 * 18000 = 9000 - 5400 = 3600.0s (1 hour).
         w = QuotaWindow(
             name="5H",
             duration_seconds=18000.0,
-            remaining_percentage=9.0,
+            remaining_percentage=30.0,
             reset_time=str(now_dt.timestamp() + 9000.0),
         )
         self.assertEqual(w.pacing_status(now_dt), "BEHIND_PACING")
@@ -1055,14 +1035,14 @@ class TestQuotaTracker(unittest.TestCase):
         tracker.update_windows(w_5h_gemini, w_1w_gemini, quota_pool="gemini")
 
         # Claude is BEHIND pacing: 1W window has 20% remaining, 4d 8h reset remaining (374400s)
-        # T_recovery = 374400 - (sqrt(0.2) * 604800) = 103925.21744...s (1d 04h)
+        # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
         w_5h_claude = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=80.0, reset_time="2026-08-09T08:18:45Z")
         w_1w_claude = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
         tracker.update_windows(w_5h_claude, w_1w_claude, quota_pool="claude_gpt")
 
         # When no specific window is passed, get_pacing_recovery_seconds and format_pacing_countdown evaluate across both pools
-        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 103925.2, places=1)
-        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "1d 04h")
+        self.assertAlmostEqual(tracker.get_pacing_recovery_seconds(now=now_dt), 253440.0)
+        self.assertEqual(tracker.format_pacing_countdown(now=now_dt), "2d 22h")
         self.assertTrue(tracker.is_pool_behind_pacing("claude_gpt", now_dt=now_dt))
         self.assertFalse(tracker.is_pool_behind_pacing("gemini", now_dt=now_dt))
         # Overall is_behind_pacing is False because Gemini pool is eligible for tasks
@@ -1179,6 +1159,37 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.remaining_percentage, 20.0)
         self.assertEqual(tracker.get_pool_remaining_percentage("claude_gpt"), 20.0)
         self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 90.0)
+
+    def test_get_pool_remaining_percentage_inactive_pool_with_none_windows_returns_none(self):
+        # Case 1: Active pool is Gemini, Claude windows are uninitialized / None
+        tracker = QuotaTracker(quota_pool="gemini", remaining_percentage=42.0)
+        tracker.claude_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker.get_pool_remaining_percentage("claude_gpt"))
+        self.assertIsNone(tracker.get_pool_remaining_percentage("claude"))
+        # Active pool retains its percentage fallback
+        self.assertEqual(tracker.get_pool_remaining_percentage("gemini"), 42.0)
+        # Quota state for inactive pool with None percentage should be NORMAL
+        self.assertEqual(tracker.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+
+        # Case 2: Active pool is exhausted (0.0%), ensure no false EXHAUSTED leakage
+        tracker_exhausted = QuotaTracker(quota_pool="gemini", remaining_percentage=0.0)
+        tracker_exhausted.claude_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker_exhausted.claude_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker_exhausted.get_pool_remaining_percentage("claude_gpt"))
+        self.assertEqual(tracker_exhausted.get_pool_state("gemini"), QuotaState.EXHAUSTED)
+        self.assertEqual(tracker_exhausted.get_pool_state("claude_gpt"), QuotaState.NORMAL)
+
+        # Case 3: Active pool is Claude/GPT, Gemini windows are uninitialized / None
+        tracker_tp = QuotaTracker(quota_pool="claude_gpt", remaining_percentage=35.0)
+        tracker_tp.gemini_window_5h = QuotaWindow(name="5H", remaining_percentage=None)
+        tracker_tp.gemini_window_1w = QuotaWindow(name="1W", remaining_percentage=None)
+
+        self.assertIsNone(tracker_tp.get_pool_remaining_percentage("gemini"))
+        self.assertEqual(tracker_tp.get_pool_remaining_percentage("claude_gpt"), 35.0)
+        self.assertEqual(tracker_tp.get_pool_state("gemini"), QuotaState.NORMAL)
 
     def test_reset_time_setter_claude_gpt_routing(self):
         t_claude = QuotaTracker(quota_pool="claude_gpt")
@@ -2057,6 +2068,615 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertIsNone(res)
         self.assertEqual(mock_urlopen.call_count, 1)
 
+    def test_quota_info_dual_windows_to_dict(self):
+        w5_g = QuotaWindow(name="5H", remaining_percentage=85.0, reset_time="2026-09-24T10:00:00Z")
+        w1_g = QuotaWindow(name="1W", remaining_percentage=92.5, reset_time="2026-09-30T10:00:00Z")
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0, reset_time="2026-09-24T12:00:00Z")
+        w1_c = QuotaWindow(name="1W", remaining_percentage=98.0, reset_time="2026-09-30T12:00:00Z")
+
+        info = QuotaInfo(
+            remaining_percentage=85.0,
+            state="NORMAL",
+            window_5h=w5_g,
+            window_1w=w1_g,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+            gemini_window_1w=w1_g,
+            claude_window_5h=w5_c,
+            claude_window_1w=w1_c,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_remaining_percentage"], 85.0)
+        self.assertEqual(d["gemini_1w_remaining_percentage"], 92.5)
+        self.assertEqual(d["third_party_5h_remaining_percentage"], 70.0)
+        self.assertEqual(d["third_party_1w_remaining_percentage"], 98.0)
+        self.assertIn("gemini_window_5h", d)
+        self.assertIn("claude_window_1w", d)
+
+    def test_quota_tracker_get_info_exposes_dual_windows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = QuotaTracker(state_path=Path(tmpdir) / ".graviton_model_selection.json")
+            w5_g = QuotaWindow(name="5H", remaining_percentage=88.0, reset_time="2026-09-24T10:00:00Z")
+            w1_g = QuotaWindow(name="1W", remaining_percentage=94.0, reset_time="2026-09-30T10:00:00Z")
+            w5_c = QuotaWindow(name="5H", remaining_percentage=65.0, reset_time="2026-09-24T12:00:00Z")
+            w1_c = QuotaWindow(name="1W", remaining_percentage=99.0, reset_time="2026-09-30T12:00:00Z")
+
+            tracker.gemini_window_5h = w5_g
+            tracker.gemini_window_1w = w1_g
+            tracker.claude_window_5h = w5_c
+            tracker.claude_window_1w = w1_c
+
+            info = tracker.get_info()
+            d = info.to_dict()
+            self.assertEqual(d["gemini_5h_remaining_percentage"], 88.0)
+            self.assertEqual(d["gemini_1w_remaining_percentage"], 94.0)
+            self.assertEqual(d["third_party_5h_remaining_percentage"], 65.0)
+            self.assertEqual(d["third_party_1w_remaining_percentage"], 99.0)
+
+    def test_quota_window_to_dict_includes_reset_countdown(self):
+        win = QuotaWindow(name="5H", remaining_percentage=80.0, reset_time="2026-09-24T15:00:00Z")
+        d = win.to_dict()
+        self.assertIn("reset_countdown", d)
+        self.assertEqual(d["reset_countdown"], win.format_reset_countdown())
+
+    def test_quota_info_dict_windows_preserves_reset_countdown(self):
+        # Window dict with explicit reset_countdown should not be overwritten by pacing cooldown
+        win_dict = {
+            "name": "5H",
+            "remaining_percentage": 75.0,
+            "reset_time": "2026-09-24T18:00:00Z",
+            "reset_countdown": "04h 30m",
+            "pacing_recovery_countdown": "00:00:00",
+        }
+        info = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+            gemini_window_5h=win_dict,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_countdown"], "04h 30m")
+
+        # Window dict without reset_countdown should compute from reset_time, not pacing_recovery_countdown
+        win_dict_no_cd = {
+            "name": "5H",
+            "remaining_percentage": 75.0,
+            "reset_time": "2029-01-01T18:00:00Z",
+            "pacing_recovery_countdown": "00:00:00",
+        }
+        info2 = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+            gemini_window_5h=win_dict_no_cd,
+        )
+        d2 = info2.to_dict()
+        self.assertNotEqual(d2["gemini_5h_countdown"], "00:00:00")
+        self.assertIsNotNone(d2["gemini_5h_countdown"])
+
+    def test_quota_info_third_party_pool_fallback(self):
+        # When active pool is third-party, window_5h and window_1w must NOT fall back to Gemini
+        w5_tp = QuotaWindow(name="5H", remaining_percentage=60.0, reset_time="2026-09-24T14:00:00Z")
+        w1_tp = QuotaWindow(name="1W", remaining_percentage=90.0, reset_time="2026-09-30T14:00:00Z")
+        info = QuotaInfo(
+            remaining_percentage=60.0,
+            quota_pool="claude_gpt",
+            window_5h=w5_tp,
+            window_1w=w1_tp,
+        )
+        d = info.to_dict()
+        # Gemini metrics must be None, NOT Claude's metrics
+        self.assertIsNone(d["gemini_5h_remaining_percentage"])
+        self.assertIsNone(d["gemini_1w_remaining_percentage"])
+        # Third-party metrics must receive the fallback
+        self.assertEqual(d["third_party_5h_remaining_percentage"], 60.0)
+        self.assertEqual(d["third_party_1w_remaining_percentage"], 90.0)
+
+    def test_quota_info_gemini_pool_serializes_resolved_windows(self):
+        w5 = QuotaWindow(name="5H", remaining_percentage=85.0, reset_time="2026-09-24T14:00:00Z")
+        w1 = QuotaWindow(name="1W", remaining_percentage=95.0, reset_time="2026-09-30T14:00:00Z")
+        info = QuotaInfo(
+            remaining_percentage=85.0,
+            quota_pool="gemini",
+            window_5h=w5,
+            window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertIn("gemini_window_5h", d)
+        self.assertIn("gemini_window_1w", d)
+        self.assertEqual(d["gemini_window_5h"]["remaining_percentage"], 85.0)
+        self.assertEqual(d["gemini_window_1w"]["remaining_percentage"], 95.0)
+        self.assertNotIn("claude_window_5h", d)
+        self.assertNotIn("claude_window_1w", d)
+
+        info_tp = QuotaInfo(
+            remaining_percentage=70.0,
+            quota_pool="claude_gpt",
+            window_5h=w5,
+            window_1w=w1,
+        )
+        d_tp = info_tp.to_dict()
+        self.assertIn("claude_window_5h", d_tp)
+        self.assertIn("claude_window_1w", d_tp)
+        self.assertEqual(d_tp["claude_window_5h"]["remaining_percentage"], 85.0)
+        self.assertEqual(d_tp["claude_window_1w"]["remaining_percentage"], 95.0)
+        self.assertNotIn("gemini_window_5h", d_tp)
+        self.assertNotIn("gemini_window_1w", d_tp)
+
+    def test_quota_info_pacing_status_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_status and preserves non-OK status."""
+        w5 = QuotaWindow(name="5H", duration_seconds=18000, remaining_percentage=5.0)
+        w5.get_pacing_status = MagicMock(return_value=("BEHIND_PACING", 5.0))
+        w1 = QuotaWindow(name="1W", duration_seconds=604800, remaining_percentage=80.0)
+        w1.get_pacing_status = MagicMock(return_value=("OK", 0.0))
+
+        info = QuotaInfo(
+            remaining_percentage=5.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertEqual(d["gemini_1w_pacing_status"], "OK")
+        self.assertEqual(d["third_party_5h_pacing_status"], "OK")
+        self.assertEqual(d["third_party_1w_pacing_status"], "OK")
+
+        # Preserving pacing_status from dictionary window
+        win_dict = {
+            "name": "5H",
+            "remaining_percentage": 10.0,
+            "reset_time": "2029-01-01T18:00:00Z",
+            "pacing_status": "BEHIND_PACING",
+        }
+        info2 = QuotaInfo(
+            remaining_percentage=10.0,
+            quota_pool="claude_gpt",
+            claude_window_5h=win_dict,
+        )
+        d2 = info2.to_dict()
+        self.assertEqual(d2["third_party_5h_pacing_status"], "BEHIND_PACING")
+
+    def test_quota_info_to_dict_exposes_pool_remaining_percentages(self):
+        """Verify QuotaInfo.to_dict includes gemini_remaining_percentage and third_party_remaining_percentage."""
+        w5_g = QuotaWindow(name="5H", remaining_percentage=80.0)
+        w1_g = QuotaWindow(name="1W", remaining_percentage=90.0)
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0)
+        w1_c = QuotaWindow(name="1W", remaining_percentage=60.0)
+
+        info = QuotaInfo(
+            remaining_percentage=80.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+            gemini_window_1w=w1_g,
+            claude_window_5h=w5_c,
+            claude_window_1w=w1_c,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_remaining_percentage"], 80.0)
+        self.assertEqual(d["third_party_remaining_percentage"], 60.0)
+
+        info_5h_only = QuotaInfo(
+            remaining_percentage=85.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5_g,
+        )
+        d_5h = info_5h_only.to_dict()
+        self.assertEqual(d_5h["gemini_remaining_percentage"], 80.0)
+        self.assertIsNone(d_5h.get("third_party_remaining_percentage"))
+
+        info_gemini_fallback = QuotaInfo(
+            remaining_percentage=75.0,
+            quota_pool="gemini",
+        )
+        d_gf = info_gemini_fallback.to_dict()
+        self.assertEqual(d_gf["gemini_remaining_percentage"], 75.0)
+        self.assertIsNone(d_gf.get("third_party_remaining_percentage"))
+
+        info_tp_fallback = QuotaInfo(
+            remaining_percentage=55.0,
+            quota_pool="claude_gpt",
+        )
+        d_tpf = info_tp_fallback.to_dict()
+        self.assertEqual(d_tpf["third_party_remaining_percentage"], 55.0)
+        self.assertIsNone(d_tpf.get("gemini_remaining_percentage"))
+
+    def test_quota_window_and_info_to_dict_with_none_remaining_percentage(self):
+        """Verifies QuotaWindow.to_dict() and QuotaInfo.to_dict() handle remaining_percentage=None without TypeError."""
+        win = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        self.assertIsNone(win.remaining_percentage)
+        d_win = win.to_dict()
+        self.assertIsNone(d_win["remaining_percentage"])
+
+        # Also verify setting attribute directly to None
+        win_init = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=90.0)
+        win_init.remaining_percentage = None
+        d_win_init = win_init.to_dict()
+        self.assertIsNone(d_win_init["remaining_percentage"])
+
+        # Verify format_quota_badge handles None
+        badge = format_quota_badge(win)
+        self.assertIn("QUOTA: N/A", badge)
+
+        # Verify QuotaInfo.to_dict() with QuotaWindow objects and None remaining_percentage
+        info = QuotaInfo(
+            remaining_percentage=None,
+            quota_pool="gemini",
+            window_5h=win,
+            window_1w=win_init,
+        )
+        d_info = info.to_dict()
+        self.assertIsNone(d_info["remaining_percentage"])
+        self.assertIsNone(d_info["gemini_5h_remaining_percentage"])
+        self.assertIsNone(d_info["gemini_1w_remaining_percentage"])
+        self.assertIsNone(d_info.get("gemini_remaining_percentage"))
+        self.assertIsNone(d_info.get("third_party_remaining_percentage"))
+
+    def test_quota_window_cached_datetime_initialization_and_copy(self):
+        """Verify QuotaWindow retains timezone-aware reset_datetime from ISO strings, timestamps, datetimes, and copy()."""
+        # 1. ISO string with Z
+        iso_str = "2026-10-01T12:00:00Z"
+        win_iso = QuotaWindow(name="5H", reset_time=iso_str)
+        self.assertIsNotNone(win_iso.reset_datetime)
+        self.assertIsNotNone(win_iso.reset_datetime.tzinfo)
+        self.assertEqual(win_iso.reset_datetime.year, 2026)
+        self.assertEqual(win_iso.reset_datetime.month, 10)
+        self.assertEqual(win_iso.reset_datetime.day, 1)
+        self.assertEqual(win_iso.reset_datetime.hour, 12)
+        self.assertEqual(win_iso.reset_time, iso_str)
+        self.assertEqual(win_iso.reset_timestamp, win_iso.reset_datetime.timestamp())
+
+        # 2. Numeric timestamp
+        ts = 1790000000.0
+        win_ts = QuotaWindow(name="1W", reset_timestamp=ts)
+        self.assertIsNotNone(win_ts.reset_datetime)
+        self.assertEqual(win_ts.reset_timestamp, ts)
+        self.assertEqual(win_ts.reset_datetime, datetime.fromtimestamp(ts, tz=timezone.utc))
+
+        # 3. Direct reset_datetime argument
+        dt_raw = datetime(2026, 10, 5, 8, 30, tzinfo=timezone.utc)
+        win_dt = QuotaWindow(name="5H", reset_datetime=dt_raw)
+        self.assertEqual(win_dt.reset_datetime, dt_raw)
+        self.assertEqual(win_dt.reset_timestamp, dt_raw.timestamp())
+        self.assertEqual(win_dt.reset_time, dt_raw.isoformat())
+
+        # 4. Naive datetime converted to UTC
+        dt_naive = datetime(2026, 10, 5, 8, 30)
+        win_naive = QuotaWindow(name="5H", reset_datetime=dt_naive)
+        self.assertEqual(win_naive.reset_datetime.tzinfo, timezone.utc)
+
+        # 5. copy() and clone() preserve reset_datetime
+        win_copied = win_iso.copy()
+        self.assertEqual(win_copied.reset_datetime, win_iso.reset_datetime)
+        self.assertEqual(win_copied.reset_time, win_iso.reset_time)
+        self.assertEqual(win_copied.reset_timestamp, win_iso.reset_timestamp)
+
+        win_cloned = win_iso.clone()
+        self.assertEqual(win_cloned.reset_datetime, win_iso.reset_datetime)
+
+    def test_quota_window_get_remaining_seconds_uses_reset_datetime(self):
+        """Verify get_remaining_seconds calculates duration from reset_datetime and falls back when reset_time updated directly."""
+        now = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc)
+        target_reset = datetime(2026, 10, 1, 11, 0, 0, tzinfo=timezone.utc)
+
+        win = QuotaWindow(name="5H", reset_datetime=target_reset)
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 3600.0)
+
+        # Ensure remaining_time_seconds also delegates correctly
+        self.assertEqual(win.remaining_time_seconds(now=now), 3600.0)
+
+        # Countdown format using reset_datetime
+        countdown = win.format_reset_countdown(now=now)
+        self.assertEqual(countdown, "01:00:00")
+
+        # Fallback when reset_datetime is None and reset_time is updated directly
+        win_lazy = QuotaWindow(name="5H", reset_time=None)
+        self.assertIsNone(win_lazy.reset_datetime)
+        self.assertEqual(win_lazy.get_remaining_seconds(now_dt=now), 0.0)
+
+        win_lazy.reset_time = "2026-10-01T12:00:00Z"
+        self.assertIsNone(win_lazy.reset_datetime)  # initially None
+        rem_lazy = win_lazy.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem_lazy, 7200.0)
+        self.assertIsNotNone(win_lazy.reset_datetime)
+        self.assertEqual(win_lazy.reset_datetime, datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc))
+
+    def test_quota_tracker_reset_datetime_synchronization(self):
+        """Verify QuotaTracker synchronizes reset_datetime on reset_time setter and update_from_payload."""
+        tracker = QuotaTracker()
+        future_ts = time.time() + 3600
+        tracker.reset_time = future_ts
+        w5, _ = tracker.get_pool_windows("gemini")
+        self.assertIsNotNone(w5.reset_datetime)
+        self.assertAlmostEqual(w5.reset_datetime.timestamp(), future_ts, delta=1.0)
+
+        # Test update_quota with ISO strings
+        iso_5h = "2026-10-01T15:00:00Z"
+        iso_1w = "2026-10-05T15:00:00Z"
+        tracker.update_quota(
+            remaining_percentage=90.0,
+            reset_time_5h=iso_5h,
+            reset_time_1w=iso_1w,
+            quota_pool="claude_gpt",
+        )
+        w5_tp, w1_tp = tracker.get_pool_windows("claude_gpt")
+        self.assertIsNotNone(w5_tp.reset_datetime)
+        self.assertEqual(w5_tp.reset_datetime, datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc))
+        self.assertIsNotNone(w1_tp.reset_datetime)
+        self.assertEqual(w1_tp.reset_datetime, datetime(2026, 10, 5, 15, 0, 0, tzinfo=timezone.utc))
+
+
+    def test_quota_window_mutation_invalidates_cached_datetime(self):
+        """Verify dynamic mutation of reset_time/reset_timestamp on an initialized window updates remaining seconds and countdown."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 3600.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "01:00:00")
+
+        # Mutate reset_time
+        win.reset_time = "2026-10-01T15:00:00Z"
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "06:00:00")
+
+        # Mutate reset_timestamp to a distinct timestamp value (16:00:00 UTC = 7 hours remaining)
+        win.reset_timestamp = 1790870400.0
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 25200.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "07:00:00")
+
+        # Mutate reset_datetime directly
+        win.reset_datetime = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 18000.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "05:00:00")
+
+        # Test parse_reset_time_to_timestamp accepts datetime
+        dt_sample = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_timestamp(dt_sample), dt_sample.timestamp())
+
+    def test_quota_window_clearing_reset_timestamp_does_not_resurrect(self):
+        """Verify setting reset_timestamp = None clears all representations and does not resurrect on subsequent calls."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        self.assertIsNotNone(win.reset_datetime)
+        self.assertIsNotNone(win.reset_timestamp)
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00Z")
+
+        # Clear reset_timestamp = None
+        win.reset_timestamp = None
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+        # Subsequent call must not resurrect old string or datetime
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "N/A")
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+    def test_quota_window_clearing_reset_time_does_not_resurrect(self):
+        """Verify setting reset_time = None clears all representations and does not resurrect."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        win.reset_time = None
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+        # Subsequent call
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertIsNone(win.reset_time)
+
+    def test_quota_window_invalid_reset_time_clears_timestamps(self):
+        """Verify setting an invalid string to reset_time clears reset_timestamp and reset_datetime."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T15:00:00Z")
+        self.assertIsNotNone(win.reset_timestamp)
+
+        win.reset_time = "invalid-date-string"
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertEqual(win.reset_time, "invalid-date-string")
+
+        # Second call to ensure fast-path / stable state
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 0.0)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+
+    def test_quota_window_init_with_datetime(self):
+        """Verify QuotaWindow(reset_time=datetime(...)) properly stores reset_datetime and ISO format reset_time."""
+        dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time=dt)
+        self.assertEqual(win.reset_datetime, dt)
+        self.assertEqual(win.reset_time, dt.isoformat())
+        self.assertEqual(win.reset_timestamp, dt.timestamp())
+
+        # Also test with naive datetime (auto-normalized to UTC)
+        naive_dt = datetime(2026, 10, 1, 15, 0, 0)
+        win_naive = QuotaWindow(name="5H", reset_time=naive_dt)
+        self.assertEqual(win_naive.reset_datetime, dt)
+        self.assertEqual(win_naive.reset_time, dt.isoformat())
+        self.assertEqual(win_naive.reset_timestamp, dt.timestamp())
+
+    def test_format_reset_countdown_with_naive_and_numeric_now(self):
+        """Verify format_reset_countdown accepts offset-naive datetime and numeric timestamp for now_dt without TypeError."""
+        reset_dt = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+        # Naive datetime as now_dt (2 hours before reset_dt)
+        naive_now = datetime(2026, 10, 1, 10, 0, 0)
+        self.assertEqual(format_reset_countdown(reset_dt, now_dt=naive_now), "02:00:00")
+
+        # Numeric timestamp as now_dt (2 hours before reset_dt)
+        ts_now = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(format_reset_countdown(reset_dt, now_dt=ts_now), "02:00:00")
+
+        # QuotaWindow.format_reset_countdown with naive datetime and numeric timestamp (both now and now_dt)
+        win = QuotaWindow(name="5H", reset_time=reset_dt)
+        self.assertEqual(win.format_reset_countdown(now=naive_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now=ts_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now_dt=naive_now), "02:00:00")
+        self.assertEqual(win.format_reset_countdown(now_dt=ts_now), "02:00:00")
+
+    def test_quota_window_unconfigured_fast_path(self):
+        """Verify unconfigured windows hit fast path and return 0.0 remaining seconds."""
+        win = QuotaWindow(name="5H")
+        self.assertIsNone(win.reset_time)
+        self.assertIsNone(win.reset_timestamp)
+        self.assertIsNone(win.reset_datetime)
+        self.assertEqual(win.get_remaining_seconds(), 0.0)
+        self.assertEqual(win.get_remaining_seconds(), 0.0)
+        self.assertEqual(win.format_reset_countdown(), "N/A")
+
+    def test_parse_reset_time_to_datetime_booleans(self):
+        """Verify booleans are not treated as epoch timestamps (1970) and return None."""
+        self.assertIsNone(parse_reset_time_to_datetime(True))
+        self.assertIsNone(parse_reset_time_to_datetime(False))
+        self.assertIsNone(parse_reset_time_to_timestamp(True))
+        self.assertIsNone(parse_reset_time_to_timestamp(False))
+        self.assertIsNone(_normalize_now_datetime(True))
+        self.assertIsNone(_normalize_now_datetime(False))
+
+    def test_quota_timezone_normalization_to_canonical_utc(self):
+        """Verify non-UTC timezone-aware datetimes and ISO strings are normalized to canonical UTC."""
+        tz_plus5 = timezone(timedelta(hours=5))
+        dt_plus5 = datetime(2026, 10, 1, 15, 0, 0, tzinfo=tz_plus5)
+        expected_utc = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+        # 1. parse_reset_time_to_datetime with non-UTC datetime object
+        res_dt = parse_reset_time_to_datetime(dt_plus5)
+        self.assertEqual(res_dt, expected_utc)
+        self.assertEqual(res_dt.tzinfo, timezone.utc)
+
+        # 2. parse_reset_time_to_datetime with ISO string containing offset (+05:00)
+        iso_plus5 = "2026-10-01T15:00:00+05:00"
+        res_iso = parse_reset_time_to_datetime(iso_plus5)
+        self.assertEqual(res_iso, expected_utc)
+        self.assertEqual(res_iso.tzinfo, timezone.utc)
+
+        # 3. QuotaWindow init with reset_datetime in non-UTC timezone
+        win_dt = QuotaWindow(name="5H", reset_datetime=dt_plus5)
+        self.assertEqual(win_dt.reset_datetime, expected_utc)
+        self.assertEqual(win_dt.reset_datetime.tzinfo, timezone.utc)
+        self.assertEqual(win_dt.reset_timestamp, expected_utc.timestamp())
+
+        # 4. QuotaWindow init with reset_time string in non-UTC timezone
+        win_str = QuotaWindow(name="5H", reset_time=iso_plus5)
+        self.assertEqual(win_str.reset_datetime, expected_utc)
+        self.assertEqual(win_str.reset_datetime.tzinfo, timezone.utc)
+        self.assertEqual(win_str.reset_timestamp, expected_utc.timestamp())
+
+        # 5. Direct mutation of win.reset_datetime to non-UTC datetime
+        win_mut = QuotaWindow(name="5H", reset_time="2026-10-01T12:00:00Z")
+        win_mut.reset_datetime = dt_plus5
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win_mut.get_remaining_seconds(now_dt=now), 3600.0)
+        self.assertEqual(win_mut.reset_datetime, expected_utc)
+        self.assertEqual(win_mut.reset_datetime.tzinfo, timezone.utc)
+
+    def test_quota_window_simultaneous_reset_time_and_timestamp_mutation(self):
+        """Verify simultaneous mutation of reset_time and reset_timestamp synchronizes all three representations."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 3600.0)
+
+        # Simultaneously mutate reset_time and reset_timestamp
+        win.reset_time = "2026-10-01T15:00:00Z"
+        win.reset_timestamp = 1790870400.0  # 16:00:00 UTC (intentionally mismatched)
+
+        # Trigger synchronization via format_reset_countdown using now_dt keyword
+        countdown = win.format_reset_countdown(now_dt=now)
+        self.assertEqual(countdown, "06:00:00")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+
+        expected_dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win.reset_datetime, expected_dt)
+        self.assertEqual(win.reset_timestamp, expected_dt.timestamp())
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00Z")
+
+    def test_parse_reset_time_extreme_and_special_values(self):
+        """Verify parse_reset_time_to_datetime handles extreme and special float/numeric values without raising."""
+        for val in [float("inf"), float("-inf"), "inf", "-inf", float("nan"), "nan", 1e18, -1e18, "1e18", "-1e18"]:
+            self.assertIsNone(parse_reset_time_to_datetime(val))
+            self.assertIsNone(parse_reset_time_to_timestamp(val))
+
+    def test_normalize_now_datetime_extreme_and_special_values(self):
+        """Verify _normalize_now_datetime returns None on extreme or NaN/Inf inputs without raising."""
+        for val in [float("nan"), float("inf"), float("-inf"), 1e18, -1e18]:
+            self.assertIsNone(_normalize_now_datetime(val))
+
+    def test_countdown_and_remaining_seconds_with_nan_and_inf_now(self):
+        """Verify get_remaining_seconds, format_reset_countdown, and format_quota_badge handle NaN and Inf now_dt safely."""
+        dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time=dt)
+        for bad_now in [float("nan"), float("inf"), float("-inf"), 1e18, -1e18]:
+            rem = win.get_remaining_seconds(now_dt=bad_now)
+            self.assertIsInstance(rem, float)
+            cd = win.format_reset_countdown(now_dt=bad_now)
+            self.assertIsInstance(cd, str)
+            badge = format_quota_badge(win, now_dt=bad_now)
+            self.assertIsInstance(badge, str)
+
+    def test_quota_window_reset_datetime_non_datetime_types(self):
+        """Verify QuotaWindow initialized or mutated with non-datetime reset_datetime parses cleanly without AttributeError."""
+        # Initialized with ISO string
+        iso_str = "2026-10-01T15:00:00Z"
+        expected_dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_datetime=iso_str)
+        self.assertEqual(win.reset_datetime, expected_dt)
+        self.assertEqual(win.reset_timestamp, expected_dt.timestamp())
+        self.assertEqual(win.reset_time, "2026-10-01T15:00:00+00:00")
+
+        # Initialized with numeric timestamp
+        ts = expected_dt.timestamp()
+        win_ts = QuotaWindow(name="5H", reset_datetime=ts)
+        self.assertEqual(win_ts.reset_datetime, expected_dt)
+        self.assertEqual(win_ts.reset_timestamp, ts)
+
+        # Initialized with invalid string
+        win_invalid = QuotaWindow(name="5H", reset_datetime="invalid")
+        self.assertIsNone(win_invalid.reset_datetime)
+        self.assertIsNone(win_invalid.reset_timestamp)
+
+        # Dynamic mutation to ISO string
+        win2 = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        win2.reset_datetime = "2026-10-01T16:00:00Z"
+        dt2 = datetime(2026, 10, 1, 16, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win2.get_remaining_seconds(now_dt=datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)), 3600.0)
+        self.assertEqual(win2.reset_datetime, dt2)
+        self.assertEqual(win2.reset_timestamp, dt2.timestamp())
+        self.assertEqual(win2.reset_time, dt2.isoformat())
+
+        # Dynamic mutation to invalid value
+        win2.reset_datetime = "not-a-datetime"
+        self.assertEqual(win2.get_remaining_seconds(), 0.0)
+        self.assertIsNone(win2.reset_datetime)
+        self.assertIsNone(win2.reset_timestamp)
+        self.assertIsNone(win2.reset_time)
+
+    def test_quota_window_reset_timestamp_mutation_normalizes_to_float(self):
+        """Verify mutating win.reset_timestamp with an int or string normalizes win.reset_timestamp to float."""
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+
+        # Mutate with integer
+        win.reset_timestamp = 1790870400  # 2026-10-01T16:00:00 UTC
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 25200.0)
+        self.assertIsInstance(win.reset_timestamp, float)
+        self.assertEqual(win.reset_timestamp, 1790870400.0)
+        self.assertEqual(win.reset_datetime, datetime(2026, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        # Mutate with string timestamp
+        win.reset_timestamp = "1790874000.0"  # 2026-10-01T17:00:00 UTC
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 28800.0)
+        self.assertIsInstance(win.reset_timestamp, float)
+        self.assertEqual(win.reset_timestamp, 1790874000.0)
+        self.assertEqual(win.reset_datetime, datetime(2026, 10, 1, 17, 0, 0, tzinfo=timezone.utc))
+
 
 class TestParseResetTime(unittest.TestCase):
     """Unit tests for parse_reset_time_to_datetime and parse_reset_time_to_timestamp."""
@@ -2075,7 +2695,7 @@ class TestParseResetTime(unittest.TestCase):
         dt_custom = datetime(2026, 9, 25, 18, 0, 0, tzinfo=custom_tz)
         res_custom = parse_reset_time_to_datetime(dt_custom)
         self.assertEqual(res_custom, dt_custom)
-        self.assertEqual(res_custom.tzinfo, custom_tz)
+        self.assertEqual(res_custom.tzinfo, timezone.utc)
 
         # Naive datetime gets timezone.utc attached
         dt_naive = datetime(2026, 9, 25, 16, 0, 0)
@@ -2102,6 +2722,8 @@ class TestParseResetTime(unittest.TestCase):
         self.assertEqual(parse_reset_time_to_datetime("1786266000"), expected_int)
         self.assertEqual(parse_reset_time_to_datetime("1786266000.5"), expected_float)
         self.assertEqual(parse_reset_time_to_datetime("-1000"), expected_neg)
+        self.assertEqual(parse_reset_time_to_datetime("  1786266000  "), expected_int)
+        self.assertEqual(parse_reset_time_to_timestamp("  1786266000  "), 1786266000.0)
 
     def test_iso8601_strings(self):
         expected_utc = datetime(2026, 9, 25, 16, 0, 0, tzinfo=timezone.utc)
@@ -2148,6 +2770,7 @@ class TestParseResetTime(unittest.TestCase):
         self.assertEqual(parse_reset_time_to_timestamp(1786266000.5), 1786266000.5)
         self.assertEqual(parse_reset_time_to_timestamp(-1000), -1000.0)
         self.assertEqual(parse_reset_time_to_timestamp("1786266000"), 1786266000.0)
+        self.assertEqual(parse_reset_time_to_timestamp("  1786266000  "), 1786266000.0)
         self.assertEqual(parse_reset_time_to_timestamp("1786266000.5"), 1786266000.5)
         self.assertEqual(parse_reset_time_to_timestamp("-1000"), -1000.0)
         self.assertEqual(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"), expected_ts)

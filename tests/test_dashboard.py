@@ -4,6 +4,7 @@ Unit tests for Graviton Live Dashboard Generator and Auto-Updater (lib/dashboard
 """
 
 import os
+import re
 import tempfile
 import threading
 import time
@@ -20,6 +21,7 @@ from lib.dashboard import (
     _render_history_tasks_table,
     format_dashboard_markdown,
     format_duration,
+    format_percentage,
     get_quota_color,
     is_safe_url,
     parse_dashboard_markdown,
@@ -30,7 +32,7 @@ from lib.dashboard import (
     METRIC_INT_PATTERNS,
     METRIC_STR_PATTERNS,
 )
-from lib.quota import QuotaTracker
+from lib.quota import QuotaInfo, QuotaTracker, QuotaWindow
 from lib.tasks import Task, TaskStatus
 
 
@@ -366,6 +368,102 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("Queue is empty.", html_out)
         self.assertIn("No completed tasks in history yet.", html_out)
 
+    def test_format_dashboard_markdown_shows_5h_and_1w_quota(self):
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+
+        mock_quota = MagicMock()
+        w5_g = QuotaWindow(name="5H", remaining_percentage=85.0, reset_time="2026-09-24T10:00:00Z")
+        w1_g = QuotaWindow(name="1W", remaining_percentage=92.5, reset_time="2026-09-30T10:00:00Z")
+        w5_c = QuotaWindow(name="5H", remaining_percentage=70.0, reset_time="2026-09-24T12:00:00Z")
+        w1_c = QuotaWindow(name="1W", remaining_percentage=98.0, reset_time="2026-09-30T12:00:00Z")
+
+        mock_quota.get_pool_windows.side_effect = lambda pool: (w5_g, w1_g) if pool == "gemini" else (w5_c, w1_c)
+        mock_quota.get_pool_remaining_percentage.side_effect = lambda pool: 85.0 if pool == "gemini" else 70.0
+        mock_quota.get_info().to_dict.return_value = {
+            "quota_pool": "gemini",
+            "active_model": "gemini-3.8-flash-medium",
+            "remaining_percentage": 85.0,
+        }
+        mock_quota.get_active_model.side_effect = lambda pool: "gemini-3.8-flash-medium" if pool == "gemini" else "claude-sonnet-4-6"
+
+        md = format_dashboard_markdown(task_manager=mock_tm, quota_tracker=mock_quota)
+
+        self.assertIn("| **Gemini (5H)** | `85%` |", md)
+        self.assertIn("| **Gemini (1W)** | `92.5%` |", md)
+        self.assertIn("| **Third-Party (5H)** | `70%` |", md)
+        self.assertIn("| **Third-Party (1W)** | `98%` |", md)
+        self.assertIn("| **Gemini Remaining** | `85.0%` |", md)
+        self.assertIn("| **Third-Party Remaining** | `70.0%` |", md)
+
+    def test_parse_dashboard_markdown_extracts_5h_and_1w_quota(self):
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `85.5%` | Reset: 02h 15m | Pacing: OK |
+| **Gemini (1W)** | `92.0%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70.0%` | Reset: 01h 30m | Pacing: OK |
+| **Third-Party (1W)** | `95.0%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `85.5%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70.0%` | Fallback model capacity |
+"""
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(parsed["gemini_5h_pct"], 85.5)
+        self.assertEqual(parsed["gemini_1w_pct"], 92.0)
+        self.assertEqual(parsed["tp_5h_pct"], 70.0)
+        self.assertEqual(parsed["tp_1w_pct"], 95.0)
+        self.assertEqual(parsed["third_party_5h_pct"], 70.0)
+        self.assertEqual(parsed["third_party_1w_pct"], 95.0)
+        self.assertEqual(parsed["gemini_5h_countdown"], "02h 15m")
+        self.assertEqual(parsed["gemini_1w_countdown"], "5d 04h")
+        self.assertEqual(parsed["third_party_5h_countdown"], "01h 30m")
+        self.assertEqual(parsed["third_party_1w_countdown"], "4d 12h")
+
+    def test_render_dashboard_html_contains_5h_and_1w_gauges(self):
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `85%` | Reset: 02:15:00 | Pacing: OK |
+| **Gemini (1W)** | `92%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70%` | Reset: 01:30:00 | Pacing: OK |
+| **Third-Party (1W)** | `95%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `85%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70%` | Fallback model capacity |
+"""
+        html_out = render_dashboard_html(sample_md)
+
+        self.assertIn("5-Hour Window (Burst)", html_out)
+        self.assertIn("1-Week Window (Weekly)", html_out)
+        self.assertIn('id="gemini-5h-bar"', html_out)
+        self.assertIn('id="gemini-1w-bar"', html_out)
+        self.assertIn('id="tp-5h-bar"', html_out)
+        self.assertIn('id="tp-1w-bar"', html_out)
+        self.assertIn('id="gemini-5h-pct-label"', html_out)
+        self.assertIn('id="gemini-1w-pct-label"', html_out)
+        self.assertIn('id="tp-5h-pct-label"', html_out)
+        self.assertIn('id="tp-1w-pct-label"', html_out)
+        self.assertIn("85%", html_out)
+        self.assertIn("92%", html_out)
+        self.assertIn("70%", html_out)
+        self.assertIn("95%", html_out)
+
     def test_render_dashboard_html_xss_sanitization(self):
         xss_task = Task(
             id="<script>alert(1)</script>",
@@ -676,6 +774,125 @@ class TestDashboardUpdater(unittest.TestCase):
         html_out = render_dashboard_html(md)
         self.assertNotIn('<option value="   "', html_out)
         self.assertNotIn('<option value=""', html_out)
+
+    def test_render_dashboard_html_client_regex_escapes_parenthesized_labels(self):
+        html_out = render_dashboard_html("# Test MD")
+        # Ensure the client-side JavaScript escapes regex special characters for labels
+        self.assertIn("const esc = label.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');", html_out)
+        self.assertIn("new RegExp(\"\\\\|\\\\s*\\\\*\\\\*\" + esc + \"\\\\*\\\\*\\\\s*\\\\|\\\\s*`?([^`|\\\\n]+)`?\");", html_out)
+        self.assertIn("new RegExp(\"\\\\|\\\\s*\\\\*\\\\*\" + esc + \"\\\\*\\\\*\\\\s*\\\\|\\\\s*`?[^`|\\\\n]+`?\\\\s*\\\\|\\\\s*([^|\\\\n]+)\\\\|\");", html_out)
+
+    def test_format_dashboard_markdown_quota_info_dict_fallback(self):
+        # When quota_tracker is None but extra_info has quota_info, format_dashboard_markdown falls back to quota_info
+        extra = {
+            "quota_info": {
+                "quota_pool": "gemini",
+                "active_model": "gemini-3.8-flash-medium",
+                "remaining_percentage": 82.0,
+                "gemini_window_5h": {
+                    "name": "5H",
+                    "remaining_percentage": 82.0,
+                    "reset_time": "2026-09-24T12:00:00Z",
+                    "reset_countdown": "03h 15m",
+                    "pacing_recovery_countdown": "00:00:00",
+                    "pacing_status": "OK",
+                },
+                "gemini_window_1w": {
+                    "name": "1W",
+                    "remaining_percentage": 95.0,
+                    "reset_countdown": "6d 02h",
+                    "pacing_status": "OK",
+                },
+                "claude_window_5h": {
+                    "name": "5H",
+                    "remaining_percentage": 60.0,
+                    "reset_countdown": "01h 45m",
+                    "pacing_status": "BEHIND_PACING",
+                },
+                "claude_window_1w": {
+                    "name": "1W",
+                    "remaining_percentage": 90.0,
+                    "reset_countdown": "4d 10h",
+                    "pacing_status": "OK",
+                },
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `82%` | Reset: 03h 15m | Pacing: OK |", md)
+        self.assertIn("| **Gemini (1W)** | `95%` | Reset: 6d 02h | Pacing: OK |", md)
+        self.assertIn("| **Third-Party (5H)** | `60%` | Reset: 01h 45m | Pacing: BEHIND_PACING |", md)
+        self.assertIn("| **Third-Party (1W)** | `90%` | Reset: 4d 10h | Pacing: OK |", md)
+
+    def test_format_dashboard_markdown_third_party_pool_fallback(self):
+        # When quota_tracker is None and quota_info is third-party pool with generic window_5h / window_1w,
+        # Third-party pool quota must not leak into Gemini windows.
+        extra = {
+            "quota_info": {
+                "quota_pool": "claude_gpt",
+                "window_5h": {
+                    "name": "5H",
+                    "remaining_percentage": 55.0,
+                    "reset_countdown": "01h 15m",
+                    "pacing_status": "OK",
+                },
+                "window_1w": {
+                    "name": "1W",
+                    "remaining_percentage": 75.0,
+                    "reset_countdown": "3d 08h",
+                    "pacing_status": "OK",
+                },
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        # Gemini windows should not take Third-Party window_5h / window_1w
+        self.assertIn("| **Gemini (5H)** | `N/A` | N/A |", md)
+        self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md)
+        # Third-Party windows should correctly resolve window_5h / window_1w
+        self.assertIn("| **Third-Party (5H)** | `55%` | Reset: 01h 15m | Pacing: OK |", md)
+        self.assertIn("| **Third-Party (1W)** | `75%` | Reset: 3d 08h | Pacing: OK |", md)
+
+    def test_parse_dashboard_markdown_preserves_pacing_status_in_details(self):
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `85%` | Reset: 02:15:00 | Pacing: OK |
+| **Gemini (1W)** | `92%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70%` | Reset: 01:30:00 | Pacing: BEHIND_PACING |
+| **Third-Party (1W)** | `95%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `85%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70%` | Fallback model capacity |
+"""
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(parsed["gemini_5h_details"], "Reset: 02:15:00 | Pacing: OK")
+        self.assertEqual(parsed["gemini_1w_details"], "Reset: 5d 04h | Pacing: OK")
+        self.assertEqual(parsed["tp_5h_details"], "Reset: 01:30:00 | Pacing: BEHIND_PACING")
+        self.assertEqual(parsed["tp_1w_details"], "Reset: 4d 12h | Pacing: OK")
+
+    def test_render_dashboard_html_extra_info_fallback(self):
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 78.5,
+                "gemini_1w_remaining_percentage": 88.0,
+                "third_party_5h_remaining_percentage": 65.0,
+                "third_party_1w_remaining_percentage": 92.0,
+                "gemini_5h_countdown": "02h 10m",
+                "gemini_1w_countdown": "5d 11h",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertIn("78.5%", html_out)
+        self.assertIn("88%", html_out)
+        self.assertIn("65%", html_out)
+        self.assertIn("92%", html_out)
+        self.assertIn("Reset: 02h 10m | Pacing: OK", html_out)
+        self.assertIn("Reset: 5d 11h | Pacing: OK", html_out)
 
 
     def test_format_dashboard_markdown_with_approved_prs(self):
@@ -1416,10 +1633,80 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIsNotNone(WORKERS_PATTERN.search("| **Active Workers** | `2 / 4` |"))
         self.assertIn("Running Tasks", METRIC_INT_PATTERNS)
         self.assertIn("Active Pool", METRIC_STR_PATTERNS)
+        self.assertIn("Active Gemini Model", METRIC_STR_PATTERNS)
+        self.assertIn("Active Third-Party Model", METRIC_STR_PATTERNS)
+        self.assertIn("Gemini (5H)", METRIC_STR_PATTERNS)
+        self.assertIn("Gemini (1W)", METRIC_STR_PATTERNS)
+        self.assertIn("Third-Party (5H)", METRIC_STR_PATTERNS)
+        self.assertIn("Third-Party (1W)", METRIC_STR_PATTERNS)
+
+    def test_format_percentage_helper(self):
+        """Verify format_percentage handles int, float, string-float, and strings with %."""
+        self.assertEqual(format_percentage(100), "100%")
+        self.assertEqual(format_percentage(88.0), "88%")
+        self.assertEqual(format_percentage(78.5), "78.5%")
+        self.assertEqual(format_percentage("78.5"), "78.5%")
+        self.assertEqual(format_percentage("78.5%"), "78.5%")
+        self.assertEqual(format_percentage("88.0"), "88%")
+        self.assertEqual(format_percentage("88.0%"), "88%")
+        self.assertEqual(format_percentage("100%"), "100%")
+        self.assertEqual(format_percentage(None), "N/A")
+        self.assertEqual(format_percentage("N/A"), "N/A")
+        self.assertEqual(format_percentage(True), "N/A")
+
+    def test_format_percentage_edge_cases(self):
+        """Verify format_percentage handles 'N/A%', 'n/a', 'None', and non-numeric strings without appending %."""
+        self.assertEqual(format_percentage("N/A%"), "N/A")
+        self.assertEqual(format_percentage("n/a"), "N/A")
+        self.assertEqual(format_percentage("None"), "N/A")
+        self.assertEqual(format_percentage("null"), "N/A")
+        self.assertEqual(format_percentage("unknown"), "N/A")
+        self.assertEqual(format_percentage("error"), "N/A")
+        self.assertEqual(format_percentage("None%", default="N/A"), "N/A")
+        self.assertEqual(format_percentage("invalid", default="--"), "--")
+
+    def test_render_dashboard_html_string_float_and_integer_percentages(self):
+        """Verify render_dashboard_html handles string-float and int percentages without ValueError or AttributeError."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": "78.5",
+                "gemini_1w_remaining_percentage": 88,  # int
+                "third_party_5h_remaining_percentage": "65.0%",
+                "third_party_1w_remaining_percentage": "92.4",
+                "gemini_5h_countdown": "02h 10m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertIn("78.5%", html_out)
+        self.assertIn("88%", html_out)
+        self.assertIn("65%", html_out)
+        self.assertIn("92.4%", html_out)
+        self.assertIn("Pacing: BEHIND_PACING", html_out)
+
+    def test_format_dashboard_markdown_integer_window_percentage_compatibility(self):
+        """Verify integer remaining_percentage on QuotaWindow does not cause AttributeError on Python 3.10/3.11."""
+        win_int = QuotaWindow(name="5H", duration_seconds=18000)
+        win_int.remaining_percentage = 80  # int instead of float
+        md = format_dashboard_markdown(extra_info={"quota_info": {"gemini_window_5h": win_int}})
+        self.assertIn("| **Gemini (5H)** | `80%` |", md)
+
+    def test_format_dashboard_markdown_reconstructed_dict_preserves_pacing_status(self):
+        """Verify format_dashboard_markdown preserves pacing_status in reconstructed window dicts."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 45.0,
+                "gemini_5h_countdown": "01h 30m",
+                "gemini_5h_reset_time": "2026-09-25T12:00:00Z",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `45%` | Reset: 01h 30m | Pacing: BEHIND_PACING |", md)
 
     def test_template_js_truncates_raw_detail_before_escape_html(self):
         template = _get_dashboard_template()
-        self.assertIn("const rawDetail = r[5].replace(/`/g, '').trim();", template)
+        self.assertIn("const rawDetail = detailRaw.replace(/`/g, '').trim();", template)
         self.assertIn("const truncRaw = rawDetail.length > 40 ? rawDetail.substring(0, 40) + '...' : rawDetail;", template)
         self.assertIn("const cleanDetail = escapeHtml(rawDetail);", template)
         self.assertIn("const trunc = escapeHtml(truncRaw);", template)
@@ -1434,10 +1721,584 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
     def test_template_js_handles_finish_status(self):
         template = _get_dashboard_template()
-        self.assertIn("r[4].toLowerCase().includes('finish')", template)
+        self.assertIn("rawStatus.toLowerCase().includes('finish')", template)
+
+    def test_template_js_client_side_update_regexes(self):
+        template = _get_dashboard_template()
+        # Verify status and updated match regexes have valid markdown escaping (not double backslashes)
+        self.assertIn(r"md.match(/\*\*Status\*\*:\s*([^\n|&]+)/)", template)
+        self.assertIn(r"md.match(/\*Last updated:\s*([^(]+)/)", template)
+        self.assertIn(r"md.match(/\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?/)", template)
+        # Verify RegExp string constructor escaping is for literal pipe and asterisks
+        self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + label + "\\*\\*\\s*\\|\\s*`?(\\d+)`?")', template)
+        self.assertIn(r'new RegExp("\\|\\s*\\*\\*" + esc + "\\*\\*\\s*\\|\\s*`?([^`|\\n]+)`?")', template)
+        # Verify markdown link regex does not look for literal backslashes
+        self.assertIn(r"rcRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
+        self.assertIn(r"detailRaw.match(/\[(.*?)\]\((.*?)\)/)", template)
+
+    def test_client_side_regexes_evaluate_generated_dashboard_markdown(self):
+        """
+        End-to-end verification that the client-side JavaScript regexes in dashboard.html
+        correctly match and parse markdown produced by format_dashboard_markdown().
+        """
+        mock_tm = MagicMock()
+        mock_tm._draining = False
+        mock_tm._paused = False
+        mock_tm.get_stats.return_value = {
+            "active_workers": 2,
+            "max_workers": 4,
+            "active_tasks": 1,
+            "queued_tasks": 3,
+            "completed_tasks": 10,
+            "failed_tasks": 1,
+        }
+
+        # Active task with remote control url
+        t1 = MagicMock()
+        t1.id = "task-001"
+        t1.agent = "code_reviewer"
+        t1.target_id = "PR #100"
+        t1.start_time = time.time() - 30
+        t1.status = "RUNNING"
+        t1.remote_control_url = "https://antigravity.google.com/session/task-001"
+        t1.repo_full_name = "owner/repo"
+        mock_tm.get_active_tasks.return_value = [t1]
+        mock_tm.get_queued_tasks.return_value = []
+
+        # History task with remote control url
+        h1 = MagicMock()
+        h1.id = "task-000"
+        h1.agent = "code_fixer"
+        h1.target_id = "PR #99"
+        h1.start_time = time.time() - 100
+        h1.finish_time = time.time() - 40
+        h1.status = TaskStatus.COMPLETED
+        h1.remote_control_url = "https://antigravity.google.com/session/task-000"
+        h1.error_message = None
+        h1.repo_full_name = "owner/repo"
+        mock_tm.get_task_history.return_value = [h1]
+
+        mock_qt = MagicMock()
+        mock_qt.get_info.return_value.to_dict.return_value = {
+            "quota_pool": "gemini",
+            "selected_model": "gemini-3.1-pro-high",
+            "active_gemini_model": "gemini-3.1-pro-high",
+            "active_third_party_model": "claude-3-5-sonnet",
+            "gemini_remaining_percentage": 85,
+            "third_party_remaining_percentage": 92,
+        }
+        mock_qt.quota_pool = "gemini"
+        mock_qt.get_active_model.side_effect = lambda pool=None: "gemini-3.1-pro-high" if pool == "gemini" else "claude-3-5-sonnet"
+        mock_qt.get_pool_remaining_percentage.side_effect = lambda pool=None: 85 if pool == "gemini" else 92
+
+        md = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+
+        # 1. Status & Updated
+        status_match = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md)
+        self.assertIsNotNone(status_match)
+        self.assertIn("BUSY", status_match.group(1))
+
+        updated_match = re.search(r"\*Last updated:\s*([^(]+)", md)
+        self.assertIsNotNone(updated_match)
+        self.assertIn("UTC", updated_match.group(1))
+
+        # 2. KPI Metrics - Active Workers
+        workers_match = re.search(r"\|\s*\*\*Active Workers\*\*\s*\|\s*`?(\d+)\s*\/\s*(\d+)`?", md)
+        self.assertIsNotNone(workers_match)
+        self.assertEqual(int(workers_match.group(1)), 2)
+        self.assertEqual(int(workers_match.group(2)), 4)
+
+        # 2. KPI Metrics - extractInt equivalent
+        def extract_int(label):
+            pattern = r"\|\s*\*\*" + re.escape(label) + r"\*\*\s*\|\s*`?(\d+)`?"
+            m = re.search(pattern, md)
+            return int(m.group(1)) if m else 0
+
+        self.assertEqual(extract_int("Running Tasks"), 1)
+        self.assertEqual(extract_int("Queued Tasks"), 3)
+        self.assertEqual(extract_int("Completed Tasks"), 10)
+        self.assertEqual(extract_int("Failed Tasks"), 1)
+
+        # 3. Quota & Model - extractStr equivalent
+        def extract_str(label, def_val):
+            pattern = r"\|\s*\*\*" + re.escape(label) + r"\*\*\s*\|\s*`?([^`|\n]+)`?"
+            m = re.search(pattern, md)
+            return m.group(1).strip() if m else def_val
+
+        self.assertEqual(extract_str("Active Pool", "default"), "gemini")
+        self.assertEqual(extract_str("Active Model", "default"), "gemini-3.1-pro-high")
+        self.assertEqual(extract_str("Active Gemini Model", ""), "gemini-3.1-pro-high")
+        self.assertEqual(extract_str("Active Third-Party Model", ""), "claude-3-5-sonnet")
+        self.assertEqual(extract_str("Gemini Remaining", "N/A"), "85%")
+        self.assertEqual(extract_str("Third-Party Remaining", "N/A"), "92%")
+
+        # 4. Table Markdown Links (active tasks & history tasks)
+        active_lines = [l for l in md.splitlines() if "task-001" in l]
+        self.assertEqual(len(active_lines), 1)
+        active_cells = [c.strip() for c in active_lines[0].split("|")[1:-1]]
+        self.assertEqual(active_cells[0], "`task-001`")
+        self.assertEqual(active_cells[1], "`code_reviewer`")
+        self.assertEqual(active_cells[2], "-")
+        self.assertEqual(active_cells[3], "`PR #100`")
+        active_link_match = re.search(r"\[(.*?)\]\((.*?)\)", active_cells[6])
+        self.assertIsNotNone(active_link_match)
+        self.assertEqual(active_link_match.group(1), "Remote Control 🌐")
+        self.assertEqual(active_link_match.group(2), "https://antigravity.google.com/session/task-001")
+
+        history_lines = [l for l in md.splitlines() if "task-000" in l]
+        self.assertEqual(len(history_lines), 1)
+        history_cells = [c.strip() for c in history_lines[0].split("|")[1:-1]]
+        self.assertEqual(history_cells[0], "`task-000`")
+        self.assertEqual(history_cells[1], "`code_fixer`")
+        self.assertEqual(history_cells[2], "-")
+        self.assertEqual(history_cells[3], "`PR #99`")
+        history_link_match = re.search(r"\[(.*?)\]\((.*?)\)", history_cells[6])
+        self.assertIsNotNone(history_link_match)
+        self.assertEqual(history_link_match.group(1), "Remote Control 🌐")
+        self.assertEqual(history_link_match.group(2), "https://antigravity.google.com/session/task-000")
+
+        # 5. ONLINE status verification when no active tasks
+        mock_tm.get_active_tasks.return_value = []
+        md_online = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_online = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_online)
+        self.assertIsNotNone(status_match_online)
+        self.assertIn("ONLINE", status_match_online.group(1))
+
+        # 6. DRAINING and PAUSED status verification
+        mock_tm._draining = True
+        md_draining = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_draining = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_draining)
+        self.assertIsNotNone(status_match_draining)
+        self.assertIn("DRAINING", status_match_draining.group(1))
+
+        mock_tm._draining = False
+        mock_tm._paused = True
+        md_paused = format_dashboard_markdown(
+            task_manager=mock_tm,
+            quota_tracker=mock_qt,
+            host="127.0.0.1",
+            port=8000,
+        )
+        status_match_paused = re.search(r"\*\*Status\*\*:\s*([^\n|&]+)", md_paused)
+        self.assertIsNotNone(status_match_paused)
+        self.assertIn("PAUSED", status_match_paused.group(1))
+
+    def test_format_dashboard_markdown_with_model_column(self):
+        """Verify format_dashboard_markdown includes Model column in active and history tables."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1,
+            "max_workers": 2,
+            "active_tasks": 1,
+            "queued_tasks": 0,
+            "completed_tasks": 2,
+            "failed_tasks": 0,
+        }
+
+        active_task = Task(
+            id="task-act",
+            agent="code_reviewer",
+            prompt="Review PR #50",
+            target_id="#50",
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 25.0,
+            selected_model="gemini-3.8-flash-medium",
+        )
+        history_task1 = Task(
+            id="task-hist1",
+            agent="code_fixer",
+            prompt="Fix bug",
+            target_id="#51",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 80.0,
+            finish_time=time.time() - 20.0,
+            selected_model="claude-3-5-sonnet",
+        )
+        history_task2 = Task(
+            id="task-hist2",
+            agent="pr_drafter",
+            prompt="Draft PR",
+            target_id="#52",
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 50.0,
+            finish_time=time.time() - 10.0,
+            selected_model=None,
+        )
+
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = [history_task1, history_task2]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+
+        # Check Active Tasks table headers and rows
+        self.assertIn("| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |", md)
+        self.assertIn("| `task-act` | `code_reviewer` | `gemini-3.8-flash-medium` | `#50` |", md)
+
+        # Check History table headers and rows
+        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Summary / Remote Link |", md)
+        self.assertIn("| `task-hist1` | `code_fixer` | `claude-3-5-sonnet` | `#51` |", md)
+        self.assertIn("| `task-hist2` | `pr_drafter` | - | `#52` |", md)
+
+    def test_parse_dashboard_markdown_with_and_without_model_column(self):
+        """Verify parse_dashboard_markdown handles both 7-column (with Model) and 6-column (legacy) tables."""
+        # 7-column markdown
+        md_7col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Model | Target | Elapsed | Status | Remote Control |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-1` | `code_reviewer` | `gemini-3.8-flash-medium` | `#10` | 15s | 🔄 RUNNING | [Remote Control 🌐](https://example.com/rc1) |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Model | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-2` | `code_fixer` | `claude-3-5-sonnet` | `#11` | 42s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed_7 = parse_dashboard_markdown(md_7col)
+        self.assertEqual(len(parsed_7["active_tasks"]), 1)
+        self.assertEqual(parsed_7["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed_7["active_tasks"][0]["agent"], "code_reviewer")
+        self.assertEqual(parsed_7["active_tasks"][0]["model"], "gemini-3.8-flash-medium")
+        self.assertEqual(parsed_7["active_tasks"][0]["target"], "#10")
+        self.assertEqual(parsed_7["active_tasks"][0]["remote_control_url"], "https://example.com/rc1")
+
+        self.assertEqual(len(parsed_7["history_tasks"]), 1)
+        self.assertEqual(parsed_7["history_tasks"][0]["id"], "task-2")
+        self.assertEqual(parsed_7["history_tasks"][0]["agent"], "code_fixer")
+        self.assertEqual(parsed_7["history_tasks"][0]["model"], "claude-3-5-sonnet")
+        self.assertEqual(parsed_7["history_tasks"][0]["target"], "#11")
+
+        # 6-column markdown (legacy backwards compatibility)
+        md_6col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status | Remote Control |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-3` | `code_reviewer` | `#12` | 10s | 🔄 RUNNING | [Remote Control 🌐](https://example.com/rc2) |\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-4` | `code_fixer` | `#13` | 30s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed_6 = parse_dashboard_markdown(md_6col)
+        self.assertEqual(len(parsed_6["active_tasks"]), 1)
+        self.assertEqual(parsed_6["active_tasks"][0]["id"], "task-3")
+        self.assertEqual(parsed_6["active_tasks"][0]["model"], "-")
+        self.assertEqual(parsed_6["active_tasks"][0]["target"], "#12")
+
+        self.assertEqual(len(parsed_6["history_tasks"]), 1)
+        self.assertEqual(parsed_6["history_tasks"][0]["id"], "task-4")
+        self.assertEqual(parsed_6["history_tasks"][0]["model"], "-")
+        self.assertEqual(parsed_6["history_tasks"][0]["target"], "#13")
+
+    def test_render_html_tables_with_model_column(self):
+        """Verify _render_active_tasks_table and _render_history_tasks_table render Model column."""
+        from lib.dashboard import _render_active_tasks_table, _render_history_tasks_table
+
+        active_data = [
+            {
+                "id": "task-act-1",
+                "agent": "code_reviewer",
+                "model": "gemini-3.8-flash-medium",
+                "target": "#101",
+                "elapsed": "20s",
+                "status": "RUNNING",
+                "remote_control_url": "https://example.com/rc",
+            },
+            {
+                "id": "task-act-2",
+                "agent": "code_fixer",
+                "model": "-",
+                "target": "#102",
+                "elapsed": "5s",
+                "status": "RUNNING",
+                "remote_control_url": None,
+            },
+        ]
+        active_html = _render_active_tasks_table(active_data)
+        self.assertIn("<th>Model</th>", active_html)
+        self.assertIn("<code>gemini-3.8-flash-medium</code>", active_html)
+        self.assertIn('<span class="text-muted">-</span>', active_html)
+
+        history_data = [
+            {
+                "id": "task-hist-1",
+                "agent": "code_fixer",
+                "model": "claude-3-5-sonnet",
+                "target": "#103",
+                "duration": "1m",
+                "status": "COMPLETED",
+                "details": "Finished",
+                "remote_control_url": None,
+            }
+        ]
+        history_html = _render_history_tasks_table(history_data)
+        self.assertIn("<th>Model</th>", history_html)
+        self.assertIn("<code>claude-3-5-sonnet</code>", history_html)
+
+    def test_client_js_renders_model_column_header(self):
+        """Verify render_dashboard_html client JS contains Model column header in active and history tables."""
+        html_out = render_dashboard_html("# Test Dashboard")
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th><th>Remote Control</th>", html_out)
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th>", html_out)
+
+    def test_format_dashboard_markdown_third_party_pool_capacity_no_leakage(self):
+        """Verify third-party active pool assigns remaining_percentage to Third-Party Remaining and does not leak into Gemini capacity or windows."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "claude_gpt",
+                "remaining_percentage": 60.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Third-Party Remaining** | `60.0%` |", md)
+        self.assertIn("| **Gemini Remaining** | `N/A` |", md)
+        self.assertIn("| **Gemini (5H)** | `N/A` | N/A |", md)
+        self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md)
+        self.assertIn("| **Third-Party (5H)** | `60%` | Live quota capacity |", md)
+        self.assertIn("| **Third-Party (1W)** | `60%` | Live quota capacity |", md)
+        self.assertNotIn("N/A%", md)
+
+    def test_format_dashboard_markdown_missing_null_windows_render_cleanly(self):
+        """Verify missing/null pool windows (e.g. from QuotaInfo.to_dict()) render as N/A without phantom details or N/A%."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "gemini",
+                "remaining_percentage": 75.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "third_party_remaining_percentage": None,
+                "third_party_5h_remaining_percentage": None,
+                "third_party_1w_remaining_percentage": None,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini Remaining** | `75.0%` |", md)
+        self.assertIn("| **Third-Party Remaining** | `N/A` |", md)
+        self.assertNotIn("Reset: N/A | Pacing: OK", md)
+        self.assertNotIn("N/A%", md)
+        self.assertIn("| **Third-Party (5H)** | `N/A` | N/A |", md)
+        self.assertIn("| **Third-Party (1W)** | `N/A` | N/A |", md)
+
+    def test_render_dashboard_html_preserves_pacing_status_without_countdown(self):
+        """Verify render_dashboard_html preserves BEHIND_PACING status even when countdown is None."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "third_party_5h_remaining_percentage": 30.0,
+                "third_party_5h_countdown": None,
+                "third_party_5h_reset_time": "2026-09-25T17:00:00Z",
+                "third_party_5h_pacing_status": "BEHIND_PACING",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertIn("Pacing: BEHIND_PACING", html_out)
+        self.assertIn("Reset: N/A | Pacing: BEHIND_PACING", html_out)
+
+    def test_dashboard_template_extract_str_and_details_support_array_labels(self):
+        """Verify dashboard HTML template includes label arrays for extractStr and extractDetails."""
+        _reset_dashboard_template_cache()
+        template = _get_dashboard_template()
+        self.assertIn("function extractStr(labels, defVal)", template)
+        self.assertIn("function extractDetails(labels, defVal)", template)
+        self.assertIn("['Third-Party (5H)', 'Third Party (5H)', 'Third-Party Quota (5H)']", template)
+
+    def test_parse_dashboard_markdown_explicit_na_does_not_fallback(self):
+        """Verify explicit N/A window rows parse to None rather than falling back to gemini_pct / tp_pct."""
+        md_content = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Gemini Remaining** | `85.0%` | Primary capacity |
+| **Third-Party Remaining** | `70.0%` | Secondary capacity |
+| **Gemini (5H)** | `N/A` | N/A |
+| **Gemini (1W)** | `85.0%` | Live Gemini weekly quota |
+| **Third-Party (5H)** | `N/A` | N/A |
+| **Third-Party (1W)** | `70.0%` | Fallback weekly quota |
+"""
+        data = parse_dashboard_markdown(md_content)
+        self.assertEqual(data["gemini_pct"], 85.0)
+        self.assertIsNone(data["gemini_5h_pct"])
+        self.assertEqual(data["gemini_1w_pct"], 85.0)
+        self.assertEqual(data["tp_pct"], 70.0)
+        self.assertIsNone(data["tp_5h_pct"])
+        self.assertEqual(data["tp_1w_pct"], 70.0)
+
+        # Contrast with legacy markdown dashboard where window rows are missing
+        legacy_md = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Gemini Remaining** | `85.0%` | Primary capacity |
+| **Third-Party Remaining** | `70.0%` | Secondary capacity |
+"""
+        legacy_data = parse_dashboard_markdown(legacy_md)
+        self.assertEqual(legacy_data["gemini_5h_pct"], 85.0)
+        self.assertEqual(legacy_data["gemini_1w_pct"], 85.0)
+        self.assertEqual(legacy_data["tp_5h_pct"], 70.0)
+        self.assertEqual(legacy_data["tp_1w_pct"], 70.0)
+
+    def test_render_dashboard_html_no_phantom_details_on_null_window(self):
+        """Verify render_dashboard_html avoids creating dummy 'Reset: N/A | Pacing: OK' details when a window is null in extra_info."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "claude_gpt",
+                "remaining_percentage": 50.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "gemini_1w_reset_time": None,
+                "gemini_1w_countdown": None,
+                "gemini_1w_pacing_status": "OK",
+                "third_party_5h_remaining_percentage": 50.0,
+                "third_party_5h_reset_time": "2026-09-25T17:00:00Z",
+                "third_party_5h_countdown": "01h 00m",
+                "third_party_5h_pacing_status": "OK",
+            }
+        }
+        html_out = render_dashboard_html("# Test MD", quota_tracker=None, extra_info=extra)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
+        self.assertIn("Reset: 01h 00m | Pacing: OK", html_out)
+
+    def test_render_dashboard_html_na_submeters_render_zero_width_and_neutral_color(self):
+        """Verifies explicit N/A window submeters render with style="width: 0%; background-color: #58a6ff;" instead of overall pool bar width."""
+        extra = {
+            "quota_info": {
+                "quota_pool": "gemini",
+                "remaining_percentage": 85.0,
+                "gemini_remaining_percentage": 85.0,
+                "gemini_5h_remaining_percentage": None,
+                "gemini_5h_reset_time": None,
+                "gemini_5h_countdown": None,
+                "gemini_5h_pacing_status": "OK",
+                "gemini_1w_remaining_percentage": None,
+                "gemini_1w_reset_time": None,
+                "gemini_1w_countdown": None,
+                "gemini_1w_pacing_status": "OK",
+                "third_party_remaining_percentage": 75.0,
+                "third_party_5h_remaining_percentage": None,
+                "third_party_5h_reset_time": None,
+                "third_party_5h_countdown": None,
+                "third_party_5h_pacing_status": "OK",
+                "third_party_1w_remaining_percentage": None,
+                "third_party_1w_reset_time": None,
+                "third_party_1w_countdown": None,
+                "third_party_1w_pacing_status": "OK",
+            }
+        }
+        md = """# 🌌 Graviton Live Dashboard
+## System Status & Health
+| Metric | Value | Notes |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.6-flash-high` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.6-flash-high` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `N/A` | N/A |
+| **Gemini (1W)** | `N/A` | N/A |
+| **Third-Party (5H)** | `N/A` | N/A |
+| **Third-Party (1W)** | `N/A` | N/A |
+| **Gemini Remaining** | `85.0%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `75.0%` | Fallback model capacity |
+"""
+        html_out = render_dashboard_html(md, quota_tracker=None, extra_info=extra)
+        self.assertIn('id="gemini-5h-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="gemini-1w-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="tp-5h-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+        self.assertIn('id="tp-1w-bar" class="meter-fill" style="width: 0%; background-color: #58a6ff;"', html_out)
+
+    def test_format_dashboard_markdown_quota_window_object_none_metrics_no_phantom_details(self):
+        """Verifies QuotaWindow objects with None metrics do not emit phantom Reset: N/A | Pacing: OK details."""
+        tracker = QuotaTracker()
+        tracker.gemini_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.gemini_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", md_out)
+        self.assertIn("| **Gemini (5H)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Gemini (1W)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Third-Party (5H)** | `N/A` | N/A |", md_out)
+        self.assertIn("| **Third-Party (1W)** | `N/A` | N/A |", md_out)
+
+    def test_format_dashboard_markdown_and_html_none_remaining_percentage_renders_na_not_none_percent(self):
+        """Verifies that QuotaInfo(remaining_percentage=None) renders N/A instead of None% in markdown and HTML across both pools."""
+        for pool in ("gemini", "claude"):
+            info = QuotaInfo(remaining_percentage=None, quota_pool=pool)
+            extra = {"quota_info": info.to_dict()}
+            md_out = format_dashboard_markdown(extra_info=extra)
+            self.assertNotIn("None%", md_out)
+            self.assertIn("| **Gemini Remaining** | `N/A` | Live Gemini API capacity |", md_out)
+            self.assertIn("| **Third-Party Remaining** | `N/A` | Fallback model capacity |", md_out)
+
+            html_out = render_dashboard_html(md_out, quota_tracker=None, extra_info=extra)
+            self.assertNotIn("None%", html_out)
+            self.assertNotIn("none%", html_out.lower())
+            self.assertIn('id="gemini-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+            self.assertIn('id="tp-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
+
+    def test_render_dashboard_html_quota_tracker_none_window_metrics_no_phantom_details(self):
+        """Verifies that render_dashboard_html with QuotaTracker containing None window metrics avoids emitting Reset: N/A | Pacing: OK details."""
+        tracker = QuotaTracker()
+        tracker.gemini_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.gemini_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+
+        # Case 1: with empty markdown content
+        html_out_empty = render_dashboard_html("", quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out_empty)
+        self.assertIn('<div class="meter-sub" id="gemini-5h-details">Live Gemini burst quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="gemini-1w-details">Live Gemini weekly quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="tp-5h-details">Fallback burst quota</div>', html_out_empty)
+        self.assertIn('<div class="meter-sub" id="tp-1w-details">Fallback weekly quota</div>', html_out_empty)
+
+        # Case 2: with markdown generated from the same uninitialized quota tracker
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        html_out = render_dashboard_html(md_out, quota_tracker=tracker)
+        self.assertNotIn("Reset: N/A | Pacing: OK", html_out)
+
+    def test_format_dashboard_markdown_quota_tracker_inactive_pool_none_windows_renders_na_not_leaked_percentage(self):
+        """Verifies that format_dashboard_markdown with QuotaTracker does not leak active pool percentage into inactive pool."""
+        # Active pool is gemini at 42.0%, but Claude windows are uninitialized / None
+        tracker = QuotaTracker(quota_pool="gemini", remaining_percentage=42.0)
+        tracker.claude_window_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=None)
+        tracker.claude_window_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=None)
+
+        md_out = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertIn("| **Gemini Remaining** | `42.0%` |", md_out)
+        self.assertIn("| **Third-Party Remaining** | `N/A` |", md_out)
+        self.assertNotIn("| **Third-Party Remaining** | `42", md_out)
+
+        html_out = render_dashboard_html(md_out, quota_tracker=tracker)
+        self.assertIn('id="tp-pct-label" style="display: none; color: #58a6ff;">N/A</span>', html_out)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
