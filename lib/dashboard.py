@@ -170,13 +170,13 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
 
 def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
     """Format target cell for markdown table, stripping existing formatting to prevent double-backticks or nested links."""
-    clean_disp = str(target_disp or "N/A").strip().strip("`").strip()
+    clean_disp = str(target_disp or "N/A").replace("\r", " ").replace("\n", " ").strip().strip("`").strip()
     md_m = re.match(r"^\[(.*?)\]\((.*?)\)$", clean_disp)
     if md_m:
         clean_disp = md_m.group(1).strip("` ").strip()
     if not clean_disp:
         clean_disp = "N/A"
-    clean_disp = clean_disp.replace("|", "\\|")
+    clean_disp = clean_disp.replace("\r", " ").replace("\n", " ").replace("|", "\\|")
     return f"[`{clean_disp}`]({target_url})" if target_url else f"`{clean_disp}`"
 
 
@@ -645,6 +645,10 @@ def resolve_target_url(
         return cand if is_safe_url(cand) else None
 
     eff_repo = repo or _detect_git_repo_full_name()
+    if eff_repo:
+        eff_repo = eff_repo.strip()
+        if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", eff_repo):
+            eff_repo = None
     agent_str = str(agent).lower() if agent else ""
     is_agent_issue = "issue" in agent_str or "drafter" in agent_str
 
@@ -683,7 +687,9 @@ def resolve_target_url(
         raw,
         re.IGNORECASE,
     )
-    if m and eff_repo:
+    if m:
+        if not eff_repo:
+            return None
         type_prefix = m.group(1).lower() if m.group(1) else ""
         num = m.group(2)
         if type_prefix:
@@ -708,7 +714,7 @@ def _format_target_html_cell(
     """Format target cell for HTML table, resolving URL and unwrapping markdown link labels."""
     if not target_raw:
         return '<code>N/A</code>'
-    raw_str = str(target_raw).strip()
+    raw_str = str(target_raw).replace("\r", " ").replace("\n", " ").strip()
     norm = raw_str.strip("`").strip()
     if not norm or norm in ("N/A", "-", "None"):
         return '<code>N/A</code>'
@@ -727,7 +733,7 @@ def _format_target_html_cell(
         if not url:
             url = resolve_target_url(label, agent=agent)
 
-    label = label.replace(r"\|", "|")
+    label = label.replace(r"\|", "|").replace("\r", " ").replace("\n", " ")
     clean_label = html.escape(label.strip("` ").strip())
     if not clean_label or clean_label in ("N/A", "-", "None"):
         return '<code>N/A</code>'

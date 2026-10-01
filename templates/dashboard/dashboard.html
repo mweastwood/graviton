@@ -960,7 +960,7 @@
                 label = norm;
                 url = resolveTargetUrl(label, agent);
             }}
-            label = label.replace(/\\\|/g, '|');
+            label = label.replace(/\\\|/g, '|').replace(/[\r\n]+/g, ' ');
             const cleanLabel = escapeHtml(label.replace(/`/g, '').trim());
             if (!cleanLabel || cleanLabel === 'N/A' || cleanLabel === '-' || cleanLabel === 'None') {{
                 return '<code>N/A</code>';

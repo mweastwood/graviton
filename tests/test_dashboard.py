@@ -1006,6 +1006,15 @@ class TestDashboardFormatting(unittest.TestCase):
             "https://github.com/owner/repo/issues/456",
         )
 
+        # Invalid repo parameter validation
+        self.assertIsNone(resolve_target_url("#42", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("#42", repo="owner/repo/extra"))
+        self.assertIsNone(resolve_target_url("42", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("PR #123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("Issue #123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("pull/123", repo="invalid_no_slash"))
+        self.assertIsNone(resolve_target_url("issues/123", repo="owner/repo/extra"))
+
         # Unsafe / non-target inputs
         self.assertIsNone(resolve_target_url(None))
         self.assertIsNone(resolve_target_url(""))
@@ -1085,6 +1094,15 @@ class TestDashboardFormatting(unittest.TestCase):
             _format_target_html_cell("arbitrary non-target string"),
             "<code>arbitrary non-target string</code>",
         )
+        # Newline and carriage return sanitization
+        self.assertEqual(
+            _format_target_html_cell("feat\r\nbranch"),
+            "<code>feat  branch</code>",
+        )
+        self.assertEqual(
+            _format_target_html_cell("[feat\nbranch](https://github.com/owner/repo/pull/1)"),
+            '<a href="https://github.com/owner/repo/pull/1" target="_blank" rel="noopener" class="target-link"><code>feat branch</code></a>',
+        )
 
     def test_format_target_markdown_cell_type_safety(self):
         # None and non-string handling
@@ -1098,6 +1116,14 @@ class TestDashboardFormatting(unittest.TestCase):
         # Escaped pipes
         self.assertEqual(_format_target_markdown_cell("feat | fix", None), "`feat \\| fix`")
         self.assertEqual(_format_target_markdown_cell("feat | fix", "https://github.com/owner/repo/pull/1"), "[`feat \\| fix`](https://github.com/owner/repo/pull/1)")
+        # Newline and carriage return sanitization
+        self.assertEqual(_format_target_markdown_cell("line1\nline2", None), "`line1 line2`")
+        self.assertEqual(_format_target_markdown_cell("line1\r\nline2", None), "`line1  line2`")
+        self.assertEqual(_format_target_markdown_cell("line1\rline2", None), "`line1 line2`")
+        self.assertEqual(
+            _format_target_markdown_cell("line1\nline2", "https://github.com/owner/repo/pull/1"),
+            "[`line1 line2`](https://github.com/owner/repo/pull/1)",
+        )
 
     def test_parse_dashboard_markdown_escaped_pipe_in_table_rows(self):
         md = (
@@ -1154,6 +1180,30 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("feat | fix", html_out)
         self.assertIn("fix | patch", html_out)
         self.assertIn("audit | check", html_out)
+
+    def test_parse_dashboard_markdown_multiline_target_sanitization(self):
+        # When target contains newlines or carriage returns, _format_target_markdown_cell
+        # strips/replaces them, ensuring the generated markdown table row does not split
+        # across multiple lines, which allows parse_dashboard_markdown to parse active tasks cleanly.
+        multiline_target = "Task prompt with\r\nmultiple\nlines"
+        cell = _format_target_markdown_cell(multiline_target, "https://github.com/owner/repo/pull/1")
+        self.assertNotIn("\n", cell)
+        self.assertNotIn("\r", cell)
+
+        md = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n\n"
+            "## 🚀 Active Container Tasks (1)\n\n"
+            "| Task ID | Agent | Target | Elapsed | Status |\n"
+            "|:---|:---|:---|:---|:---|\n"
+            f"| `task-1` | `code_reviewer` | {cell} | 42s | 🔄 Running |\n\n"
+        )
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["active_tasks"]), 1)
+        self.assertEqual(parsed["active_tasks"][0]["id"], "task-1")
+        self.assertEqual(parsed["active_tasks"][0]["agent"], "code_reviewer")
+        self.assertEqual(parsed["active_tasks"][0]["target"], "Task prompt with  multiple lines")
+        self.assertEqual(parsed["active_tasks"][0]["target_url"], "https://github.com/owner/repo/pull/1")
 
     def test_table_rendering_target_unwrapping_and_fallback(self):
         active_rendered = _render_active_tasks_table([
@@ -3073,8 +3123,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         # Line splitting uses /\r?\n/ (not faulty split('\\n'))
         self.assertIn(r"sec.split(/\r?\n/).map", template)
         self.assertNotIn(r"sec.split('\\n')", template)
-        # Target cell pipe unescaping in client-side formatTargetCell
-        self.assertIn(r"label = label.replace(/\\\|/g, '|');", template)
+        # Target cell pipe and newline unescaping/sanitization in client-side formatTargetCell
+        self.assertIn(r"label = label.replace(/\\\|/g, '|').replace(/[\r\n]+/g, ' ');", template)
 
 
 if __name__ == "__main__":
