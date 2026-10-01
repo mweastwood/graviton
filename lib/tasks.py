@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 from lib.runner import run_agent_container
 from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
@@ -355,9 +355,34 @@ def prune_abandoned_workspaces(
 class _PrunedTaskIds:
     """Bounded collection tracking pruned task IDs with O(1) lookups and FIFO eviction."""
 
-    def __init__(self, maxlen: Optional[int] = 10000):
-        self.maxlen = maxlen
+    def __init__(
+        self,
+        iterable: Optional[Iterable[str]] = None,
+        maxlen: Optional[int] = 10000,
+    ):
+        if isinstance(iterable, int) and maxlen == 10000:
+            self._maxlen = iterable
+            iterable = None
+        else:
+            self._maxlen = maxlen
         self._items: collections.OrderedDict[str, None] = collections.OrderedDict()
+        if iterable is not None:
+            for item in iterable:
+                self.add(item)
+
+    @property
+    def maxlen(self) -> Optional[int]:
+        return self._maxlen
+
+    @maxlen.setter
+    def maxlen(self, value: Optional[int]) -> None:
+        self._maxlen = value
+        if self._maxlen is not None:
+            if self._maxlen <= 0:
+                self._items.clear()
+            else:
+                while len(self._items) > self._maxlen and self._items:
+                    self._items.popitem(last=False)
 
     def add(self, item: str) -> None:
         """Add an item to the collection, moving it to the most recent position if present."""
@@ -390,7 +415,7 @@ class _PrunedTaskIds:
         return reversed(self._items)
 
     def __repr__(self) -> str:
-        return f"_PrunedTaskIds({list(self._items)}, maxlen={self.maxlen})"
+        return f"{self.__class__.__name__}({list(self._items)}, maxlen={self.maxlen})"
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _PrunedTaskIds):
@@ -399,7 +424,7 @@ class _PrunedTaskIds:
 
     def copy(self) -> "_PrunedTaskIds":
         """Return a shallow copy of the collection with an independent underlying items dictionary."""
-        new_instance = _PrunedTaskIds(maxlen=self.maxlen)
+        new_instance = self.__class__(maxlen=self.maxlen)
         new_instance._items = self._items.copy()
         return new_instance
 

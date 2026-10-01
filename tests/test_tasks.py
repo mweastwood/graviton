@@ -2226,6 +2226,10 @@ class TestTaskManager(unittest.TestCase):
         zero_drain.add("t-2")
         self.assertEqual(len(zero_drain), 2)
         zero_drain.maxlen = 0
+        # Dynamic assignment immediately clears all items
+        self.assertEqual(len(zero_drain), 0)
+        self.assertNotIn("t-1", zero_drain)
+        self.assertNotIn("t-2", zero_drain)
         zero_drain.add("t-2")  # Re-adding existing item when maxlen <= 0
         self.assertEqual(len(zero_drain), 0)
         self.assertNotIn("t-2", zero_drain)
@@ -2240,7 +2244,13 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(len(neg_bounded), 0)
         self.assertNotIn("item", neg_bounded)
 
-        # Test dynamic maxlen reduction drains existing items down to the new bound
+        # Dynamic assignment to negative maxlen immediately clears all items
+        neg_drain = _PrunedTaskIds(maxlen=3)
+        neg_drain.add("n-1")
+        neg_drain.maxlen = -1
+        self.assertEqual(len(neg_drain), 0)
+
+        # Test dynamic maxlen reduction drains existing items down to the new bound immediately
         drain_bounded = _PrunedTaskIds(maxlen=5)
         for i in range(5):
             drain_bounded.add(f"item-{i}")
@@ -2248,13 +2258,19 @@ class TestTaskManager(unittest.TestCase):
         self.assertEqual(list(drain_bounded), ["item-0", "item-1", "item-2", "item-3", "item-4"])
 
         drain_bounded.maxlen = 2
-        # Adding a new item drains older items down to the new maxlen bound
+        # Dynamic maxlen assignment immediately purges excess entries without requiring an extra .add() call
+        self.assertEqual(len(drain_bounded), 2)
+        self.assertEqual(list(drain_bounded), ["item-3", "item-4"])
+
+        # Adding a new item continues bounded FIFO eviction
         drain_bounded.add("item-5")
         self.assertEqual(len(drain_bounded), 2)
         self.assertEqual(list(drain_bounded), ["item-4", "item-5"])
 
-        # Re-adding an existing item also drains down to the reduced maxlen
+        # Dynamic maxlen reduction down to 1 immediately purges down to 1
         drain_bounded.maxlen = 1
+        self.assertEqual(len(drain_bounded), 1)
+        self.assertEqual(list(drain_bounded), ["item-5"])
         drain_bounded.add("item-5")
         self.assertEqual(len(drain_bounded), 1)
         self.assertEqual(list(drain_bounded), ["item-5"])
@@ -2353,6 +2369,43 @@ class TestTaskManager(unittest.TestCase):
         method_copy.clear()
         self.assertEqual(len(method_copy), 0)
         self.assertEqual(len(orig), 3)
+
+        # Test initialization with iterable and maxlen capping
+        init_iter = _PrunedTaskIds(["a", "b", "c"], maxlen=2)
+        self.assertEqual(len(init_iter), 2)
+        self.assertEqual(list(init_iter), ["b", "c"])
+        self.assertNotIn("a", init_iter)
+        self.assertIn("b", init_iter)
+        self.assertIn("c", init_iter)
+
+        # Test initialization with iterable without maxlen (defaults to 10000)
+        init_default = _PrunedTaskIds(["x", "y"])
+        self.assertEqual(len(init_default), 2)
+        self.assertEqual(list(init_default), ["x", "y"])
+        self.assertEqual(init_default.maxlen, 10000)
+
+        # Test initialization matching own repr
+        repr_eval = eval(repr(init_iter))
+        self.assertEqual(repr_eval, init_iter)
+        self.assertEqual(list(repr_eval), ["b", "c"])
+        self.assertEqual(repr_eval.maxlen, 2)
+
+        # Test backwards compatibility for positional int constructor
+        pos_int = _PrunedTaskIds(42)
+        self.assertEqual(len(pos_int), 0)
+        self.assertEqual(pos_int.maxlen, 42)
+
+        # Test subclass polymorphism in copy() and __repr__()
+        class SubPrunedTaskIds(_PrunedTaskIds):
+            pass
+
+        sub = SubPrunedTaskIds(["alpha", "beta"], maxlen=5)
+        self.assertIsInstance(sub, SubPrunedTaskIds)
+        self.assertIn("SubPrunedTaskIds", repr(sub))
+        sub_copy = sub.copy()
+        self.assertIsInstance(sub_copy, SubPrunedTaskIds)
+        self.assertEqual(sub_copy, sub)
+        self.assertEqual(sub_copy.maxlen, 5)
 
 
     def test_wait_for_all_and_join(self):
