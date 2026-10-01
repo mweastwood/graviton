@@ -2308,6 +2308,100 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertIsNone(d_info.get("gemini_remaining_percentage"))
         self.assertIsNone(d_info.get("third_party_remaining_percentage"))
 
+    def test_quota_window_cached_datetime_initialization_and_copy(self):
+        """Verify QuotaWindow retains timezone-aware reset_datetime from ISO strings, timestamps, datetimes, and copy()."""
+        # 1. ISO string with Z
+        iso_str = "2026-10-01T12:00:00Z"
+        win_iso = QuotaWindow(name="5H", reset_time=iso_str)
+        self.assertIsNotNone(win_iso.reset_datetime)
+        self.assertIsNotNone(win_iso.reset_datetime.tzinfo)
+        self.assertEqual(win_iso.reset_datetime.year, 2026)
+        self.assertEqual(win_iso.reset_datetime.month, 10)
+        self.assertEqual(win_iso.reset_datetime.day, 1)
+        self.assertEqual(win_iso.reset_datetime.hour, 12)
+        self.assertEqual(win_iso.reset_time, iso_str)
+        self.assertEqual(win_iso.reset_timestamp, win_iso.reset_datetime.timestamp())
+
+        # 2. Numeric timestamp
+        ts = 1790000000.0
+        win_ts = QuotaWindow(name="1W", reset_timestamp=ts)
+        self.assertIsNotNone(win_ts.reset_datetime)
+        self.assertEqual(win_ts.reset_timestamp, ts)
+        self.assertEqual(win_ts.reset_datetime, datetime.fromtimestamp(ts, tz=timezone.utc))
+
+        # 3. Direct reset_datetime argument
+        dt_raw = datetime(2026, 10, 5, 8, 30, tzinfo=timezone.utc)
+        win_dt = QuotaWindow(name="5H", reset_datetime=dt_raw)
+        self.assertEqual(win_dt.reset_datetime, dt_raw)
+        self.assertEqual(win_dt.reset_timestamp, dt_raw.timestamp())
+        self.assertEqual(win_dt.reset_time, dt_raw.isoformat())
+
+        # 4. Naive datetime converted to UTC
+        dt_naive = datetime(2026, 10, 5, 8, 30)
+        win_naive = QuotaWindow(name="5H", reset_datetime=dt_naive)
+        self.assertEqual(win_naive.reset_datetime.tzinfo, timezone.utc)
+
+        # 5. copy() and clone() preserve reset_datetime
+        win_copied = win_iso.copy()
+        self.assertEqual(win_copied.reset_datetime, win_iso.reset_datetime)
+        self.assertEqual(win_copied.reset_time, win_iso.reset_time)
+        self.assertEqual(win_copied.reset_timestamp, win_iso.reset_timestamp)
+
+        win_cloned = win_iso.clone()
+        self.assertEqual(win_cloned.reset_datetime, win_iso.reset_datetime)
+
+    def test_quota_window_get_remaining_seconds_uses_reset_datetime(self):
+        """Verify get_remaining_seconds calculates duration from reset_datetime and falls back when reset_time updated directly."""
+        now = datetime(2026, 10, 1, 10, 0, 0, tzinfo=timezone.utc)
+        target_reset = datetime(2026, 10, 1, 11, 0, 0, tzinfo=timezone.utc)
+
+        win = QuotaWindow(name="5H", reset_datetime=target_reset)
+        rem = win.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem, 3600.0)
+
+        # Ensure remaining_time_seconds also delegates correctly
+        self.assertEqual(win.remaining_time_seconds(now=now), 3600.0)
+
+        # Countdown format using reset_datetime
+        countdown = win.format_reset_countdown(now=now)
+        self.assertEqual(countdown, "01:00:00")
+
+        # Fallback when reset_datetime is None and reset_time is updated directly
+        win_lazy = QuotaWindow(name="5H", reset_time=None)
+        self.assertIsNone(win_lazy.reset_datetime)
+        self.assertEqual(win_lazy.get_remaining_seconds(now_dt=now), 0.0)
+
+        win_lazy.reset_time = "2026-10-01T12:00:00Z"
+        self.assertIsNone(win_lazy.reset_datetime)  # initially None
+        rem_lazy = win_lazy.get_remaining_seconds(now_dt=now)
+        self.assertEqual(rem_lazy, 7200.0)
+        self.assertIsNotNone(win_lazy.reset_datetime)
+        self.assertEqual(win_lazy.reset_datetime, datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc))
+
+    def test_quota_tracker_reset_datetime_synchronization(self):
+        """Verify QuotaTracker synchronizes reset_datetime on reset_time setter and update_from_payload."""
+        tracker = QuotaTracker()
+        future_ts = time.time() + 3600
+        tracker.reset_time = future_ts
+        w5, _ = tracker.get_pool_windows("gemini")
+        self.assertIsNotNone(w5.reset_datetime)
+        self.assertAlmostEqual(w5.reset_datetime.timestamp(), future_ts, delta=1.0)
+
+        # Test update_quota with ISO strings
+        iso_5h = "2026-10-01T15:00:00Z"
+        iso_1w = "2026-10-05T15:00:00Z"
+        tracker.update_quota(
+            remaining_percentage=90.0,
+            reset_time_5h=iso_5h,
+            reset_time_1w=iso_1w,
+            quota_pool="claude_gpt",
+        )
+        w5_tp, w1_tp = tracker.get_pool_windows("claude_gpt")
+        self.assertIsNotNone(w5_tp.reset_datetime)
+        self.assertEqual(w5_tp.reset_datetime, datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc))
+        self.assertIsNotNone(w1_tp.reset_datetime)
+        self.assertEqual(w1_tp.reset_datetime, datetime(2026, 10, 5, 15, 0, 0, tzinfo=timezone.utc))
+
 
 if __name__ == "__main__":
     unittest.main()
