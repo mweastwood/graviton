@@ -35,6 +35,7 @@ from lib.quota import (
     parse_all_antigravity_quota_json,
     parse_antigravity_quota_json,
     parse_quota_headers,
+    parse_reset_time_to_timestamp,
     resolve_antigravity_quota_endpoint,
 )
 
@@ -2401,6 +2402,32 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(w5_tp.reset_datetime, datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc))
         self.assertIsNotNone(w1_tp.reset_datetime)
         self.assertEqual(w1_tp.reset_datetime, datetime(2026, 10, 5, 15, 0, 0, tzinfo=timezone.utc))
+
+
+    def test_quota_window_mutation_invalidates_cached_datetime(self):
+        """Verify dynamic mutation of reset_time/reset_timestamp on an initialized window updates remaining seconds and countdown."""
+        now = datetime(2026, 10, 1, 9, 0, 0, tzinfo=timezone.utc)
+        win = QuotaWindow(name="5H", reset_time="2026-10-01T10:00:00Z")
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 3600.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "01:00:00")
+
+        # Mutate reset_time
+        win.reset_time = "2026-10-01T15:00:00Z"
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "06:00:00")
+
+        # Mutate reset_timestamp
+        win.reset_timestamp = 1790866800.0
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 21600.0)
+
+        # Mutate reset_datetime directly
+        win.reset_datetime = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(win.get_remaining_seconds(now_dt=now), 18000.0)
+        self.assertEqual(win.format_reset_countdown(now=now), "05:00:00")
+
+        # Test parse_reset_time_to_timestamp accepts datetime
+        dt_sample = datetime(2026, 10, 1, 14, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(parse_reset_time_to_timestamp(dt_sample), dt_sample.timestamp())
 
 
 if __name__ == "__main__":
