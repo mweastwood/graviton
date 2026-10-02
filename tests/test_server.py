@@ -2439,6 +2439,9 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertIn("markdown", data)
         self.assertIn("targets", data)
+        self.assertIn("commit", data)
+        self.assertIn("branch", data)
+        self.assertIn("reload_state", data)
 
     def test_do_post_dashboard_register_and_unregister(self):
         handler = MagicMock(spec=GravitonHandler)
@@ -2564,6 +2567,9 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(data["markdown"], "# Markdown Content")
         self.assertEqual(data["targets"], ["/path/to/target.md"])
+        self.assertIn("commit", data)
+        self.assertIn("branch", data)
+        self.assertIn("reload_state", data)
 
     def test_do_post_api_model_uninitialized_quota_tracker(self):
         handler = MagicMock(spec=GravitonHandler)

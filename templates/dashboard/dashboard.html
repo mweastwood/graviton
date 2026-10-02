@@ -130,6 +130,45 @@
             font-size: 0.8rem;
             padding: 3px 8px;
         }}
+        .reload-badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: 12px;
+            border: 1px solid transparent;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            vertical-align: middle;
+        }}
+        .reload-badge-idle {{
+            background: rgba(63, 185, 80, 0.12);
+            color: var(--accent-green);
+            border-color: rgba(63, 185, 80, 0.3);
+        }}
+        .reload-badge-pulling {{
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+            border-color: rgba(210, 153, 34, 0.4);
+            animation: pulse-ring-yellow 1.5s infinite;
+        }}
+        .reload-badge-rebuilding {{
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+            border-color: rgba(210, 153, 34, 0.4);
+            animation: pulse-ring-yellow 1.5s infinite;
+        }}
+        .reload-badge-draining {{
+            background: rgba(210, 153, 34, 0.2);
+            color: var(--accent-yellow);
+            border-color: rgba(210, 153, 34, 0.5);
+            animation: pulse-ring-yellow 1.5s infinite;
+        }}
+        .reload-badge-reloading {{
+            background: rgba(188, 140, 255, 0.2);
+            color: #bc8cff;
+            border-color: rgba(188, 140, 255, 0.5);
+        }}
         .pulse {{
             width: 10px;
             height: 10px;
@@ -403,6 +442,10 @@
             background-color: #da3633;
             border: 1px solid #f85149;
         }}
+        .toast-info {{
+            background-color: #1f6feb;
+            border: 1px solid #388bfd;
+        }}
         .table-wrapper {{
             overflow-x: auto;
             border-radius: 6px;
@@ -663,6 +706,12 @@
                 <h1>🌌 Graviton Live Dashboard <span class="pulse"></span></h1>
                 <div class="server-meta">
                     <span class="meta-item">Host: <code id="meta-host">{effective_host}:{effective_port}</code></span>
+                    <span class="meta-dot">&bull;</span>
+                    <span class="meta-item">Branch: <code id="meta-branch">{branch}</code></span>
+                    <span class="meta-dot">&bull;</span>
+                    <span class="meta-item">Commit: <code id="meta-commit">{commit}</code></span>
+                    <span class="meta-dot">&bull;</span>
+                    <span class="meta-item">Reload: <span id="meta-reload-state" class="reload-badge reload-badge-{reload_state_class}">{reload_state}</span></span>
                     <span class="meta-dot">&bull;</span>
                     <span class="meta-item">Updated: <span id="meta-updated">{effective_now}</span></span>
                     <span class="meta-dot">&bull;</span>
@@ -1551,17 +1600,65 @@
             }});
         }});
 
+        let initialCommit = "{commit}";
+        let isReloading = false;
+
+        function getReloadStateClass(state) {{
+            const s = (state || 'IDLE').toUpperCase();
+            if (s.includes('PULL')) return 'pulling';
+            if (s.includes('REBUILD')) return 'rebuilding';
+            if (s.includes('DRAIN')) return 'draining';
+            if (s.includes('RELOAD')) return 'reloading';
+            return 'idle';
+        }}
+
         async function refreshDashboard() {{
             try {{
                 const res = await fetch('/dashboard/content');
                 if (res.ok) {{
                     const data = await res.json();
-                    if (data && data.markdown) {{
-                        const contentEl = document.getElementById('content');
-                        if (contentEl) {{
-                            contentEl.textContent = data.markdown;
+                    if (data) {{
+                        const newCommit = data.commit;
+                        if (
+                            newCommit &&
+                            newCommit !== 'unknown' &&
+                            initialCommit &&
+                            initialCommit !== 'unknown' &&
+                            newCommit !== initialCommit &&
+                            !isReloading
+                        ) {{
+                            isReloading = true;
+                            showToast(`Server updated to commit ${{newCommit}}. Refreshing dashboard...`, 'info');
+                            setTimeout(() => {{
+                                window.location.reload();
+                            }}, 1500);
+                            return;
                         }}
-                        updateDashboardUI(data.markdown);
+                        if (initialCommit === 'unknown' && newCommit && newCommit !== 'unknown') {{
+                            initialCommit = newCommit;
+                        }}
+                        if (data.commit) {{
+                            const commitEl = document.getElementById('meta-commit');
+                            if (commitEl) commitEl.textContent = data.commit;
+                        }}
+                        if (data.branch) {{
+                            const branchEl = document.getElementById('meta-branch');
+                            if (branchEl) branchEl.textContent = data.branch;
+                        }}
+                        if (data.reload_state) {{
+                            const reloadEl = document.getElementById('meta-reload-state');
+                            if (reloadEl) {{
+                                reloadEl.textContent = data.reload_state;
+                                reloadEl.className = 'reload-badge reload-badge-' + getReloadStateClass(data.reload_state);
+                            }}
+                        }}
+                        if (data.markdown) {{
+                            const contentEl = document.getElementById('content');
+                            if (contentEl) {{
+                                contentEl.textContent = data.markdown;
+                            }}
+                            updateDashboardUI(data.markdown);
+                        }}
                     }}
                 }}
             }} catch (err) {{

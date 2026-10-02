@@ -35,6 +35,7 @@ from lib.updater import (
     stop_smee_listener,
     set_hot_reload_state,
     get_hot_reload_state,
+    get_git_info,
     _SYNC_LOCK,
 )
 from lib.sidecar import ensure_shell_environment
@@ -285,6 +286,13 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     port=port,
                 )
             )
+            commit, branch = get_git_info()
+            reload_state = get_hot_reload_state()
+            extra_info = {
+                "commit": commit,
+                "branch": branch,
+                "reload_state": reload_state,
+            }
             html_page = render_dashboard_html(
                 markdown_content,
                 host=host,
@@ -292,6 +300,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 task_manager=self.task_manager,
                 quota_tracker=self.quota_tracker,
                 scheduler=self.scheduler,
+                extra_info=extra_info,
                 pr_tracker=self.pr_tracker,
             )
             self._send_html(200, html_page)
@@ -310,7 +319,15 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 )
             )
             targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
-            self._send_json(200, {"markdown": markdown_content, "targets": targets})
+            commit, branch = get_git_info()
+            reload_state = get_hot_reload_state()
+            self._send_json(200, {
+                "markdown": markdown_content,
+                "targets": targets,
+                "commit": commit,
+                "branch": branch,
+                "reload_state": reload_state,
+            })
         else:
             self._send_json(404, {"error": "Not Found"})
 
