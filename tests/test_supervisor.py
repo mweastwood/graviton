@@ -1765,6 +1765,122 @@ class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
         entries = _read_agyhub_entries(corrupt_data)
         self.assertEqual(entries, [])
 
+    def test_encode_and_parse_field_wire_type_1(self):
+        import struct
+        from lib.supervisor import _encode_field, _parse_fields, _encode_varint
+
+        # Integer values (positive 64-bit and negative 64-bit)
+        f_int1 = _encode_field(field_num=3, wire_type=1, data=987654321012345)
+        tag1 = (3 << 3) | 1
+        tag1_bytes = _encode_varint(tag1)
+        self.assertEqual(f_int1[:len(tag1_bytes)], tag1_bytes)
+        self.assertEqual(f_int1[len(tag1_bytes):], struct.pack("<q", 987654321012345))
+
+        f_int2 = _encode_field(field_num=4, wire_type=1, data=-123456789)
+        tag2 = (4 << 3) | 1
+        tag2_bytes = _encode_varint(tag2)
+        self.assertEqual(f_int2[:len(tag2_bytes)], tag2_bytes)
+        self.assertEqual(f_int2[len(tag2_bytes):], struct.pack("<q", -123456789))
+
+        # Decode with _parse_fields: verify parsed tuple (field_num, 1, raw_8_bytes)
+        parsed_ints = _parse_fields(f_int1 + f_int2)
+        self.assertEqual(len(parsed_ints), 2)
+        self.assertEqual(parsed_ints[0][0], 3)
+        self.assertEqual(parsed_ints[0][1], 1)
+        self.assertEqual(struct.unpack("<q", parsed_ints[0][2])[0], 987654321012345)
+
+        self.assertEqual(parsed_ints[1][0], 4)
+        self.assertEqual(parsed_ints[1][1], 1)
+        self.assertEqual(struct.unpack("<q", parsed_ints[1][2])[0], -123456789)
+
+        # Raw bytes and string values
+        f_bytes = _encode_field(field_num=5, wire_type=1, data=b"12345678")
+        f_str = _encode_field(field_num=6, wire_type=1, data="ABCDEFGH")
+
+        parsed_raw = _parse_fields(f_bytes + f_str)
+        self.assertEqual(len(parsed_raw), 2)
+        self.assertEqual(parsed_raw[0], (5, 1, b"12345678"))
+        self.assertEqual(parsed_raw[1], (6, 1, b"ABCDEFGH"))
+
+    def test_encode_and_parse_field_wire_type_5(self):
+        import struct
+        from lib.supervisor import _encode_field, _parse_fields, _encode_varint
+
+        # Integer values (positive 32-bit and negative 32-bit)
+        f_int1 = _encode_field(field_num=7, wire_type=5, data=12345678)
+        tag1 = (7 << 3) | 5
+        tag1_bytes = _encode_varint(tag1)
+        self.assertEqual(f_int1[:len(tag1_bytes)], tag1_bytes)
+        self.assertEqual(f_int1[len(tag1_bytes):], struct.pack("<i", 12345678))
+
+        f_int2 = _encode_field(field_num=8, wire_type=5, data=-42)
+        tag2 = (8 << 3) | 5
+        tag2_bytes = _encode_varint(tag2)
+        self.assertEqual(f_int2[:len(tag2_bytes)], tag2_bytes)
+        self.assertEqual(f_int2[len(tag2_bytes):], struct.pack("<i", -42))
+
+        # Decode with _parse_fields: verify parsed tuple (field_num, 5, raw_4_bytes)
+        parsed_ints = _parse_fields(f_int1 + f_int2)
+        self.assertEqual(len(parsed_ints), 2)
+        self.assertEqual(parsed_ints[0][0], 7)
+        self.assertEqual(parsed_ints[0][1], 5)
+        self.assertEqual(struct.unpack("<i", parsed_ints[0][2])[0], 12345678)
+
+        self.assertEqual(parsed_ints[1][0], 8)
+        self.assertEqual(parsed_ints[1][1], 5)
+        self.assertEqual(struct.unpack("<i", parsed_ints[1][2])[0], -42)
+
+        # Raw bytes and string values
+        f_bytes = _encode_field(field_num=9, wire_type=5, data=b"test")
+        f_str = _encode_field(field_num=10, wire_type=5, data="data")
+
+        parsed_raw = _parse_fields(f_bytes + f_str)
+        self.assertEqual(len(parsed_raw), 2)
+        self.assertEqual(parsed_raw[0], (9, 5, b"test"))
+        self.assertEqual(parsed_raw[1], (10, 5, b"data"))
+
+    def test_encode_field_unsupported_wire_type_raises_value_error(self):
+        from lib.supervisor import _encode_field
+
+        for wt in [3, 4, 6, 7]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(field_num=1, wire_type=wt, data=b"")
+            self.assertEqual(str(ctx.exception), f"Unsupported wire type {wt}")
+
+    def test_parse_fields_truncated_payloads(self):
+        from lib.supervisor import _encode_field, _parse_fields, _encode_varint
+
+        valid_field = _encode_field(1, 0, 42)
+
+        # Truncated Wire Type 1 (needs 8 bytes)
+        tag_wt1 = _encode_varint((2 << 3) | 1)
+        for truncated_bytes in [b"", b"123", b"1234567"]:
+            parsed = _parse_fields(valid_field + tag_wt1 + truncated_bytes)
+            self.assertEqual(parsed, [(1, 0, 42)])
+
+        # Truncated Wire Type 5 (needs 4 bytes)
+        tag_wt5 = _encode_varint((3 << 3) | 5)
+        for truncated_bytes in [b"", b"1", b"123"]:
+            parsed = _parse_fields(valid_field + tag_wt5 + truncated_bytes)
+            self.assertEqual(parsed, [(1, 0, 42)])
+
+        # Truncated Wire Type 2 (specified length > remaining bytes)
+        tag_wt2 = _encode_varint((4 << 3) | 2)
+        len_10 = _encode_varint(10)
+        truncated_bytes = b"1234"  # 4 bytes instead of 10
+        parsed = _parse_fields(valid_field + tag_wt2 + len_10 + truncated_bytes)
+        self.assertEqual(parsed, [(1, 0, 42)])
+
+        # Truncated Varint Tag (incomplete varint tag byte sequence)
+        self.assertEqual(_parse_fields(b"\x80"), [])
+        self.assertEqual(_parse_fields(valid_field + b"\x80"), [(1, 0, 42)])
+
+        # Unsupported Wire Type in Data Stream (wire type 3, 4, 6, 7)
+        for wt in [3, 4, 6, 7]:
+            tag_unsupported = _encode_varint((5 << 3) | wt)
+            parsed = _parse_fields(valid_field + tag_unsupported + b"extra")
+            self.assertEqual(parsed, [(1, 0, 42)])
+
     def test_sync_conversation_to_agyhub(self):
         import sqlite3
         from lib.supervisor import (
