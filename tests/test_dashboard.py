@@ -3388,6 +3388,19 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
         self.assertIn("Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00)", html_out)
 
+    def test_render_dashboard_html_third_party_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown for third-party window when BEHIND_PACING."""
+        _reset_dashboard_template_cache()
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="claude_gpt")
+        html_out = render_dashboard_html("# Test", quota_tracker=tracker)
+        self.assertRegex(html_out, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+        self.assertIn('id="tp-5h-details"', html_out)
+
     def test_parse_dashboard_markdown_behind_pacing_with_resume_countdown(self):
         """Verify parse_dashboard_markdown extracts details with resume countdown and maintains target pacing."""
         sample_md = """# 🌌 Graviton Live Dashboard

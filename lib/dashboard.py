@@ -209,6 +209,13 @@ def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) ->
     return f"`{clean_disp}`"
 
 
+def _build_pacing_details(cd: str, st: Optional[str], rec_cd: Optional[str] = None) -> str:
+    """Build standardized details string showing reset countdown and pacing status with recovery time."""
+    if st == "BEHIND_PACING" and rec_cd and rec_cd != "00:00:00":
+        return f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
+    return f"Reset: {cd} | Pacing: {st or 'OK'}"
+
+
 def format_dashboard_markdown(
     task_manager: Optional[TaskManager] = None,
     quota_tracker: Optional[QuotaTracker] = None,
@@ -498,9 +505,7 @@ def format_dashboard_markdown(
                         rec_cd = qw_rec
                 except Exception:
                     pass
-            if status == "BEHIND_PACING" and rec_cd and rec_cd != "00:00:00":
-                return pct_disp, f"Reset: {cd} | Pacing: {status} (Resume in {rec_cd})"
-            return pct_disp, f"Reset: {cd} | Pacing: {status}"
+            return pct_disp, _build_pacing_details(cd, status, rec_cd)
         # QuotaWindow object
         pct = w.remaining_percentage
         pct_disp = format_percentage(pct)
@@ -508,11 +513,7 @@ def format_dashboard_markdown(
         status, _ = w.get_pacing_status()
         if pct is None and cd == "N/A" and (status == "OK" or not status):
             return "N/A", "N/A"
-        if status == "BEHIND_PACING":
-            rec_cd = w.format_pacing_countdown()
-            if rec_cd and rec_cd != "00:00:00":
-                return pct_disp, f"Reset: {cd} | Pacing: {status} (Resume in {rec_cd})"
-        return pct_disp, f"Reset: {cd} | Pacing: {status}"
+        return pct_disp, _build_pacing_details(cd, status, w.format_pacing_countdown())
 
     g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem)
     g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem)
@@ -1654,14 +1655,7 @@ def render_dashboard_html(
                 cd = w5_g.format_reset_countdown()
                 st, _ = w5_g.get_pacing_status()
                 if not (w5_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    if st == "BEHIND_PACING":
-                        rec_cd = w5_g.format_pacing_countdown()
-                        if rec_cd and rec_cd != "00:00:00":
-                            data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
-                        else:
-                            data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
-                    else:
-                        data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["gemini_5h_details"] = _build_pacing_details(cd, st, w5_g.format_pacing_countdown())
                 data["gemini_5h_target_pacing_pct"] = w5_g.get_target_pacing_percentage()
             if w1_g is not None:
                 data["gemini_1w_pct"] = w1_g.remaining_percentage
@@ -1669,14 +1663,7 @@ def render_dashboard_html(
                 cd = w1_g.format_reset_countdown()
                 st, _ = w1_g.get_pacing_status()
                 if not (w1_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    if st == "BEHIND_PACING":
-                        rec_cd = w1_g.format_pacing_countdown()
-                        if rec_cd and rec_cd != "00:00:00":
-                            data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
-                        else:
-                            data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
-                    else:
-                        data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["gemini_1w_details"] = _build_pacing_details(cd, st, w1_g.format_pacing_countdown())
                 data["gemini_1w_target_pacing_pct"] = w1_g.get_target_pacing_percentage()
             if w5_c is not None:
                 data["tp_5h_pct"] = w5_c.remaining_percentage
@@ -1684,14 +1671,7 @@ def render_dashboard_html(
                 cd = w5_c.format_reset_countdown()
                 st, _ = w5_c.get_pacing_status()
                 if not (w5_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    if st == "BEHIND_PACING":
-                        rec_cd = w5_c.format_pacing_countdown()
-                        if rec_cd and rec_cd != "00:00:00":
-                            data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
-                        else:
-                            data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
-                    else:
-                        data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["tp_5h_details"] = _build_pacing_details(cd, st, w5_c.format_pacing_countdown())
                 data["tp_5h_target_pacing_pct"] = w5_c.get_target_pacing_percentage()
             if w1_c is not None:
                 data["tp_1w_pct"] = w1_c.remaining_percentage
@@ -1699,14 +1679,7 @@ def render_dashboard_html(
                 cd = w1_c.format_reset_countdown()
                 st, _ = w1_c.get_pacing_status()
                 if not (w1_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    if st == "BEHIND_PACING":
-                        rec_cd = w1_c.format_pacing_countdown()
-                        if rec_cd and rec_cd != "00:00:00":
-                            data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
-                        else:
-                            data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
-                    else:
-                        data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["tp_1w_details"] = _build_pacing_details(cd, st, w1_c.format_pacing_countdown())
                 data["tp_1w_target_pacing_pct"] = w1_c.get_target_pacing_percentage()
         except Exception as e:
             logger.debug(f"Error enriching window metrics from quota_tracker: {e}")
@@ -1782,10 +1755,7 @@ def render_dashboard_html(
                     except Exception:
                         pass
 
-                if st == "BEHIND_PACING" and rec_cd and rec_cd != "00:00:00":
-                    details = f"Reset: {cd or 'N/A'} | Pacing: {st} (Resume in {rec_cd})"
-                else:
-                    details = f"Reset: {cd or 'N/A'} | Pacing: {st or 'OK'}"
+                details = _build_pacing_details(cd or "N/A", st, rec_cd)
                 data[f"{prefix}_details"] = details
                 if prefix.startswith("tp_"):
                     data[f"{key_prefix}_details"] = details

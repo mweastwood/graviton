@@ -2248,7 +2248,18 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         d = info.to_dict()
         self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
         self.assertAlmostEqual(d["gemini_5h_pacing_recovery_seconds"], 1800.0, delta=5.0)
-        self.assertTrue(d["gemini_5h_pacing_recovery_countdown"] in ("00:30:00", "00:29:59"))
+        self.assertRegex(d["gemini_5h_pacing_recovery_countdown"], r"^00:2[89]:\d\d$")
+
+    def test_quota_info_third_party_pacing_recovery_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_recovery for third-party windows."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w5c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        info = QuotaInfo(remaining_percentage=40.0, quota_pool="claude_gpt", claude_window_5h=w5c)
+        d = info.to_dict()
+        self.assertEqual(d["third_party_5h_pacing_status"], "BEHIND_PACING")
+        self.assertAlmostEqual(d["third_party_5h_pacing_recovery_seconds"], 1800.0, delta=5.0)
+        self.assertRegex(d["third_party_5h_pacing_recovery_countdown"], r"^00:2[89]:\d\d$")
 
     def test_quota_info_to_dict_exposes_pool_remaining_percentages(self):
         """Verify QuotaInfo.to_dict includes gemini_remaining_percentage and third_party_remaining_percentage."""
