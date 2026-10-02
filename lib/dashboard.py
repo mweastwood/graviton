@@ -130,9 +130,9 @@ def _get_fallback_dashboard_template() -> str:
 </html>"""
 
 
-def _format_reload_state_class(reload_state: str) -> str:
+def _format_reload_state_class(reload_state: Any) -> str:
     """Map hot reload lifecycle state to a CSS modifier class."""
-    s = (reload_state or "IDLE").upper()
+    s = str(reload_state or "IDLE").upper()
     if "PULL" in s:
         return "pulling"
     if "REBUILD" in s:
@@ -1815,11 +1815,10 @@ def render_dashboard_html(
 
     commit = (extra_info.get("commit") if extra_info else None) or data.get("commit")
     branch = (extra_info.get("branch") if extra_info else None) or data.get("branch")
-    reload_state = (extra_info.get("reload_state") if extra_info else None) or data.get("reload_state")
 
     if not commit or not branch or commit == "unknown" or branch == "unknown":
         try:
-            c, b = get_git_info()
+            c, b = get_git_info(REPO_ROOT)
             commit = (commit if commit and commit != "unknown" else c) or "unknown"
             branch = (branch if branch and branch != "unknown" else b) or "unknown"
         except Exception:
@@ -1827,11 +1826,14 @@ def render_dashboard_html(
     commit = commit or "unknown"
     branch = branch or "unknown"
 
-    if not reload_state or reload_state == "IDLE":
+    if extra_info is not None and "reload_state" in extra_info and extra_info["reload_state"] is not None:
+        reload_state = str(extra_info["reload_state"])
+    else:
         try:
             reload_state = get_hot_reload_state()
         except Exception:
-            reload_state = "IDLE"
+            reload_state = (data.get("reload_state") if data else "IDLE") or "IDLE"
+    reload_state = reload_state or "IDLE"
 
     reload_state_class = _format_reload_state_class(reload_state)
 

@@ -3266,6 +3266,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(_format_reload_state_class("SHUTDOWN: DRAINING_TASKS"), "draining")
         self.assertEqual(_format_reload_state_class(None), "idle")
         self.assertEqual(_format_reload_state_class(""), "idle")
+        self.assertEqual(_format_reload_state_class(123), "idle")
+        self.assertEqual(_format_reload_state_class(object()), "idle")
 
     def test_render_dashboard_html_contains_branch_commit_and_reload_state(self):
         _reset_dashboard_template_cache()
@@ -3279,6 +3281,24 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('id="meta-branch">feat/my-branch</code>', html_out)
         self.assertIn('id="meta-commit">a1b2c3d</code>', html_out)
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
+
+    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
+    def test_render_dashboard_html_explicit_idle_reload_state(self, mock_get_reload):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        extra = {"reload_state": "IDLE"}
+        html_out = render_dashboard_html(sample_md, extra_info=extra)
+        mock_get_reload.assert_not_called()
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
+
+    @patch("lib.dashboard.get_git_info", return_value=("cafe123", "feature-x"))
+    def test_render_dashboard_html_passes_repo_root_to_get_git_info(self, mock_get_git):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_git.assert_called_once_with(REPO_ROOT)
+        self.assertIn('id="meta-branch">feature-x</code>', html_out)
+        self.assertIn('id="meta-commit">cafe123</code>', html_out)
 
     def test_render_dashboard_html_default_branch_and_commit_resolution(self):
         _reset_dashboard_template_cache()
@@ -3299,6 +3319,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('let initialCommit = "{commit}";', template)
         self.assertIn("let isReloading = false;", template)
         self.assertIn("function getReloadStateClass(state)", template)
+        self.assertIn("const isReloadIdle = reloadState === 'IDLE';", template)
+        self.assertIn("isReloadIdle &&", template)
         self.assertIn("window.location.reload()", template)
         self.assertIn("data.commit", template)
         self.assertIn("data.branch", template)

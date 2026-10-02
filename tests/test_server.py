@@ -2741,6 +2741,56 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
         self.assertEqual(data["pool"], "third_party")
         self.assertEqual(data["active_model"], "claude-sonnet-4-6")
 
+    def test_get_cached_git_info_caching_and_ttl(self):
+        server_mod._reset_git_info_cache()
+        with patch("graviton_server.get_git_info", return_value=("abc1234", "main")) as mock_git:
+            # First call populates cache
+            c1, b1 = server_mod.get_cached_git_info(server_mod.REPO_ROOT, ttl=10.0)
+            self.assertEqual((c1, b1), ("abc1234", "main"))
+            self.assertEqual(mock_git.call_count, 1)
+            mock_git.assert_called_with(server_mod.REPO_ROOT)
+
+            # Second call within TTL hits cache without invoking get_git_info
+            c2, b2 = server_mod.get_cached_git_info(server_mod.REPO_ROOT, ttl=10.0)
+            self.assertEqual((c2, b2), ("abc1234", "main"))
+            self.assertEqual(mock_git.call_count, 1)
+
+            # Call with ttl=0.0 expires cache and calls get_git_info again
+            c3, b3 = server_mod.get_cached_git_info(server_mod.REPO_ROOT, ttl=0.0)
+            self.assertEqual((c3, b3), ("abc1234", "main"))
+            self.assertEqual(mock_git.call_count, 2)
+
+    def test_dashboard_endpoints_use_cached_git_info_with_repo_root(self):
+        handler = MagicMock(spec=GravitonHandler)
+        handler.task_manager = None
+        handler.quota_tracker = None
+        handler.scheduler = None
+        handler.pr_tracker = None
+        handler.dashboard_updater = None
+        handler.headers = {"Host": "localhost:8000"}
+
+        with patch("graviton_server.get_cached_git_info", return_value=("def5678", "dev")) as mock_cached_git:
+            # Test /dashboard
+            handler.path = "/dashboard"
+            GravitonHandler.do_GET(handler)
+            mock_cached_git.assert_called_with(server_mod.REPO_ROOT)
+            handler._send_html.assert_called_once()
+            html_content = handler._send_html.call_args[0][1]
+            self.assertIn("def5678", html_content)
+            self.assertIn("dev", html_content)
+
+            mock_cached_git.reset_mock()
+
+            # Test /dashboard/content
+            handler.path = "/dashboard/content"
+            GravitonHandler.do_GET(handler)
+            mock_cached_git.assert_called_with(server_mod.REPO_ROOT)
+            handler._send_json.assert_called_once()
+            code, json_data = handler._send_json.call_args[0]
+            self.assertEqual(code, 200)
+            self.assertEqual(json_data["commit"], "def5678")
+            self.assertEqual(json_data["branch"], "dev")
+
 
 if __name__ == "__main__":
     unittest.main()

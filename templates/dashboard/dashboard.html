@@ -1619,12 +1619,16 @@
                     const data = await res.json();
                     if (data) {{
                         const newCommit = data.commit;
+                        const reloadState = (data.reload_state || 'IDLE').toUpperCase();
+                        const isReloadIdle = reloadState === 'IDLE';
+
                         if (
                             newCommit &&
                             newCommit !== 'unknown' &&
                             initialCommit &&
                             initialCommit !== 'unknown' &&
                             newCommit !== initialCommit &&
+                            isReloadIdle &&
                             !isReloading
                         ) {{
                             isReloading = true;
@@ -1634,7 +1638,7 @@
                             }}, 1500);
                             return;
                         }}
-                        if (initialCommit === 'unknown' && newCommit && newCommit !== 'unknown') {{
+                        if (initialCommit === 'unknown' && newCommit && newCommit !== 'unknown' && isReloadIdle) {{
                             initialCommit = newCommit;
                         }}
                         if (data.commit) {{

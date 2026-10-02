@@ -18,9 +18,10 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer as HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Tuple, Union
 
 # Add REPO_ROOT to sys.path to allow importing lib
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +61,36 @@ from lib.dashboard import DashboardUpdater, format_dashboard_markdown, render_da
 _is_shutting_down = False
 _shutdown_thread: Optional[threading.Thread] = None
 _shutdown_lock = threading.Lock()
+
+_git_info_cache: Optional[Tuple[str, str]] = None
+_git_info_last_fetch: float = 0.0
+_git_info_lock = threading.Lock()
+_GIT_CACHE_TTL: float = 5.0
+
+
+def _reset_git_info_cache() -> None:
+    """Reset cached git info (used primarily in tests)."""
+    global _git_info_cache, _git_info_last_fetch
+    with _git_info_lock:
+        _git_info_cache = None
+        _git_info_last_fetch = 0.0
+
+
+def get_cached_git_info(
+    repo_root: Optional[Union[Path, str]] = REPO_ROOT,
+    ttl: float = _GIT_CACHE_TTL,
+) -> Tuple[str, str]:
+    """
+    Retrieve git commit SHA and branch name with a short TTL cache.
+    Prevents spawning git subprocesses on every auto-refresh request.
+    """
+    global _git_info_cache, _git_info_last_fetch
+    now = time.time()
+    with _git_info_lock:
+        if _git_info_cache is None or (now - _git_info_last_fetch) >= ttl:
+            _git_info_cache = get_git_info(repo_root)
+            _git_info_last_fetch = now
+        return _git_info_cache
 
 
 def graceful_shutdown(
@@ -286,7 +317,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     port=port,
                 )
             )
-            commit, branch = get_git_info()
+            commit, branch = get_cached_git_info(REPO_ROOT)
             reload_state = get_hot_reload_state()
             extra_info = {
                 "commit": commit,
@@ -319,7 +350,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 )
             )
             targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
-            commit, branch = get_git_info()
+            commit, branch = get_cached_git_info(REPO_ROOT)
             reload_state = get_hot_reload_state()
             self._send_json(200, {
                 "markdown": markdown_content,
