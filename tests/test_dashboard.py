@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -3335,6 +3336,80 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("{branch}", fb)
         self.assertIn("{commit}", fb)
         self.assertIn("{reload_state}", fb)
+
+    def test_format_dashboard_markdown_behind_pacing_shows_resume_countdown(self):
+        """Verify format_dashboard_markdown includes resume countdown estimate when window is BEHIND_PACING."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="gemini")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertRegex(md, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+
+    def test_format_dashboard_markdown_dict_behind_pacing_shows_resume_countdown(self):
+        """Verify format_dashboard_markdown includes resume countdown from dictionary extra_info."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:30:00",
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `40%` | Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00) |", md)
+
+    def test_render_dashboard_html_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown in details element when BEHIND_PACING."""
+        _reset_dashboard_template_cache()
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="gemini")
+        html_out = render_dashboard_html("# Test", quota_tracker=tracker)
+        self.assertRegex(html_out, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+        self.assertIn('id="gemini-5h-details"', html_out)
+
+    def test_render_dashboard_html_extra_info_dict_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown from extra_info dictionary."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:30:00",
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00)", html_out)
+
+    def test_parse_dashboard_markdown_behind_pacing_with_resume_countdown(self):
+        """Verify parse_dashboard_markdown extracts details with resume countdown and maintains target pacing."""
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `40%` | Reset: 02:30:00 | Pacing: BEHIND_PACING (Resume in 00:30:00) |
+| **Gemini (1W)** | `92%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70%` | Reset: 01:15:00 | Pacing: OK |
+| **Third-Party (1W)** | `95%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `40%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70%` | Fallback model capacity |
+"""
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(parsed["gemini_5h_details"], "Reset: 02:30:00 | Pacing: BEHIND_PACING (Resume in 00:30:00)")
+        self.assertEqual(parsed["gemini_5h_target_pacing_pct"], 50.0)
 
 
 if __name__ == "__main__":

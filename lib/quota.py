@@ -1071,12 +1071,14 @@ class QuotaInfo:
                 d["claude_window_1w"] = self.claude_window_1w
         def _extract_win_metrics(w, default_name=None):
             if w is None:
-                return None, None, None, "OK", None
+                return None, None, None, "OK", None, 0.0, None
             if isinstance(w, QuotaWindow):
                 st, _ = w.get_pacing_status()
                 pct = round(w.remaining_percentage, 1) if w.remaining_percentage is not None else None
                 tgt = w.get_target_pacing_percentage()
-                return pct, w.reset_time, w.format_reset_countdown(), st, tgt
+                rec_sec = round(w.get_pacing_recovery_seconds(), 1) if st == "BEHIND_PACING" else 0.0
+                rec_cd = w.format_pacing_countdown() if st == "BEHIND_PACING" else None
+                return pct, w.reset_time, w.format_reset_countdown(), st, tgt, rec_sec, rec_cd
             elif isinstance(w, dict):
                 pct = w.get("remaining_percentage")
                 if pct is not None:
@@ -1090,8 +1092,10 @@ class QuotaInfo:
                     cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
                 st = w.get("pacing_status", "OK")
                 tgt = w.get("target_pacing_percentage")
-                return pct, res, cd, st, tgt
-            return None, None, None, "OK", None
+                rec_sec = w.get("pacing_recovery_seconds", 0.0)
+                rec_cd = w.get("pacing_recovery_countdown")
+                return pct, res, cd, st, tgt, rec_sec, rec_cd
+            return None, None, None, "OK", None, 0.0, None
 
         p = str(self.quota_pool or "").lower()
         is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
@@ -1101,10 +1105,10 @@ class QuotaInfo:
         claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
         claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
 
-        g5_pct, g5_res, g5_cd, g5_st, g5_tgt = _extract_win_metrics(gemini_5h, default_name="5H")
-        g1_pct, g1_res, g1_cd, g1_st, g1_tgt = _extract_win_metrics(gemini_1w, default_name="1W")
-        c5_pct, c5_res, c5_cd, c5_st, c5_tgt = _extract_win_metrics(claude_5h, default_name="5H")
-        c1_pct, c1_res, c1_cd, c1_st, c1_tgt = _extract_win_metrics(claude_1w, default_name="1W")
+        g5_pct, g5_res, g5_cd, g5_st, g5_tgt, g5_rec_sec, g5_rec_cd = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd, g1_st, g1_tgt, g1_rec_sec, g1_rec_cd = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd, c5_st, c5_tgt, c5_rec_sec, c5_rec_cd = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd, c1_st, c1_tgt, c1_rec_sec, c1_rec_cd = _extract_win_metrics(claude_1w, default_name="1W")
 
         def _to_win_dict(w):
             if w is None:
@@ -1127,24 +1131,32 @@ class QuotaInfo:
         d["gemini_5h_countdown"] = g5_cd
         d["gemini_5h_pacing_status"] = g5_st
         d["gemini_5h_target_pacing_percentage"] = g5_tgt
+        d["gemini_5h_pacing_recovery_seconds"] = g5_rec_sec
+        d["gemini_5h_pacing_recovery_countdown"] = g5_rec_cd
 
         d["gemini_1w_remaining_percentage"] = g1_pct
         d["gemini_1w_reset_time"] = g1_res
         d["gemini_1w_countdown"] = g1_cd
         d["gemini_1w_pacing_status"] = g1_st
         d["gemini_1w_target_pacing_percentage"] = g1_tgt
+        d["gemini_1w_pacing_recovery_seconds"] = g1_rec_sec
+        d["gemini_1w_pacing_recovery_countdown"] = g1_rec_cd
 
         d["third_party_5h_remaining_percentage"] = c5_pct
         d["third_party_5h_reset_time"] = c5_res
         d["third_party_5h_countdown"] = c5_cd
         d["third_party_5h_pacing_status"] = c5_st
         d["third_party_5h_target_pacing_percentage"] = c5_tgt
+        d["third_party_5h_pacing_recovery_seconds"] = c5_rec_sec
+        d["third_party_5h_pacing_recovery_countdown"] = c5_rec_cd
 
         d["third_party_1w_remaining_percentage"] = c1_pct
         d["third_party_1w_reset_time"] = c1_res
         d["third_party_1w_countdown"] = c1_cd
         d["third_party_1w_pacing_status"] = c1_st
         d["third_party_1w_target_pacing_percentage"] = c1_tgt
+        d["third_party_1w_pacing_recovery_seconds"] = c1_rec_sec
+        d["third_party_1w_pacing_recovery_countdown"] = c1_rec_cd
 
         if g5_pct is not None and g1_pct is not None:
             d["gemini_remaining_percentage"] = min(g5_pct, g1_pct)
