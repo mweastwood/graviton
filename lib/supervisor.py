@@ -1301,33 +1301,33 @@ def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
     while pos < length:
         try:
             tag, pos = _decode_varint(data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 7
+            if wire_type == 0:
+                val, pos = _decode_varint(data, pos)
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 1:
+                if pos + 8 > length:
+                    break
+                val = data[pos:pos+8]
+                pos += 8
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 2:
+                f_len, pos = _decode_varint(data, pos)
+                if pos + f_len > length:
+                    break
+                val = data[pos:pos+f_len]
+                pos += f_len
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 5:
+                if pos + 4 > length:
+                    break
+                val = data[pos:pos+4]
+                pos += 4
+                fields.append((field_num, wire_type, val))
+            else:
+                break
         except IndexError:
-            break
-        field_num = tag >> 3
-        wire_type = tag & 7
-        if wire_type == 0:
-            val, pos = _decode_varint(data, pos)
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 1:
-            if pos + 8 > length:
-                break
-            val = data[pos:pos+8]
-            pos += 8
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 2:
-            f_len, pos = _decode_varint(data, pos)
-            if pos + f_len > length:
-                break
-            val = data[pos:pos+f_len]
-            pos += f_len
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 5:
-            if pos + 4 > length:
-                break
-            val = data[pos:pos+4]
-            pos += 4
-            fields.append((field_num, wire_type, val))
-        else:
             break
     return fields
 
@@ -1358,25 +1358,27 @@ def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
     while pos < len(pb_data):
         try:
             tag, pos = _decode_varint(pb_data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 7
+            if field_num != 1 or wire_type != 2:
+                break
+            length, pos = _decode_varint(pb_data, pos)
+            if pos + length > len(pb_data):
+                break
+            entry_bytes = pb_data[pos:pos+length]
+            pos += length
+
+            conv_id = None
+            raw_summary = None
+            for s_num, s_type, s_val in _parse_fields(entry_bytes):
+                if s_num == 1 and isinstance(s_val, bytes):
+                    conv_id = s_val.decode("utf-8", errors="ignore")
+                elif s_num == 2 and isinstance(s_val, bytes):
+                    raw_summary = s_val
+            if conv_id and raw_summary:
+                entries.append((conv_id, raw_summary))
         except IndexError:
             break
-        field_num = tag >> 3
-        wire_type = tag & 7
-        if field_num != 1 or wire_type != 2:
-            break
-        length, pos = _decode_varint(pb_data, pos)
-        entry_bytes = pb_data[pos:pos+length]
-        pos += length
-
-        conv_id = None
-        raw_summary = None
-        for s_num, s_type, s_val in _parse_fields(entry_bytes):
-            if s_num == 1 and isinstance(s_val, bytes):
-                conv_id = s_val.decode("utf-8", errors="ignore")
-            elif s_num == 2 and isinstance(s_val, bytes):
-                raw_summary = s_val
-        if conv_id and raw_summary:
-            entries.append((conv_id, raw_summary))
     return entries
 
 
