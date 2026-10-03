@@ -2914,9 +2914,9 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         manager.stop(wait=False)
 
     def test_task_manager_supervisor_abort(self):
-        import time
-
         created_supervisors = []
+        started_event = threading.Event()
+        abort_event = threading.Event()
 
         class HangingSupervisor:
             def __init__(self, **kwargs):
@@ -2927,11 +2927,12 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
             def cleanup(self):
                 pass
             def run_goal(self, goal, **kwargs):
-                while not self.aborted:
-                    time.sleep(0.05)
+                started_event.set()
+                abort_event.wait(timeout=5.0)
                 raise RuntimeError("Supervisor aborted")
             def abort(self):
                 self.aborted = True
+                abort_event.set()
 
         manager = TaskManager(
             max_workers=1,
@@ -2940,23 +2941,31 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
             supervisor_cls=HangingSupervisor,
         )
         manager.start()
+        try:
+            submitted_task = manager.submit_task(
+                agent="code_reviewer",
+                prompt="Hanging task",
+                use_goal=True,
+            )
+            task_id = submitted_task.id
 
-        submitted_task = manager.submit_task(
-            agent="code_reviewer",
-            prompt="Hanging task",
-            use_goal=True,
-        )
-        task_id = submitted_task.id
+            # Deterministically wait for task to begin supervisor execution
+            self.assertTrue(started_event.wait(timeout=3.0), "HangingSupervisor failed to start within timeout")
+            task = manager.get_task(task_id)
+            self.assertEqual(task.status, TaskStatus.RUNNING)
 
-        time.sleep(0.1)
-        aborted = manager.abort_task(task_id)
-        self.assertTrue(aborted)
-        manager.wait_for_task(task_id, timeout=3.0)
-        task = manager.get_task(task_id)
-        self.assertEqual(task.status, TaskStatus.ABORTED)
-        self.assertTrue(len(created_supervisors) > 0)
-        self.assertTrue(all(sup.aborted for sup in created_supervisors))
-        manager.stop(wait=True)
+            aborted = manager.abort_task(task_id)
+            self.assertTrue(aborted)
+            self.assertTrue(
+                manager.wait_for_task(task_id, target_statuses=(TaskStatus.ABORTED,), timeout=3.0),
+                "Task failed to reach ABORTED within timeout",
+            )
+            task = manager.get_task(task_id)
+            self.assertEqual(task.status, TaskStatus.ABORTED)
+            self.assertTrue(len(created_supervisors) > 0)
+            self.assertTrue(all(sup.aborted for sup in created_supervisors))
+        finally:
+            manager.stop(wait=True)
 
     @patch("lib.tasks.subprocess.run")
     def test_post_task_completion_comment(self, mock_run):
