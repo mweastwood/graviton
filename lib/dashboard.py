@@ -28,7 +28,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.tasks import TaskManager, Task, TaskStatus
-from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, format_reset_countdown
+from lib.quota import (
+    QuotaTracker,
+    QuotaWindow,
+    DEFAULT_GEMINI_MODELS,
+    DEFAULT_THIRD_PARTY_MODELS,
+    format_reset_countdown,
+    format_pacing_recovery_countdown,
+)
 from lib.scheduler import TaskScheduler
 from lib.pr_tracker import PRTracker
 from lib.updater import get_cached_git_info, get_git_info, get_hot_reload_state
@@ -207,6 +214,13 @@ def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) ->
         safe_url = target_url.strip().replace(")", "%29").replace("(", "%28").replace("|", "")
         return f"[`{clean_disp}`]({safe_url})"
     return f"`{clean_disp}`"
+
+
+def _build_pacing_details(cd: str, st: Optional[str], rec_cd: Optional[str] = None) -> str:
+    """Build standardized details string showing reset countdown and pacing status with recovery time."""
+    if st == "BEHIND_PACING" and rec_cd and rec_cd != "00:00:00":
+        return f"Reset: {cd} | Pacing: {st} (Resume in {rec_cd})"
+    return f"Reset: {cd} | Pacing: {st or 'OK'}"
 
 
 def format_dashboard_markdown(
@@ -410,46 +424,59 @@ def format_dashboard_markdown(
 
         if w5_g is None and quota_info.get("gemini_5h_remaining_percentage") is not None:
             w5_g = {
+                "name": "5H",
                 "remaining_percentage": quota_info.get("gemini_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_5h_countdown"),
                 "reset_time": quota_info.get("gemini_5h_reset_time"),
                 "pacing_status": quota_info.get("gemini_5h_pacing_status", "OK"),
+                "pacing_recovery_countdown": quota_info.get("gemini_5h_pacing_recovery_countdown"),
+                "pacing_recovery_seconds": quota_info.get("gemini_5h_pacing_recovery_seconds"),
             }
         if w1_g is None and quota_info.get("gemini_1w_remaining_percentage") is not None:
             w1_g = {
+                "name": "1W",
                 "remaining_percentage": quota_info.get("gemini_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("gemini_1w_countdown"),
                 "reset_time": quota_info.get("gemini_1w_reset_time"),
                 "pacing_status": quota_info.get("gemini_1w_pacing_status", "OK"),
+                "pacing_recovery_countdown": quota_info.get("gemini_1w_pacing_recovery_countdown"),
+                "pacing_recovery_seconds": quota_info.get("gemini_1w_pacing_recovery_seconds"),
             }
         if w5_c is None and quota_info.get("third_party_5h_remaining_percentage") is not None:
             w5_c = {
+                "name": "5H",
                 "remaining_percentage": quota_info.get("third_party_5h_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_5h_countdown"),
                 "reset_time": quota_info.get("third_party_5h_reset_time"),
                 "pacing_status": quota_info.get("third_party_5h_pacing_status", "OK"),
+                "pacing_recovery_countdown": quota_info.get("third_party_5h_pacing_recovery_countdown"),
+                "pacing_recovery_seconds": quota_info.get("third_party_5h_pacing_recovery_seconds"),
             }
         if w1_c is None and quota_info.get("third_party_1w_remaining_percentage") is not None:
             w1_c = {
+                "name": "1W",
                 "remaining_percentage": quota_info.get("third_party_1w_remaining_percentage"),
                 "reset_countdown": quota_info.get("third_party_1w_countdown"),
                 "reset_time": quota_info.get("third_party_1w_reset_time"),
                 "pacing_status": quota_info.get("third_party_1w_pacing_status", "OK"),
+                "pacing_recovery_countdown": quota_info.get("third_party_1w_pacing_recovery_countdown"),
+                "pacing_recovery_seconds": quota_info.get("third_party_1w_pacing_recovery_seconds"),
             }
 
-    def _fmt_window_val_and_details(w, fallback_pct=None):
+    def _fmt_window_val_and_details(w, fallback_pct=None, default_name: str = "5H"):
         if w is None:
             if fallback_pct is not None and fallback_pct != "N/A":
                 disp = format_percentage(fallback_pct)
                 return disp, "Live quota capacity"
             return "N/A", "N/A"
         if isinstance(w, dict):
+            win_name = w.get("name") or default_name
             pct = w.get("remaining_percentage")
             pct_disp = format_percentage(pct) if pct is not None else "N/A"
             cd = w.get("reset_countdown")
             if cd is None and w.get("reset_time") is not None:
                 try:
-                    cd = format_reset_countdown(w.get("reset_time"), window_name=w.get("name"))
+                    cd = format_reset_countdown(w.get("reset_time"), window_name=win_name)
                 except Exception:
                     cd = str(w.get("reset_time"))
             if not cd:
@@ -457,7 +484,31 @@ def format_dashboard_markdown(
             status = w.get("pacing_status", "OK")
             if pct is None and cd == "N/A" and (status == "OK" or not status):
                 return "N/A", "N/A"
-            return pct_disp, f"Reset: {cd} | Pacing: {status}"
+            rec_cd = w.get("pacing_recovery_countdown")
+            if (not rec_cd or rec_cd == "00:00:00") and w.get("pacing_recovery_seconds") is not None:
+                try:
+                    rec_sec = float(w.get("pacing_recovery_seconds"))
+                    if rec_sec > 0:
+                        rec_cd = format_pacing_recovery_countdown(rec_sec)
+                except Exception:
+                    pass
+            if (not rec_cd or rec_cd == "00:00:00") and status == "BEHIND_PACING" and w.get("reset_time") is not None and pct is not None:
+                try:
+                    dur = w.get("duration_seconds")
+                    if dur is None:
+                        dur = 18000.0 if str(win_name).upper() == "5H" else 604800.0
+                    qw = QuotaWindow(
+                        name=win_name,
+                        duration_seconds=dur,
+                        remaining_percentage=pct,
+                        reset_time=w.get("reset_time"),
+                    )
+                    qw_rec = qw.format_pacing_countdown()
+                    if qw_rec and qw_rec != "00:00:00":
+                        rec_cd = qw_rec
+                except Exception:
+                    pass
+            return pct_disp, _build_pacing_details(cd, status, rec_cd)
         # QuotaWindow object
         pct = w.remaining_percentage
         pct_disp = format_percentage(pct)
@@ -465,12 +516,12 @@ def format_dashboard_markdown(
         status, _ = w.get_pacing_status()
         if pct is None and cd == "N/A" and (status == "OK" or not status):
             return "N/A", "N/A"
-        return pct_disp, f"Reset: {cd} | Pacing: {status}"
+        return pct_disp, _build_pacing_details(cd, status, w.format_pacing_countdown())
 
-    g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem)
-    g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem)
-    c_5h_val, c_5h_details = _fmt_window_val_and_details(w5_c, fallback_pct=tp_rem)
-    c_1w_val, c_1w_details = _fmt_window_val_and_details(w1_c, fallback_pct=tp_rem)
+    g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem, default_name="5H")
+    g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem, default_name="1W")
+    c_5h_val, c_5h_details = _fmt_window_val_and_details(w5_c, fallback_pct=tp_rem, default_name="5H")
+    c_1w_val, c_1w_details = _fmt_window_val_and_details(w1_c, fallback_pct=tp_rem, default_name="1W")
 
     lines.extend([
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
@@ -1607,7 +1658,7 @@ def render_dashboard_html(
                 cd = w5_g.format_reset_countdown()
                 st, _ = w5_g.get_pacing_status()
                 if not (w5_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    data["gemini_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["gemini_5h_details"] = _build_pacing_details(cd, st, w5_g.format_pacing_countdown())
                 data["gemini_5h_target_pacing_pct"] = w5_g.get_target_pacing_percentage()
             if w1_g is not None:
                 data["gemini_1w_pct"] = w1_g.remaining_percentage
@@ -1615,7 +1666,7 @@ def render_dashboard_html(
                 cd = w1_g.format_reset_countdown()
                 st, _ = w1_g.get_pacing_status()
                 if not (w1_g.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    data["gemini_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["gemini_1w_details"] = _build_pacing_details(cd, st, w1_g.format_pacing_countdown())
                 data["gemini_1w_target_pacing_pct"] = w1_g.get_target_pacing_percentage()
             if w5_c is not None:
                 data["tp_5h_pct"] = w5_c.remaining_percentage
@@ -1623,7 +1674,7 @@ def render_dashboard_html(
                 cd = w5_c.format_reset_countdown()
                 st, _ = w5_c.get_pacing_status()
                 if not (w5_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    data["tp_5h_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["tp_5h_details"] = _build_pacing_details(cd, st, w5_c.format_pacing_countdown())
                 data["tp_5h_target_pacing_pct"] = w5_c.get_target_pacing_percentage()
             if w1_c is not None:
                 data["tp_1w_pct"] = w1_c.remaining_percentage
@@ -1631,7 +1682,7 @@ def render_dashboard_html(
                 cd = w1_c.format_reset_countdown()
                 st, _ = w1_c.get_pacing_status()
                 if not (w1_c.remaining_percentage is None and cd == "N/A" and (st == "OK" or not st)):
-                    data["tp_1w_details"] = f"Reset: {cd} | Pacing: {st}"
+                    data["tp_1w_details"] = _build_pacing_details(cd, st, w1_c.format_pacing_countdown())
                 data["tp_1w_target_pacing_pct"] = w1_c.get_target_pacing_percentage()
         except Exception as e:
             logger.debug(f"Error enriching window metrics from quota_tracker: {e}")
@@ -1677,7 +1728,29 @@ def render_dashboard_html(
             has_pct = q_extra.get(f"{key_prefix}_remaining_percentage") is not None
             has_res = q_extra.get(f"{key_prefix}_reset_time") is not None
             if cd or has_res or has_pct or (st and st != "OK"):
-                details = f"Reset: {cd or 'N/A'} | Pacing: {st or 'OK'}"
+                rec_cd = q_extra.get(f"{key_prefix}_pacing_recovery_countdown")
+                if (not rec_cd or rec_cd == "00:00:00") and q_extra.get(f"{key_prefix}_pacing_recovery_seconds") is not None:
+                    try:
+                        rec_sec = float(q_extra.get(f"{key_prefix}_pacing_recovery_seconds"))
+                        if rec_sec > 0:
+                            rec_cd = format_pacing_recovery_countdown(rec_sec)
+                    except Exception:
+                        pass
+                if (not rec_cd or rec_cd == "00:00:00") and st == "BEHIND_PACING" and has_res and has_pct:
+                    try:
+                        qw = QuotaWindow(
+                            name="5H" if "5h" in key_prefix else "1W",
+                            duration_seconds=18000.0 if "5h" in key_prefix else 604800.0,
+                            remaining_percentage=q_extra.get(f"{key_prefix}_remaining_percentage"),
+                            reset_time=q_extra.get(f"{key_prefix}_reset_time"),
+                        )
+                        qw_rec = qw.format_pacing_countdown()
+                        if qw_rec and qw_rec != "00:00:00":
+                            rec_cd = qw_rec
+                    except Exception:
+                        pass
+
+                details = _build_pacing_details(cd or "N/A", st, rec_cd)
                 data[f"{prefix}_details"] = details
                 if prefix.startswith("tp_"):
                     data[f"{key_prefix}_details"] = details

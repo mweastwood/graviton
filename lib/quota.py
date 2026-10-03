@@ -429,17 +429,7 @@ class QuotaWindow:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)
         rec_sec = self.get_pacing_recovery_seconds(norm_dt)
-        if rec_sec <= 0:
-            return "00:00:00"
-        if rec_sec >= 86400:
-            days = int(rec_sec // 86400)
-            hours = int((rec_sec % 86400) // 3600)
-            return f"{days}d {hours:02d}h"
-        else:
-            hours = int(rec_sec // 3600)
-            mins = int((rec_sec % 3600) // 60)
-            secs = int(rec_sec % 60)
-            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+        return format_pacing_recovery_countdown(rec_sec)
 
     def format_reset_countdown(
         self,
@@ -496,6 +486,32 @@ def format_reset_countdown(
         mins = int((diff % 3600) // 60)
         secs = int(diff % 60)
         return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
+def format_pacing_recovery_countdown(
+    seconds: Optional[Union[float, int]] = None,
+) -> str:
+    """Format pacing recovery seconds into Xd Yh or HH:MM:SS countdown string."""
+    if seconds is None:
+        return "00:00:00"
+    try:
+        sec = float(seconds)
+    except (ValueError, TypeError):
+        return "00:00:00"
+    if math.isnan(sec) or math.isinf(sec) or sec <= 0:
+        return "00:00:00"
+    try:
+        if sec >= 86400:
+            days = int(sec // 86400)
+            hours = int((sec % 86400) // 3600)
+            return f"{days}d {hours:02d}h"
+        else:
+            hours = int(sec // 3600)
+            mins = int((sec % 3600) // 60)
+            secs = int(sec % 60)
+            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    except (ValueError, TypeError, OverflowError):
+        return "00:00:00"
 
 
 def format_quota_badge(
@@ -1071,12 +1087,16 @@ class QuotaInfo:
                 d["claude_window_1w"] = self.claude_window_1w
         def _extract_win_metrics(w, default_name=None):
             if w is None:
-                return None, None, None, "OK", None
+                return None, None, None, "OK", None, 0.0, None
             if isinstance(w, QuotaWindow):
                 st, _ = w.get_pacing_status()
                 pct = round(w.remaining_percentage, 1) if w.remaining_percentage is not None else None
                 tgt = w.get_target_pacing_percentage()
-                return pct, w.reset_time, w.format_reset_countdown(), st, tgt
+                rec_sec = round(w.get_pacing_recovery_seconds(), 1) if st == "BEHIND_PACING" else 0.0
+                rec_cd = w.format_pacing_countdown() if st == "BEHIND_PACING" else None
+                if rec_cd == "00:00:00":
+                    rec_cd = None
+                return pct, w.reset_time, w.format_reset_countdown(), st, tgt, rec_sec, rec_cd
             elif isinstance(w, dict):
                 pct = w.get("remaining_percentage")
                 if pct is not None:
@@ -1088,10 +1108,57 @@ class QuotaInfo:
                 cd = w.get("reset_countdown")
                 if cd is None and res is not None:
                     cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
-                st = w.get("pacing_status", "OK")
+                st = w.get("pacing_status") or "OK"
                 tgt = w.get("target_pacing_percentage")
-                return pct, res, cd, st, tgt
-            return None, None, None, "OK", None
+                if st != "BEHIND_PACING":
+                    rec_sec = 0.0
+                    rec_cd = None
+                else:
+                    rec_sec = w.get("pacing_recovery_seconds")
+                    if rec_sec is not None:
+                        try:
+                            rec_sec = float(rec_sec)
+                            if math.isnan(rec_sec) or math.isinf(rec_sec):
+                                rec_sec = 0.0
+                        except (ValueError, TypeError):
+                            rec_sec = 0.0
+                    else:
+                        rec_sec = 0.0
+                    rec_cd = w.get("pacing_recovery_countdown")
+                    if (not rec_cd or rec_cd == "00:00:00") and rec_sec > 0:
+                        rec_cd = format_pacing_recovery_countdown(rec_sec)
+                    if (not rec_cd or rec_cd == "00:00:00") and res is not None and pct is not None:
+                        try:
+                            win_name = w.get("name") or default_name or "5H"
+                            dur = w.get("duration_seconds")
+                            if dur is None:
+                                dur = 18000.0 if str(win_name).upper() == "5H" else 604800.0
+                            qw = QuotaWindow(
+                                name=win_name,
+                                duration_seconds=dur,
+                                remaining_percentage=pct,
+                                reset_time=res,
+                            )
+                            qw_sec = qw.get_pacing_recovery_seconds()
+                            qw_cd = qw.format_pacing_countdown()
+                            if rec_sec <= 0:
+                                rec_sec = qw_sec
+                            if not rec_cd or rec_cd == "00:00:00":
+                                rec_cd = qw_cd
+                        except Exception:
+                            pass
+                    if rec_cd == "00:00:00":
+                        rec_cd = None
+                    try:
+                        rec_sec = float(rec_sec)
+                        if math.isnan(rec_sec) or math.isinf(rec_sec):
+                            rec_sec = 0.0
+                        else:
+                            rec_sec = round(rec_sec, 1)
+                    except (ValueError, TypeError, OverflowError):
+                        rec_sec = 0.0
+                return pct, res, cd, st, tgt, rec_sec, rec_cd
+            return None, None, None, "OK", None, 0.0, None
 
         p = str(self.quota_pool or "").lower()
         is_tp = "claude" in p or "gpt" in p or "3p" in p or "third" in p
@@ -1101,10 +1168,10 @@ class QuotaInfo:
         claude_5h = self.claude_window_5h if self.claude_window_5h is not None else (self.window_5h if is_tp else None)
         claude_1w = self.claude_window_1w if self.claude_window_1w is not None else (self.window_1w if is_tp else None)
 
-        g5_pct, g5_res, g5_cd, g5_st, g5_tgt = _extract_win_metrics(gemini_5h, default_name="5H")
-        g1_pct, g1_res, g1_cd, g1_st, g1_tgt = _extract_win_metrics(gemini_1w, default_name="1W")
-        c5_pct, c5_res, c5_cd, c5_st, c5_tgt = _extract_win_metrics(claude_5h, default_name="5H")
-        c1_pct, c1_res, c1_cd, c1_st, c1_tgt = _extract_win_metrics(claude_1w, default_name="1W")
+        g5_pct, g5_res, g5_cd, g5_st, g5_tgt, g5_rec_sec, g5_rec_cd = _extract_win_metrics(gemini_5h, default_name="5H")
+        g1_pct, g1_res, g1_cd, g1_st, g1_tgt, g1_rec_sec, g1_rec_cd = _extract_win_metrics(gemini_1w, default_name="1W")
+        c5_pct, c5_res, c5_cd, c5_st, c5_tgt, c5_rec_sec, c5_rec_cd = _extract_win_metrics(claude_5h, default_name="5H")
+        c1_pct, c1_res, c1_cd, c1_st, c1_tgt, c1_rec_sec, c1_rec_cd = _extract_win_metrics(claude_1w, default_name="1W")
 
         def _to_win_dict(w):
             if w is None:
@@ -1127,24 +1194,32 @@ class QuotaInfo:
         d["gemini_5h_countdown"] = g5_cd
         d["gemini_5h_pacing_status"] = g5_st
         d["gemini_5h_target_pacing_percentage"] = g5_tgt
+        d["gemini_5h_pacing_recovery_seconds"] = g5_rec_sec
+        d["gemini_5h_pacing_recovery_countdown"] = g5_rec_cd
 
         d["gemini_1w_remaining_percentage"] = g1_pct
         d["gemini_1w_reset_time"] = g1_res
         d["gemini_1w_countdown"] = g1_cd
         d["gemini_1w_pacing_status"] = g1_st
         d["gemini_1w_target_pacing_percentage"] = g1_tgt
+        d["gemini_1w_pacing_recovery_seconds"] = g1_rec_sec
+        d["gemini_1w_pacing_recovery_countdown"] = g1_rec_cd
 
         d["third_party_5h_remaining_percentage"] = c5_pct
         d["third_party_5h_reset_time"] = c5_res
         d["third_party_5h_countdown"] = c5_cd
         d["third_party_5h_pacing_status"] = c5_st
         d["third_party_5h_target_pacing_percentage"] = c5_tgt
+        d["third_party_5h_pacing_recovery_seconds"] = c5_rec_sec
+        d["third_party_5h_pacing_recovery_countdown"] = c5_rec_cd
 
         d["third_party_1w_remaining_percentage"] = c1_pct
         d["third_party_1w_reset_time"] = c1_res
         d["third_party_1w_countdown"] = c1_cd
         d["third_party_1w_pacing_status"] = c1_st
         d["third_party_1w_target_pacing_percentage"] = c1_tgt
+        d["third_party_1w_pacing_recovery_seconds"] = c1_rec_sec
+        d["third_party_1w_pacing_recovery_countdown"] = c1_rec_cd
 
         if g5_pct is not None and g1_pct is not None:
             d["gemini_remaining_percentage"] = min(g5_pct, g1_pct)
