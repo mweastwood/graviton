@@ -331,6 +331,26 @@ class TestStreamSession(unittest.TestCase):
                 session.start(timeout=1.0)
             self.assertIn("Expected 'init' event", str(ctx.exception))
 
+    def test_start_result_event_with_error(self):
+        session = StreamSession(agy_binary="agy")
+        with patch("subprocess.Popen") as mock_popen:
+            self.mock_proc.stdout.readline.side_effect = [
+                json.dumps({
+                    "event": "result",
+                    "result": {
+                        "status": "ERROR",
+                        "error": "invalid model selection: model claude-sonnet-4-6 is not recognized",
+                    },
+                }) + "\n",
+                "",
+            ]
+            mock_popen.return_value = self.mock_proc
+
+            with self.assertRaises(SupervisorError) as ctx:
+                session.start(timeout=1.0)
+            self.assertIn("Expected 'init' event, got 'result' with error:", str(ctx.exception))
+            self.assertIn("invalid model selection", str(ctx.exception))
+
     def test_start_timeout_blocking(self):
         session = StreamSession(agy_binary="agy")
         with patch("subprocess.Popen") as mock_popen:

@@ -418,6 +418,10 @@ class StreamSession:
 
         if event.get("event") != "init":
             self.close()
+            if event.get("event") == "result":
+                res_obj = event.get("result", {})
+                err_msg = res_obj.get("error") or res_obj.get("status") or self.get_stderr().strip() or str(res_obj)
+                raise SupervisorError(f"Expected 'init' event, got 'result' with error: {err_msg}")
             raise SupervisorError(f"Expected 'init' event, got: {event.get('event')}")
 
         self.conversation_id = event.get("conversation_id")
