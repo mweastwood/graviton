@@ -10,6 +10,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 from lib.updater import (
     get_git_info,
+    get_cached_git_info,
+    _reset_git_info_cache,
+    _GIT_CACHE_TTL,
     perform_git_pull,
     check_if_dockerfile_changed,
     rebuild_agent_container,
@@ -1040,6 +1043,55 @@ class TestUpdater(unittest.TestCase):
         self.assertIn("index.lock", output)
         self.assertEqual(mock_run.call_count, 2)
         self.assertTrue(any("lock collision retry limit reached (2/2)" in log for log in cm.output))
+
+
+class TestCachedGitInfo(unittest.TestCase):
+    """Unit tests for get_cached_git_info TTL cache and reset functionality."""
+
+    def setUp(self):
+        super().setUp()
+        _reset_git_info_cache()
+        self.addCleanup(_reset_git_info_cache)
+
+    @patch("lib.updater.get_git_info", return_value=("sha123", "feature-branch"))
+    def test_get_cached_git_info_populates_cache_and_hits_within_ttl(self, mock_git):
+        c1, b1 = get_cached_git_info(Path("/repo"), ttl=5.0)
+        self.assertEqual((c1, b1), ("sha123", "feature-branch"))
+        self.assertEqual(mock_git.call_count, 1)
+        mock_git.assert_called_with(Path("/repo"))
+
+        # Subsequent call within TTL returns cached result without invoking get_git_info
+        c2, b2 = get_cached_git_info(Path("/repo"), ttl=5.0)
+        self.assertEqual((c2, b2), ("sha123", "feature-branch"))
+        self.assertEqual(mock_git.call_count, 1)
+
+    @patch("lib.updater.get_git_info")
+    def test_get_cached_git_info_expires_after_ttl_using_monotonic_clock(self, mock_git):
+        mock_git.side_effect = [("sha1", "main"), ("sha2", "main")]
+        with patch("time.monotonic", side_effect=[100.0, 102.0, 106.0]):
+            c1, b1 = get_cached_git_info(ttl=5.0)
+            self.assertEqual(c1, "sha1")
+            self.assertEqual(mock_git.call_count, 1)
+
+            # At t=102.0 (elapsed 2.0s < 5.0s), hits cache
+            c2, b2 = get_cached_git_info(ttl=5.0)
+            self.assertEqual(c2, "sha1")
+            self.assertEqual(mock_git.call_count, 1)
+
+            # At t=106.0 (elapsed 6.0s >= 5.0s), expired and calls get_git_info again
+            c3, b3 = get_cached_git_info(ttl=5.0)
+            self.assertEqual(c3, "sha2")
+            self.assertEqual(mock_git.call_count, 2)
+
+    @patch("lib.updater.get_git_info", return_value=("sha999", "dev"))
+    def test_reset_git_info_cache_clears_cache(self, mock_git):
+        get_cached_git_info(ttl=10.0)
+        self.assertEqual(mock_git.call_count, 1)
+
+        _reset_git_info_cache()
+
+        get_cached_git_info(ttl=10.0)
+        self.assertEqual(mock_git.call_count, 2)
 
 
 if __name__ == "__main__":

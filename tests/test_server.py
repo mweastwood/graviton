@@ -2743,7 +2743,8 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
 
     def test_get_cached_git_info_caching_and_ttl(self):
         server_mod._reset_git_info_cache()
-        with patch("graviton_server.get_git_info", return_value=("abc1234", "main")) as mock_git:
+        self.addCleanup(server_mod._reset_git_info_cache)
+        with patch("lib.updater.get_git_info", return_value=("abc1234", "main")) as mock_git:
             # First call populates cache
             c1, b1 = server_mod.get_cached_git_info(server_mod.REPO_ROOT, ttl=10.0)
             self.assertEqual((c1, b1), ("abc1234", "main"))
@@ -2761,6 +2762,8 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
             self.assertEqual(mock_git.call_count, 2)
 
     def test_dashboard_endpoints_use_cached_git_info_with_repo_root(self):
+        server_mod._reset_git_info_cache()
+        self.addCleanup(server_mod._reset_git_info_cache)
         handler = MagicMock(spec=GravitonHandler)
         handler.task_manager = None
         handler.quota_tracker = None
@@ -2790,6 +2793,32 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(json_data["commit"], "def5678")
             self.assertEqual(json_data["branch"], "dev")
+
+    def test_send_json_and_html_cache_control_headers(self):
+        import io
+        handler = MagicMock(spec=GravitonHandler)
+        handler.wfile = io.BytesIO()
+
+        # Test _send_json headers
+        GravitonHandler._send_json(handler, 200, {"key": "val"})
+        handler.send_response.assert_called_with(200)
+        handler.send_header.assert_any_call("Content-Type", "application/json")
+        handler.send_header.assert_any_call("Cache-Control", "no-cache, no-store, must-revalidate")
+        handler.send_header.assert_any_call("Pragma", "no-cache")
+        handler.end_headers.assert_called_once()
+
+        # Reset mocks
+        handler.send_response.reset_mock()
+        handler.send_header.reset_mock()
+        handler.end_headers.reset_mock()
+
+        # Test _send_html headers
+        GravitonHandler._send_html(handler, 200, "<html>test</html>")
+        handler.send_response.assert_called_with(200)
+        handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
+        handler.send_header.assert_any_call("Cache-Control", "no-cache, no-store, must-revalidate")
+        handler.send_header.assert_any_call("Pragma", "no-cache")
+        handler.end_headers.assert_called_once()
 
 
 if __name__ == "__main__":

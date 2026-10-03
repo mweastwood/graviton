@@ -37,6 +37,9 @@ from lib.updater import (
     set_hot_reload_state,
     get_hot_reload_state,
     get_git_info,
+    get_cached_git_info as _updater_get_cached_git_info,
+    _reset_git_info_cache,
+    _GIT_CACHE_TTL,
     _SYNC_LOCK,
 )
 from lib.sidecar import ensure_shell_environment
@@ -62,20 +65,6 @@ _is_shutting_down = False
 _shutdown_thread: Optional[threading.Thread] = None
 _shutdown_lock = threading.Lock()
 
-_git_info_cache: Optional[Tuple[str, str]] = None
-_git_info_last_fetch: float = 0.0
-_git_info_lock = threading.Lock()
-_GIT_CACHE_TTL: float = 5.0
-
-
-def _reset_git_info_cache() -> None:
-    """Reset cached git info (used primarily in tests)."""
-    global _git_info_cache, _git_info_last_fetch
-    with _git_info_lock:
-        _git_info_cache = None
-        _git_info_last_fetch = 0.0
-
-
 def get_cached_git_info(
     repo_root: Optional[Union[Path, str]] = REPO_ROOT,
     ttl: float = _GIT_CACHE_TTL,
@@ -84,13 +73,7 @@ def get_cached_git_info(
     Retrieve git commit SHA and branch name with a short TTL cache.
     Prevents spawning git subprocesses on every auto-refresh request.
     """
-    global _git_info_cache, _git_info_last_fetch
-    now = time.time()
-    with _git_info_lock:
-        if _git_info_cache is None or (now - _git_info_last_fetch) >= ttl:
-            _git_info_cache = get_git_info(repo_root)
-            _git_info_last_fetch = now
-        return _git_info_cache
+    return _updater_get_cached_git_info(repo_root=repo_root, ttl=ttl)
 
 
 def graceful_shutdown(
@@ -831,12 +814,16 @@ class GravitonHandler(BaseHTTPRequestHandler):
     def _send_json(self, status_code: int, data: dict):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2).encode("utf-8"))
 
     def _send_html(self, status_code: int, html_content: str):
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(html_content.encode("utf-8"))
 

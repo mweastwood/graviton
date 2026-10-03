@@ -3291,8 +3291,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         mock_get_reload.assert_not_called()
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
 
-    @patch("lib.dashboard.get_git_info", return_value=("cafe123", "feature-x"))
-    def test_render_dashboard_html_passes_repo_root_to_get_git_info(self, mock_get_git):
+    @patch("lib.dashboard.get_cached_git_info", return_value=("cafe123", "feature-x"))
+    def test_render_dashboard_html_passes_repo_root_to_get_cached_git_info(self, mock_get_git):
         _reset_dashboard_template_cache()
         sample_md = "# 🌌 Graviton Live Dashboard\n"
         html_out = render_dashboard_html(sample_md)
@@ -3321,6 +3321,8 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("function getReloadStateClass(state)", template)
         self.assertIn("const isReloadIdle = reloadState === 'IDLE';", template)
         self.assertIn("isReloadIdle &&", template)
+        self.assertIn("const probeAndReload", template)
+        self.assertIn("fetch('/dashboard/content'", template)
         self.assertIn("window.location.reload()", template)
         self.assertIn("data.commit", template)
         self.assertIn("data.branch", template)

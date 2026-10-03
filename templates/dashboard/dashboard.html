@@ -1632,10 +1632,24 @@
                             !isReloading
                         ) {{
                             isReloading = true;
-                            showToast(`Server updated to commit ${{newCommit}}. Refreshing dashboard...`, 'info');
-                            setTimeout(() => {{
-                                window.location.reload();
-                            }}, 1500);
+                            showToast(`Server updated to commit ${{newCommit}}. Verifying connection and refreshing...`, 'info');
+                            const probeAndReload = async (attempts = 0) => {{
+                                try {{
+                                    const probeRes = await fetch('/dashboard/content', {{ cache: 'no-store' }});
+                                    if (probeRes.ok) {{
+                                        window.location.reload();
+                                        return;
+                                    }}
+                                }} catch (probeErr) {{
+                                    // Transient server restart, retry after delay
+                                }}
+                                if (attempts < 10) {{
+                                    setTimeout(() => probeAndReload(attempts + 1), 1000);
+                                }} else {{
+                                    window.location.reload();
+                                }}
+                            }};
+                            setTimeout(() => probeAndReload(), 1000);
                             return;
                         }}
                         if (initialCommit === 'unknown' && newCommit && newCommit !== 'unknown' && isReloadIdle) {{

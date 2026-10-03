@@ -94,6 +94,42 @@ def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str
     return commit, branch
 
 
+_GIT_CACHE_TTL: float = 5.0
+_git_info_cache: Optional[Tuple[str, str]] = None
+_git_info_last_fetch: float = 0.0
+_git_info_lock = threading.Lock()
+
+
+def _reset_git_info_cache() -> None:
+    """Reset cached git info (used primarily in tests)."""
+    global _git_info_cache, _git_info_last_fetch
+    with _git_info_lock:
+        _git_info_cache = None
+        _git_info_last_fetch = 0.0
+
+
+def get_cached_git_info(
+    repo_root: Optional[Union[Path, str]] = None,
+    ttl: float = _GIT_CACHE_TTL,
+) -> Tuple[str, str]:
+    """
+    Retrieve git commit SHA and branch name with a short TTL cache.
+    Prevents spawning git subprocesses on every auto-refresh request.
+    Uses time.monotonic() for interval and clock stability.
+
+    :param repo_root: Optional Path or str to repository root.
+    :param ttl: Time-to-live cache duration in seconds.
+    :return: Tuple (commit_sha, branch_name).
+    """
+    global _git_info_cache, _git_info_last_fetch
+    now = time.monotonic()
+    with _git_info_lock:
+        if _git_info_cache is None or (now - _git_info_last_fetch) >= ttl:
+            _git_info_cache = get_git_info(repo_root)
+            _git_info_last_fetch = now
+        return _git_info_cache
+
+
 def perform_git_pull(
     repo_root: Path,
     branch: str = "main",

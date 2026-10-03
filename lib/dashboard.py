@@ -31,7 +31,7 @@ from lib.tasks import TaskManager, Task, TaskStatus
 from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, format_reset_countdown
 from lib.scheduler import TaskScheduler
 from lib.pr_tracker import PRTracker
-from lib.updater import get_git_info, get_hot_reload_state
+from lib.updater import get_cached_git_info, get_git_info, get_hot_reload_state
 
 logger = logging.getLogger("graviton.dashboard")
 
@@ -1818,7 +1818,7 @@ def render_dashboard_html(
 
     if not commit or not branch or commit == "unknown" or branch == "unknown":
         try:
-            c, b = get_git_info(REPO_ROOT)
+            c, b = get_cached_git_info(REPO_ROOT)
             commit = (commit if commit and commit != "unknown" else c) or "unknown"
             branch = (branch if branch and branch != "unknown" else b) or "unknown"
         except Exception:
