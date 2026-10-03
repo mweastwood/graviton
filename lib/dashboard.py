@@ -28,7 +28,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lib.tasks import TaskManager, Task, TaskStatus
-from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, format_reset_countdown
+from lib.quota import (
+    QuotaTracker,
+    QuotaWindow,
+    DEFAULT_GEMINI_MODELS,
+    DEFAULT_THIRD_PARTY_MODELS,
+    format_reset_countdown,
+    format_pacing_recovery_countdown,
+)
 from lib.scheduler import TaskScheduler
 from lib.pr_tracker import PRTracker
 from lib.updater import get_cached_git_info, get_git_info, get_hot_reload_state
@@ -477,22 +484,14 @@ def format_dashboard_markdown(
             if pct is None and cd == "N/A" and (status == "OK" or not status):
                 return "N/A", "N/A"
             rec_cd = w.get("pacing_recovery_countdown")
-            if not rec_cd and w.get("pacing_recovery_seconds") is not None:
+            if (not rec_cd or rec_cd == "00:00:00") and w.get("pacing_recovery_seconds") is not None:
                 try:
                     rec_sec = float(w.get("pacing_recovery_seconds"))
                     if rec_sec > 0:
-                        if rec_sec >= 86400:
-                            days = int(rec_sec // 86400)
-                            hours = int((rec_sec % 86400) // 3600)
-                            rec_cd = f"{days}d {hours:02d}h"
-                        else:
-                            hours = int(rec_sec // 3600)
-                            mins = int((rec_sec % 3600) // 60)
-                            secs = int(rec_sec % 60)
-                            rec_cd = f"{hours:02d}:{mins:02d}:{secs:02d}"
+                        rec_cd = format_pacing_recovery_countdown(rec_sec)
                 except Exception:
                     pass
-            if not rec_cd and status == "BEHIND_PACING" and w.get("reset_time") is not None and pct is not None:
+            if (not rec_cd or rec_cd == "00:00:00") and status == "BEHIND_PACING" and w.get("reset_time") is not None and pct is not None:
                 try:
                     qw = QuotaWindow(
                         name=w.get("name", "5H"),
@@ -1726,22 +1725,14 @@ def render_dashboard_html(
             has_res = q_extra.get(f"{key_prefix}_reset_time") is not None
             if cd or has_res or has_pct or (st and st != "OK"):
                 rec_cd = q_extra.get(f"{key_prefix}_pacing_recovery_countdown")
-                if not rec_cd and q_extra.get(f"{key_prefix}_pacing_recovery_seconds") is not None:
+                if (not rec_cd or rec_cd == "00:00:00") and q_extra.get(f"{key_prefix}_pacing_recovery_seconds") is not None:
                     try:
                         rec_sec = float(q_extra.get(f"{key_prefix}_pacing_recovery_seconds"))
                         if rec_sec > 0:
-                            if rec_sec >= 86400:
-                                days = int(rec_sec // 86400)
-                                hours = int((rec_sec % 86400) // 3600)
-                                rec_cd = f"{days}d {hours:02d}h"
-                            else:
-                                hours = int(rec_sec // 3600)
-                                mins = int((rec_sec % 3600) // 60)
-                                secs = int(rec_sec % 60)
-                                rec_cd = f"{hours:02d}:{mins:02d}:{secs:02d}"
+                            rec_cd = format_pacing_recovery_countdown(rec_sec)
                     except Exception:
                         pass
-                if not rec_cd and st == "BEHIND_PACING" and has_res and has_pct:
+                if (not rec_cd or rec_cd == "00:00:00") and st == "BEHIND_PACING" and has_res and has_pct:
                     try:
                         qw = QuotaWindow(
                             name="5H" if "5h" in key_prefix else "1W",

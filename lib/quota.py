@@ -429,17 +429,7 @@ class QuotaWindow:
         effective_now = now_dt if now_dt is not None else now
         norm_dt = _normalize_now_datetime(effective_now)
         rec_sec = self.get_pacing_recovery_seconds(norm_dt)
-        if rec_sec <= 0:
-            return "00:00:00"
-        if rec_sec >= 86400:
-            days = int(rec_sec // 86400)
-            hours = int((rec_sec % 86400) // 3600)
-            return f"{days}d {hours:02d}h"
-        else:
-            hours = int(rec_sec // 3600)
-            mins = int((rec_sec % 3600) // 60)
-            secs = int(rec_sec % 60)
-            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+        return format_pacing_recovery_countdown(rec_sec)
 
     def format_reset_countdown(
         self,
@@ -495,6 +485,29 @@ def format_reset_countdown(
         hours = int(diff // 3600)
         mins = int((diff % 3600) // 60)
         secs = int(diff % 60)
+        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
+def format_pacing_recovery_countdown(
+    seconds: Optional[Union[float, int]] = None,
+) -> str:
+    """Format pacing recovery seconds into Xd Yh or HH:MM:SS countdown string."""
+    if seconds is None:
+        return "00:00:00"
+    try:
+        sec = float(seconds)
+    except (ValueError, TypeError):
+        return "00:00:00"
+    if sec <= 0:
+        return "00:00:00"
+    if sec >= 86400:
+        days = int(sec // 86400)
+        hours = int((sec % 86400) // 3600)
+        return f"{days}d {hours:02d}h"
+    else:
+        hours = int(sec // 3600)
+        mins = int((sec % 3600) // 60)
+        secs = int(sec % 60)
         return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
 
@@ -1090,10 +1103,46 @@ class QuotaInfo:
                 cd = w.get("reset_countdown")
                 if cd is None and res is not None:
                     cd = format_reset_countdown(res, window_name=w.get("name") or default_name)
-                st = w.get("pacing_status", "OK")
+                st = w.get("pacing_status") or "OK"
                 tgt = w.get("target_pacing_percentage")
-                rec_sec = w.get("pacing_recovery_seconds", 0.0)
-                rec_cd = w.get("pacing_recovery_countdown")
+                if st != "BEHIND_PACING":
+                    rec_sec = 0.0
+                    rec_cd = None
+                else:
+                    rec_sec = w.get("pacing_recovery_seconds")
+                    if rec_sec is not None:
+                        try:
+                            rec_sec = float(rec_sec)
+                        except (ValueError, TypeError):
+                            rec_sec = 0.0
+                    else:
+                        rec_sec = 0.0
+                    rec_cd = w.get("pacing_recovery_countdown")
+                    if (not rec_cd or rec_cd == "00:00:00") and rec_sec > 0:
+                        rec_cd = format_pacing_recovery_countdown(rec_sec)
+                    if (not rec_cd or rec_cd == "00:00:00") and res is not None and pct is not None:
+                        try:
+                            win_name = w.get("name") or default_name or "5H"
+                            dur = w.get("duration_seconds")
+                            if dur is None:
+                                dur = 18000.0 if str(win_name).upper() == "5H" else 604800.0
+                            qw = QuotaWindow(
+                                name=win_name,
+                                duration_seconds=dur,
+                                remaining_percentage=pct,
+                                reset_time=res,
+                            )
+                            qw_sec = qw.get_pacing_recovery_seconds()
+                            qw_cd = qw.format_pacing_countdown()
+                            if rec_sec <= 0:
+                                rec_sec = qw_sec
+                            if not rec_cd or rec_cd == "00:00:00":
+                                rec_cd = qw_cd
+                        except Exception:
+                            pass
+                    if rec_cd == "00:00:00":
+                        rec_cd = None
+                    rec_sec = round(float(rec_sec), 1) if rec_sec is not None else 0.0
                 return pct, res, cd, st, tgt, rec_sec, rec_cd
             return None, None, None, "OK", None, 0.0, None
 

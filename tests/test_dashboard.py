@@ -3424,6 +3424,90 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(parsed["gemini_5h_details"], "Reset: 02:30:00 | Pacing: BEHIND_PACING (Resume in 00:30:00)")
         self.assertEqual(parsed["gemini_5h_target_pacing_pct"], 50.0)
 
+    def test_format_dashboard_markdown_1w_multi_day_recovery_countdown(self):
+        """Verify format_dashboard_markdown formats 1W multi-day recovery countdown as Xd Yh."""
+        extra = {
+            "quota_info": {
+                "gemini_1w_remaining_percentage": 20.0,
+                "gemini_1w_countdown": "5d 12h",
+                "gemini_1w_pacing_status": "BEHIND_PACING",
+                "gemini_1w_pacing_recovery_seconds": 187200.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 5d 12h | Pacing: BEHIND_PACING (Resume in 2d 04h)", md)
+
+    def test_render_dashboard_html_1w_multi_day_recovery_countdown(self):
+        """Verify render_dashboard_html formats 1W multi-day recovery countdown as Xd Yh."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_1w_remaining_percentage": 20.0,
+                "gemini_1w_countdown": "5d 12h",
+                "gemini_1w_pacing_status": "BEHIND_PACING",
+                "gemini_1w_pacing_recovery_seconds": 187200.0,
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 5d 12h | Pacing: BEHIND_PACING (Resume in 2d 04h)", html_out)
+
+    def test_format_dashboard_markdown_1w_window_object_multi_day_recovery(self):
+        """Verify format_dashboard_markdown computes multi-day recovery from 1W QuotaWindow."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(days=5)).isoformat()
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0)
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=10.0, reset_time=reset_time_str)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_5h, w_1w, quota_pool="gemini")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertRegex(md, r"Pacing: BEHIND_PACING \(Resume in \d+d \d+h\)")
+
+    def test_format_dashboard_markdown_dict_with_zero_recovery_countdown_does_not_suppress_estimate(self):
+        """Verify window dict with pacing_recovery_countdown='00:00:00' and positive seconds computes countdown."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:00:00",
+                "gemini_5h_pacing_recovery_seconds": 1800.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `40%` | Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00) |", md)
+
+    def test_render_dashboard_html_dict_with_zero_recovery_countdown_does_not_suppress_estimate(self):
+        """Verify HTML rendering computes countdown when pacing_recovery_countdown='00:00:00' but seconds > 0."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:00:00",
+                "gemini_5h_pacing_recovery_seconds": 1800.0,
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00)", html_out)
+
+    def test_format_dashboard_markdown_window_dict_zero_countdown_fallback(self):
+        """Verify window object dict with '00:00:00' countdown falls back to positive recovery seconds."""
+        extra = {
+            "quota_info": {
+                "gemini_window_5h": {
+                    "name": "5H",
+                    "remaining_percentage": 40.0,
+                    "reset_countdown": "02:30:00",
+                    "pacing_status": "BEHIND_PACING",
+                    "pacing_recovery_countdown": "00:00:00",
+                    "pacing_recovery_seconds": 1800.0,
+                }
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("Pacing: BEHIND_PACING (Resume in 00:30:00)", md)
+
 
 if __name__ == "__main__":
     unittest.main()
