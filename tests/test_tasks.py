@@ -2917,6 +2917,7 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         import time
 
         created_supervisors = []
+        started_event = threading.Event()
 
         class HangingSupervisor:
             def __init__(self, **kwargs):
@@ -2927,8 +2928,9 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
             def cleanup(self):
                 pass
             def run_goal(self, goal, **kwargs):
+                started_event.set()
                 while not self.aborted:
-                    time.sleep(0.05)
+                    time.sleep(0.01)
                 raise RuntimeError("Supervisor aborted")
             def abort(self):
                 self.aborted = True
@@ -2948,7 +2950,10 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         )
         task_id = submitted_task.id
 
-        time.sleep(0.1)
+        # Deterministically wait for task to transition to RUNNING and supervisor to begin execution
+        manager.wait_for_task(task_id, target_statuses=(TaskStatus.RUNNING,), timeout=3.0)
+        self.assertTrue(started_event.wait(timeout=3.0))
+
         aborted = manager.abort_task(task_id)
         self.assertTrue(aborted)
         manager.wait_for_task(task_id, timeout=3.0)
