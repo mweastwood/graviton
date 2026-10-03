@@ -17,9 +17,11 @@ from lib.dashboard import (
     REPO_ROOT,
     _detect_git_repo_full_name,
     _extract_countdown,
+    _format_reload_state_class,
     _format_target_html_cell,
     _format_target_markdown_cell,
     _get_dashboard_template,
+    _get_fallback_dashboard_template,
     _render_active_tasks_table,
     _render_approved_prs_table,
     _render_history_tasks_table,
@@ -3253,6 +3255,86 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("updatePacingMark('tp-5h-pacing-mark'", template)
         self.assertIn("updatePacingMark('tp-1w-pacing-mark'", template)
         self.assertIn("mark.setAttribute('aria-label', titleText)", template)
+
+    def test_format_reload_state_class(self):
+        self.assertEqual(_format_reload_state_class("IDLE"), "idle")
+        self.assertEqual(_format_reload_state_class("idle"), "idle")
+        self.assertEqual(_format_reload_state_class("PULLING_GIT"), "pulling")
+        self.assertEqual(_format_reload_state_class("REBUILDING_CONTAINER"), "rebuilding")
+        self.assertEqual(_format_reload_state_class("DRAINING_TASKS"), "draining")
+        self.assertEqual(_format_reload_state_class("RELOADING"), "reloading")
+        self.assertEqual(_format_reload_state_class("SHUTDOWN: DRAINING_TASKS"), "draining")
+        self.assertEqual(_format_reload_state_class(None), "idle")
+        self.assertEqual(_format_reload_state_class(""), "idle")
+        self.assertEqual(_format_reload_state_class(123), "idle")
+        self.assertEqual(_format_reload_state_class(object()), "idle")
+
+    def test_render_dashboard_html_contains_branch_commit_and_reload_state(self):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n"
+        extra = {
+            "branch": "feat/my-branch",
+            "commit": "a1b2c3d",
+            "reload_state": "DRAINING_TASKS",
+        }
+        html_out = render_dashboard_html(sample_md, extra_info=extra)
+        self.assertIn('id="meta-branch">feat/my-branch</code>', html_out)
+        self.assertIn('id="meta-commit">a1b2c3d</code>', html_out)
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
+
+    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
+    def test_render_dashboard_html_explicit_idle_reload_state(self, mock_get_reload):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        extra = {"reload_state": "IDLE"}
+        html_out = render_dashboard_html(sample_md, extra_info=extra)
+        mock_get_reload.assert_not_called()
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
+
+    @patch("lib.dashboard.get_cached_git_info", return_value=("cafe123", "feature-x"))
+    def test_render_dashboard_html_passes_repo_root_to_get_cached_git_info(self, mock_get_git):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_git.assert_called_once_with(REPO_ROOT)
+        self.assertIn('id="meta-branch">feature-x</code>', html_out)
+        self.assertIn('id="meta-commit">cafe123</code>', html_out)
+
+    def test_render_dashboard_html_default_branch_and_commit_resolution(self):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        self.assertIn('id="meta-branch">', html_out)
+        self.assertIn('id="meta-commit">', html_out)
+        self.assertIn('id="meta-reload-state"', html_out)
+
+    def test_template_js_client_side_commit_auto_reload(self):
+        _reset_dashboard_template_cache()
+        template = _get_dashboard_template()
+        self.assertIn(".reload-badge", template)
+        self.assertIn(".reload-badge-idle", template)
+        self.assertIn(".reload-badge-pulling", template)
+        self.assertIn(".reload-badge-draining", template)
+        self.assertIn(".toast-info", template)
+        self.assertIn('let initialCommit = "{commit}";', template)
+        self.assertIn("let isReloading = false;", template)
+        self.assertIn("function getReloadStateClass(state)", template)
+        self.assertIn("const isReloadIdle = reloadState === 'IDLE';", template)
+        self.assertIn("isReloadIdle &&", template)
+        self.assertIn("if (isReloading) return;", template)
+        self.assertIn("const probeAndReload", template)
+        self.assertIn("if (attempts < 30)", template)
+        self.assertIn("fetch('/dashboard/content'", template)
+        self.assertIn("window.location.reload()", template)
+        self.assertIn("data.commit", template)
+        self.assertIn("data.branch", template)
+        self.assertIn("data.reload_state", template)
+
+    def test_fallback_template_contains_branch_commit_reload(self):
+        fb = _get_fallback_dashboard_template()
+        self.assertIn("{branch}", fb)
+        self.assertIn("{commit}", fb)
+        self.assertIn("{reload_state}", fb)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ from lib.tasks import TaskManager, Task, TaskStatus
 from lib.quota import QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, format_reset_countdown
 from lib.scheduler import TaskScheduler
 from lib.pr_tracker import PRTracker
+from lib.updater import get_cached_git_info, get_git_info, get_hot_reload_state
 
 logger = logging.getLogger("graviton.dashboard")
 
@@ -117,7 +118,7 @@ def _get_fallback_dashboard_template() -> str:
 </head>
 <body>
     <h1>🌌 Graviton Live Dashboard</h1>
-    <p>Status: {status_icon} {status_text} | Host: {effective_host}:{effective_port}</p>
+    <p>Status: {status_icon} {status_text} | Host: {effective_host}:{effective_port} | Branch: {branch} | Commit: {commit} | Reload: {reload_state}</p>
     <p>Active Workers: {active_workers} / {max_workers}</p>
     <p>Running Tasks: {running_tasks} | Queued: {queued_tasks_count} | Completed: {completed_tasks} | Failed: {failed_tasks}</p>
     <div>{active_table_html}</div>
@@ -127,6 +128,20 @@ def _get_fallback_dashboard_template() -> str:
     <pre id="content">{escaped_md}</pre>
 </body>
 </html>"""
+
+
+def _format_reload_state_class(reload_state: Any) -> str:
+    """Map hot reload lifecycle state to a CSS modifier class."""
+    s = str(reload_state or "IDLE").upper()
+    if "PULL" in s:
+        return "pulling"
+    if "REBUILD" in s:
+        return "rebuilding"
+    if "DRAIN" in s:
+        return "draining"
+    if "RELOAD" in s:
+        return "reloading"
+    return "idle"
 
 
 
@@ -1258,6 +1273,9 @@ def parse_dashboard_markdown(
     return {
         "host": host,
         "port": port,
+        "commit": "unknown",
+        "branch": "unknown",
+        "reload_state": "IDLE",
         "status_text": status_text,
         "status_icon": status_icon,
         "status_class": status_class,
@@ -1795,12 +1813,40 @@ def render_dashboard_html(
     raw_repo = _detect_git_repo_full_name() or ""
     default_repo = raw_repo if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", raw_repo) else ""
 
+    commit = (extra_info.get("commit") if extra_info else None) or data.get("commit")
+    branch = (extra_info.get("branch") if extra_info else None) or data.get("branch")
+
+    if not commit or not branch or commit == "unknown" or branch == "unknown":
+        try:
+            c, b = get_cached_git_info(REPO_ROOT)
+            commit = (commit if commit and commit != "unknown" else c) or "unknown"
+            branch = (branch if branch and branch != "unknown" else b) or "unknown"
+        except Exception:
+            pass
+    commit = commit or "unknown"
+    branch = branch or "unknown"
+
+    if extra_info is not None and "reload_state" in extra_info and extra_info["reload_state"] is not None:
+        reload_state = str(extra_info["reload_state"])
+    else:
+        try:
+            reload_state = get_hot_reload_state()
+        except Exception:
+            reload_state = (data.get("reload_state") if data else "IDLE") or "IDLE"
+    reload_state = reload_state or "IDLE"
+
+    reload_state_class = _format_reload_state_class(reload_state)
+
     template = _get_dashboard_template()
 
     return template.format(
         effective_host=effective_host,
         effective_port=effective_port,
         effective_now=effective_now,
+        branch=html.escape(branch),
+        commit=html.escape(commit),
+        reload_state=html.escape(reload_state),
+        reload_state_class=html.escape(reload_state_class),
         status_icon=status_icon,
         status_text=status_text,
         status_class=status_class,
