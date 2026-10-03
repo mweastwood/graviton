@@ -1613,6 +1613,7 @@
         }}
 
         async function refreshDashboard() {{
+            if (isReloading) return;
             try {{
                 const res = await fetch('/dashboard/content');
                 if (res.ok) {{
@@ -1643,7 +1644,7 @@
                                 }} catch (probeErr) {{
                                     // Transient server restart, retry after delay
                                 }}
-                                if (attempts < 10) {{
+                                if (attempts < 30) {{
                                     setTimeout(() => probeAndReload(attempts + 1), 1000);
                                 }} else {{
                                     window.location.reload();

@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 logger = logging.getLogger("graviton.updater")
 
@@ -95,16 +95,20 @@ def get_git_info(repo_root: Optional[Union[Path, str]] = None) -> Tuple[str, str
 
 
 _GIT_CACHE_TTL: float = 5.0
-_git_info_cache: Optional[Tuple[str, str]] = None
+_git_info_cache: Dict[str, Tuple[Tuple[str, str], float]] = {}
 _git_info_last_fetch: float = 0.0
 _git_info_lock = threading.Lock()
 
 
-def _reset_git_info_cache() -> None:
-    """Reset cached git info (used primarily in tests)."""
+def _reset_git_info_cache(repo_root: Optional[Union[Path, str]] = None) -> None:
+    """Reset cached git info (used primarily in tests and post-pull)."""
     global _git_info_cache, _git_info_last_fetch
     with _git_info_lock:
-        _git_info_cache = None
+        if repo_root is not None:
+            cache_key = str(Path(repo_root).resolve()) if repo_root else ""
+            _git_info_cache.pop(cache_key, None)
+        else:
+            _git_info_cache.clear()
         _git_info_last_fetch = 0.0
 
 
@@ -122,12 +126,16 @@ def get_cached_git_info(
     :return: Tuple (commit_sha, branch_name).
     """
     global _git_info_cache, _git_info_last_fetch
+    cache_key = str(Path(repo_root).resolve()) if repo_root else ""
     now = time.monotonic()
     with _git_info_lock:
-        if _git_info_cache is None or (now - _git_info_last_fetch) >= ttl:
-            _git_info_cache = get_git_info(repo_root)
+        cached = _git_info_cache.get(cache_key)
+        if cached is None or (now - cached[1]) >= ttl:
+            info = get_git_info(repo_root)
+            _git_info_cache[cache_key] = (info, now)
             _git_info_last_fetch = now
-        return _git_info_cache
+            return info
+        return cached[0]
 
 
 def perform_git_pull(
@@ -349,6 +357,7 @@ def sync_repo_and_reload(
             return False
 
         logger.info(f"Git pull output:\n{git_output}")
+        _reset_git_info_cache()
 
         if check_if_dockerfile_changed(git_output):
             set_hot_reload_state("REBUILDING_CONTAINER")

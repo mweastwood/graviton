@@ -499,6 +499,28 @@ class TestUpdater(unittest.TestCase):
         self.assertEqual(states_during_drain, ["DRAINING_TASKS"])
         mock_execv.assert_called_once()
 
+    @patch("os.execv")
+    @patch("lib.updater.get_git_info")
+    @patch("lib.updater.perform_git_pull")
+    def test_sync_repo_and_reload_invalidates_cache_real(self, mock_git_pull, mock_get_git, mock_execv):
+        mock_git_pull.return_value = (True, "Updating abc..def")
+        mock_get_git.side_effect = [("abc", "main"), ("def", "main")]
+        repo_root = Path("/tmp/fake_repo")
+
+        c1, _ = get_cached_git_info(repo_root, ttl=60.0)
+        self.assertEqual(c1, "abc")
+        self.assertEqual(mock_get_git.call_count, 1)
+
+        c2, _ = get_cached_git_info(repo_root, ttl=60.0)
+        self.assertEqual(c2, "abc")
+        self.assertEqual(mock_get_git.call_count, 1)
+
+        sync_repo_and_reload(repo_root=repo_root)
+
+        c3, _ = get_cached_git_info(repo_root, ttl=60.0)
+        self.assertEqual(c3, "def")
+        self.assertEqual(mock_get_git.call_count, 2)
+
     @patch("lib.updater.perform_git_pull")
     def test_sync_repo_and_reload_git_pull_failure_skips_drain(self, mock_git_pull):
         mock_git_pull.return_value = (False, "Git merge conflict")
@@ -1092,6 +1114,55 @@ class TestCachedGitInfo(unittest.TestCase):
 
         get_cached_git_info(ttl=10.0)
         self.assertEqual(mock_git.call_count, 2)
+
+    @patch("lib.updater.get_git_info")
+    def test_get_cached_git_info_isolated_by_repo_root(self, mock_git):
+        def fake_git_info(repo_root=None):
+            if repo_root == Path("/repo_a"):
+                return ("sha_a", "main")
+            elif repo_root == Path("/repo_b"):
+                return ("sha_b", "dev")
+            return ("sha_default", "main")
+
+        mock_git.side_effect = fake_git_info
+
+        res_a = get_cached_git_info(Path("/repo_a"), ttl=10.0)
+        res_b = get_cached_git_info(Path("/repo_b"), ttl=10.0)
+        res_none = get_cached_git_info(None, ttl=10.0)
+
+        self.assertEqual(res_a, ("sha_a", "main"))
+        self.assertEqual(res_b, ("sha_b", "dev"))
+        self.assertEqual(res_none, ("sha_default", "main"))
+
+        # Subsequent calls hit cache and return isolated results
+        self.assertEqual(get_cached_git_info(Path("/repo_a"), ttl=10.0), ("sha_a", "main"))
+        self.assertEqual(get_cached_git_info(Path("/repo_b"), ttl=10.0), ("sha_b", "dev"))
+        self.assertEqual(get_cached_git_info(None, ttl=10.0), ("sha_default", "main"))
+        self.assertEqual(mock_git.call_count, 3)
+
+    @patch("lib.updater.get_git_info")
+    def test_reset_git_info_cache_specific_repo_root(self, mock_git):
+        mock_git.side_effect = [
+            ("sha_a1", "main"),
+            ("sha_b1", "dev"),
+            ("sha_a2", "main"),
+        ]
+        res_a = get_cached_git_info(Path("/repo_a"), ttl=10.0)
+        res_b = get_cached_git_info(Path("/repo_b"), ttl=10.0)
+        self.assertEqual(res_a, ("sha_a1", "main"))
+        self.assertEqual(res_b, ("sha_b1", "dev"))
+        self.assertEqual(mock_git.call_count, 2)
+
+        # Reset only repo_a
+        _reset_git_info_cache(Path("/repo_a"))
+
+        # repo_b still cached
+        self.assertEqual(get_cached_git_info(Path("/repo_b"), ttl=10.0), ("sha_b1", "dev"))
+        self.assertEqual(mock_git.call_count, 2)
+
+        # repo_a is fetched again
+        self.assertEqual(get_cached_git_info(Path("/repo_a"), ttl=10.0), ("sha_a2", "main"))
+        self.assertEqual(mock_git.call_count, 3)
 
 
 if __name__ == "__main__":

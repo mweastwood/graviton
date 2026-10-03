@@ -2795,7 +2795,6 @@ class TestGravitonServerTaskEndpoints(unittest.TestCase):
             self.assertEqual(json_data["branch"], "dev")
 
     def test_send_json_and_html_cache_control_headers(self):
-        import io
         handler = MagicMock(spec=GravitonHandler)
         handler.wfile = io.BytesIO()
 
