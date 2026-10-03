@@ -33,8 +33,8 @@ DEFAULT_GEMINI_MODELS: List[str] = [
 ]
 
 DEFAULT_THIRD_PARTY_MODELS: List[str] = [
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
+    "claude-sonnet-5-5-medium",
+    "claude-opus-5-5-medium",
     "gpt-oss-120b-medium",
 ]
 
@@ -1305,7 +1305,7 @@ class QuotaTracker:
         window_1w: Optional[QuotaWindow] = None,
         quota_pool: Optional[str] = None,
         active_gemini_model: Optional[str] = None,
-        active_third_party_model: str = "claude-sonnet-4-6",
+        active_third_party_model: Optional[str] = None,
         available_gemini_models: Optional[List[str]] = None,
         available_third_party_models: Optional[List[str]] = None,
         state_path: Optional[Union[str, Path]] = None,
@@ -1321,7 +1321,11 @@ class QuotaTracker:
         self._tokens_remaining: Optional[int] = None
 
         self.active_gemini_model = active_gemini_model if active_gemini_model is not None else DEFAULT_GEMINI_MODELS[0]
-        self.active_third_party_model = active_third_party_model
+        self.active_third_party_model = (
+            active_third_party_model
+            if active_third_party_model is not None
+            else DEFAULT_THIRD_PARTY_MODELS[0]
+        )
 
         if available_gemini_models is not None:
             self.available_gemini_models = list(available_gemini_models)
