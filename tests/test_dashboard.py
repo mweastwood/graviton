@@ -1441,8 +1441,8 @@ class TestDashboardUpdater(unittest.TestCase):
 
     @staticmethod
     def _wait_for_condition(condition, timeout=3.0, interval=0.01):
-        start = time.time()
-        while time.time() - start < timeout:
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
             try:
                 if condition():
                     return True
@@ -1506,11 +1506,12 @@ class TestDashboardUpdater(unittest.TestCase):
         updater.register_target(target)
 
         updater.start()
+        self.addCleanup(updater.stop)
         # Verify thread started
         self.assertTrue(updater._running)
         self.assertTrue(
             self._wait_for_condition(
-                lambda: target.exists() and target.stat().st_size > 0,
+                lambda: target.exists() and target.stat().st_size > 0 and updater._last_update_ts > 0.0,
                 timeout=3.0,
             ),
             "Target file was not created by background loop",
@@ -1532,6 +1533,7 @@ class TestDashboardUpdater(unittest.TestCase):
         self.assertFalse(updater._running)
         self.assertTrue(target.exists())
         self.assertIn("# 🌌 Graviton Live Dashboard", target.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(mock_tm.get_stats.call_count, 2, "Expected at least 2 update cycles to execute")
 
     def test_get_markdown_does_not_write_to_targets(self):
         mock_tm = MagicMock()
