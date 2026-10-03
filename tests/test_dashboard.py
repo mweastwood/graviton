@@ -3508,6 +3508,34 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
         self.assertIn("Pacing: BEHIND_PACING (Resume in 00:30:00)", md)
 
+    def test_format_dashboard_markdown_1w_window_dict_without_name_uses_1w_duration(self):
+        """Verify 1W window dict without 'name' key uses 1-week duration to calculate recovery countdown."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(days=5)).isoformat()
+        extra = {
+            "quota_info": {
+                "gemini_window_1w": {
+                    "remaining_percentage": 20.0,
+                    "reset_time": reset_time_str,
+                    "pacing_status": "BEHIND_PACING",
+                }
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertRegex(md, r"\| \*\*Gemini \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
+
+        extra_tp = {
+            "quota_info": {
+                "claude_window_1w": {
+                    "remaining_percentage": 20.0,
+                    "reset_time": reset_time_str,
+                    "pacing_status": "BEHIND_PACING",
+                }
+            }
+        }
+        md_tp = format_dashboard_markdown(quota_tracker=None, extra_info=extra_tp)
+        self.assertRegex(md_tp, r"\| \*\*Third-Party \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
+
 
 if __name__ == "__main__":
     unittest.main()

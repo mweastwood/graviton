@@ -2272,6 +2272,38 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(format_pacing_recovery_countdown(86400), "1d 00h")
         self.assertEqual(format_pacing_recovery_countdown(187200), "2d 04h")
         self.assertEqual(format_pacing_recovery_countdown("invalid"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("nan")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("inf")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("-inf")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("nan"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("inf"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("-inf"), "00:00:00")
+
+    def test_quota_info_dict_window_nan_and_inf_recovery_seconds(self):
+        """Verify QuotaInfo.to_dict handles nan, inf, and non-finite recovery seconds gracefully."""
+        for invalid_val in [float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf"]:
+            win_dict = {
+                "name": "5H",
+                "remaining_percentage": 20.0,
+                "pacing_status": "BEHIND_PACING",
+                "pacing_recovery_seconds": invalid_val,
+            }
+            info = QuotaInfo(
+                remaining_percentage=20.0,
+                quota_pool="gemini",
+                gemini_window_5h=win_dict,
+            )
+            d = info.to_dict()
+            self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+            self.assertEqual(d["gemini_5h_pacing_recovery_seconds"], 0.0)
+            self.assertIsNone(d["gemini_5h_pacing_recovery_countdown"])
+
+    def test_quota_info_window_zero_recovery_countdown_serializes_as_none(self):
+        """Verify QuotaWindow with 00:00:00 countdown serializes pacing_recovery_countdown as None."""
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        info = QuotaInfo(quota_pool="gemini", gemini_window_5h=w5)
+        d = info.to_dict()
+        self.assertIsNone(d["gemini_5h_pacing_recovery_countdown"])
 
     def test_quota_info_round_trip_serialization_with_dict_windows(self):
         """Verify QuotaInfo.to_dict round-trip consistency when input windows are dictionaries."""

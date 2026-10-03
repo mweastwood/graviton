@@ -498,17 +498,20 @@ def format_pacing_recovery_countdown(
         sec = float(seconds)
     except (ValueError, TypeError):
         return "00:00:00"
-    if sec <= 0:
+    if math.isnan(sec) or math.isinf(sec) or sec <= 0:
         return "00:00:00"
-    if sec >= 86400:
-        days = int(sec // 86400)
-        hours = int((sec % 86400) // 3600)
-        return f"{days}d {hours:02d}h"
-    else:
-        hours = int(sec // 3600)
-        mins = int((sec % 3600) // 60)
-        secs = int(sec % 60)
-        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    try:
+        if sec >= 86400:
+            days = int(sec // 86400)
+            hours = int((sec % 86400) // 3600)
+            return f"{days}d {hours:02d}h"
+        else:
+            hours = int(sec // 3600)
+            mins = int((sec % 3600) // 60)
+            secs = int(sec % 60)
+            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    except (ValueError, TypeError, OverflowError):
+        return "00:00:00"
 
 
 def format_quota_badge(
@@ -1091,6 +1094,8 @@ class QuotaInfo:
                 tgt = w.get_target_pacing_percentage()
                 rec_sec = round(w.get_pacing_recovery_seconds(), 1) if st == "BEHIND_PACING" else 0.0
                 rec_cd = w.format_pacing_countdown() if st == "BEHIND_PACING" else None
+                if rec_cd == "00:00:00":
+                    rec_cd = None
                 return pct, w.reset_time, w.format_reset_countdown(), st, tgt, rec_sec, rec_cd
             elif isinstance(w, dict):
                 pct = w.get("remaining_percentage")
@@ -1113,6 +1118,8 @@ class QuotaInfo:
                     if rec_sec is not None:
                         try:
                             rec_sec = float(rec_sec)
+                            if math.isnan(rec_sec) or math.isinf(rec_sec):
+                                rec_sec = 0.0
                         except (ValueError, TypeError):
                             rec_sec = 0.0
                     else:
@@ -1142,7 +1149,14 @@ class QuotaInfo:
                             pass
                     if rec_cd == "00:00:00":
                         rec_cd = None
-                    rec_sec = round(float(rec_sec), 1) if rec_sec is not None else 0.0
+                    try:
+                        rec_sec = float(rec_sec)
+                        if math.isnan(rec_sec) or math.isinf(rec_sec):
+                            rec_sec = 0.0
+                        else:
+                            rec_sec = round(rec_sec, 1)
+                    except (ValueError, TypeError, OverflowError):
+                        rec_sec = 0.0
                 return pct, res, cd, st, tgt, rec_sec, rec_cd
             return None, None, None, "OK", None, 0.0, None
 

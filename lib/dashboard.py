@@ -463,19 +463,20 @@ def format_dashboard_markdown(
                 "pacing_recovery_seconds": quota_info.get("third_party_1w_pacing_recovery_seconds"),
             }
 
-    def _fmt_window_val_and_details(w, fallback_pct=None):
+    def _fmt_window_val_and_details(w, fallback_pct=None, default_name: str = "5H"):
         if w is None:
             if fallback_pct is not None and fallback_pct != "N/A":
                 disp = format_percentage(fallback_pct)
                 return disp, "Live quota capacity"
             return "N/A", "N/A"
         if isinstance(w, dict):
+            win_name = w.get("name") or default_name
             pct = w.get("remaining_percentage")
             pct_disp = format_percentage(pct) if pct is not None else "N/A"
             cd = w.get("reset_countdown")
             if cd is None and w.get("reset_time") is not None:
                 try:
-                    cd = format_reset_countdown(w.get("reset_time"), window_name=w.get("name"))
+                    cd = format_reset_countdown(w.get("reset_time"), window_name=win_name)
                 except Exception:
                     cd = str(w.get("reset_time"))
             if not cd:
@@ -493,9 +494,12 @@ def format_dashboard_markdown(
                     pass
             if (not rec_cd or rec_cd == "00:00:00") and status == "BEHIND_PACING" and w.get("reset_time") is not None and pct is not None:
                 try:
+                    dur = w.get("duration_seconds")
+                    if dur is None:
+                        dur = 18000.0 if str(win_name).upper() == "5H" else 604800.0
                     qw = QuotaWindow(
-                        name=w.get("name", "5H"),
-                        duration_seconds=w.get("duration_seconds", 18000.0 if str(w.get("name", "5H")).upper() == "5H" else 604800.0),
+                        name=win_name,
+                        duration_seconds=dur,
                         remaining_percentage=pct,
                         reset_time=w.get("reset_time"),
                     )
@@ -514,10 +518,10 @@ def format_dashboard_markdown(
             return "N/A", "N/A"
         return pct_disp, _build_pacing_details(cd, status, w.format_pacing_countdown())
 
-    g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem)
-    g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem)
-    c_5h_val, c_5h_details = _fmt_window_val_and_details(w5_c, fallback_pct=tp_rem)
-    c_1w_val, c_1w_details = _fmt_window_val_and_details(w1_c, fallback_pct=tp_rem)
+    g_5h_val, g_5h_details = _fmt_window_val_and_details(w5_g, fallback_pct=gemini_rem, default_name="5H")
+    g_1w_val, g_1w_details = _fmt_window_val_and_details(w1_g, fallback_pct=gemini_rem, default_name="1W")
+    c_5h_val, c_5h_details = _fmt_window_val_and_details(w5_c, fallback_pct=tp_rem, default_name="5H")
+    c_1w_val, c_1w_details = _fmt_window_val_and_details(w1_c, fallback_pct=tp_rem, default_name="1W")
 
     lines.extend([
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
