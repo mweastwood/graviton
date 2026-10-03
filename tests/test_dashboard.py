@@ -1439,6 +1439,21 @@ class TestDashboardUpdater(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    @staticmethod
+    def _wait_for_condition(condition, timeout=3.0, interval=0.01):
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                if condition():
+                    return True
+            except Exception:
+                pass
+            time.sleep(interval)
+        try:
+            return bool(condition())
+        except Exception:
+            return False
+
     def test_register_and_unregister_targets(self):
         updater = DashboardUpdater(host="127.0.0.1", port=8000)
         target1 = self.dir_path / "dashboard1.md"
@@ -1493,9 +1508,25 @@ class TestDashboardUpdater(unittest.TestCase):
         updater.start()
         # Verify thread started
         self.assertTrue(updater._running)
-        time.sleep(0.25)
+        self.assertTrue(
+            self._wait_for_condition(
+                lambda: target.exists() and target.stat().st_size > 0,
+                timeout=3.0,
+            ),
+            "Target file was not created by background loop",
+        )
+
+        initial_update_ts = updater._last_update_ts
         updater.trigger_update()
-        time.sleep(0.1)
+
+        self.assertTrue(
+            self._wait_for_condition(
+                lambda: updater._last_update_ts > initial_update_ts,
+                timeout=3.0,
+            ),
+            "Triggered update did not execute in background loop",
+        )
+
         updater.stop()
 
         self.assertFalse(updater._running)
