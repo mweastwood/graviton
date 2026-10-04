@@ -2074,6 +2074,16 @@ class TestProtobufWireProtocol(unittest.TestCase):
                 _encode_field(non_int_fn, 5, 100)
 
     def test_encode_fixed_integer_overflow_raises(self):
+        # Wire type 0 (varint 64-bit)
+        for out_of_range in [2**64, 2**65, -(2**63) - 1, -0x8000000000000001]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(1, 0, out_of_range)
+            self.assertIn("out of range for varint field", str(ctx.exception))
+
+        # Boundary valid varint values (-2**63 and 2**64 - 1)
+        self.assertTrue(len(_encode_field(1, 0, -0x8000000000000000)) > 0)
+        self.assertTrue(len(_encode_field(1, 0, 0xffffffffffffffff)) > 0)
+
         # Wire type 1 (64-bit)
         for out_of_range in [2**64, 2**65, -(2**63) - 1, -0x8000000000000001]:
             with self.assertRaises(ValueError) as ctx:
@@ -2146,6 +2156,11 @@ class TestProtobufWireProtocol(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _encode_field(field_num=1, wire_type=wt, data=b"")
             self.assertEqual(str(ctx.exception), f"Unsupported wire type {wt}")
+
+        for invalid_wt in [True, False, 1.5, "0", None, [1]]:
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(field_num=1, wire_type=invalid_wt, data=b"")
+            self.assertIn("must be an int", str(ctx.exception))
 
     def test_parse_fields_truncated_payloads(self):
         self.assertEqual(_parse_fields(b""), [])

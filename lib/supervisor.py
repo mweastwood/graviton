@@ -1284,10 +1284,17 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
     if 19000 <= field_num <= 19999:
         raise ValueError(f"Invalid field number {field_num}: field numbers 19000-19999 are reserved")
 
+    if not isinstance(wire_type, int) or isinstance(wire_type, bool):
+        raise TypeError(f"Invalid wire type type {type(wire_type).__name__}: must be an int")
+    if wire_type not in (0, 1, 2, 5):
+        raise ValueError(f"Unsupported wire type {wire_type}")
+
     tag = (field_num << 3) | wire_type
     if wire_type == 0:
         if not isinstance(data, int) or isinstance(data, bool):
             raise TypeError(f"Unsupported data type for wire type 0: {type(data).__name__}")
+        if not (-0x8000000000000000 <= data <= 0xffffffffffffffff):
+            raise ValueError(f"Integer value {data} out of range for varint field")
         return _encode_varint(tag) + _encode_varint(int(data))
     elif wire_type == 2:
         if isinstance(data, str):
