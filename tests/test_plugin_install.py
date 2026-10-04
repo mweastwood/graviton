@@ -6,7 +6,6 @@ Unit tests for bin/graviton-plugin-install
 import importlib.util
 import io
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,7 +171,8 @@ class TestPluginInstall(unittest.TestCase):
         plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
         exe_file = clean_target / "bin" / "graviton-sidecar"
 
-        res = subprocess.run([sys.executable, str(exe_file)], capture_output=True, text=True)
+        clean_env = {k: v for k, v in os.environ.items() if k != "GRAVITON_ROOT"}
+        res = subprocess.run([sys.executable, str(exe_file)], capture_output=True, text=True, env=clean_env)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Error: Could not locate", res.stderr)
 
@@ -187,9 +187,29 @@ class TestPluginInstall(unittest.TestCase):
         plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
         exe_file = clean_target / "bin" / "graviton-sidecar"
 
-        res = subprocess.run([sys.executable, str(exe_file), "--test-flag"], capture_output=True, text=True)
+        clean_env = {k: v for k, v in os.environ.items() if k != "GRAVITON_ROOT"}
+        res = subprocess.run([sys.executable, str(exe_file), "--test-flag"], capture_output=True, text=True, env=clean_env)
         self.assertEqual(res.returncode, 0)
         self.assertIn("SUCCESS:--test-flag", res.stdout)
+
+    def test_ensure_plugin_executables_wrapper_execution_env_override(self):
+        clean_target = self.tmp_path / "clean_plugin"
+        mock_repo = self.tmp_path / "mock_graviton"
+        override_repo = self.tmp_path / "override_graviton"
+        override_bin = override_repo / "bin" / "graviton-sidecar"
+        override_bin.parent.mkdir(parents=True, exist_ok=True)
+        override_bin.write_text("#!/usr/bin/env python3\nimport sys\nprint('OVERRIDE_SUCCESS')\n")
+        override_bin.chmod(0o755)
+
+        plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
+        exe_file = clean_target / "bin" / "graviton-sidecar"
+
+        override_env = dict(os.environ)
+        override_env["GRAVITON_ROOT"] = str(override_repo.resolve())
+
+        res = subprocess.run([sys.executable, str(exe_file)], capture_output=True, text=True, env=override_env)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("OVERRIDE_SUCCESS", res.stdout)
 
     def test_install_plugin_cleans_existing_symlink(self):
         dummy_file = self.tmp_path / "dummy.txt"
@@ -205,6 +225,27 @@ class TestPluginInstall(unittest.TestCase):
         self.assertEqual(
             self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
         )
+
+    def test_install_plugin_cleans_existing_directory_symlink(self):
+        target_content_dir = self.tmp_path / "target_dir_to_preserve"
+        target_content_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_file = target_content_dir / "keep_me.txt"
+        sentinel_file.write_text("do not delete")
+
+        self.target_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.target_dir.symlink_to(target_content_dir, target_is_directory=True)
+        self.assertTrue(self.target_dir.is_symlink())
+        self.assertTrue(self.target_dir.is_dir())
+
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        self.assertTrue(success)
+        self.assertTrue(self.target_dir.is_symlink())
+        self.assertEqual(
+            self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
+        )
+        self.assertTrue(target_content_dir.exists())
+        self.assertTrue(sentinel_file.exists())
+        self.assertEqual(sentinel_file.read_text(), "do not delete")
 
     def test_install_plugin_cleans_existing_directory(self):
         self.target_dir.mkdir(parents=True, exist_ok=True)
@@ -241,6 +282,7 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertTrue(self.target_dir.is_dir())
+        self.assertFalse(self.target_dir.is_file())
         self.assertEqual(
             self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
         )
@@ -256,6 +298,7 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(self.target_dir.is_dir())
         self.assertFalse(self.target_dir.is_file())
         self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
+        self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
 
     def test_install_plugin_symlink_failure_falls_back_to_copy(self):
         with patch.object(
