@@ -1434,10 +1434,8 @@ class TestDashboardUpdater(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
         self.dir_path = Path(self.temp_dir.name)
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
 
     @staticmethod
     def _wait_for_condition(condition, timeout=3.0, interval=0.01):
@@ -1531,6 +1529,8 @@ class TestDashboardUpdater(unittest.TestCase):
         updater.stop()
 
         self.assertFalse(updater._running)
+        if updater._thread:
+            self.assertFalse(updater._thread.is_alive(), "Updater background thread did not terminate")
         self.assertTrue(target.exists())
         self.assertIn("# 🌌 Graviton Live Dashboard", target.read_text(encoding="utf-8"))
         self.assertGreaterEqual(mock_tm.get_stats.call_count, 2, "Expected at least 2 update cycles to execute")
