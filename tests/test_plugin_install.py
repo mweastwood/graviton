@@ -27,6 +27,10 @@ class TestPluginInstall(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmpdir.name)
         self.target_dir = self.tmp_path / "plugins" / "graviton"
+        # Suppress installer output (emojis) during test discovery
+        stdout_patcher = patch("sys.stdout")
+        stdout_patcher.start()
+        self.addCleanup(stdout_patcher.stop)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -176,6 +180,9 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertNotEqual(os.readlink(self.target_dir), str(dummy_file))
+        self.assertEqual(
+            self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
+        )
 
     def test_install_plugin_cleans_existing_directory(self):
         self.target_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +194,9 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertFalse((self.target_dir / "old_file.txt").exists())
+        self.assertEqual(
+            self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
+        )
 
     def test_install_plugin_cleans_existing_file(self):
         self.target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +208,9 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertTrue(self.target_dir.is_dir())
+        self.assertEqual(
+            self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
+        )
 
     def test_install_plugin_symlink_failure_falls_back_to_copy(self):
         with patch.object(
@@ -212,6 +225,59 @@ class TestPluginInstall(unittest.TestCase):
             self.assertTrue(self.target_dir.is_dir())
             self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
             self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
+
+    def test_main_cli_global_copy(self):
+        with patch.object(
+            plugin_installer, "install_plugin", return_value=True
+        ) as mock_install:
+            with patch("sys.stdout"):
+                with patch.object(
+                    sys, "argv", ["graviton-plugin-install", "--global", "--copy"]
+                ):
+                    plugin_installer.main()
+                mock_install.assert_called_once_with(
+                    Path.home() / ".gemini" / "config" / "plugins" / "graviton",
+                    use_symlink=False,
+                    is_global=True,
+                )
+
+    def test_main_cli_install_failure_suppresses_banner(self):
+        with patch.object(
+            plugin_installer, "install_plugin", return_value=False
+        ) as mock_install:
+            with patch("sys.stdout") as mock_stdout:
+                with patch.object(sys, "argv", ["graviton-plugin-install"]):
+                    plugin_installer.main()
+                mock_install.assert_called_once()
+                mock_stdout.write.assert_not_called()
+
+    def test_ensure_plugin_executables_preserves_existing_wrapper(self):
+        clean_target = self.tmp_path / "clean_plugin"
+        bin_dir = clean_target / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        custom_script = bin_dir / "graviton-sidecar"
+        custom_script.write_text("#!/bin/sh\necho custom\n")
+
+        mock_repo = self.tmp_path / "mock_graviton"
+        plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
+
+        self.assertEqual(custom_script.read_text(), "#!/bin/sh\necho custom\n")
+        self.assertTrue((bin_dir / "graviton-mcp").exists())
+
+    def test_install_plugin_cleans_existing_dangling_symlink(self):
+        nonexistent_target = self.tmp_path / "nonexistent.txt"
+        self.target_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.target_dir.symlink_to(nonexistent_target)
+        self.assertTrue(self.target_dir.is_symlink())
+        self.assertFalse(self.target_dir.exists())
+
+        with patch("sys.stdout"):
+            success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        self.assertTrue(success)
+        self.assertTrue(self.target_dir.is_symlink())
+        self.assertEqual(
+            self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
+        )
 
 
 if __name__ == "__main__":
