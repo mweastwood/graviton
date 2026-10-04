@@ -2034,16 +2034,79 @@ class TestProtobufWireProtocol(unittest.TestCase):
             _encode_field(1, 5, "12345")
 
     def test_encode_field_invalid_field_num_raises(self):
-        for invalid_fn in [0, -1, -42]:
+        for invalid_fn in [0, -1, -42, 536870912, 1000000000]:
             with self.assertRaises(ValueError) as ctx:
                 _encode_field(invalid_fn, 0, 100)
-            self.assertEqual(str(ctx.exception), f"Invalid field number {invalid_fn}: must be positive")
+            self.assertEqual(str(ctx.exception), f"Invalid field number {invalid_fn}: must be between 1 and 536870911")
             with self.assertRaises(ValueError):
                 _encode_field(invalid_fn, 1, 100)
             with self.assertRaises(ValueError):
                 _encode_field(invalid_fn, 2, "test")
             with self.assertRaises(ValueError):
                 _encode_field(invalid_fn, 5, 100)
+
+        # Boundary valid field number (536870911)
+        encoded_max = _encode_field(536870911, 0, 1)
+        self.assertTrue(len(encoded_max) > 0)
+
+        # Reserved field numbers 19000-19999
+        for reserved_fn in [19000, 19500, 19999]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(reserved_fn, 0, 100)
+            self.assertEqual(str(ctx.exception), f"Invalid field number {reserved_fn}: field numbers 19000-19999 are reserved")
+            with self.assertRaises(ValueError):
+                _encode_field(reserved_fn, 1, 100)
+            with self.assertRaises(ValueError):
+                _encode_field(reserved_fn, 2, "test")
+            with self.assertRaises(ValueError):
+                _encode_field(reserved_fn, 5, 100)
+
+        # Non-integer / boolean field numbers
+        for non_int_fn in [1.5, "1", None, [1], True, False]:
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(non_int_fn, 0, 100)
+            self.assertIn("must be an int", str(ctx.exception))
+            with self.assertRaises(TypeError):
+                _encode_field(non_int_fn, 1, 100)
+            with self.assertRaises(TypeError):
+                _encode_field(non_int_fn, 2, "test")
+            with self.assertRaises(TypeError):
+                _encode_field(non_int_fn, 5, 100)
+
+    def test_encode_fixed_integer_overflow_raises(self):
+        # Wire type 1 (64-bit)
+        for out_of_range in [2**64, 2**65, -(2**63) - 1, -0x8000000000000001]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(1, 1, out_of_range)
+            self.assertIn("out of range for 64-bit fixed field", str(ctx.exception))
+
+        # Wire type 5 (32-bit)
+        for out_of_range in [2**32, 2**33, -(2**31) - 1, -0x80000001]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(1, 5, out_of_range)
+            self.assertIn("out of range for 32-bit fixed field", str(ctx.exception))
+
+    def test_encode_field_unsupported_data_types(self):
+        # Wire type 0 rejects non-int or bool
+        for invalid in [True, False, 1.5, "100", b"\x01", None, [1]]:
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(1, 0, invalid)
+            self.assertIn("Unsupported data type for wire type 0", str(ctx.exception))
+
+        # Wire type 2 rejects non-(str, bytes, bytearray)
+        for invalid in [123, 1.5, True, False, None, [1, 2], {"a": 1}]:
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(1, 2, invalid)
+            self.assertIn("Unsupported data type for wire type 2", str(ctx.exception))
+
+        # Wire types 1 and 5 reject bool
+        for invalid in [True, False]:
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(1, 1, invalid)
+            self.assertIn("Unsupported data type for wire type 1", str(ctx.exception))
+            with self.assertRaises(TypeError) as ctx:
+                _encode_field(1, 5, invalid)
+            self.assertIn("Unsupported data type for wire type 5", str(ctx.exception))
 
     def test_encode_fixed_bytearray_support(self):
         ba1 = bytearray(b"12345678")

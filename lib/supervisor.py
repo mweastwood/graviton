@@ -1276,17 +1276,31 @@ def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
     return res, pos
 
 
-def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, str]) -> bytes:
-    if field_num <= 0:
-        raise ValueError(f"Invalid field number {field_num}: must be positive")
+def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, bytearray, str]) -> bytes:
+    if not isinstance(field_num, int) or isinstance(field_num, bool):
+        raise TypeError(f"Invalid field number type {type(field_num).__name__}: must be an int")
+    if field_num <= 0 or field_num > 536870911:
+        raise ValueError(f"Invalid field number {field_num}: must be between 1 and 536870911")
+    if 19000 <= field_num <= 19999:
+        raise ValueError(f"Invalid field number {field_num}: field numbers 19000-19999 are reserved")
+
     tag = (field_num << 3) | wire_type
     if wire_type == 0:
+        if not isinstance(data, int) or isinstance(data, bool):
+            raise TypeError(f"Unsupported data type for wire type 0: {type(data).__name__}")
         return _encode_varint(tag) + _encode_varint(int(data))
     elif wire_type == 2:
-        b_data = data.encode("utf-8") if isinstance(data, str) else data
+        if isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
+        else:
+            raise TypeError(f"Unsupported data type for wire type 2: {type(data).__name__}")
         return _encode_varint(tag) + _encode_varint(len(b_data)) + b_data
     elif wire_type == 1:
-        if isinstance(data, int):
+        if isinstance(data, int) and not isinstance(data, bool):
+            if not (-0x8000000000000000 <= data <= 0xffffffffffffffff):
+                raise ValueError(f"Integer value {data} out of range for 64-bit fixed field")
             b_data = struct.pack("<Q", data & 0xffffffffffffffff)
         elif isinstance(data, float):
             b_data = struct.pack("<d", data)
@@ -1300,7 +1314,9 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
             raise ValueError(f"Wire type 1 requires 8 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     elif wire_type == 5:
-        if isinstance(data, int):
+        if isinstance(data, int) and not isinstance(data, bool):
+            if not (-0x80000000 <= data <= 0xffffffff):
+                raise ValueError(f"Integer value {data} out of range for 32-bit fixed field")
             b_data = struct.pack("<I", data & 0xffffffff)
         elif isinstance(data, float):
             b_data = struct.pack("<f", data)
