@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import patch
@@ -16,9 +17,10 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_INSTALL_SCRIPT = REPO_ROOT / "bin" / "graviton-plugin-install"
 
-plugin_installer = SourceFileLoader(
-    "graviton_plugin_install", str(PLUGIN_INSTALL_SCRIPT)
-).load_module()
+loader = SourceFileLoader("graviton_plugin_install", str(PLUGIN_INSTALL_SCRIPT))
+spec = importlib.util.spec_from_loader("graviton_plugin_install", loader)
+plugin_installer = importlib.util.module_from_spec(spec)
+loader.exec_module(plugin_installer)
 
 
 class TestPluginInstall(unittest.TestCase):
@@ -98,55 +100,52 @@ class TestPluginInstall(unittest.TestCase):
         with patch.object(
             plugin_installer, "install_plugin", return_value=True
         ) as mock_install:
-            with patch("sys.stdout"):
-                with patch.object(sys, "argv", ["graviton-plugin-install"]):
-                    plugin_installer.main()
-                mock_install.assert_called_once_with(
-                    plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
-                    use_symlink=True,
-                    is_global=False,
-                )
+            with patch.object(sys, "argv", ["graviton-plugin-install"]):
+                plugin_installer.main()
+            mock_install.assert_called_once_with(
+                plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
+                use_symlink=True,
+                is_global=False,
+            )
 
-                mock_install.reset_mock()
-                with patch.object(
-                    sys, "argv", ["graviton-plugin-install", "--workspace"]
-                ):
-                    plugin_installer.main()
-                mock_install.assert_called_once_with(
-                    plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
-                    use_symlink=True,
-                    is_global=False,
-                )
+            mock_install.reset_mock()
+            with patch.object(
+                sys, "argv", ["graviton-plugin-install", "--workspace"]
+            ):
+                plugin_installer.main()
+            mock_install.assert_called_once_with(
+                plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
+                use_symlink=True,
+                is_global=False,
+            )
 
     def test_main_cli_global(self):
         with patch.object(
             plugin_installer, "install_plugin", return_value=True
         ) as mock_install:
-            with patch("sys.stdout"):
-                with patch.object(
-                    sys, "argv", ["graviton-plugin-install", "--global"]
-                ):
-                    plugin_installer.main()
-                mock_install.assert_called_once_with(
-                    Path.home() / ".gemini" / "config" / "plugins" / "graviton",
-                    use_symlink=True,
-                    is_global=True,
-                )
+            with patch.object(
+                sys, "argv", ["graviton-plugin-install", "--global"]
+            ):
+                plugin_installer.main()
+            mock_install.assert_called_once_with(
+                Path.home() / ".gemini" / "config" / "plugins" / "graviton",
+                use_symlink=True,
+                is_global=True,
+            )
 
     def test_main_cli_copy_flag(self):
         with patch.object(
             plugin_installer, "install_plugin", return_value=True
         ) as mock_install:
-            with patch("sys.stdout"):
-                with patch.object(
-                    sys, "argv", ["graviton-plugin-install", "--copy"]
-                ):
-                    plugin_installer.main()
-                mock_install.assert_called_once_with(
-                    plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
-                    use_symlink=False,
-                    is_global=False,
-                )
+            with patch.object(
+                sys, "argv", ["graviton-plugin-install", "--copy"]
+            ):
+                plugin_installer.main()
+            mock_install.assert_called_once_with(
+                plugin_installer.REPO_ROOT / ".agents" / "plugins" / "graviton",
+                use_symlink=False,
+                is_global=False,
+            )
 
     def test_ensure_plugin_executables_generates_wrapper(self):
         clean_target = self.tmp_path / "clean_plugin"
@@ -168,6 +167,17 @@ class TestPluginInstall(unittest.TestCase):
             self.assertIn("for parent in [current.parent", content)
             self.assertIn("os.execv", content)
 
+    def test_ensure_plugin_executables_chmod_oserror_handled(self):
+        clean_target = self.tmp_path / "clean_plugin"
+        mock_repo = self.tmp_path / "mock_graviton"
+        with patch.object(Path, "chmod", side_effect=OSError("Read-only filesystem")):
+            plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
+
+        bin_dir = clean_target / "bin"
+        self.assertTrue(bin_dir.is_dir())
+        self.assertTrue((bin_dir / "graviton-sidecar").exists())
+        self.assertTrue((bin_dir / "graviton-mcp").exists())
+
     def test_install_plugin_cleans_existing_symlink(self):
         dummy_file = self.tmp_path / "dummy.txt"
         dummy_file.write_text("dummy")
@@ -175,8 +185,7 @@ class TestPluginInstall(unittest.TestCase):
         self.target_dir.symlink_to(dummy_file)
         self.assertTrue(self.target_dir.is_symlink())
 
-        with patch("sys.stdout"):
-            success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertNotEqual(os.readlink(self.target_dir), str(dummy_file))
@@ -189,8 +198,7 @@ class TestPluginInstall(unittest.TestCase):
         (self.target_dir / "old_file.txt").write_text("old content")
         self.assertTrue(self.target_dir.is_dir())
 
-        with patch("sys.stdout"):
-            success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertFalse((self.target_dir / "old_file.txt").exists())
@@ -198,13 +206,25 @@ class TestPluginInstall(unittest.TestCase):
             self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
         )
 
+    def test_install_plugin_copy_cleans_existing_directory(self):
+        self.target_dir.mkdir(parents=True, exist_ok=True)
+        (self.target_dir / "old_file.txt").write_text("old content")
+        self.assertTrue(self.target_dir.is_dir())
+
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=False)
+        self.assertTrue(success)
+        self.assertFalse(self.target_dir.is_symlink())
+        self.assertTrue(self.target_dir.is_dir())
+        self.assertFalse((self.target_dir / "old_file.txt").exists())
+        self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
+        self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
+
     def test_install_plugin_cleans_existing_file(self):
         self.target_dir.parent.mkdir(parents=True, exist_ok=True)
         self.target_dir.write_text("regular file")
         self.assertTrue(self.target_dir.is_file())
 
-        with patch("sys.stdout"):
-            success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertTrue(self.target_dir.is_dir())
@@ -216,30 +236,28 @@ class TestPluginInstall(unittest.TestCase):
         with patch.object(
             Path, "symlink_to", side_effect=OSError("Cross-device link")
         ):
-            with patch("sys.stdout"):
-                success = plugin_installer.install_plugin(
-                    self.target_dir, use_symlink=True, is_global=False
-                )
-            self.assertTrue(success)
-            self.assertFalse(self.target_dir.is_symlink())
-            self.assertTrue(self.target_dir.is_dir())
-            self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
-            self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
+            success = plugin_installer.install_plugin(
+                self.target_dir, use_symlink=True, is_global=False
+            )
+        self.assertTrue(success)
+        self.assertFalse(self.target_dir.is_symlink())
+        self.assertTrue(self.target_dir.is_dir())
+        self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
+        self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
 
     def test_main_cli_global_copy(self):
         with patch.object(
             plugin_installer, "install_plugin", return_value=True
         ) as mock_install:
-            with patch("sys.stdout"):
-                with patch.object(
-                    sys, "argv", ["graviton-plugin-install", "--global", "--copy"]
-                ):
-                    plugin_installer.main()
-                mock_install.assert_called_once_with(
-                    Path.home() / ".gemini" / "config" / "plugins" / "graviton",
-                    use_symlink=False,
-                    is_global=True,
-                )
+            with patch.object(
+                sys, "argv", ["graviton-plugin-install", "--global", "--copy"]
+            ):
+                plugin_installer.main()
+            mock_install.assert_called_once_with(
+                Path.home() / ".gemini" / "config" / "plugins" / "graviton",
+                use_symlink=False,
+                is_global=True,
+            )
 
     def test_main_cli_install_failure_suppresses_banner(self):
         with patch.object(
@@ -250,6 +268,17 @@ class TestPluginInstall(unittest.TestCase):
                     plugin_installer.main()
                 mock_install.assert_called_once()
                 mock_stdout.write.assert_not_called()
+
+    def test_main_cli_success_prints_banner(self):
+        with patch.object(
+            plugin_installer, "install_plugin", return_value=True
+        ) as mock_install:
+            with patch("sys.stdout") as mock_stdout:
+                with patch.object(sys, "argv", ["graviton-plugin-install"]):
+                    plugin_installer.main()
+                mock_install.assert_called_once()
+                written = "".join(call.args[0] for call in mock_stdout.write.call_args_list)
+                self.assertIn("Graviton Antigravity Plugin installed successfully!", written)
 
     def test_ensure_plugin_executables_preserves_existing_wrapper(self):
         clean_target = self.tmp_path / "clean_plugin"
@@ -271,8 +300,7 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue(self.target_dir.is_symlink())
         self.assertFalse(self.target_dir.exists())
 
-        with patch("sys.stdout"):
-            success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=True)
         self.assertTrue(success)
         self.assertTrue(self.target_dir.is_symlink())
         self.assertEqual(
