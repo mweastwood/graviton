@@ -1986,6 +1986,39 @@ class TestProtobufWireProtocol(unittest.TestCase):
         self.assertEqual(parsed_raw[0], (9, 5, b"test"))
         self.assertEqual(parsed_raw[1], (10, 5, b"data"))
 
+    def test_encode_fixed_unsigned_and_float(self):
+        t1 = _encode_varint((1 << 3) | 1)
+        f = _encode_field(1, 1, 0xffffffffffffffff)
+        self.assertEqual(f, t1 + b"\xff" * 8)
+        self.assertEqual(_encode_field(1, 1, -1), f)
+        f = _encode_field(1, 1, 1.5)
+        self.assertEqual(f, t1 + struct.pack("<d", 1.5))
+        self.assertEqual(struct.unpack("<d", _parse_fields(f)[0][2])[0], 1.5)
+
+        t5 = _encode_varint((2 << 3) | 5)
+        f = _encode_field(2, 5, 0xffffffff)
+        self.assertEqual(f, t5 + b"\xff" * 4)
+        self.assertEqual(_encode_field(2, 5, -1), f)
+        f = _encode_field(2, 5, 2.5)
+        self.assertEqual(f, t5 + struct.pack("<f", 2.5))
+        self.assertEqual(struct.unpack("<f", _parse_fields(f)[0][2])[0], 2.5)
+
+    def test_encode_fixed_invalid_length_raises(self):
+        with self.assertRaises(ValueError):
+            _encode_field(1, 1, b"123")
+        with self.assertRaises(ValueError):
+            _encode_field(1, 1, "123456789")
+        with self.assertRaises(ValueError):
+            _encode_field(1, 5, b"123")
+        with self.assertRaises(ValueError):
+            _encode_field(1, 5, "12345")
+
+    def test_parse_fields_field_zero_terminates(self):
+        self.assertEqual(_parse_fields(b"\x00\x00"), [])
+        self.assertEqual(
+            _parse_fields(_encode_field(1, 0, 5) + b"\x00\x00"), [(1, 0, 5)]
+        )
+
     def test_encode_field_unsupported_wire_type_raises_value_error(self):
         for wt in [-1, 3, 4, 6, 7, 8]:
             with self.assertRaises(ValueError) as ctx:

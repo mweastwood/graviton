@@ -1281,15 +1281,23 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) 
         return _encode_varint(tag) + _encode_varint(len(b_data)) + b_data
     elif wire_type == 1:
         if isinstance(data, int):
-            b_data = struct.pack("<q", data)
+            b_data = struct.pack("<Q", data & 0xffffffffffffffff)
+        elif isinstance(data, float):
+            b_data = struct.pack("<d", data)
         else:
             b_data = data.encode("utf-8") if isinstance(data, str) else data
+            if len(b_data) != 8:
+                raise ValueError(f"Wire type 1 requires 8 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     elif wire_type == 5:
         if isinstance(data, int):
-            b_data = struct.pack("<i", data)
+            b_data = struct.pack("<I", data & 0xffffffff)
+        elif isinstance(data, float):
+            b_data = struct.pack("<f", data)
         else:
             b_data = data.encode("utf-8") if isinstance(data, str) else data
+            if len(b_data) != 4:
+                raise ValueError(f"Wire type 5 requires 4 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     raise ValueError(f"Unsupported wire type {wire_type}")
 
@@ -1303,6 +1311,8 @@ def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
             tag, pos = _decode_varint(data, pos)
             field_num = tag >> 3
             wire_type = tag & 7
+            if field_num == 0:
+                break
             if wire_type == 0:
                 val, pos = _decode_varint(data, pos)
                 fields.append((field_num, wire_type, val))
