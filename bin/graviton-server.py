@@ -18,9 +18,10 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer as HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Tuple, Union
 
 # Add REPO_ROOT to sys.path to allow importing lib
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +36,10 @@ from lib.updater import (
     stop_smee_listener,
     set_hot_reload_state,
     get_hot_reload_state,
+    get_git_info,
+    get_cached_git_info as _updater_get_cached_git_info,
+    _reset_git_info_cache,
+    _GIT_CACHE_TTL,
     _SYNC_LOCK,
 )
 from lib.sidecar import ensure_shell_environment
@@ -59,6 +64,16 @@ from lib.dashboard import DashboardUpdater, format_dashboard_markdown, render_da
 _is_shutting_down = False
 _shutdown_thread: Optional[threading.Thread] = None
 _shutdown_lock = threading.Lock()
+
+def get_cached_git_info(
+    repo_root: Optional[Union[Path, str]] = REPO_ROOT,
+    ttl: float = _GIT_CACHE_TTL,
+) -> Tuple[str, str]:
+    """
+    Retrieve git commit SHA and branch name with a short TTL cache.
+    Prevents spawning git subprocesses on every auto-refresh request.
+    """
+    return _updater_get_cached_git_info(repo_root=repo_root, ttl=ttl)
 
 
 def graceful_shutdown(
@@ -285,6 +300,13 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     port=port,
                 )
             )
+            commit, branch = get_cached_git_info(REPO_ROOT)
+            reload_state = get_hot_reload_state()
+            extra_info = {
+                "commit": commit,
+                "branch": branch,
+                "reload_state": reload_state,
+            }
             html_page = render_dashboard_html(
                 markdown_content,
                 host=host,
@@ -292,6 +314,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 task_manager=self.task_manager,
                 quota_tracker=self.quota_tracker,
                 scheduler=self.scheduler,
+                extra_info=extra_info,
                 pr_tracker=self.pr_tracker,
             )
             self._send_html(200, html_page)
@@ -310,7 +333,15 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 )
             )
             targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
-            self._send_json(200, {"markdown": markdown_content, "targets": targets})
+            commit, branch = get_cached_git_info(REPO_ROOT)
+            reload_state = get_hot_reload_state()
+            self._send_json(200, {
+                "markdown": markdown_content,
+                "targets": targets,
+                "commit": commit,
+                "branch": branch,
+                "reload_state": reload_state,
+            })
         else:
             self._send_json(404, {"error": "Not Found"})
 
@@ -783,12 +814,16 @@ class GravitonHandler(BaseHTTPRequestHandler):
     def _send_json(self, status_code: int, data: dict):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2).encode("utf-8"))
 
     def _send_html(self, status_code: int, html_content: str):
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(html_content.encode("utf-8"))
 

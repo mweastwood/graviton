@@ -418,6 +418,10 @@ class StreamSession:
 
         if event.get("event") != "init":
             self.close()
+            if event.get("event") == "result":
+                res_obj = event.get("result", {})
+                err_msg = res_obj.get("error") or res_obj.get("status") or self.get_stderr().strip() or str(res_obj)
+                raise SupervisorError(f"Expected 'init' event, got 'result' with error: {err_msg}")
             raise SupervisorError(f"Expected 'init' event, got: {event.get('event')}")
 
         self.conversation_id = event.get("conversation_id")
@@ -1272,62 +1276,140 @@ def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
     return res, pos
 
 
-def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) -> bytes:
+def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, bytearray, str, bool]) -> bytes:
+    """Encode a single Protocol Buffer field with tag (field number and wire type) and payload.
+
+    Supported wire types:
+        - 0 (Varint): int (int32, int64, uint32, uint64, sint32, sint64, bool, enum).
+        - 1 (64-bit fixed): int, float (fixed64, sfixed64, double), 8-byte str/bytes/bytearray.
+        - 2 (Length-delimited): str (UTF-8 encoded), bytes, bytearray (string, bytes, embedded messages).
+        - 5 (32-bit fixed): int, float (fixed32, sfixed32, float), 4-byte str/bytes/bytearray.
+
+    Wire structure:
+        Tag: varint-encoded ((field_num << 3) | wire_type)
+        Followed by:
+            - Wire type 0: varint-encoded integer value
+            - Wire type 1: 8 raw bytes (little-endian fixed64 or IEEE 754 double)
+            - Wire type 2: varint length prefix + raw bytes payload
+            - Wire type 5: 4 raw bytes (little-endian fixed32 or IEEE 754 single-precision float)
+    """
+    if not isinstance(field_num, int) or isinstance(field_num, bool):
+        raise TypeError(f"Invalid field number type {type(field_num).__name__}: must be an int")
+    if field_num <= 0 or field_num > 536870911:
+        raise ValueError(f"Invalid field number {field_num}: must be between 1 and 536870911")
+    if 19000 <= field_num <= 19999:
+        raise ValueError(f"Invalid field number {field_num}: field numbers 19000-19999 are reserved")
+
+    if not isinstance(wire_type, int) or isinstance(wire_type, bool):
+        raise TypeError(f"Invalid wire type {type(wire_type).__name__}: must be an int")
+    if wire_type not in (0, 1, 2, 5):
+        raise ValueError(f"Unsupported wire type {wire_type}")
+
     tag = (field_num << 3) | wire_type
     if wire_type == 0:
-        return _encode_varint(tag) + _encode_varint(int(data))
+        if isinstance(data, bool):
+            int_val = 1 if data else 0
+        elif isinstance(data, int):
+            int_val = data
+        else:
+            raise TypeError(f"Unsupported data type for wire type 0: {type(data).__name__}")
+        if not (-0x8000000000000000 <= int_val <= 0xffffffffffffffff):
+            raise ValueError(f"Integer value {int_val} out of range for varint field")
+        return _encode_varint(tag) + _encode_varint(int_val)
     elif wire_type == 2:
-        b_data = data.encode("utf-8") if isinstance(data, str) else data
+        if isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
+        else:
+            raise TypeError(f"Unsupported data type for wire type 2: {type(data).__name__}")
         return _encode_varint(tag) + _encode_varint(len(b_data)) + b_data
     elif wire_type == 1:
-        if isinstance(data, int):
-            b_data = struct.pack("<q", data)
+        if isinstance(data, int) and not isinstance(data, bool):
+            if not (-0x8000000000000000 <= data <= 0xffffffffffffffff):
+                raise ValueError(f"Integer value {data} out of range for 64-bit fixed field")
+            b_data = struct.pack("<Q", data & 0xffffffffffffffff)
+        elif isinstance(data, float):
+            b_data = struct.pack("<d", data)
+        elif isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
         else:
-            b_data = data.encode("utf-8") if isinstance(data, str) else data
+            raise TypeError(f"Unsupported data type for wire type 1: {type(data).__name__}")
+        if len(b_data) != 8:
+            raise ValueError(f"Wire type 1 requires 8 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     elif wire_type == 5:
-        if isinstance(data, int):
-            b_data = struct.pack("<i", data)
+        if isinstance(data, int) and not isinstance(data, bool):
+            if not (-0x80000000 <= data <= 0xffffffff):
+                raise ValueError(f"Integer value {data} out of range for 32-bit fixed field")
+            b_data = struct.pack("<I", data & 0xffffffff)
+        elif isinstance(data, float):
+            try:
+                b_data = struct.pack("<f", data)
+            except (OverflowError, struct.error):
+                raise ValueError(f"Float value {data} out of range for 32-bit fixed field")
+        elif isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
         else:
-            b_data = data.encode("utf-8") if isinstance(data, str) else data
+            raise TypeError(f"Unsupported data type for wire type 5: {type(data).__name__}")
+        if len(b_data) != 4:
+            raise ValueError(f"Wire type 5 requires 4 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
-    raise ValueError(f"Unsupported wire type {wire_type}")
 
 
 def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
+    """Parse raw protobuf message bytes into a list of (field_num, wire_type, value) tuples.
+
+    Iterates through serialized protobuf wire data and extracts fields according to their wire type:
+        - 0 (Varint): decodes varint integer value.
+        - 1 (64-bit fixed): extracts 8 raw payload bytes.
+        - 2 (Length-delimited): decodes varint length prefix and extracts raw payload bytes.
+        - 5 (32-bit fixed): extracts 4 raw payload bytes.
+
+    Parsing stops cleanly if unknown wire types, field number 0, or truncated data are encountered.
+
+    Returns:
+        List of tuples: (field_number: int, wire_type: int, value: Union[int, bytes])
+    """
     fields = []
     pos = 0
     length = len(data)
     while pos < length:
         try:
             tag, pos = _decode_varint(data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 7
+            if field_num == 0:
+                break
+            if wire_type == 0:
+                val, pos = _decode_varint(data, pos)
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 1:
+                if pos + 8 > length:
+                    break
+                val = data[pos:pos+8]
+                pos += 8
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 2:
+                f_len, pos = _decode_varint(data, pos)
+                if pos + f_len > length:
+                    break
+                val = data[pos:pos+f_len]
+                pos += f_len
+                fields.append((field_num, wire_type, val))
+            elif wire_type == 5:
+                if pos + 4 > length:
+                    break
+                val = data[pos:pos+4]
+                pos += 4
+                fields.append((field_num, wire_type, val))
+            else:
+                break
         except IndexError:
-            break
-        field_num = tag >> 3
-        wire_type = tag & 7
-        if wire_type == 0:
-            val, pos = _decode_varint(data, pos)
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 1:
-            if pos + 8 > length:
-                break
-            val = data[pos:pos+8]
-            pos += 8
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 2:
-            f_len, pos = _decode_varint(data, pos)
-            if pos + f_len > length:
-                break
-            val = data[pos:pos+f_len]
-            pos += f_len
-            fields.append((field_num, wire_type, val))
-        elif wire_type == 5:
-            if pos + 4 > length:
-                break
-            val = data[pos:pos+4]
-            pos += 4
-            fields.append((field_num, wire_type, val))
-        else:
             break
     return fields
 
@@ -1358,25 +1440,27 @@ def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
     while pos < len(pb_data):
         try:
             tag, pos = _decode_varint(pb_data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 7
+            if field_num != 1 or wire_type != 2:
+                break
+            length, pos = _decode_varint(pb_data, pos)
+            if pos + length > len(pb_data):
+                break
+            entry_bytes = pb_data[pos:pos+length]
+            pos += length
+
+            conv_id = None
+            raw_summary = None
+            for s_num, s_type, s_val in _parse_fields(entry_bytes):
+                if s_num == 1 and isinstance(s_val, bytes):
+                    conv_id = s_val.decode("utf-8", errors="ignore")
+                elif s_num == 2 and isinstance(s_val, bytes):
+                    raw_summary = s_val
+            if conv_id and raw_summary is not None:
+                entries.append((conv_id, raw_summary))
         except IndexError:
             break
-        field_num = tag >> 3
-        wire_type = tag & 7
-        if field_num != 1 or wire_type != 2:
-            break
-        length, pos = _decode_varint(pb_data, pos)
-        entry_bytes = pb_data[pos:pos+length]
-        pos += length
-
-        conv_id = None
-        raw_summary = None
-        for s_num, s_type, s_val in _parse_fields(entry_bytes):
-            if s_num == 1 and isinstance(s_val, bytes):
-                conv_id = s_val.decode("utf-8", errors="ignore")
-            elif s_num == 2 and isinstance(s_val, bytes):
-                raw_summary = s_val
-        if conv_id and raw_summary:
-            entries.append((conv_id, raw_summary))
     return entries
 
 
