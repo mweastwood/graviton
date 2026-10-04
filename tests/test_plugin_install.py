@@ -4,13 +4,13 @@ Unit tests for bin/graviton-plugin-install
 """
 
 import argparse
+import importlib.util
 import io
 import os
 import shutil
 import sys
 import tempfile
 import unittest
-import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +28,7 @@ class TestPluginInstall(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
         self.tmp_path = Path(self.tmpdir.name)
         self.target_dir = self.tmp_path / "plugins" / "graviton"
         # Suppress installer output (emojis) during test discovery and capture output
@@ -175,6 +176,7 @@ class TestPluginInstall(unittest.TestCase):
             self.assertIn(str(mock_repo.resolve()), content)
             self.assertIn("for parent in [current.parent", content)
             self.assertIn("os.execv", content)
+            compile(content, str(exe_file), "exec")
 
     def test_ensure_plugin_executables_chmod_oserror_handled(self):
         clean_target = self.tmp_path / "clean_plugin"
@@ -247,6 +249,19 @@ class TestPluginInstall(unittest.TestCase):
         ):
             success = plugin_installer.install_plugin(
                 self.target_dir, use_symlink=True, is_global=False
+            )
+        self.assertTrue(success)
+        self.assertFalse(self.target_dir.is_symlink())
+        self.assertTrue(self.target_dir.is_dir())
+        self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
+        self.assertTrue((self.target_dir / "bin" / "graviton-mcp").exists())
+
+    def test_install_plugin_global_symlink_failure_falls_back_to_copy(self):
+        with patch.object(
+            Path, "symlink_to", side_effect=OSError("Cross-device link")
+        ):
+            success = plugin_installer.install_plugin(
+                self.target_dir, use_symlink=True, is_global=True
             )
         self.assertTrue(success)
         self.assertFalse(self.target_dir.is_symlink())
