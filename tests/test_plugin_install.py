@@ -4,6 +4,7 @@ Unit tests for bin/graviton-plugin-install
 """
 
 import argparse
+import io
 import os
 import shutil
 import sys
@@ -29,10 +30,10 @@ class TestPluginInstall(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmpdir.name)
         self.target_dir = self.tmp_path / "plugins" / "graviton"
-        # Suppress installer output (emojis) during test discovery
-        stdout_patcher = patch("sys.stdout")
-        stdout_patcher.start()
-        self.addCleanup(stdout_patcher.stop)
+        # Suppress installer output (emojis) during test discovery and capture output
+        self.stdout_patcher = patch("sys.stdout", new_callable=io.StringIO)
+        self.mock_stdout = self.stdout_patcher.start()
+        self.addCleanup(self.stdout_patcher.stop)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -57,6 +58,14 @@ class TestPluginInstall(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with patch("sys.stderr"):
                 parser.parse_args(["--workspace", "--global"])
+
+    def test_main_cli_mutual_exclusion(self):
+        with patch.object(
+            sys, "argv", ["graviton-plugin-install", "--workspace", "--global"]
+        ):
+            with patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    plugin_installer.main()
 
     def test_install_workspace_symlink(self):
         success = plugin_installer.install_plugin(
@@ -263,22 +272,19 @@ class TestPluginInstall(unittest.TestCase):
         with patch.object(
             plugin_installer, "install_plugin", return_value=False
         ) as mock_install:
-            with patch("sys.stdout") as mock_stdout:
-                with patch.object(sys, "argv", ["graviton-plugin-install"]):
-                    plugin_installer.main()
-                mock_install.assert_called_once()
-                mock_stdout.write.assert_not_called()
+            with patch.object(sys, "argv", ["graviton-plugin-install"]):
+                plugin_installer.main()
+            mock_install.assert_called_once()
+            self.assertEqual(self.mock_stdout.getvalue(), "")
 
     def test_main_cli_success_prints_banner(self):
         with patch.object(
             plugin_installer, "install_plugin", return_value=True
         ) as mock_install:
-            with patch("sys.stdout") as mock_stdout:
-                with patch.object(sys, "argv", ["graviton-plugin-install"]):
-                    plugin_installer.main()
-                mock_install.assert_called_once()
-                written = "".join(call.args[0] for call in mock_stdout.write.call_args_list)
-                self.assertIn("Graviton Antigravity Plugin installed successfully!", written)
+            with patch.object(sys, "argv", ["graviton-plugin-install"]):
+                plugin_installer.main()
+            mock_install.assert_called_once()
+            self.assertIn("Graviton Antigravity Plugin installed successfully!", self.mock_stdout.getvalue())
 
     def test_ensure_plugin_executables_preserves_existing_wrapper(self):
         clean_target = self.tmp_path / "clean_plugin"
@@ -291,6 +297,7 @@ class TestPluginInstall(unittest.TestCase):
         plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
 
         self.assertEqual(custom_script.read_text(), "#!/bin/sh\necho custom\n")
+        self.assertTrue(os.access(custom_script, os.X_OK))
         self.assertTrue((bin_dir / "graviton-mcp").exists())
 
     def test_install_plugin_cleans_existing_dangling_symlink(self):
