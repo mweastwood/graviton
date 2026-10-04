@@ -12,7 +12,6 @@ from lib.updater import set_hot_reload_state
 def run_graceful_shutdown(
     task_manager: Optional[Any] = None,
     scheduler: Optional[Any] = None,
-    dashboard: Optional[Any] = None,
     httpd: Optional[Any] = None,
     quota_tracker: Optional[Any] = None,
     grace_period: float = 3.0,
@@ -59,7 +58,7 @@ def run_graceful_shutdown(
             except Exception as e:
                 log.warning(f"Error dumping task queue state: {e}")
 
-        qt = quota_tracker or (getattr(dashboard, "quota_tracker", None) if dashboard else None) or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
+        qt = quota_tracker or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
         if qt is not None and hasattr(qt, "dump_model_selection"):
             try:
                 qt.dump_model_selection()
@@ -69,7 +68,7 @@ def run_graceful_shutdown(
     finally:
         # Step 4: Clean Abort & Termination Teardown
         log.info("Graceful shutdown Step 4/4: Clean abort & termination...")
-        qt = quota_tracker or (getattr(dashboard, "quota_tracker", None) if dashboard else None) or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
+        qt = quota_tracker or (getattr(task_manager, "quota_tracker", None) if task_manager else None)
         if qt is not None and hasattr(qt, "stop_background_polling"):
             try:
                 qt.stop_background_polling()
@@ -93,12 +92,6 @@ def run_graceful_shutdown(
                 httpd.server_close()
             except Exception as e:
                 log.warning(f"Error closing HTTP server socket during shutdown: {e}")
-
-        if dashboard and hasattr(dashboard, "stop"):
-            try:
-                dashboard.stop()
-            except Exception as e:
-                log.warning(f"Error stopping dashboard during shutdown: {e}")
 
         if task_manager:
             try:

@@ -79,7 +79,6 @@ def get_cached_git_info(
 def graceful_shutdown(
     task_manager: Optional[TaskManager] = None,
     scheduler: Optional[TaskScheduler] = None,
-    dashboard: Optional[Any] = None,
     httpd: Optional[HTTPServer] = None,
     quota_tracker: Optional[QuotaTracker] = None,
     grace_period: float = 3.0,
@@ -961,7 +960,6 @@ def main():
     GravitonHandler.listener_proc = listener_proc
 
     scheduler = None
-    dashboard = None
     dashboard_updater = None
     task_manager = None
     httpd = None
@@ -1059,7 +1057,6 @@ def main():
             shutdown_thread = graceful_shutdown(
                 task_manager=task_manager,
                 scheduler=scheduler,
-                dashboard=dashboard,
                 httpd=httpd,
                 quota_tracker=quota_tracker,
                 grace_period=args.quit_grace_period,

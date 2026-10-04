@@ -937,7 +937,6 @@ class TestGravitonHandler(unittest.TestCase):
         t = server_mod.graceful_shutdown(
             task_manager=mock_tm,
             scheduler=mock_sched,
-            dashboard=None,
             httpd=mock_httpd,
             grace_period=0.01,
         )
@@ -985,14 +984,12 @@ class TestGravitonHandler(unittest.TestCase):
         t1 = server_mod.graceful_shutdown(
             task_manager=mock_tm,
             scheduler=mock_sched,
-            dashboard=None,
             httpd=mock_httpd,
             grace_period=0.01,
         )
         t2 = server_mod.graceful_shutdown(
             task_manager=mock_tm,
             scheduler=mock_sched,
-            dashboard=None,
             httpd=mock_httpd,
             grace_period=0.01,
         )
@@ -1014,7 +1011,6 @@ class TestGravitonHandler(unittest.TestCase):
                 t = server_mod.graceful_shutdown(
                     task_manager=tm,
                     scheduler=mock_sched,
-                    dashboard=None,
                     httpd=mock_httpd,
                     grace_period=0.01,
                 )
@@ -1407,7 +1403,6 @@ class TestGravitonHandler(unittest.TestCase):
         t = server_mod.graceful_shutdown(
             task_manager=mock_tm,
             scheduler=mock_sched,
-            dashboard=None,
             httpd=mock_httpd,
             quota_tracker=mock_qt,
             grace_period=0.01,
@@ -1565,7 +1560,6 @@ class TestGravitonHandler(unittest.TestCase):
             t = server_mod.graceful_shutdown(
                 task_manager=None,
                 scheduler=None,
-                dashboard=None,
                 httpd=None,
                 quota_tracker=tracker1,
                 grace_period=0.01,
