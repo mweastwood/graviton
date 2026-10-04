@@ -3,11 +3,11 @@
 Unit tests for bin/graviton-plugin-install
 """
 
-import argparse
 import importlib.util
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -36,29 +36,6 @@ class TestPluginInstall(unittest.TestCase):
         self.mock_stdout = self.stdout_patcher.start()
         self.addCleanup(self.stdout_patcher.stop)
 
-    def tearDown(self):
-        self.tmpdir.cleanup()
-
-    def test_argparse_mutual_exclusion(self):
-        parser = argparse.ArgumentParser()
-        group = parser.add_mutually_exclusive_group()
-        group.add_argument("--workspace", action="store_true")
-        group.add_argument("--global", dest="is_global", action="store_true")
-
-        # Workspace only
-        args = parser.parse_args(["--workspace"])
-        self.assertTrue(args.workspace)
-        self.assertFalse(args.is_global)
-
-        # Global only
-        args = parser.parse_args(["--global"])
-        self.assertTrue(args.is_global)
-        self.assertFalse(args.workspace)
-
-        # Both flags raise SystemExit
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr"):
-                parser.parse_args(["--workspace", "--global"])
 
     def test_main_cli_mutual_exclusion(self):
         with patch.object(
@@ -189,6 +166,31 @@ class TestPluginInstall(unittest.TestCase):
         self.assertTrue((bin_dir / "graviton-sidecar").exists())
         self.assertTrue((bin_dir / "graviton-mcp").exists())
 
+    def test_ensure_plugin_executables_wrapper_execution_missing_target(self):
+        clean_target = self.tmp_path / "clean_plugin"
+        mock_repo = self.tmp_path / "mock_graviton"
+        plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
+        exe_file = clean_target / "bin" / "graviton-sidecar"
+
+        res = subprocess.run([sys.executable, str(exe_file)], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: Could not locate", res.stderr)
+
+    def test_ensure_plugin_executables_wrapper_execution_success(self):
+        clean_target = self.tmp_path / "clean_plugin"
+        mock_repo = self.tmp_path / "mock_graviton"
+        target_bin = mock_repo / "bin" / "graviton-sidecar"
+        target_bin.parent.mkdir(parents=True, exist_ok=True)
+        target_bin.write_text("#!/usr/bin/env python3\nimport sys\nprint('SUCCESS:' + sys.argv[1])\n")
+        target_bin.chmod(0o755)
+
+        plugin_installer._ensure_plugin_executables(clean_target, repo_root=mock_repo)
+        exe_file = clean_target / "bin" / "graviton-sidecar"
+
+        res = subprocess.run([sys.executable, str(exe_file), "--test-flag"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("SUCCESS:--test-flag", res.stdout)
+
     def test_install_plugin_cleans_existing_symlink(self):
         dummy_file = self.tmp_path / "dummy.txt"
         dummy_file.write_text("dummy")
@@ -242,6 +244,18 @@ class TestPluginInstall(unittest.TestCase):
         self.assertEqual(
             self.target_dir.resolve(), plugin_installer.PLUGIN_SRC.resolve()
         )
+
+    def test_install_plugin_copy_cleans_existing_file(self):
+        self.target_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.target_dir.write_text("regular file")
+        self.assertTrue(self.target_dir.is_file())
+
+        success = plugin_installer.install_plugin(self.target_dir, use_symlink=False)
+        self.assertTrue(success)
+        self.assertFalse(self.target_dir.is_symlink())
+        self.assertTrue(self.target_dir.is_dir())
+        self.assertFalse(self.target_dir.is_file())
+        self.assertTrue((self.target_dir / "bin" / "graviton-sidecar").exists())
 
     def test_install_plugin_symlink_failure_falls_back_to_copy(self):
         with patch.object(
