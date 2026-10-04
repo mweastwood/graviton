@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,9 +18,11 @@ from lib.dashboard import (
     REPO_ROOT,
     _detect_git_repo_full_name,
     _extract_countdown,
+    _format_reload_state_class,
     _format_target_html_cell,
     _format_target_markdown_cell,
     _get_dashboard_template,
+    _get_fallback_dashboard_template,
     _render_active_tasks_table,
     _render_approved_prs_table,
     _render_history_tasks_table,
@@ -3253,6 +3256,285 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("updatePacingMark('tp-5h-pacing-mark'", template)
         self.assertIn("updatePacingMark('tp-1w-pacing-mark'", template)
         self.assertIn("mark.setAttribute('aria-label', titleText)", template)
+
+    def test_format_reload_state_class(self):
+        self.assertEqual(_format_reload_state_class("IDLE"), "idle")
+        self.assertEqual(_format_reload_state_class("idle"), "idle")
+        self.assertEqual(_format_reload_state_class("PULLING_GIT"), "pulling")
+        self.assertEqual(_format_reload_state_class("REBUILDING_CONTAINER"), "rebuilding")
+        self.assertEqual(_format_reload_state_class("DRAINING_TASKS"), "draining")
+        self.assertEqual(_format_reload_state_class("RELOADING"), "reloading")
+        self.assertEqual(_format_reload_state_class("SHUTDOWN: DRAINING_TASKS"), "draining")
+        self.assertEqual(_format_reload_state_class(None), "idle")
+        self.assertEqual(_format_reload_state_class(""), "idle")
+        self.assertEqual(_format_reload_state_class(123), "idle")
+        self.assertEqual(_format_reload_state_class(object()), "idle")
+
+    def test_render_dashboard_html_contains_branch_commit_and_reload_state(self):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n"
+        extra = {
+            "branch": "feat/my-branch",
+            "commit": "a1b2c3d",
+            "reload_state": "DRAINING_TASKS",
+        }
+        html_out = render_dashboard_html(sample_md, extra_info=extra)
+        self.assertIn('id="meta-branch">feat/my-branch</code>', html_out)
+        self.assertIn('id="meta-commit">a1b2c3d</code>', html_out)
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
+
+    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
+    def test_render_dashboard_html_explicit_idle_reload_state(self, mock_get_reload):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        extra = {"reload_state": "IDLE"}
+        html_out = render_dashboard_html(sample_md, extra_info=extra)
+        mock_get_reload.assert_not_called()
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
+
+    @patch("lib.dashboard.get_cached_git_info", return_value=("cafe123", "feature-x"))
+    def test_render_dashboard_html_passes_repo_root_to_get_cached_git_info(self, mock_get_git):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_git.assert_called_once_with(REPO_ROOT)
+        self.assertIn('id="meta-branch">feature-x</code>', html_out)
+        self.assertIn('id="meta-commit">cafe123</code>', html_out)
+
+    def test_render_dashboard_html_default_branch_and_commit_resolution(self):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        self.assertIn('id="meta-branch">', html_out)
+        self.assertIn('id="meta-commit">', html_out)
+        self.assertIn('id="meta-reload-state"', html_out)
+
+    def test_template_js_client_side_commit_auto_reload(self):
+        _reset_dashboard_template_cache()
+        template = _get_dashboard_template()
+        self.assertIn(".reload-badge", template)
+        self.assertIn(".reload-badge-idle", template)
+        self.assertIn(".reload-badge-pulling", template)
+        self.assertIn(".reload-badge-draining", template)
+        self.assertIn(".toast-info", template)
+        self.assertIn('let initialCommit = "{commit}";', template)
+        self.assertIn("let isReloading = false;", template)
+        self.assertIn("function getReloadStateClass(state)", template)
+        self.assertIn("const isReloadIdle = reloadState === 'IDLE';", template)
+        self.assertIn("isReloadIdle &&", template)
+        self.assertIn("if (isReloading) return;", template)
+        self.assertIn("const probeAndReload", template)
+        self.assertIn("if (attempts < 30)", template)
+        self.assertIn("fetch('/dashboard/content'", template)
+        self.assertIn("window.location.reload()", template)
+        self.assertIn("data.commit", template)
+        self.assertIn("data.branch", template)
+        self.assertIn("data.reload_state", template)
+
+    def test_fallback_template_contains_branch_commit_reload(self):
+        fb = _get_fallback_dashboard_template()
+        self.assertIn("{branch}", fb)
+        self.assertIn("{commit}", fb)
+        self.assertIn("{reload_state}", fb)
+
+    def test_format_dashboard_markdown_behind_pacing_shows_resume_countdown(self):
+        """Verify format_dashboard_markdown includes resume countdown estimate when window is BEHIND_PACING."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="gemini")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertRegex(md, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+
+    def test_format_dashboard_markdown_dict_behind_pacing_shows_resume_countdown(self):
+        """Verify format_dashboard_markdown includes resume countdown from dictionary extra_info."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:30:00",
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `40%` | Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00) |", md)
+
+    def test_render_dashboard_html_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown in details element when BEHIND_PACING."""
+        _reset_dashboard_template_cache()
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="gemini")
+        html_out = render_dashboard_html("# Test", quota_tracker=tracker)
+        self.assertRegex(html_out, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+        self.assertIn('id="gemini-5h-details"', html_out)
+
+    def test_render_dashboard_html_extra_info_dict_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown from extra_info dictionary."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:30:00",
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00)", html_out)
+
+    def test_render_dashboard_html_third_party_behind_pacing_shows_resume_countdown(self):
+        """Verify render_dashboard_html includes resume countdown for third-party window when BEHIND_PACING."""
+        _reset_dashboard_template_cache()
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w_behind = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w_ok = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_behind, w_ok, quota_pool="claude_gpt")
+        html_out = render_dashboard_html("# Test", quota_tracker=tracker)
+        self.assertRegex(html_out, r"Pacing: BEHIND_PACING \(Resume in 00:(?:29|30):\d\d\)")
+        self.assertIn('id="tp-5h-details"', html_out)
+
+    def test_parse_dashboard_markdown_behind_pacing_with_resume_countdown(self):
+        """Verify parse_dashboard_markdown extracts details with resume countdown and maintains target pacing."""
+        sample_md = """# 🌌 Graviton Live Dashboard
+
+## 🎯 Model Quota & Pacing
+
+| Metric | Value | Details |
+| :--- | :--- | :--- |
+| **Active Pool** | `gemini` | Configured quota bucket |
+| **Active Model** | `gemini-3.8-flash-medium` | Active Gemini / LLM persona |
+| **Active Gemini Model** | `gemini-3.8-flash-medium` | Active Gemini model persona |
+| **Active Third-Party Model** | `claude-sonnet-4-6` | Active Third-Party model persona |
+| **Gemini (5H)** | `40%` | Reset: 02:30:00 | Pacing: BEHIND_PACING (Resume in 00:30:00) |
+| **Gemini (1W)** | `92%` | Reset: 5d 04h | Pacing: OK |
+| **Third-Party (5H)** | `70%` | Reset: 01:15:00 | Pacing: OK |
+| **Third-Party (1W)** | `95%` | Reset: 4d 12h | Pacing: OK |
+| **Gemini Remaining** | `40%` | Live Gemini API capacity |
+| **Third-Party Remaining** | `70%` | Fallback model capacity |
+"""
+        parsed = parse_dashboard_markdown(sample_md)
+        self.assertEqual(parsed["gemini_5h_details"], "Reset: 02:30:00 | Pacing: BEHIND_PACING (Resume in 00:30:00)")
+        self.assertEqual(parsed["gemini_5h_target_pacing_pct"], 50.0)
+
+    def test_format_dashboard_markdown_1w_multi_day_recovery_countdown(self):
+        """Verify format_dashboard_markdown formats 1W multi-day recovery countdown as Xd Yh."""
+        extra = {
+            "quota_info": {
+                "gemini_1w_remaining_percentage": 20.0,
+                "gemini_1w_countdown": "5d 12h",
+                "gemini_1w_pacing_status": "BEHIND_PACING",
+                "gemini_1w_pacing_recovery_seconds": 187200.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 5d 12h | Pacing: BEHIND_PACING (Resume in 2d 04h)", md)
+
+    def test_render_dashboard_html_1w_multi_day_recovery_countdown(self):
+        """Verify render_dashboard_html formats 1W multi-day recovery countdown as Xd Yh."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_1w_remaining_percentage": 20.0,
+                "gemini_1w_countdown": "5d 12h",
+                "gemini_1w_pacing_status": "BEHIND_PACING",
+                "gemini_1w_pacing_recovery_seconds": 187200.0,
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 5d 12h | Pacing: BEHIND_PACING (Resume in 2d 04h)", html_out)
+
+    def test_format_dashboard_markdown_1w_window_object_multi_day_recovery(self):
+        """Verify format_dashboard_markdown computes multi-day recovery from 1W QuotaWindow."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(days=5)).isoformat()
+        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=90.0)
+        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=10.0, reset_time=reset_time_str)
+        tracker = QuotaTracker()
+        tracker.update_windows(w_5h, w_1w, quota_pool="gemini")
+        md = format_dashboard_markdown(quota_tracker=tracker)
+        self.assertRegex(md, r"Pacing: BEHIND_PACING \(Resume in \d+d \d+h\)")
+
+    def test_format_dashboard_markdown_dict_with_zero_recovery_countdown_does_not_suppress_estimate(self):
+        """Verify window dict with pacing_recovery_countdown='00:00:00' and positive seconds computes countdown."""
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:00:00",
+                "gemini_5h_pacing_recovery_seconds": 1800.0,
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("| **Gemini (5H)** | `40%` | Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00) |", md)
+
+    def test_render_dashboard_html_dict_with_zero_recovery_countdown_does_not_suppress_estimate(self):
+        """Verify HTML rendering computes countdown when pacing_recovery_countdown='00:00:00' but seconds > 0."""
+        _reset_dashboard_template_cache()
+        extra = {
+            "quota_info": {
+                "gemini_5h_remaining_percentage": 40.0,
+                "gemini_5h_countdown": "02h 30m",
+                "gemini_5h_pacing_status": "BEHIND_PACING",
+                "gemini_5h_pacing_recovery_countdown": "00:00:00",
+                "gemini_5h_pacing_recovery_seconds": 1800.0,
+            }
+        }
+        html_out = render_dashboard_html("# Test", quota_tracker=None, extra_info=extra)
+        self.assertIn("Reset: 02h 30m | Pacing: BEHIND_PACING (Resume in 00:30:00)", html_out)
+
+    def test_format_dashboard_markdown_window_dict_zero_countdown_fallback(self):
+        """Verify window object dict with '00:00:00' countdown falls back to positive recovery seconds."""
+        extra = {
+            "quota_info": {
+                "gemini_window_5h": {
+                    "name": "5H",
+                    "remaining_percentage": 40.0,
+                    "reset_countdown": "02:30:00",
+                    "pacing_status": "BEHIND_PACING",
+                    "pacing_recovery_countdown": "00:00:00",
+                    "pacing_recovery_seconds": 1800.0,
+                }
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertIn("Pacing: BEHIND_PACING (Resume in 00:30:00)", md)
+
+    def test_format_dashboard_markdown_1w_window_dict_without_name_uses_1w_duration(self):
+        """Verify 1W window dict without 'name' key uses 1-week duration to calculate recovery countdown."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(days=5)).isoformat()
+        extra = {
+            "quota_info": {
+                "gemini_window_1w": {
+                    "remaining_percentage": 20.0,
+                    "reset_time": reset_time_str,
+                    "pacing_status": "BEHIND_PACING",
+                }
+            }
+        }
+        md = format_dashboard_markdown(quota_tracker=None, extra_info=extra)
+        self.assertRegex(md, r"\| \*\*Gemini \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
+
+        extra_tp = {
+            "quota_info": {
+                "claude_window_1w": {
+                    "remaining_percentage": 20.0,
+                    "reset_time": reset_time_str,
+                    "pacing_status": "BEHIND_PACING",
+                }
+            }
+        }
+        md_tp = format_dashboard_markdown(quota_tracker=None, extra_info=extra_tp)
+        self.assertRegex(md_tp, r"\| \*\*Third-Party \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
 
 
 if __name__ == "__main__":

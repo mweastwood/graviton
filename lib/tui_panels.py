@@ -643,7 +643,7 @@ def render_third_party_models_panel(
     width: int,
     models: List[str],
     selected_index: int = 0,
-    active_model: str = "claude-sonnet-4-6",
+    active_model: str = "claude-sonnet-5-5-medium",
 ) -> List[str]:
     """Render 3rd party (Claude/GPT) model selection panel."""
     header_bar = render_panel_header(width, "3RD PARTY MODEL SELECTION (CLAUDE / GPT)", "\033[96m\033[1m")

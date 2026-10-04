@@ -31,6 +31,7 @@ from lib.quota import (
     fetch_live_antigravity_quota,
     format_quota_badge,
     format_reset_countdown,
+    format_pacing_recovery_countdown,
     normalize_antigravity_quota_endpoint,
     parse_all_antigravity_quota_json,
     parse_antigravity_quota_json,
@@ -977,7 +978,7 @@ class TestQuotaTracker(unittest.TestCase):
 
             # Initial active models
             self.assertEqual(tracker.get_active_model("gemini"), "gemini-3.8-flash-medium")
-            self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-sonnet-4-6")
+            self.assertEqual(tracker.get_active_model("claude_gpt"), "claude-sonnet-5-5-medium")
 
             # Set active model
             tracker.set_active_model("gemini", "gemini-2.5-pro")
@@ -2234,6 +2235,131 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         )
         d2 = info2.to_dict()
         self.assertEqual(d2["third_party_5h_pacing_status"], "BEHIND_PACING")
+
+    def test_quota_info_pacing_recovery_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_recovery_seconds and pacing_recovery_countdown."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        info = QuotaInfo(
+            remaining_percentage=40.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertAlmostEqual(d["gemini_5h_pacing_recovery_seconds"], 1800.0, delta=5.0)
+        self.assertRegex(d["gemini_5h_pacing_recovery_countdown"], r"^00:2[89]:\d\d$")
+
+    def test_quota_info_third_party_pacing_recovery_serialization(self):
+        """Verify QuotaInfo.to_dict includes pacing_recovery for third-party windows."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w5c = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        info = QuotaInfo(remaining_percentage=40.0, quota_pool="claude_gpt", claude_window_5h=w5c)
+        d = info.to_dict()
+        self.assertEqual(d["third_party_5h_pacing_status"], "BEHIND_PACING")
+        self.assertAlmostEqual(d["third_party_5h_pacing_recovery_seconds"], 1800.0, delta=5.0)
+        self.assertRegex(d["third_party_5h_pacing_recovery_countdown"], r"^00:2[89]:\d\d$")
+
+    def test_format_pacing_recovery_countdown_helper(self):
+        """Verify format_pacing_recovery_countdown handles seconds, multi-day intervals, and invalid inputs."""
+        self.assertEqual(format_pacing_recovery_countdown(None), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(-10), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(0), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(1800), "00:30:00")
+        self.assertEqual(format_pacing_recovery_countdown(3665), "01:01:05")
+        self.assertEqual(format_pacing_recovery_countdown(86400), "1d 00h")
+        self.assertEqual(format_pacing_recovery_countdown(187200), "2d 04h")
+        self.assertEqual(format_pacing_recovery_countdown("invalid"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("nan")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("inf")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown(float("-inf")), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("nan"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("inf"), "00:00:00")
+        self.assertEqual(format_pacing_recovery_countdown("-inf"), "00:00:00")
+
+    def test_quota_info_dict_window_nan_and_inf_recovery_seconds(self):
+        """Verify QuotaInfo.to_dict handles nan, inf, and non-finite recovery seconds gracefully."""
+        for invalid_val in [float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf"]:
+            win_dict = {
+                "name": "5H",
+                "remaining_percentage": 20.0,
+                "pacing_status": "BEHIND_PACING",
+                "pacing_recovery_seconds": invalid_val,
+            }
+            info = QuotaInfo(
+                remaining_percentage=20.0,
+                quota_pool="gemini",
+                gemini_window_5h=win_dict,
+            )
+            d = info.to_dict()
+            self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+            self.assertEqual(d["gemini_5h_pacing_recovery_seconds"], 0.0)
+            self.assertIsNone(d["gemini_5h_pacing_recovery_countdown"])
+
+    def test_quota_info_window_zero_recovery_countdown_serializes_as_none(self):
+        """Verify QuotaWindow with 00:00:00 countdown serializes pacing_recovery_countdown as None."""
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=100.0)
+        info = QuotaInfo(quota_pool="gemini", gemini_window_5h=w5)
+        d = info.to_dict()
+        self.assertIsNone(d["gemini_5h_pacing_recovery_countdown"])
+
+    def test_quota_info_round_trip_serialization_with_dict_windows(self):
+        """Verify QuotaInfo.to_dict round-trip consistency when input windows are dictionaries."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        w5 = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=40.0, reset_time=reset_time_str)
+        w1 = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=100.0)
+        info1 = QuotaInfo(
+            remaining_percentage=40.0,
+            quota_pool="gemini",
+            gemini_window_5h=w5,
+            gemini_window_1w=w1,
+        )
+        d1 = info1.to_dict()
+        self.assertEqual(d1["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertIsNotNone(d1["gemini_5h_pacing_recovery_countdown"])
+        self.assertEqual(d1["gemini_1w_pacing_status"], "OK")
+        self.assertIsNone(d1["gemini_1w_pacing_recovery_countdown"])
+        self.assertEqual(d1["gemini_1w_pacing_recovery_seconds"], 0.0)
+
+        # Round-trip through dict inputs produced by to_dict()
+        info2 = QuotaInfo(
+            remaining_percentage=d1["remaining_percentage"],
+            quota_pool=d1["quota_pool"],
+            gemini_window_5h=d1["gemini_window_5h"],
+            gemini_window_1w=d1["gemini_window_1w"],
+        )
+        d2 = info2.to_dict()
+        self.assertEqual(d2["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertEqual(d2["gemini_5h_pacing_recovery_countdown"], d1["gemini_5h_pacing_recovery_countdown"])
+        self.assertEqual(d2["gemini_5h_pacing_recovery_seconds"], d1["gemini_5h_pacing_recovery_seconds"])
+        self.assertEqual(d2["gemini_1w_pacing_status"], "OK")
+        self.assertIsNone(d2["gemini_1w_pacing_recovery_countdown"])
+        self.assertEqual(d2["gemini_1w_pacing_recovery_seconds"], 0.0)
+
+    def test_quota_info_dict_window_behind_pacing_fallback_computation(self):
+        """Verify dict window with BEHIND_PACING but missing/zero recovery countdown computes metrics."""
+        now_dt = datetime.now(timezone.utc)
+        reset_time_str = (now_dt + timedelta(seconds=9000)).isoformat()
+        win_dict = {
+            "name": "5H",
+            "duration_seconds": 18000.0,
+            "remaining_percentage": 40.0,
+            "reset_time": reset_time_str,
+            "pacing_status": "BEHIND_PACING",
+            "pacing_recovery_countdown": "00:00:00",
+        }
+        info = QuotaInfo(
+            remaining_percentage=40.0,
+            quota_pool="gemini",
+            gemini_window_5h=win_dict,
+        )
+        d = info.to_dict()
+        self.assertEqual(d["gemini_5h_pacing_status"], "BEHIND_PACING")
+        self.assertAlmostEqual(d["gemini_5h_pacing_recovery_seconds"], 1800.0, delta=5.0)
+        self.assertRegex(d["gemini_5h_pacing_recovery_countdown"], r"^00:2[89]:\d\d$")
 
     def test_quota_info_to_dict_exposes_pool_remaining_percentages(self):
         """Verify QuotaInfo.to_dict includes gemini_remaining_percentage and third_party_remaining_percentage."""
