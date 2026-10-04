@@ -2101,9 +2101,20 @@ class TestProtobufWireProtocol(unittest.TestCase):
                 _encode_field(1, 5, out_of_range)
             self.assertIn("out of range for 32-bit fixed field", str(ctx.exception))
 
+    def test_encode_field_wire_type_0_bool(self):
+        # True encodes to varint 1
+        f_true = _encode_field(1, 0, True)
+        self.assertEqual(f_true, _encode_varint((1 << 3) | 0) + _encode_varint(1))
+        self.assertEqual(_parse_fields(f_true), [(1, 0, 1)])
+
+        # False encodes to varint 0
+        f_false = _encode_field(2, 0, False)
+        self.assertEqual(f_false, _encode_varint((2 << 3) | 0) + _encode_varint(0))
+        self.assertEqual(_parse_fields(f_false), [(2, 0, 0)])
+
     def test_encode_field_unsupported_data_types(self):
-        # Wire type 0 rejects non-int or bool
-        for invalid in [True, False, 1.5, "100", b"\x01", None, [1]]:
+        # Wire type 0 rejects non-int/bool
+        for invalid in [1.5, "100", b"\x01", None, [1], {"a": 1}]:
             with self.assertRaises(TypeError) as ctx:
                 _encode_field(1, 0, invalid)
             self.assertIn("Unsupported data type for wire type 0", str(ctx.exception))

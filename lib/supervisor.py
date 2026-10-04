@@ -1276,7 +1276,7 @@ def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
     return res, pos
 
 
-def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, bytearray, str]) -> bytes:
+def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, bytearray, str, bool]) -> bytes:
     """Encode a single Protocol Buffer field with tag (field number and wire type) and payload.
 
     Supported wire types:
@@ -1307,11 +1307,15 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
 
     tag = (field_num << 3) | wire_type
     if wire_type == 0:
-        if not isinstance(data, int) or isinstance(data, bool):
+        if isinstance(data, bool):
+            int_val = 1 if data else 0
+        elif isinstance(data, int):
+            int_val = data
+        else:
             raise TypeError(f"Unsupported data type for wire type 0: {type(data).__name__}")
-        if not (-0x8000000000000000 <= data <= 0xffffffffffffffff):
-            raise ValueError(f"Integer value {data} out of range for varint field")
-        return _encode_varint(tag) + _encode_varint(int(data))
+        if not (-0x8000000000000000 <= int_val <= 0xffffffffffffffff):
+            raise ValueError(f"Integer value {int_val} out of range for varint field")
+        return _encode_varint(tag) + _encode_varint(int_val)
     elif wire_type == 2:
         if isinstance(data, str):
             b_data = data.encode("utf-8")
@@ -1352,7 +1356,6 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
         if len(b_data) != 4:
             raise ValueError(f"Wire type 5 requires 4 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
-    raise ValueError(f"Unsupported wire type {wire_type}")
 
 
 def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
