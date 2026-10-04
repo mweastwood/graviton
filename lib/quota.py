@@ -514,29 +514,6 @@ def format_pacing_recovery_countdown(
         return "00:00:00"
 
 
-def format_quota_badge(
-    window: QuotaWindow,
-    now_dt: Optional[Union[float, int, datetime]] = None,
-    quota_pool: Optional[str] = None,
-) -> str:
-    """Render quota badge string for TUI header/panel."""
-    pct = window.remaining_percentage
-    if pct is None:
-        pct_str = "N/A"
-    else:
-        pct_str = f"{int(pct)}%" if pct.is_integer() else f"{pct:.1f}%"
-    countdown = window.format_reset_countdown(now_dt)
-    pacing_status, backoff = window.get_pacing_status(now_dt)
-
-    if pacing_status == "BEHIND_PACING":
-        recovery_cd = window.format_pacing_countdown(now_dt)
-        pacing_str = f"PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN {recovery_cd})"
-    else:
-        pacing_str = "PACING: OK"
-
-    pool_prefix = f"{quota_pool.upper()} " if quota_pool else ""
-    return f"[ {pool_prefix}{window.name.upper()} QUOTA: {pct_str} | RESET: {countdown} | {pacing_str} ]"
-
 
 def _extract_token_from_object(obj) -> Optional[str]:
     """Helper to extract access token string from JSON dict or primitive."""

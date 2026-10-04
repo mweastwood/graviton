@@ -16,8 +16,6 @@ from lib.tasks import (
     post_task_completion_comment,
     post_task_start_comment,
 )
-from lib.tui import TerminalDashboard
-from lib.tui_panels import render_task_logs_panel
 
 
 class TestRemoteControlUrlExtraction(unittest.TestCase):
@@ -376,42 +374,6 @@ class TestMCPRemoteControlTools(unittest.TestCase):
         resp = self.server.handle_request(req_get)
         content = resp["result"]["content"][0]["text"]
         self.assertIn("- **Remote Control**: https://antigravity.google.com/c/conv-mcp", content)
-
-
-class TestTUIRemoteControl(unittest.TestCase):
-    def test_render_task_logs_panel_with_remote_control(self):
-        task = Task(
-            id="t-tui",
-            agent="code_reviewer",
-            prompt="Check logs",
-            status=TaskStatus.RUNNING,
-            remote_control_url="https://antigravity.google.com/c/conv-tui",
-        )
-        rendered = render_task_logs_panel(width=100, task=task, logs=["output line"])
-        self.assertTrue(any("https://antigravity.google.com/c/conv-tui" in l for l in rendered))
-
-    @patch("webbrowser.open")
-    def test_dashboard_open_selected_task_remote_control(self, mock_open):
-        mock_tm = MagicMock()
-        task = Task(
-            id="t-open",
-            agent="code_reviewer",
-            prompt="Check logs",
-            status=TaskStatus.RUNNING,
-            remote_control_url="https://antigravity.google.com/c/conv-open",
-        )
-        mock_tm.get_active_tasks.return_value = [task]
-        mock_tm.get_queued_tasks.return_value = []
-        mock_tm.get_task.return_value = task
-
-        dashboard = TerminalDashboard(task_manager=mock_tm)
-        dashboard.focused_panel = "active"
-        dashboard.selected_active_index = 0
-
-        self.assertEqual(dashboard.selected_task, task)
-        success = dashboard.open_selected_task_remote_control()
-        self.assertTrue(success)
-        mock_open.assert_called_once_with("https://antigravity.google.com/c/conv-open")
 
 
 if __name__ == "__main__":

@@ -311,13 +311,12 @@ class TestGravitonHandler(unittest.TestCase):
         mock_logger.info.assert_any_call("Received GitHub webhook event: issues (Issue #62 (action: opened))")
         mock_logger.info.assert_any_call("Routed webhook event 'issues' (Issue #62 (action: opened)): status=accepted, agent=issue_triager")
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_runs_headless_by_default(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
@@ -329,19 +328,18 @@ class TestGravitonHandler(unittest.TestCase):
         with patch("sys.argv", ["graviton-server.py"]):
             server_mod.main()
 
-        mock_dashboard_cls.assert_not_called()
+        mock_server.serve_forever.assert_called_once()
 
     def test_server_uses_threading_http_server(self):
         import socketserver
         self.assertTrue(issubclass(server_mod.HTTPServer, socketserver.ThreadingMixIn))
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_server_initializes_daemon_threads(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
@@ -355,43 +353,17 @@ class TestGravitonHandler(unittest.TestCase):
 
         self.assertTrue(mock_server.daemon_threads)
 
-    @patch("graviton_server.TerminalDashboard")
-    @patch("graviton_server.HTTPServer")
-    @patch("graviton_server.TaskManager")
-    @patch("graviton_server.QuotaTracker")
-    @patch("graviton_server.PRTracker")
-    def test_main_starts_dashboard_with_tui_flag(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
-    ):
-        mock_tm_inst = MagicMock()
-        mock_tm_inst.restore_queue_state.return_value = 0
-        mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
-        mock_server = MagicMock()
-        mock_http.return_value = mock_server
-        mock_server.serve_forever.side_effect = KeyboardInterrupt
 
-        with patch("sys.argv", ["graviton-server.py", "--tui"]):
-            server_mod.main()
-
-        mock_dashboard_cls.assert_called_once()
-        mock_dashboard_inst.start.assert_called_once()
-        mock_dashboard_inst.stop.assert_called_once()
-
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_cli_drafter_option_configures_handler(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -434,19 +406,16 @@ class TestGravitonHandler(unittest.TestCase):
             clone_url="https://github.com/owner/repo-alpha.git",
         )
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_cli_repos_dir_defaults_to_starting_directory(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -456,19 +425,16 @@ class TestGravitonHandler(unittest.TestCase):
 
         self.assertEqual(GravitonHandler.repos_dir, Path("~/graviton-repos").expanduser().resolve())
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_cli_projects_dir_option(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -772,12 +738,11 @@ class TestGravitonHandler(unittest.TestCase):
         mock_post_reaction.assert_not_called()
         handler._send_json.assert_called_once_with(200, {"status": "ignored", "reason": "behind_quota_pacing"})
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_server_signal_shutdown_non_blocking(
-        self, mock_pr, mock_quota, mock_tm, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
@@ -791,8 +756,6 @@ class TestGravitonHandler(unittest.TestCase):
         mock_pr_inst = MagicMock()
         mock_pr.return_value = mock_pr_inst
 
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
 
         call_order = []
 
@@ -801,20 +764,6 @@ class TestGravitonHandler(unittest.TestCase):
             return []
 
         mock_tm_inst.drain_active_tasks.side_effect = fake_drain_active_tasks
-
-        def fake_dashboard_graceful_shutdown(timeout=None, grace_period=None):
-            t = server_mod.graceful_shutdown(
-                task_manager=mock_tm_inst,
-                httpd=mock_dashboard_inst.httpd,
-                quota_tracker=mock_quota_inst,
-                grace_period=grace_period if grace_period is not None else 0.01,
-                timeout=timeout,
-                dashboard=None,
-            )
-            mock_dashboard_inst._shutdown_thread = t
-            return t
-
-        mock_dashboard_inst.graceful_shutdown.side_effect = fake_dashboard_graceful_shutdown
 
         server_port = None
         server_ready = threading.Event()
@@ -903,77 +852,82 @@ class TestGravitonHandler(unittest.TestCase):
             with socket.create_connection(("127.0.0.1", server_port), timeout=0.5):
                 pass
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     @patch("graviton_server.signal.signal")
-    def test_signal_handler_registered_before_dashboard_start(
-        self, mock_signal_func, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+    def test_signal_handler_registered_before_serve_forever(
+        self, mock_signal_func, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
-        mock_server.serve_forever.side_effect = KeyboardInterrupt
 
         call_order = []
 
         def track_signal(sig, handler):
             call_order.append(("signal", sig))
 
-        def track_dashboard_start():
-            call_order.append(("dashboard_start",))
+        def track_serve():
+            call_order.append(("serve_forever",))
+            raise KeyboardInterrupt
 
         mock_signal_func.side_effect = track_signal
-        mock_dashboard_inst.start.side_effect = track_dashboard_start
+        mock_server.serve_forever.side_effect = track_serve
 
-        with patch("sys.argv", ["graviton-server.py", "--tui"]):
+        with patch("sys.argv", ["graviton-server.py"]):
             server_mod.main()
 
         self.assertIn(("signal", signal.SIGINT), call_order)
         self.assertIn(("signal", signal.SIGTERM), call_order)
-        self.assertIn(("dashboard_start",), call_order)
+        self.assertIn(("serve_forever",), call_order)
 
         sigint_index = call_order.index(("signal", signal.SIGINT))
         sigterm_index = call_order.index(("signal", signal.SIGTERM))
-        dashboard_index = call_order.index(("dashboard_start",))
+        serve_index = call_order.index(("serve_forever",))
 
-        self.assertLess(sigint_index, dashboard_index)
-        self.assertLess(sigterm_index, dashboard_index)
+        self.assertLess(sigint_index, serve_index)
+        self.assertLess(sigterm_index, serve_index)
 
     def test_cli_argument_quit_grace_period(self):
-        with patch("sys.argv", ["graviton-server.py", "--quit-grace-period", "5.5", "--tui"]):
-            with patch("bin.graviton-server.HTTPServer" if "bin.graviton-server" in sys.modules else "graviton_server.HTTPServer") as mock_http:
-                mock_server = MagicMock()
-                mock_http.return_value = mock_server
-                mock_server.serve_forever.side_effect = KeyboardInterrupt
-                with patch("graviton_server.TerminalDashboard") as mock_dash:
-                    server_mod.main()
-                    mock_dash.assert_called_once()
-                    _, kwargs = mock_dash.call_args
-                    self.assertEqual(kwargs.get("quit_grace_period"), 5.5)
+        registered_handlers = {}
 
-    def test_graceful_shutdown_workflow_server_module(self):
+        def mock_signal_func(sig, handler):
+            registered_handlers[sig] = handler
+
+        with patch("signal.signal", side_effect=mock_signal_func):
+            with patch("sys.argv", ["graviton-server.py", "--quit-grace-period", "5.5"]):
+                with patch("bin.graviton-server.HTTPServer" if "bin.graviton-server" in sys.modules else "graviton_server.HTTPServer") as mock_http:
+                    mock_server = MagicMock()
+                    mock_http.return_value = mock_server
+                    mock_server.serve_forever.side_effect = KeyboardInterrupt
+                    with patch("graviton_server.graceful_shutdown") as mock_gs:
+                        server_mod.main()
+                        self.assertIn(signal.SIGINT, registered_handlers)
+                        handler = registered_handlers[signal.SIGINT]
+                        handler(signal.SIGINT, None)
+                        mock_gs.assert_called_once()
+                        _, kwargs = mock_gs.call_args
+                        self.assertEqual(kwargs.get("grace_period"), 5.5)
+
+    @patch("graviton_server.run_graceful_shutdown")
+    def test_graceful_shutdown_workflow_server_module(self, mock_run_gs):
         mock_tm = MagicMock()
         mock_sched = MagicMock()
         mock_httpd = MagicMock()
-        mock_dash = MagicMock()
 
         t = server_mod.graceful_shutdown(
             task_manager=mock_tm,
             scheduler=mock_sched,
-            dashboard=mock_dash,
             httpd=mock_httpd,
             grace_period=0.01,
         )
         t.join(timeout=2.0)
 
-        mock_dash.graceful_shutdown.assert_called_once_with(timeout=None, grace_period=0.01)
+        mock_run_gs.assert_called_once()
 
     def test_graceful_shutdown_without_dashboard(self):
         mock_tm = MagicMock()
@@ -1008,19 +962,18 @@ class TestGravitonHandler(unittest.TestCase):
                     mock_server = MagicMock()
                     mock_http.return_value = mock_server
                     mock_server.serve_forever.side_effect = KeyboardInterrupt
-                    with patch("graviton_server.TerminalDashboard") as mock_dash:
-                        with patch("graviton_server.graceful_shutdown") as mock_gs:
-                            mock_thread = MagicMock()
-                            mock_gs.return_value = mock_thread
-                            server_mod.main()
+                    with patch("graviton_server.graceful_shutdown") as mock_gs:
+                        mock_thread = MagicMock()
+                        mock_gs.return_value = mock_thread
+                        server_mod.main()
 
-                            self.assertIn(signal.SIGINT, registered_handlers)
-                            handler = registered_handlers[signal.SIGINT]
-                            # Call signal handler
-                            handler(signal.SIGINT, None)
-                            mock_gs.assert_called_once()
-                            # Verify thread.join was not called inside signal handler
-                            mock_thread.join.assert_not_called()
+                        self.assertIn(signal.SIGINT, registered_handlers)
+                        handler = registered_handlers[signal.SIGINT]
+                        # Call signal handler
+                        handler(signal.SIGINT, None)
+                        mock_gs.assert_called_once()
+                        # Verify thread.join was not called inside signal handler
+                        mock_thread.join.assert_not_called()
 
     def test_graceful_shutdown_headless_double_trigger_guard(self):
         server_mod._is_shutting_down = False
@@ -1109,19 +1062,16 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertIsNone(res)
 
     @patch("graviton_server.start_smee_listener")
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_launches_and_cleans_up_smee_listener(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_start_listener
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1138,19 +1088,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_proc.wait.assert_called_once_with(timeout=2)
 
     @patch("graviton_server.start_smee_listener")
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_smee_url_from_env_var(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_start_listener
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1178,19 +1125,16 @@ class TestGravitonHandler(unittest.TestCase):
         )
 
     @patch("graviton_server.start_smee_listener")
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_no_smee_flag_skips_listener(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_start_listener
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1202,19 +1146,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_start_listener.assert_not_called()
 
     @patch("graviton_server.start_smee_listener")
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_smee_listener_timeout_triggers_kill(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_start_listener
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1233,19 +1174,16 @@ class TestGravitonHandler(unittest.TestCase):
         self.assertEqual(mock_proc.wait.call_count, 2)
 
     @patch("graviton_server.start_smee_listener")
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_cleans_up_smee_listener_on_init_exception(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls, mock_start_listener
+        self, mock_pr, mock_quota, mock_tm, mock_http, mock_start_listener
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_http.side_effect = OSError("[Errno 98] Address already in use")
 
         mock_proc = MagicMock()
@@ -1260,21 +1198,18 @@ class TestGravitonHandler(unittest.TestCase):
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once_with(timeout=2)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_restores_model_selection_on_startup(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1288,21 +1223,18 @@ class TestGravitonHandler(unittest.TestCase):
         )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_model_state_cli_arg(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1317,21 +1249,18 @@ class TestGravitonHandler(unittest.TestCase):
         )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_model_selection_state_alias_cli_arg(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1346,21 +1275,18 @@ class TestGravitonHandler(unittest.TestCase):
         )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_model_selection_state_env_var(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1376,21 +1302,18 @@ class TestGravitonHandler(unittest.TestCase):
         )
         mock_qt_inst.restore_model_selection.assert_called_once()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_quota_endpoint_cli_arg(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1406,21 +1329,18 @@ class TestGravitonHandler(unittest.TestCase):
             api_url=custom_endpoint,
         )
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_quota_endpoint_env_var(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
         mock_qt_inst = MagicMock()
         mock_quota_cls.return_value = mock_qt_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1436,13 +1356,12 @@ class TestGravitonHandler(unittest.TestCase):
             api_url=custom_endpoint,
         )
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_agents_dir_cli_arg(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
@@ -1458,13 +1377,12 @@ class TestGravitonHandler(unittest.TestCase):
         _, kwargs = mock_tm.call_args
         self.assertEqual(kwargs.get("agents_dir"), custom_agents)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_accepts_skills_dir_cli_arg(
-        self, mock_pr, mock_quota_cls, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota_cls, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
@@ -1668,19 +1586,16 @@ class TestGravitonHandler(unittest.TestCase):
             self.assertEqual(tracker2.get_active_model("claude_gpt"), "claude-opus-4-6-thinking")
             self.assertEqual(tracker2.quota_pool, "claude_gpt")
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_initializes_quota_via_poll_all_pools(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1694,19 +1609,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_starts_quota_background_polling_custom_interval(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1719,19 +1631,16 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=10.0)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_starts_quota_background_polling_fallback_non_positive_interval(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1744,19 +1653,16 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_starts_quota_background_polling_fallback_non_finite_interval(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1769,19 +1675,16 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_starts_quota_background_polling_graviton_env_var(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1794,19 +1697,16 @@ class TestGravitonHandler(unittest.TestCase):
 
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=12.5)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_disables_quota_background_polling_with_flag(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1820,19 +1720,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_not_called()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_disables_quota_background_polling_with_env_var(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1846,19 +1743,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_not_called()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_disables_quota_background_polling_with_quota_env_var(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1874,19 +1768,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_not_called()
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_enables_quota_background_polling_with_flag(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt
@@ -1900,19 +1791,16 @@ class TestGravitonHandler(unittest.TestCase):
         mock_qt_inst.poll_all_pools.assert_called_once()
         mock_qt_inst.start_background_polling.assert_called_once_with(poll_interval=5.0)
 
-    @patch("graviton_server.TerminalDashboard")
     @patch("graviton_server.HTTPServer")
     @patch("graviton_server.TaskManager")
     @patch("graviton_server.QuotaTracker")
     @patch("graviton_server.PRTracker")
     def test_main_quota_poll_interval_invalid_fallback_warning(
-        self, mock_pr, mock_quota, mock_tm, mock_http, mock_dashboard_cls
+        self, mock_pr, mock_quota, mock_tm, mock_http
     ):
         mock_tm_inst = MagicMock()
         mock_tm_inst.restore_queue_state.return_value = 0
         mock_tm.return_value = mock_tm_inst
-        mock_dashboard_inst = MagicMock()
-        mock_dashboard_cls.return_value = mock_dashboard_inst
         mock_server = MagicMock()
         mock_http.return_value = mock_server
         mock_server.serve_forever.side_effect = KeyboardInterrupt

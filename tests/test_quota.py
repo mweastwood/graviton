@@ -29,7 +29,6 @@ from lib.quota import (
     fetch_all_live_antigravity_quota,
     fetch_cli_models,
     fetch_live_antigravity_quota,
-    format_quota_badge,
     format_reset_countdown,
     format_pacing_recovery_countdown,
     normalize_antigravity_quota_endpoint,
@@ -336,20 +335,6 @@ class TestQuotaTracker(unittest.TestCase):
         # None -> N/A
         self.assertEqual(format_reset_countdown(None, now_dt=now_dt), "N/A")
 
-    def test_pacing_ratio_and_badge_formatting(self):
-        now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
-
-        # 5H: 65% remaining
-        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=65.0, reset_time="2026-08-09T08:18:45Z")
-        badge_5h = format_quota_badge(w_5h, now_dt=now_dt)
-        self.assertEqual(badge_5h, "[ 5H QUOTA: 65% | RESET: 03:12:45 | PACING: OK ]")
-
-        # 1W: 20% remaining -> BEHIND
-        w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=20.0, reset_time="2026-08-13T13:06:00Z")
-        badge_1w = format_quota_badge(w_1w, now_dt=now_dt)
-        self.assertTrue(badge_1w.startswith("[ 1W QUOTA: 20% | RESET: 4d 08h | PACING: BEHIND"))
-        self.assertIn("PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 2d 22h)", badge_1w)
-
     def test_pacing_recovery_seconds_and_countdown(self):
         now_dt = datetime(2026, 8, 9, 5, 6, 0, tzinfo=timezone.utc)
 
@@ -365,11 +350,6 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertAlmostEqual(w_5h_behind.get_pacing_recovery_seconds(now_dt), 1800.0)
         self.assertAlmostEqual(w_5h_behind.pacing_recovery_seconds(now_dt), 1800.0)
         self.assertEqual(w_5h_behind.format_pacing_countdown(now_dt), "00:30:00")
-        badge_5h = format_quota_badge(w_5h_behind, now_dt=now_dt, quota_pool="gemini")
-        self.assertEqual(
-            badge_5h,
-            "[ GEMINI 5H QUOTA: 40% | RESET: 02:30:00 | PACING: BEHIND (NEW TASKS SUSPENDED - RESUME IN 00:30:00) ]",
-        )
 
         # 3. 1W Window BEHIND pacing: 20% remaining (q=0.2), 4d 8h reset remaining (374400s)
         # T_recovery = 374400 - (0.2 * 604800) = 253440s (2d 22h)
@@ -625,14 +605,6 @@ class TestQuotaTracker(unittest.TestCase):
         with patch.dict("os.environ", {"ANTIGRAVITY_QUOTA_POOL": "claude_gpt"}):
             t2 = QuotaTracker()
             self.assertEqual(t2.quota_pool, "claude_gpt")
-
-    def test_format_quota_badge_with_pool(self):
-        w_5h = QuotaWindow(name="5H", duration_seconds=18000.0, remaining_percentage=65.0, reset_time="2026-08-09T08:18:45Z")
-        badge = format_quota_badge(w_5h, quota_pool="gemini")
-        self.assertIn("[ GEMINI 5H QUOTA: 65%", badge)
-
-        badge_c = format_quota_badge(w_5h, quota_pool="claude_gpt")
-        self.assertIn("[ CLAUDE_GPT 5H QUOTA: 65%", badge_c)
 
     @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
     @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
@@ -2418,10 +2390,6 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         d_win_init = win_init.to_dict()
         self.assertIsNone(d_win_init["remaining_percentage"])
 
-        # Verify format_quota_badge handles None
-        badge = format_quota_badge(win)
-        self.assertIn("QUOTA: N/A", badge)
-
         # Verify QuotaInfo.to_dict() with QuotaWindow objects and None remaining_percentage
         info = QuotaInfo(
             remaining_percentage=None,
@@ -2734,7 +2702,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
             self.assertIsNone(_normalize_now_datetime(val))
 
     def test_countdown_and_remaining_seconds_with_nan_and_inf_now(self):
-        """Verify get_remaining_seconds, format_reset_countdown, and format_quota_badge handle NaN and Inf now_dt safely."""
+        """Verify get_remaining_seconds and format_reset_countdown handle NaN and Inf now_dt safely."""
         dt = datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc)
         win = QuotaWindow(name="5H", reset_time=dt)
         for bad_now in [float("nan"), float("inf"), float("-inf"), 1e18, -1e18]:
@@ -2742,8 +2710,6 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
             self.assertIsInstance(rem, float)
             cd = win.format_reset_countdown(now_dt=bad_now)
             self.assertIsInstance(cd, str)
-            badge = format_quota_badge(win, now_dt=bad_now)
-            self.assertIsInstance(badge, str)
 
     def test_quota_window_reset_datetime_non_datetime_types(self):
         """Verify QuotaWindow initialized or mutated with non-datetime reset_datetime parses cleanly without AttributeError."""
