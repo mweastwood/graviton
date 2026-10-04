@@ -1933,6 +1933,11 @@ class TestProtobufWireProtocol(unittest.TestCase):
         parsed_entries = _read_agyhub_entries(empty_summary_entry)
         self.assertEqual(parsed_entries, [("conv-123", b"")])
 
+        # Test _read_agyhub_entries ignores entries with empty conversation ID
+        empty_cid_entry = _encode_field(1, 2, _encode_field(1, 2, "") + _encode_field(2, 2, b"payload"))
+        parsed_empty_cid = _read_agyhub_entries(empty_cid_entry)
+        self.assertEqual(parsed_empty_cid, [])
+
     def test_encode_and_parse_field_wire_type_1(self):
         # Integer values (positive 64-bit and negative 64-bit)
         f_int1 = _encode_field(field_num=3, wire_type=1, data=987654321012345)
@@ -2100,6 +2105,11 @@ class TestProtobufWireProtocol(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 _encode_field(1, 5, out_of_range)
             self.assertIn("out of range for 32-bit fixed field", str(ctx.exception))
+        # Float overflow for 32-bit fixed field
+        for float_out_of_range in [1e39, -1e39]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(1, 5, float_out_of_range)
+            self.assertIn("out of range for 32-bit fixed field", str(ctx.exception))
 
     def test_encode_field_wire_type_0_bool(self):
         # True encodes to varint 1
@@ -2148,6 +2158,12 @@ class TestProtobufWireProtocol(unittest.TestCase):
         self.assertEqual(f5, tag5 + b"test")
         parsed5 = _parse_fields(f5)
         self.assertEqual(parsed5, [(2, 5, b"test")])
+
+        ba2 = bytearray(b"length_delimited")
+        f2 = _encode_field(3, 2, ba2)
+        self.assertEqual(f2, _encode_varint((3 << 3) | 2) + _encode_varint(len(ba2)) + b"length_delimited")
+        parsed2 = _parse_fields(f2)
+        self.assertEqual(parsed2, [(3, 2, b"length_delimited")])
 
         with self.assertRaises(ValueError):
             _encode_field(1, 1, bytearray(b"short"))

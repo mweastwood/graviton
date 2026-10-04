@@ -1346,7 +1346,10 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
                 raise ValueError(f"Integer value {data} out of range for 32-bit fixed field")
             b_data = struct.pack("<I", data & 0xffffffff)
         elif isinstance(data, float):
-            b_data = struct.pack("<f", data)
+            try:
+                b_data = struct.pack("<f", data)
+            except (OverflowError, struct.error):
+                raise ValueError(f"Float value {data} out of range for 32-bit fixed field")
         elif isinstance(data, str):
             b_data = data.encode("utf-8")
         elif isinstance(data, (bytes, bytearray)):
@@ -1454,7 +1457,7 @@ def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
                     conv_id = s_val.decode("utf-8", errors="ignore")
                 elif s_num == 2 and isinstance(s_val, bytes):
                     raw_summary = s_val
-            if conv_id is not None and raw_summary is not None:
+            if conv_id and raw_summary is not None:
                 entries.append((conv_id, raw_summary))
         except IndexError:
             break
