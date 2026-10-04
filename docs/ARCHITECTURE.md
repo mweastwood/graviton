@@ -195,7 +195,7 @@ sequenceDiagram
 
 ### Core Advantages:
 1. **Multi-Turn Goal Resilience**: Solves timeout and step-limit constraints by keeping the session alive and streaming until the goal is fully satisfied.
-2. **Real-time Observability**: Streams thoughts, model decisions, and tool calls directly to server logs and the TUI dashboard as they occur.
+2. **Real-time Observability**: Streams thoughts, model decisions, and tool calls directly to server logs and the live dashboard as they occur.
 3. **Container Isolation**: Mounts an isolated ephemeral clone of the repository into `/workspace` with host user UID/GID mapping and read-only auth volume mounts.
 4. **Watchdog Timers**: Enforces both per-turn idle timeouts and maximum task wall-clock timeouts, gracefully terminating hanging containers.
 
@@ -211,7 +211,6 @@ Every agent execution is registered with the **Antigravity Remote Control site**
   - **REST API**: The `/health` endpoint exposes `active_remote_control_urls` for active tasks.
   - **MCP Tools**: `graviton_dashboard`, `graviton_status`, `graviton_list_tasks`, and `graviton_get_task` display live URLs.
   - **Live Artifact & Web Dashboard**: Formatted markdown in the Antigravity Auxiliary Pane and the web UI at `/dashboard` provide clickable links to live container sessions.
-  - **Legacy TUI Dashboard**: Pressing `o` on the main dashboard or task logs screen opens the session in the user's web browser.
 
 ---
 

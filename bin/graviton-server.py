@@ -45,7 +45,7 @@ from lib.updater import (
 from lib.sidecar import ensure_shell_environment
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
-from lib.tui import TerminalDashboard, run_graceful_shutdown
+from lib.shutdown import run_graceful_shutdown
 from lib.pr_tracker import PRTracker
 from lib.quota import QuotaTracker, QuotaState, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 from lib.reactions import post_emoji_reaction_async
@@ -79,7 +79,6 @@ def get_cached_git_info(
 def graceful_shutdown(
     task_manager: Optional[TaskManager] = None,
     scheduler: Optional[TaskScheduler] = None,
-    dashboard: Optional[TerminalDashboard] = None,
     httpd: Optional[HTTPServer] = None,
     quota_tracker: Optional[QuotaTracker] = None,
     grace_period: float = 3.0,
@@ -90,12 +89,8 @@ def graceful_shutdown(
     1. Drain Active Tasks (task_manager.drain_active_tasks)
     2. Webhook Grace Buffer (sleep grace_period seconds)
     3. Shutdown HTTP Listener (httpd.shutdown) & Persist Task Queue and Model Selection (task_manager.dump_queue_state, quota_tracker.dump_model_selection)
-    4. Clean Abort & Termination (stop scheduler, dashboard, task_manager, server_close)
+    4. Clean Abort & Termination (stop scheduler, task_manager, server_close)
     """
-    if dashboard:
-        dashboard.httpd = httpd or getattr(dashboard, "httpd", None)
-        return dashboard.graceful_shutdown(timeout=timeout, grace_period=grace_period)
-
     global _is_shutting_down, _shutdown_thread
     with _shutdown_lock:
         if _is_shutting_down and _shutdown_thread is not None:
@@ -106,7 +101,6 @@ def graceful_shutdown(
             run_graceful_shutdown(
                 task_manager=task_manager,
                 scheduler=scheduler,
-                dashboard=dashboard,
                 httpd=httpd,
                 quota_tracker=quota_tracker,
                 grace_period=grace_period,
@@ -921,12 +915,6 @@ def main():
         help="Post an initial progress comment with live remote control link to GitHub issue/PR upon supervisor task start",
     )
     parser.add_argument(
-        "--tui",
-        action="store_true",
-        default=os.getenv("GRAVITON_ENABLE_TUI", "false").lower() in ("1", "true", "yes"),
-        help="[DEPRECATED] Run interactive curses Terminal UI dashboard (default: False, env: GRAVITON_ENABLE_TUI)",
-    )
-    parser.add_argument(
         "--dashboard-target",
         action="append",
         default=[],
@@ -943,13 +931,6 @@ def main():
         help="Path to agent personas directory (default: REPO_ROOT/plugin/agents, env: AGENTS_DIR)",
     )
     args = parser.parse_args()
-
-    # Strip console StreamHandler ONLY if running interactive curses TUI
-    if getattr(args, "tui", False):
-        _root = logging.getLogger()
-        for _h in list(_root.handlers):
-            if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
-                _root.removeHandler(_h)
 
     repos_dir = Path(args.repos_dir).expanduser().resolve()
     GravitonHandler.secret = args.secret
@@ -979,7 +960,6 @@ def main():
     GravitonHandler.listener_proc = listener_proc
 
     scheduler = None
-    dashboard = None
     dashboard_updater = None
     task_manager = None
     httpd = None
@@ -1077,7 +1057,6 @@ def main():
             shutdown_thread = graceful_shutdown(
                 task_manager=task_manager,
                 scheduler=scheduler,
-                dashboard=dashboard,
                 httpd=httpd,
                 quota_tracker=quota_tracker,
                 grace_period=args.quit_grace_period,
@@ -1146,31 +1125,7 @@ def main():
         task_manager.on_task_thought = _hook_thought
         task_manager.on_task_tool_call = _hook_tool
 
-        if args.tui:
-            logger.warning("[DEPRECATED] Terminal UI (--tui) is deprecated. Use the Graviton Antigravity plugin and live dashboard.")
-            # Right before dashboard.start(), strip root StreamHandler
-            _root = logging.getLogger()
-            for _h in list(_root.handlers):
-                if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
-                    _root.removeHandler(_h)
-
-            dashboard = TerminalDashboard(
-                task_manager=task_manager,
-                host=args.host,
-                port=args.port,
-                repo_root=REPO_ROOT,
-                scheduler=scheduler,
-                pr_tracker=pr_tracker,
-                quota_tracker=quota_tracker,
-                quit_grace_period=args.quit_grace_period,
-                httpd=httpd,
-            )
-            dashboard.start()
-            logger.info("Live Terminal UI Dashboard ENABLED.")
-        else:
-            dashboard = None
-            logger.info("Graviton Webhook Server running in headless daemon mode.")
-
+        logger.info("Graviton Webhook Server running in headless daemon mode.")
         logger.info(f"Starting Graviton Webhook Server on {args.host}:{args.port}...")
         logger.info(f"Agents: Reviewer='{args.reviewer}', Fixer='{args.fixer}', Triager='{args.triager}', Drafter='{args.drafter}'")
 
@@ -1185,17 +1140,12 @@ def main():
                 dashboard_updater.stop()
             except Exception:
                 pass
-        st = shutdown_thread or (getattr(dashboard, "_shutdown_thread", None) if dashboard else None) or _shutdown_thread
+        st = shutdown_thread or _shutdown_thread
         if st and st.is_alive() and st != threading.current_thread():
             st.join()
         if scheduler:
             try:
                 scheduler.stop()
-            except Exception:
-                pass
-        if dashboard:
-            try:
-                dashboard.stop()
             except Exception:
                 pass
         if task_manager:
