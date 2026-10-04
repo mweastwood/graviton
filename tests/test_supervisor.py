@@ -1928,6 +1928,11 @@ class TestProtobufWireProtocol(unittest.TestCase):
         entries = _read_agyhub_entries(corrupt_data)
         self.assertEqual(entries, [])
 
+        # Test _read_agyhub_entries with empty raw_summary proto payload
+        empty_summary_entry = _encode_field(1, 2, _encode_field(1, 2, "conv-123") + _encode_field(2, 2, b""))
+        parsed_entries = _read_agyhub_entries(empty_summary_entry)
+        self.assertEqual(parsed_entries, [("conv-123", b"")])
+
     def test_encode_and_parse_field_wire_type_1(self):
         # Integer values (positive 64-bit and negative 64-bit)
         f_int1 = _encode_field(field_num=3, wire_type=1, data=987654321012345)
@@ -2160,7 +2165,7 @@ class TestProtobufWireProtocol(unittest.TestCase):
         for invalid_wt in [True, False, 1.5, "0", None, [1]]:
             with self.assertRaises(TypeError) as ctx:
                 _encode_field(field_num=1, wire_type=invalid_wt, data=b"")
-            self.assertIn("must be an int", str(ctx.exception))
+            self.assertEqual(str(ctx.exception), f"Invalid wire type {type(invalid_wt).__name__}: must be an int")
 
     def test_parse_fields_truncated_payloads(self):
         self.assertEqual(_parse_fields(b""), [])

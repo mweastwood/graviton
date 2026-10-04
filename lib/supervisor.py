@@ -1277,6 +1277,22 @@ def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
 
 
 def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, bytearray, str]) -> bytes:
+    """Encode a single Protocol Buffer field with tag (field number and wire type) and payload.
+
+    Supported wire types:
+        - 0 (Varint): int (int32, int64, uint32, uint64, sint32, sint64, bool, enum).
+        - 1 (64-bit fixed): int, float (fixed64, sfixed64, double), 8-byte str/bytes/bytearray.
+        - 2 (Length-delimited): str (UTF-8 encoded), bytes, bytearray (string, bytes, embedded messages).
+        - 5 (32-bit fixed): int, float (fixed32, sfixed32, float), 4-byte str/bytes/bytearray.
+
+    Wire structure:
+        Tag: varint-encoded ((field_num << 3) | wire_type)
+        Followed by:
+            - Wire type 0: varint-encoded integer value
+            - Wire type 1: 8 raw bytes (little-endian fixed64 or IEEE 754 double)
+            - Wire type 2: varint length prefix + raw bytes payload
+            - Wire type 5: 4 raw bytes (little-endian fixed32 or IEEE 754 single-precision float)
+    """
     if not isinstance(field_num, int) or isinstance(field_num, bool):
         raise TypeError(f"Invalid field number type {type(field_num).__name__}: must be an int")
     if field_num <= 0 or field_num > 536870911:
@@ -1285,7 +1301,7 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
         raise ValueError(f"Invalid field number {field_num}: field numbers 19000-19999 are reserved")
 
     if not isinstance(wire_type, int) or isinstance(wire_type, bool):
-        raise TypeError(f"Invalid wire type type {type(wire_type).__name__}: must be an int")
+        raise TypeError(f"Invalid wire type {type(wire_type).__name__}: must be an int")
     if wire_type not in (0, 1, 2, 5):
         raise ValueError(f"Unsupported wire type {wire_type}")
 
@@ -1340,6 +1356,19 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes,
 
 
 def _parse_fields(data: bytes) -> List[Tuple[int, int, Any]]:
+    """Parse raw protobuf message bytes into a list of (field_num, wire_type, value) tuples.
+
+    Iterates through serialized protobuf wire data and extracts fields according to their wire type:
+        - 0 (Varint): decodes varint integer value.
+        - 1 (64-bit fixed): extracts 8 raw payload bytes.
+        - 2 (Length-delimited): decodes varint length prefix and extracts raw payload bytes.
+        - 5 (32-bit fixed): extracts 4 raw payload bytes.
+
+    Parsing stops cleanly if unknown wire types, field number 0, or truncated data are encountered.
+
+    Returns:
+        List of tuples: (field_number: int, wire_type: int, value: Union[int, bytes])
+    """
     fields = []
     pos = 0
     length = len(data)
@@ -1422,7 +1451,7 @@ def _read_agyhub_entries(pb_data: bytes) -> List[Tuple[str, bytes]]:
                     conv_id = s_val.decode("utf-8", errors="ignore")
                 elif s_num == 2 and isinstance(s_val, bytes):
                     raw_summary = s_val
-            if conv_id and raw_summary:
+            if conv_id is not None and raw_summary is not None:
                 entries.append((conv_id, raw_summary))
         except IndexError:
             break
