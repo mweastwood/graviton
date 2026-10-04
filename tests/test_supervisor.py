@@ -2013,6 +2013,45 @@ class TestProtobufWireProtocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             _encode_field(1, 5, "12345")
 
+    def test_encode_field_invalid_field_num_raises(self):
+        for invalid_fn in [0, -1, -42]:
+            with self.assertRaises(ValueError) as ctx:
+                _encode_field(invalid_fn, 0, 100)
+            self.assertEqual(str(ctx.exception), f"Invalid field number {invalid_fn}: must be positive")
+            with self.assertRaises(ValueError):
+                _encode_field(invalid_fn, 1, 100)
+            with self.assertRaises(ValueError):
+                _encode_field(invalid_fn, 2, "test")
+            with self.assertRaises(ValueError):
+                _encode_field(invalid_fn, 5, 100)
+
+    def test_encode_fixed_bytearray_support(self):
+        ba1 = bytearray(b"12345678")
+        f1 = _encode_field(1, 1, ba1)
+        tag1 = _encode_varint((1 << 3) | 1)
+        self.assertEqual(f1, tag1 + b"12345678")
+        parsed1 = _parse_fields(f1)
+        self.assertEqual(parsed1, [(1, 1, b"12345678")])
+
+        ba5 = bytearray(b"test")
+        f5 = _encode_field(2, 5, ba5)
+        tag5 = _encode_varint((2 << 3) | 5)
+        self.assertEqual(f5, tag5 + b"test")
+        parsed5 = _parse_fields(f5)
+        self.assertEqual(parsed5, [(2, 5, b"test")])
+
+        with self.assertRaises(ValueError):
+            _encode_field(1, 1, bytearray(b"short"))
+        with self.assertRaises(ValueError):
+            _encode_field(1, 5, bytearray(b"toolong5"))
+
+    def test_encode_fixed_unsupported_type_raises_type_error(self):
+        for unsupported in [None, [1, 2, 3], {"a": 1}]:
+            with self.assertRaises(TypeError):
+                _encode_field(1, 1, unsupported)
+            with self.assertRaises(TypeError):
+                _encode_field(1, 5, unsupported)
+
     def test_parse_fields_field_zero_terminates(self):
         self.assertEqual(_parse_fields(b"\x00\x00"), [])
         self.assertEqual(

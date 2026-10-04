@@ -1272,7 +1272,9 @@ def _decode_varint(data: bytes, pos: int) -> Tuple[int, int]:
     return res, pos
 
 
-def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) -> bytes:
+def _encode_field(field_num: int, wire_type: int, data: Union[int, float, bytes, str]) -> bytes:
+    if field_num <= 0:
+        raise ValueError(f"Invalid field number {field_num}: must be positive")
     tag = (field_num << 3) | wire_type
     if wire_type == 0:
         return _encode_varint(tag) + _encode_varint(int(data))
@@ -1284,20 +1286,28 @@ def _encode_field(field_num: int, wire_type: int, data: Union[int, bytes, str]) 
             b_data = struct.pack("<Q", data & 0xffffffffffffffff)
         elif isinstance(data, float):
             b_data = struct.pack("<d", data)
+        elif isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
         else:
-            b_data = data.encode("utf-8") if isinstance(data, str) else data
-            if len(b_data) != 8:
-                raise ValueError(f"Wire type 1 requires 8 bytes, got {len(b_data)}")
+            raise TypeError(f"Unsupported data type for wire type 1: {type(data).__name__}")
+        if len(b_data) != 8:
+            raise ValueError(f"Wire type 1 requires 8 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     elif wire_type == 5:
         if isinstance(data, int):
             b_data = struct.pack("<I", data & 0xffffffff)
         elif isinstance(data, float):
             b_data = struct.pack("<f", data)
+        elif isinstance(data, str):
+            b_data = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            b_data = bytes(data)
         else:
-            b_data = data.encode("utf-8") if isinstance(data, str) else data
-            if len(b_data) != 4:
-                raise ValueError(f"Wire type 5 requires 4 bytes, got {len(b_data)}")
+            raise TypeError(f"Unsupported data type for wire type 5: {type(data).__name__}")
+        if len(b_data) != 4:
+            raise ValueError(f"Wire type 5 requires 4 bytes, got {len(b_data)}")
         return _encode_varint(tag) + b_data
     raise ValueError(f"Unsupported wire type {wire_type}")
 
