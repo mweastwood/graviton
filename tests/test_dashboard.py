@@ -1411,20 +1411,20 @@ class TestDashboardFormatting(unittest.TestCase):
     def test_render_dashboard_html_default_repo_handling(self):
         # When repo cannot be detected, defaultRepo in JS template is empty string
         _reset_detected_repo_cache()
-        with patch("lib.dashboard._detect_git_repo_full_name", return_value=None):
+        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value=None):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "";', html_out)
             self.assertNotIn('const defaultRepo = "None";', html_out)
 
         # When repo is detected, defaultRepo is populated
         _reset_detected_repo_cache()
-        with patch("lib.dashboard._detect_git_repo_full_name", return_value="my-org/my-repo"):
+        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value="my-org/my-repo"):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "my-org/my-repo";', html_out)
 
         # When repo detection returns invalid/malicious string, it is sanitized to empty string
         _reset_detected_repo_cache()
-        with patch("lib.dashboard._detect_git_repo_full_name", return_value='"; alert("xss");//'):
+        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value='"; alert("xss");//'):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "";', html_out)
             self.assertNotIn('alert("xss")', html_out)
@@ -3316,7 +3316,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('id="meta-commit">a1b2c3d</code>', html_out)
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
 
-    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
+    @patch("lib.dashboard.html.get_hot_reload_state", return_value="DRAINING_TASKS")
     def test_render_dashboard_html_explicit_idle_reload_state(self, mock_get_reload):
         _reset_dashboard_template_cache()
         sample_md = "# 🌌 Graviton Live Dashboard\n"
@@ -3325,7 +3325,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         mock_get_reload.assert_not_called()
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
 
-    @patch("lib.dashboard.get_cached_git_info", return_value=("cafe123", "feature-x"))
+    @patch("lib.dashboard.html.get_cached_git_info", return_value=("cafe123", "feature-x"))
     def test_render_dashboard_html_passes_repo_root_to_get_cached_git_info(self, mock_get_git):
         _reset_dashboard_template_cache()
         sample_md = "# 🌌 Graviton Live Dashboard\n"
