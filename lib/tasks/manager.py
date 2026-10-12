@@ -1224,4 +1224,3 @@ class TaskManager:
                     except Exception as poll_err:
                         logger.warning(f"[{worker_id}] Quota fetch on task finish failed: {poll_err}")
                 self._queue.task_done()
-

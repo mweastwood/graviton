@@ -102,5 +102,3 @@ def load_oauth_token(token_file: Optional[Path] = None) -> Optional[str]:
                 logger.warning(f"Failed to read token file {path}: {e}")
 
     return os.getenv("ANTIGRAVITY_TOKEN")
-
-

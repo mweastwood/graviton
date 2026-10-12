@@ -226,4 +226,3 @@ def fetch_live_antigravity_quota(
             except Exception as retry_err:
                 logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None
-

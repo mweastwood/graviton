@@ -298,5 +298,3 @@ def parse_quota_headers(headers: dict) -> dict:
                 pass
 
     return res
-
-

@@ -515,5 +515,3 @@ class _PacingStatusResult(str):
 
     def __call__(self, now: Optional[Union[float, datetime]] = None) -> str:
         return "BEHIND_PACING" if self._tracker.is_behind_pacing(now=now) else "OK"
-
-

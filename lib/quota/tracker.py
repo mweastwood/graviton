@@ -70,6 +70,8 @@ def _get_effective_fetch_all_live_quota():
         if hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
             return val
     return fetch_all_live_antigravity_quota
+
+
 class QuotaTracker:
     """
     Thread-safe tracker for Antigravity API model quota levels and rate limits.
@@ -860,7 +862,6 @@ class QuotaTracker:
                 and not self._stop_polling_event.is_set()
             )
 
-
     def _background_polling_loop(
         self, token: Optional[str] = None, quota_pool: Optional[str] = None, poll_interval: float = 5.0
     ):
@@ -967,4 +968,3 @@ class QuotaTracker:
                 else:
                     return f"{int(self._reset_time)}s"
             return str(self._reset_time)
-

@@ -104,5 +104,3 @@ def resolve_antigravity_quota_endpoint(api_url: Optional[str] = None) -> str:
         return detected
 
     return DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT
-
-
