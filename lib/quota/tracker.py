@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -34,7 +35,6 @@ from .fetch import (
     fetch_all_live_antigravity_quota,
 )
 from .parse import parse_quota_headers
-import sys
 
 logger = logging.getLogger("graviton.quota")
 
@@ -45,7 +45,7 @@ def _get_effective_fetch_cli_models():
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_cli_models"):
         val = getattr(mod, "fetch_cli_models")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_cli_models:
             return val
     return fetch_cli_models
 
@@ -56,7 +56,7 @@ def _get_effective_fetch_live_quota():
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_live_antigravity_quota"):
         val = getattr(mod, "fetch_live_antigravity_quota")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_live_antigravity_quota:
             return val
     return fetch_live_antigravity_quota
 
@@ -67,7 +67,7 @@ def _get_effective_fetch_all_live_quota():
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_all_live_antigravity_quota"):
         val = getattr(mod, "fetch_all_live_antigravity_quota")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_all_live_antigravity_quota:
             return val
     return fetch_all_live_antigravity_quota
 

@@ -5,6 +5,7 @@ Workspace cleanup, garbage collection, and bounded pruned task tracking.
 import collections
 import logging
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Union
@@ -64,7 +65,6 @@ def prune_abandoned_workspaces(
     if has_aged_run:
         try:
             subproc_run = subprocess.run
-            import sys
             mod = sys.modules.get("lib.tasks")
             if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
                 subproc_run = mod.subprocess.run

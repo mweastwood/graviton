@@ -16,6 +16,8 @@ logger = logging.getLogger("graviton.tasks")
 
 
 def _get_effective_atomic_write():
+    if hasattr(_atomic_write_json, "mock_calls") or hasattr(_atomic_write_json, "_mock_name"):
+        return _atomic_write_json
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "_atomic_write_json"):
         val = getattr(mod, "_atomic_write_json")

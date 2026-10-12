@@ -34,19 +34,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _get_effective(name, default):
+    if hasattr(default, "mock_calls") or hasattr(default, "_mock_name"):
+        return default
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, name):
         val = getattr(mod, name)
-        if val is not default or hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not default:
             return val
     return default
 
 
 def _get_effective_subproc_run():
+    if hasattr(subprocess.run, "mock_calls") or hasattr(subprocess.run, "_mock_name"):
+        return subprocess.run
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
         val = mod.subprocess.run
-        if val is not subprocess.run or hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not subprocess.run:
             return val
     return subprocess.run
 

@@ -4,6 +4,7 @@ Task and TaskStatus data models for Graviton task queue.
 
 import collections
 import re
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -96,13 +97,13 @@ class Task:
         """Parse retry log line and update attempt / max_attempts if present."""
         if not line or ("Auto-continuing conversation" not in line and "auto-continuing conversation" not in line):
             return False
-        import sys
         pat = AUTO_CONTINUE_PATTERN
-        mod = sys.modules.get("lib.tasks")
-        if mod and hasattr(mod, "AUTO_CONTINUE_PATTERN"):
-            val = getattr(mod, "AUTO_CONTINUE_PATTERN")
-            if val is not AUTO_CONTINUE_PATTERN or hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
-                pat = val
+        if not (hasattr(pat, "mock_calls") or hasattr(pat, "_mock_name")):
+            mod = sys.modules.get("lib.tasks")
+            if mod and hasattr(mod, "AUTO_CONTINUE_PATTERN"):
+                val = getattr(mod, "AUTO_CONTINUE_PATTERN")
+                if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not AUTO_CONTINUE_PATTERN:
+                    pat = val
         match = pat.search(line)
         if match:
             self.attempt = int(match.group(1))

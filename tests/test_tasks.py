@@ -3201,6 +3201,31 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         self.assertEqual(finished_task.status, "COMPLETED")
         self.assertEqual(finished_task.return_code, 0)
 
+    def test_direct_submodule_mocking_manager(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _get_effective, _get_effective_subproc_run
+
+        mock_fn = MagicMock()
+        self.assertIs(_get_effective("run_agent_container", mock_fn), mock_fn)
+
+        with patch("lib.tasks.manager.subprocess.run") as mock_subproc:
+            self.assertIs(_get_effective_subproc_run(), mock_subproc)
+
+    def test_direct_submodule_mocking_models_and_persistence(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.models import Task
+        from lib.tasks.persistence import _get_effective_atomic_write
+
+        t = Task(id="task-mock", agent="test", prompt="test")
+        mock_regex = MagicMock()
+        mock_regex.search.return_value = None
+        with patch("lib.tasks.models.AUTO_CONTINUE_PATTERN", mock_regex):
+            t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)")
+            mock_regex.search.assert_called_once()
+
+        with patch("lib.tasks.persistence._atomic_write_json") as mock_write:
+            self.assertIs(_get_effective_atomic_write(), mock_write)
+
 
 if __name__ == "__main__":
     unittest.main()

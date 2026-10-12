@@ -2973,6 +2973,39 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIsNotNone(d["third_party_5h_target_pacing_percentage"])
         self.assertIsNotNone(d["third_party_1w_target_pacing_percentage"])
 
+    def test_custom_callable_in_quota_get_effective(self):
+        import lib.quota.tracker as tracker
+        import lib.quota as quota
+
+        custom_called = []
+        def custom_fetch_cli():
+            custom_called.append("cli")
+            return ["custom-model"]
+
+        def custom_fetch_live(*args, **kwargs):
+            custom_called.append("live")
+            return None
+
+        def custom_fetch_all(*args, **kwargs):
+            custom_called.append("all")
+            return {}
+
+        orig_cli = getattr(quota, "fetch_cli_models")
+        orig_live = getattr(quota, "fetch_live_antigravity_quota")
+        orig_all = getattr(quota, "fetch_all_live_antigravity_quota")
+        try:
+            quota.fetch_cli_models = custom_fetch_cli
+            quota.fetch_live_antigravity_quota = custom_fetch_live
+            quota.fetch_all_live_antigravity_quota = custom_fetch_all
+
+            self.assertIs(tracker._get_effective_fetch_cli_models(), custom_fetch_cli)
+            self.assertIs(tracker._get_effective_fetch_live_quota(), custom_fetch_live)
+            self.assertIs(tracker._get_effective_fetch_all_live_quota(), custom_fetch_all)
+        finally:
+            quota.fetch_cli_models = orig_cli
+            quota.fetch_live_antigravity_quota = orig_live
+            quota.fetch_all_live_antigravity_quota = orig_all
+
 
 if __name__ == "__main__":
     unittest.main()
