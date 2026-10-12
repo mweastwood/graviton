@@ -89,15 +89,18 @@ async def run_agent_turn(
                 chunk_type.endswith("Thought")
                 or (ag_types is not None and hasattr(ag_types, "Thought") and isinstance(chunk, ag_types.Thought))
             )
-            is_tool_call = (
-                chunk_type.endswith("ToolCall")
-                or (ag_types is not None and hasattr(ag_types, "ToolCall") and isinstance(chunk, ag_types.ToolCall))
-                or (hasattr(chunk, "name") and hasattr(chunk, "args"))
-            )
             is_tool_result = (
                 chunk_type.endswith("ToolResult")
                 or (ag_types is not None and hasattr(ag_types, "ToolResult") and isinstance(chunk, ag_types.ToolResult))
-                or (hasattr(chunk, "name") and hasattr(chunk, "result"))
+                or (hasattr(chunk, "name") and (hasattr(chunk, "result") or hasattr(chunk, "error") or hasattr(chunk, "exception")))
+            )
+            is_tool_call = (
+                (
+                    chunk_type.endswith("ToolCall")
+                    or (ag_types is not None and hasattr(ag_types, "ToolCall") and isinstance(chunk, ag_types.ToolCall))
+                    or (hasattr(chunk, "name") and hasattr(chunk, "args"))
+                )
+                and not is_tool_result
             )
             is_text = (
                 chunk_type.endswith("Text")
@@ -222,6 +225,10 @@ async def main_async(args: argparse.Namespace) -> int:
         sys.stderr.flush()
         return 1
 
+    global ag_types
+    if ag_types is None:
+        ag_types = types
+
     workspace_dir = os.path.abspath(args.workspace or os.getcwd())
     app_data_dir = args.app_data_dir or os.environ.get("ANTIGRAVITY_CLI_DIR") or str(Path.home() / ".gemini" / "antigravity-cli")
     save_dir = args.save_dir or str(Path(app_data_dir) / "brain")
@@ -247,7 +254,15 @@ async def main_async(args: argparse.Namespace) -> int:
             Path(workspace_dir) / ".agents" / "agents" / args.agent / "agent.md",
             Path(workspace_dir) / ".agents" / "agents" / f"{args.agent}.md",
             Path(workspace_dir) / "plugin" / "agents" / args.agent / "agent.md",
+            Path(workspace_dir) / "plugin" / "agents" / f"{args.agent}.md",
         ]
+        plugins_dir = Path(workspace_dir) / ".agents" / "plugins"
+        if plugins_dir.is_dir():
+            for plugin_dir in sorted(plugins_dir.iterdir()):
+                if plugin_dir.is_dir():
+                    agent_paths.append(plugin_dir / "agents" / args.agent / "agent.md")
+                    agent_paths.append(plugin_dir / "agents" / f"{args.agent}.md")
+
         for ap in agent_paths:
             if ap.is_file():
                 try:
@@ -267,6 +282,12 @@ async def main_async(args: argparse.Namespace) -> int:
     for ws_sub in [Path(workspace_dir) / ".agents" / "skills", Path(workspace_dir) / "skills", Path(workspace_dir) / "plugin" / "skills"]:
         if ws_sub.is_dir() and str(ws_sub) not in skills_paths:
             skills_paths.append(str(ws_sub))
+    plugins_dir = Path(workspace_dir) / ".agents" / "plugins"
+    if plugins_dir.is_dir():
+        for plugin_dir in sorted(plugins_dir.iterdir()):
+            plugin_skills = plugin_dir / "skills"
+            if plugin_skills.is_dir() and str(plugin_skills) not in skills_paths:
+                skills_paths.append(str(plugin_skills))
 
     agent_config = LocalAgentConfig(
         conversation_id=cid,

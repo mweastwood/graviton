@@ -1378,6 +1378,24 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("--input-format", cmd)
         self.assertIn("stream-json", cmd)
 
+    def test_container_supervisor_runner_string_sanitization(self):
+        """Verify runner parameter and env var are stripped and lowercased."""
+        sup1 = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sanitize_test_1",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="  SDK  ",
+        )
+        self.assertEqual(sup1.runner, "sdk")
+
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": "  AGY  "}):
+            sup2 = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sanitize_test_2",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup2.runner, "agy")
+
     def test_build_docker_command_sdk_runner_resolution_order(self):
         """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py."""
         custom_bin = self.repo_dir / "bin"

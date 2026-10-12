@@ -1137,7 +1137,7 @@ class ContainerSupervisor:
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
-        self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).lower()
+        self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).strip().lower()
         self.allow_custom_runner = allow_custom_runner
         self.image_name = image_name or os.environ.get("ANTIGRAVITY_IMAGE", "antigravity-agent:latest")
         self.remote_control = remote_control

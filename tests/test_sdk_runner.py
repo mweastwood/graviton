@@ -785,6 +785,210 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_tool_result_with_args_and_result_precedence(self):
+        """Verify tool result chunks retaining invocation args are classified as DONE and not RUNNING."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockToolResultWithArgs:
+                def __init__(self, name, args, result, call_id):
+                    self.name = name
+                    self.args = args
+                    self.result = result
+                    self.id = call_id
+
+            async def _chunk_iter():
+                yield MockToolResultWithArgs("run_command", {"command": "ls -la"}, "file1.txt\nfile2.txt", "call-exec-1")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Command output processed.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Run ls", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 1)
+            step = tool_events[0]["step_update"]
+            self.assertEqual(step["state"], "DONE")
+            self.assertEqual(step["tool_name"], "run_command")
+            self.assertEqual(step["result"], "file1.txt\nfile2.txt")
+            self.assertEqual(step["id"], "call-exec-1")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_tool_result_with_args_and_error(self):
+        """Verify tool execution chunks that fail with error or exception are classified as ERROR."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockToolErrorWithArgs:
+                def __init__(self, name, args, error, call_id):
+                    self.name = name
+                    self.args = args
+                    self.error = error
+                    self.id = call_id
+
+            class MockToolExceptionWithArgs:
+                def __init__(self, name, args, exception, call_id):
+                    self.name = name
+                    self.args = args
+                    self.exception = exception
+                    self.id = call_id
+
+            async def _chunk_iter():
+                yield MockToolErrorWithArgs("read_file", {"path": "/no/such/file"}, "Permission denied", "call-err-1")
+                yield MockToolExceptionWithArgs("write_file", {"path": "/read/only"}, RuntimeError("Disk full"), "call-err-2")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Errors encountered.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Perform file ops", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 2)
+
+            step1 = tool_events[0]["step_update"]
+            self.assertEqual(step1["state"], "ERROR")
+            self.assertEqual(step1["tool_name"], "read_file")
+            self.assertEqual(step1["error"], "Permission denied")
+
+            step2 = tool_events[1]["step_update"]
+            self.assertEqual(step2["state"], "ERROR")
+            self.assertEqual(step2["tool_name"], "write_file")
+            self.assertIn("Disk full", step2["error"])
+
+        asyncio.run(_test())
+
+    def test_main_async_synchronizes_ag_types(self):
+        """Verify main_async synchronizes the module-level ag_types if initially None."""
+        async def _test():
+            import bin.agent_sdk_runner as runner_module
+            original_ag_types = runner_module.ag_types
+            try:
+                runner_module.ag_types = None
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args(["--conversation", "test-conv-uuid-1234567890123456"])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                self.assertIsNotNone(runner_module.ag_types)
+                self.assertEqual(runner_module.ag_types, mock_sdk.types)
+            finally:
+                runner_module.ag_types = original_ag_types
+
+        asyncio.run(_test())
+
+    def test_main_async_workspace_plugins_skills_and_agents_discovery(self):
+        """Verify plugin skills and agent personas under .agents/plugins are discovered."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                fake_workspace = Path(temp_dir) / "workspace"
+                fake_workspace.mkdir(parents=True)
+
+                # Workspace plugin structure: .agents/plugins/graviton/skills and .agents/plugins/graviton/agents
+                plugin_skills = fake_workspace / ".agents" / "plugins" / "graviton" / "skills"
+                plugin_skills.mkdir(parents=True)
+                plugin_agents = fake_workspace / ".agents" / "plugins" / "graviton" / "agents"
+                plugin_agents.mkdir(parents=True)
+                (plugin_agents / "plugin_bot.md").write_text("# Plugin Bot Persona", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--workspace", str(fake_workspace),
+                    "--agent", "plugin_bot",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                skills = call_kwargs.get("skills_paths")
+                self.assertIsNotNone(skills)
+                self.assertIn(str(plugin_skills), skills)
+                self.assertEqual(call_kwargs.get("system_instructions"), "# Plugin Bot Persona")
+
+        asyncio.run(_test())
+
+    def test_main_async_plugin_flat_agent_md_discovery(self):
+        """Verify plugin/agents/{agent}.md is discovered when directory agent.md does not exist."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                fake_workspace = Path(temp_dir) / "workspace"
+                fake_workspace.mkdir(parents=True)
+
+                plugin_agents = fake_workspace / "plugin" / "agents"
+                plugin_agents.mkdir(parents=True)
+                (plugin_agents / "custom_agent.md").write_text("# Custom Plugin Agent Persona", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--workspace", str(fake_workspace),
+                    "--agent", "custom_agent",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertEqual(call_kwargs.get("system_instructions"), "# Custom Plugin Agent Persona")
+
+        asyncio.run(_test())
+
 
 if __name__ == "__main__":
     unittest.main()
