@@ -20,6 +20,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("graviton.sdk_runner")
 
+try:
+    from google.antigravity import types as ag_types
+except ImportError:
+    ag_types = None
+
 
 def _flush_json(data: Dict[str, Any]) -> None:
     """Write an NDJSON event to stdout and flush immediately."""
@@ -80,7 +85,27 @@ async def run_agent_turn(
         text_parts = []
         async for chunk in response.chunks:
             chunk_type = type(chunk).__name__
-            if chunk_type in ("Thought", "MockThought"):
+            is_thought = (
+                chunk_type.endswith("Thought")
+                or (ag_types is not None and hasattr(ag_types, "Thought") and isinstance(chunk, ag_types.Thought))
+            )
+            is_text = (
+                chunk_type.endswith("Text")
+                or (ag_types is not None and hasattr(ag_types, "Text") and isinstance(chunk, ag_types.Text))
+                or (hasattr(chunk, "text") and not hasattr(chunk, "args"))
+            )
+            is_tool_call = (
+                chunk_type.endswith("ToolCall")
+                or (ag_types is not None and hasattr(ag_types, "ToolCall") and isinstance(chunk, ag_types.ToolCall))
+                or (hasattr(chunk, "name") and hasattr(chunk, "args"))
+            )
+            is_tool_result = (
+                chunk_type.endswith("ToolResult")
+                or (ag_types is not None and hasattr(ag_types, "ToolResult") and isinstance(chunk, ag_types.ToolResult))
+                or (hasattr(chunk, "name") and hasattr(chunk, "result"))
+            )
+
+            if is_thought:
                 _flush_json({
                     "event": "step_update",
                     "step_update": {
@@ -88,7 +113,7 @@ async def run_agent_turn(
                         "thought": getattr(chunk, "text", str(chunk)),
                     },
                 })
-            elif chunk_type in ("Text", "MockText") or (hasattr(chunk, "text") and not hasattr(chunk, "args")):
+            elif is_text:
                 delta = getattr(chunk, "text", str(chunk))
                 text_parts.append(delta)
                 _flush_json({
@@ -98,7 +123,7 @@ async def run_agent_turn(
                         "text_delta": delta,
                     },
                 })
-            elif chunk_type in ("ToolCall", "MockToolCall") or (hasattr(chunk, "name") and hasattr(chunk, "args")):
+            elif is_tool_call:
                 raw_name = getattr(chunk, "name", "")
                 tool_name = getattr(raw_name, "value", str(raw_name))
                 tool_id = (
@@ -215,7 +240,23 @@ async def main_async(args: argparse.Namespace) -> int:
 
     # Load agent persona instructions if provided
     instructions = args.instructions or os.environ.get("ANTIGRAVITY_SYSTEM_INSTRUCTIONS")
+    if not instructions and args.agent:
+        agent_paths = [
+            Path.home() / ".gemini" / "config" / "agents" / args.agent / "agent.md",
+            Path.home() / ".gemini" / "config" / "agents" / f"{args.agent}.md",
+            Path(workspace_dir) / ".agents" / "agents" / args.agent / "agent.md",
+            Path(workspace_dir) / ".agents" / "agents" / f"{args.agent}.md",
+            Path(workspace_dir) / "plugin" / "agents" / args.agent / "agent.md",
+        ]
+        for ap in agent_paths:
+            if ap.is_file():
+                try:
+                    instructions = ap.read_text(encoding="utf-8")
+                    break
+                except Exception as e:
+                    logger.debug(f"Failed to read agent instructions from {ap}: {e}")
 
+    # Discover skills paths
     skills_paths = []
     default_skills = Path.home() / ".gemini" / "config" / "skills"
     if default_skills.is_dir():
@@ -223,6 +264,9 @@ async def main_async(args: argparse.Namespace) -> int:
     cli_skills = Path(app_data_dir) / "skills"
     if cli_skills.is_dir():
         skills_paths.append(str(cli_skills))
+    for ws_sub in [Path(workspace_dir) / ".agents" / "skills", Path(workspace_dir) / "skills", Path(workspace_dir) / "plugin" / "skills"]:
+        if ws_sub.is_dir() and str(ws_sub) not in skills_paths:
+            skills_paths.append(str(ws_sub))
 
     agent_config = LocalAgentConfig(
         conversation_id=cid,

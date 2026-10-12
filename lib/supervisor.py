@@ -1094,6 +1094,15 @@ class ContainerSupervisor:
       with strict read-only overlays for host binaries, built-in skills, and credentials
     - Host SSH and GitHub CLI configs mounted read-only (:ro)
     - Automatically cleans up container and ephemeral directory on exit
+
+    Execution Runtime Selection:
+    Supports configurable execution runtimes via the `runner` parameter or the
+    `GRAVITON_AGENT_RUNNER` environment variable:
+    - "sdk" (default): Runs via the `google-antigravity` Python SDK agent runner
+      (/usr/local/bin/agent_sdk_runner.py), providing native async execution and structured
+      streaming over standard I/O.
+    - "agy": Runs via the standard `agy` CLI binary
+      (agy --input-format stream-json --output-format stream-json).
     """
 
     def __init__(

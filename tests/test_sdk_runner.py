@@ -517,6 +517,228 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_chunk_classification_subclasses(self):
+        """Verify chunks that subclass Thought/Text or end with Thought are properly classified."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            # Subclass of types.Thought with arbitrary name
+            try:
+                from google.antigravity import types as ag_types
+                class SpecialIdea(ag_types.Thought):
+                    pass
+                thought_instance = SpecialIdea(step_index=0, text="Deep thought from subclass")
+            except Exception:
+                class SpecialIdea:
+                    def __init__(self, text):
+                        self.text = text
+                thought_instance = SpecialIdea("Deep thought from subclass")
+
+            # Mock class ending with Thought but not inheriting types.Thought
+            class CustomAgentThought:
+                def __init__(self, text):
+                    self.text = text
+
+            # Subclass of Text
+            try:
+                from google.antigravity import types as ag_types
+                class CustomTextChunk(ag_types.Text):
+                    pass
+                text_instance = CustomTextChunk(step_index=1, text="Result text")
+            except Exception:
+                class CustomTextChunk:
+                    def __init__(self, text):
+                        self.text = text
+                text_instance = CustomTextChunk("Result text")
+
+            async def _chunk_iter():
+                yield thought_instance
+                yield CustomAgentThought("Custom agent thought")
+                yield text_instance
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Result text")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Think and answer", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            thought_events = [l for l in lines if l.get("step_update", {}).get("thought")]
+            text_events = [l for l in lines if l.get("step_update", {}).get("text_delta")]
+
+            # Both SpecialIdea and CustomAgentThought must be classified as thoughts
+            self.assertEqual(len(thought_events), 2)
+            self.assertEqual(thought_events[0]["step_update"]["thought"], "Deep thought from subclass")
+            self.assertEqual(thought_events[1]["step_update"]["thought"], "Custom agent thought")
+
+            # Only CustomTextChunk should be classified as text_delta
+            self.assertEqual(len(text_events), 1)
+            self.assertEqual(text_events[0]["step_update"]["text_delta"], "Result text")
+
+        asyncio.run(_test())
+
+    def test_main_async_agent_persona_instructions_loading(self):
+        """Verify persona instructions are loaded from agent.md when --agent is specified."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                agent_dir = fake_home / ".gemini" / "config" / "agents" / "code_fixer"
+                agent_dir.mkdir(parents=True)
+                agent_md = agent_dir / "agent.md"
+                agent_md.write_text("# Code Fixer Agent Persona\nResolve review feedback.", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--agent", "code_fixer",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                mock_sdk.LocalAgentConfig.assert_called_once()
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertEqual(call_kwargs.get("system_instructions"), "# Code Fixer Agent Persona\nResolve review feedback.")
+
+        asyncio.run(_test())
+
+    def test_main_async_agent_persona_flat_md_loading(self):
+        """Verify persona instructions are loaded from {agent}.md if directory agent.md does not exist."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                agents_dir = fake_home / ".gemini" / "config" / "agents"
+                agents_dir.mkdir(parents=True)
+                agent_flat_md = agents_dir / "code_reviewer.md"
+                agent_flat_md.write_text("# Code Reviewer Persona", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--agent", "code_reviewer",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertEqual(call_kwargs.get("system_instructions"), "# Code Reviewer Persona")
+
+        asyncio.run(_test())
+
+    def test_main_async_agent_persona_precedence(self):
+        """Verify explicit --instructions takes precedence over --agent persona file."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                agent_dir = fake_home / ".gemini" / "config" / "agents" / "code_fixer"
+                agent_dir.mkdir(parents=True)
+                (agent_dir / "agent.md").write_text("Persona from file", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--agent", "code_fixer",
+                    "--instructions", "Explicit instruction override",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertEqual(call_kwargs.get("system_instructions"), "Explicit instruction override")
+
+        asyncio.run(_test())
+
+    def test_main_async_workspace_skills_discovery(self):
+        """Verify repository and workspace-level skills are discovered in skills_paths."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                fake_workspace = Path(temp_dir) / "workspace"
+                fake_workspace.mkdir(parents=True)
+
+                dot_agents_skills = fake_workspace / ".agents" / "skills"
+                dot_agents_skills.mkdir(parents=True)
+                ws_skills = fake_workspace / "skills"
+                ws_skills.mkdir(parents=True)
+                plugin_skills = fake_workspace / "plugin" / "skills"
+                plugin_skills.mkdir(parents=True)
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--workspace", str(fake_workspace),
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                skills = call_kwargs.get("skills_paths")
+                self.assertIsNotNone(skills)
+                self.assertIn(str(dot_agents_skills), skills)
+                self.assertIn(str(ws_skills), skills)
+                self.assertIn(str(plugin_skills), skills)
+
+        asyncio.run(_test())
+
 
 if __name__ == "__main__":
     unittest.main()
