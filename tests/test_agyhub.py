@@ -305,6 +305,34 @@ class TestAgyhubSync(unittest.TestCase):
         self.assertIsNone(git_url)
         self.assertIsNone(branch)
 
+    def test_parse_git_repo_info_git_repo(self):
+        git_dir = self.base / "git_test_repo"
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", str(git_dir)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(git_dir), "config", "remote.origin.url", "https://github.com/myorg/custom-repo.git"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "-C", str(git_dir), "checkout", "-b", "feature/my-branch"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(git_dir), "config", "user.name", "Test User"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(git_dir), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+        (git_dir / "README.md").write_text("test")
+        subprocess.run(["git", "-C", str(git_dir), "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(git_dir), "commit", "-m", "init"], check=True, capture_output=True)
+
+        # Test passing Path object
+        repo_name, git_url, branch = _parse_git_repo_info(git_dir)
+        self.assertEqual(repo_name, "myorg/custom-repo")
+        self.assertEqual(git_url, "https://github.com/myorg/custom-repo.git")
+        self.assertEqual(branch, "feature/my-branch")
+
+        # Test passing string path
+        repo_name_str, git_url_str, branch_str = _parse_git_repo_info(str(git_dir))
+        self.assertEqual(repo_name_str, "myorg/custom-repo")
+        self.assertEqual(git_url_str, "https://github.com/myorg/custom-repo.git")
+        self.assertEqual(branch_str, "feature/my-branch")
+
 
 if __name__ == "__main__":
     unittest.main()

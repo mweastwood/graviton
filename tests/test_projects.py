@@ -68,6 +68,32 @@ class TestProjectDiscovery(unittest.TestCase):
         updated_uris = [_extract_uri(r) for r in updated_data["projectResources"]["resources"]]
         self.assertIn(f"file://{new_repo.resolve()}", updated_uris)
 
+    def test_ensure_default_project_str_paths(self):
+        str_projects_dir = str(self.projects_dir / "str_projects")
+        str_repo_dir = str(self.repo_dir)
+        pid, pname = ensure_default_project(str_projects_dir, str_repo_dir, name="String Path Project")
+        self.assertEqual(pname, "String Path Project")
+        proj_file = Path(str_projects_dir) / f"{pid}.json"
+        self.assertTrue(proj_file.exists())
+
+        data = json.loads(proj_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["id"], pid)
+        self.assertEqual(data["name"], "String Path Project")
+        uris = [_extract_uri(r) for r in data["projectResources"]["resources"]]
+        self.assertIn("file:///workspace", uris)
+        self.assertIn(f"file://{self.repo_dir.resolve()}", uris)
+
+        # Verify reuse with string paths
+        pid2, pname2 = ensure_default_project(str_projects_dir, str_repo_dir, name="String Path Project")
+        self.assertEqual(pid2, pid)
+        self.assertEqual(pname2, pname)
+
+        # Verify string path with repo_path=None
+        pid_none, pname_none = ensure_default_project(str_projects_dir, None, name="None Repo Project")
+        self.assertEqual(pname_none, "None Repo Project")
+        proj_none_file = Path(str_projects_dir) / f"{pid_none}.json"
+        self.assertTrue(proj_none_file.exists())
+
     def test_find_project_for_repo_matching_and_non_matching(self):
         proj_file = self.projects_dir / "alpha.json"
         proj_file.write_text(json.dumps({

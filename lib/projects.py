@@ -36,14 +36,16 @@ def _extract_uri(res_item: Any) -> Optional[str]:
 
 
 def ensure_default_project(
-    projects_dir: Path,
-    repo_path: Optional[Path] = None,
+    projects_dir: Union[str, Path],
+    repo_path: Optional[Union[str, Path]] = None,
     name: str = DEFAULT_PROJECT_NAME,
 ) -> Tuple[str, str]:
     """
     Ensures a project definition exists for the given name in projects_dir,
     creating it if not present. Returns (project_id, project_name).
     """
+    projects_dir = Path(projects_dir)
+    repo_path = Path(repo_path).resolve() if repo_path is not None else None
     if not projects_dir.exists():
         try:
             projects_dir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +237,6 @@ def find_project_for_repo(
         return ensure_default_project(projects_dir, repo_path, match_default_worker[1])
 
     # If config_dir is not custom (i.e. default system config dir), auto-ensure DEFAULT_PROJECT_NAME
-    default_sys_dir = (Path.home() / ".gemini" / "config" / "projects").resolve()
     if projects_dir.resolve() == default_sys_dir:
         return ensure_default_project(projects_dir, repo_path, DEFAULT_PROJECT_NAME)
 

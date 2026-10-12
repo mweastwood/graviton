@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _parse_git_repo_info(repo_path: Union[str, Path]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Returns (repo_name, git_url, current_branch) for a git repository directory.
     """
@@ -37,7 +37,7 @@ def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str],
     try:
         res = subprocess.run(
             ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=5.0,
         )
         if res.returncode == 0 and res.stdout.strip():
             git_url = res.stdout.strip()
@@ -50,7 +50,7 @@ def _parse_git_repo_info(repo_path: Path) -> Tuple[Optional[str], Optional[str],
     try:
         res = subprocess.run(
             ["git", "-C", str(repo_path), "branch", "--show-current"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=5.0,
         )
         if res.returncode == 0 and res.stdout.strip():
             branch = res.stdout.strip()
