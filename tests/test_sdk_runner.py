@@ -75,8 +75,15 @@ class TestAgentSdkRunner(unittest.TestCase):
         # Message content is plain string
         self.assertEqual(_extract_prompt({"message": {"content": "Direct content string"}}), "Direct content string")
 
+        # Message is plain string
+        self.assertEqual(_extract_prompt({"event": "user", "message": "Execute task"}), "Execute task")
+
         # Fallback text field
         self.assertEqual(_extract_prompt({"text": "Fallback text"}), "Fallback text")
+
+        # Fallback with non-serializable object uses default=str
+        payload_with_path = {"custom": Path("/tmp/test")}
+        self.assertIn("/tmp/test", _extract_prompt(payload_with_path))
 
     def test_flush_json(self):
         buf = io.StringIO()
@@ -87,6 +94,14 @@ class TestAgentSdkRunner(unittest.TestCase):
         parsed = json.loads(output)
         self.assertEqual(parsed["event"], "init")
         self.assertEqual(parsed["conversation_id"], "test-cid")
+
+    def test_flush_json_with_non_serializable(self):
+        """Verify _flush_json protects against TypeError by serializing via default=str."""
+        buf = io.StringIO()
+        with patch.object(sys, "stdout", buf):
+            _flush_json({"event": "step_update", "path": Path("/workspace/file.txt")})
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(parsed["path"], "/workspace/file.txt")
 
     def test_run_agent_turn_success(self):
         async def _test():
@@ -269,10 +284,61 @@ class TestAgentSdkRunner(unittest.TestCase):
             self.assertEqual(tool_events[0]["step_update"]["state"], "DONE")
             self.assertEqual(tool_events[0]["step_update"]["tool_name"], "run_command")
             self.assertEqual(tool_events[0]["step_update"]["id"], "call-1")
+            self.assertEqual(tool_events[0]["step_update"]["call_id"], "call-1")
+            self.assertEqual(tool_events[0]["step_update"]["tool_call_id"], "call-1")
+            self.assertEqual(tool_events[0]["step_update"]["result"], "0")
+            self.assertNotIn("error", tool_events[0]["step_update"])
 
             self.assertEqual(tool_events[1]["step_update"]["state"], "ERROR")
             self.assertEqual(tool_events[1]["step_update"]["tool_name"], "read_file")
             self.assertEqual(tool_events[1]["step_update"]["id"], "call-2")
+            self.assertEqual(tool_events[1]["step_update"]["call_id"], "call-2")
+            self.assertEqual(tool_events[1]["step_update"]["tool_call_id"], "call-2")
+            self.assertEqual(tool_events[1]["step_update"]["error"], "File not found")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_enum_tool_name_unwrapping(self):
+        """Verify enum tool names are unwrapped to their .value string."""
+        async def _test():
+            from enum import Enum
+            class MockBuiltinTools(Enum):
+                RUN_COMMAND = "run_command"
+                READ_FILE = "read_file"
+
+            mock_agent = MagicMock()
+
+            class MockToolCall:
+                def __init__(self, name, args, call_id):
+                    self.name = name
+                    self.args = args
+                    self.id = call_id
+
+            class MockToolResult:
+                def __init__(self, name, result, call_id):
+                    self.name = name
+                    self.result = result
+                    self.id = call_id
+
+            async def _chunk_iter():
+                yield MockToolCall(MockBuiltinTools.RUN_COMMAND, {"command": "ls"}, "call-enum-1")
+                yield MockToolResult(MockBuiltinTools.RUN_COMMAND, "file.txt", "call-enum-1")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Done.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "List files", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 2)
+            self.assertEqual(tool_events[0]["step_update"]["tool_name"], "run_command")
+            self.assertEqual(tool_events[1]["step_update"]["tool_name"], "run_command")
 
         asyncio.run(_test())
 

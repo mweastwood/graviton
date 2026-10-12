@@ -23,7 +23,7 @@ logger = logging.getLogger("graviton.sdk_runner")
 
 def _flush_json(data: Dict[str, Any]) -> None:
     """Write an NDJSON event to stdout and flush immediately."""
-    sys.stdout.write(json.dumps(data) + "\n")
+    sys.stdout.write(json.dumps(data, default=str) + "\n")
     sys.stdout.flush()
 
 
@@ -33,6 +33,8 @@ def _extract_prompt(payload: Dict[str, Any]) -> str:
         return payload["prompt"]
 
     msg = payload.get("message")
+    if isinstance(msg, str):
+        return msg
     if isinstance(msg, dict):
         content = msg.get("content")
         if isinstance(content, str):
@@ -51,7 +53,7 @@ def _extract_prompt(payload: Dict[str, Any]) -> str:
     if "text" in payload:
         return str(payload["text"])
 
-    return json.dumps(payload)
+    return json.dumps(payload, default=str)
 
 
 async def run_agent_turn(
@@ -97,27 +99,51 @@ async def run_agent_turn(
                     },
                 })
             elif chunk_type in ("ToolCall", "MockToolCall") or (hasattr(chunk, "name") and hasattr(chunk, "args")):
+                raw_name = getattr(chunk, "name", "")
+                tool_name = getattr(raw_name, "value", str(raw_name))
+                tool_id = (
+                    getattr(chunk, "id", None)
+                    or getattr(chunk, "call_id", None)
+                    or getattr(chunk, "tool_call_id", None)
+                )
                 _flush_json({
                     "event": "step_update",
                     "step_update": {
                         "step_type": "tool",
-                        "tool_name": getattr(chunk, "name", ""),
+                        "tool_name": tool_name,
                         "tool_info": getattr(chunk, "args", {}),
-                        "id": getattr(chunk, "id", None),
+                        "id": tool_id,
+                        "call_id": tool_id,
+                        "tool_call_id": tool_id,
                         "state": "RUNNING",
                     },
                 })
             elif chunk_type in ("ToolResult", "MockToolResult") or (hasattr(chunk, "name") and hasattr(chunk, "result")):
+                raw_name = getattr(chunk, "name", "")
+                tool_name = getattr(raw_name, "value", str(raw_name))
                 err = getattr(chunk, "error", None) or getattr(chunk, "exception", None)
                 state = "ERROR" if err else "DONE"
+                tool_id = (
+                    getattr(chunk, "id", None)
+                    or getattr(chunk, "call_id", None)
+                    or getattr(chunk, "tool_call_id", None)
+                )
+                step_data: Dict[str, Any] = {
+                    "step_type": "tool",
+                    "tool_name": tool_name,
+                    "id": tool_id,
+                    "call_id": tool_id,
+                    "tool_call_id": tool_id,
+                    "state": state,
+                }
+                res = getattr(chunk, "result", None)
+                if res is not None:
+                    step_data["result"] = res
+                if err is not None:
+                    step_data["error"] = str(err)
                 _flush_json({
                     "event": "step_update",
-                    "step_update": {
-                        "step_type": "tool",
-                        "tool_name": getattr(chunk, "name", ""),
-                        "id": getattr(chunk, "id", None),
-                        "state": state,
-                    },
+                    "step_update": step_data,
                 })
 
         final_text = await response.text()

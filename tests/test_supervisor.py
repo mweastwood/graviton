@@ -35,6 +35,8 @@ from lib.supervisor import (
     run_container_goal,
     run_container_turn,
     run_goal_turn,
+    run_isolated_agent_goal,
+    run_isolated_agent_turn,
     run_stream_turn,
     sync_conversation_to_agyhub,
     to_ssh_url,
@@ -1376,6 +1378,26 @@ class TestContainerSupervisor(unittest.TestCase):
         self.assertIn("--input-format", cmd)
         self.assertIn("stream-json", cmd)
 
+    def test_build_docker_command_sdk_runner_resolution_order(self):
+        """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_order_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
         """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""
         with patch.dict(os.environ, {}, clear=True), \
@@ -1665,6 +1687,48 @@ class TestContainerSupervisor(unittest.TestCase):
                 max_duration=1800.0,
             )
             self.assertEqual(res2, expected_res)
+
+    def test_run_isolated_agent_turn_and_goal_runner_propagation(self):
+        """Verify run_isolated_agent_turn and run_isolated_agent_goal accept and forward runner."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_turn.return_value = SupervisorResult(status="SUCCESS")
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            # Test run_isolated_agent_turn with runner="agy"
+            res_turn = run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                runner="agy",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "agy")
+            self.assertEqual(res_turn.status, "SUCCESS")
+
+            # Test run_isolated_agent_turn with runner="sdk"
+            run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                runner="sdk",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "sdk")
+
+            # Test run_isolated_agent_goal with runner="agy"
+            res_goal = run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                runner="agy",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "agy")
+            self.assertEqual(res_goal.status, "SUCCESS")
+
+            # Test run_isolated_agent_goal with runner="sdk"
+            run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                runner="sdk",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "sdk")
 
 
 class TestProjectResolutionAndAgyHubSync(unittest.TestCase):

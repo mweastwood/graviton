@@ -60,6 +60,8 @@ __all__ = [
     "run_container_goal",
     "run_container_turn",
     "run_goal_turn",
+    "run_isolated_agent_goal",
+    "run_isolated_agent_turn",
     "run_stream_turn",
     "sync_conversation_to_agyhub",
     "to_ssh_url",
@@ -1395,7 +1397,9 @@ class ContainerSupervisor:
         cmd.extend(["-v", f"{self.temp_workspace.resolve()}:/workspace", "-w", "/workspace"])
 
         # Mount SDK runner script if present
-        sdk_runner_path = Path(__file__).resolve().parent.parent / "bin" / "agent_sdk_runner.py"
+        sdk_runner_path = self.repo_dir / "bin" / "agent_sdk_runner.py"
+        if not sdk_runner_path.is_file():
+            sdk_runner_path = Path(__file__).resolve().parent.parent / "bin" / "agent_sdk_runner.py"
         if sdk_runner_path.is_file():
             cmd.extend(["-v", f"{sdk_runner_path.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro"])
 
@@ -1818,6 +1822,7 @@ def run_container_turn(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    runner: Optional[str] = None,
     **kwargs: Any,
 ) -> SupervisorResult:
     """
@@ -1843,6 +1848,7 @@ def run_container_turn(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        runner=runner,
     ) as supervisor:
         extra = dict(kwargs)
         if on_thought is not None:
@@ -1889,6 +1895,7 @@ def run_container_goal(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    runner: Optional[str] = None,
 ) -> SupervisorResult:
     """
     Convenience function to execute an autonomous /goal in an isolated container.
@@ -1913,6 +1920,7 @@ def run_container_goal(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        runner=runner,
     ) as supervisor:
         extra = {}
         if on_thought is not None:
@@ -1932,4 +1940,9 @@ def run_container_goal(
             on_event=on_event,
             **extra,
         )
+
+
+# Aliases for container run helpers
+run_isolated_agent_turn = run_container_turn
+run_isolated_agent_goal = run_container_goal
 
