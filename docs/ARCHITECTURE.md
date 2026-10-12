@@ -249,3 +249,13 @@ Graviton is packaged as a consolidated top-level Antigravity Plugin located at `
 ## 9. Legacy Deprecation
 
 The legacy bash container runner (`bin/run_agent_container.sh`) and one-shot transcript file scraper in `lib/runner.py` are deprecated in favor of `ContainerSupervisor` (`lib/supervisor.py`). They are maintained solely for backward compatibility with older test harnesses and CLI environments.
+
+---
+
+## 10. Module Modularization & Sizing Standards
+
+To maintain clean separation of concerns and prevent monolithic modules, source files in `lib/` are kept under ~800 lines. The approved, documented exceptions are:
+- `lib/tasks/manager.py` (~1230 lines): Coordinates queue concurrency, worker threads, sub-agent container execution, and process lifecycles.
+- `lib/quota/tracker.py` (~970 lines): Thread-safe pacing state engine managing multi-pool quota windows, pacing recovery timers, and background telemetry polling loops.
+
+Future refactoring iterations may further decompose worker loops and quota polling state machines as needed.

@@ -3228,6 +3228,231 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         self.assertEqual(finished_task.status, "COMPLETED")
         self.assertEqual(finished_task.return_code, 0)
 
+    def test_direct_submodule_mocking_manager(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _get_effective, _get_effective_subproc_run
+
+        mock_fn = MagicMock()
+        self.assertIs(_get_effective("run_agent_container", mock_fn), mock_fn)
+
+        with patch("lib.tasks.manager.subprocess.run") as mock_subproc:
+            self.assertIs(_get_effective_subproc_run(), mock_subproc)
+
+    def test_direct_submodule_mocking_models_and_persistence(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.models import Task
+        from lib.tasks.persistence import _get_effective_atomic_write
+
+        t = Task(id="task-mock", agent="test", prompt="test")
+        mock_regex = MagicMock()
+        mock_regex.search.return_value = None
+        with patch("lib.tasks.models.AUTO_CONTINUE_PATTERN", mock_regex):
+            t.update_attempt_from_line("Auto-continuing conversation (Attempt 2/3)")
+            mock_regex.search.assert_called_once()
+
+        with patch("lib.tasks.persistence._atomic_write_json") as mock_write:
+            self.assertIs(_get_effective_atomic_write(), mock_write)
+
+        from lib.tasks.persistence import _get_effective_state_path
+        with patch("lib.tasks.persistence.get_default_state_path") as mock_direct_path:
+            self.assertIs(_get_effective_state_path(), mock_direct_path)
+        with patch("lib.tasks.get_default_state_path") as mock_top_path:
+            self.assertIs(_get_effective_state_path(), mock_top_path)
+
+    def test_clean_workspace_mock_delegation_in_manager(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _clean_workspace, TaskManager, Task, TaskStatus
+
+        # 1. Test top-level lib.tasks patch
+        with patch("lib.tasks.clean_workspace_dir") as mock_clean:
+            mock_clean.return_value = True
+            res = _clean_workspace(Path("/tmp/fake-workspace"))
+            self.assertTrue(res)
+            mock_clean.assert_called_once_with(Path("/tmp/fake-workspace"))
+
+        # 2. Test manager-level patch
+        with patch("lib.tasks.manager.clean_workspace_dir") as mock_clean_direct:
+            mock_clean_direct.return_value = True
+            res = _clean_workspace(Path("/tmp/fake-workspace-2"))
+            self.assertTrue(res)
+            mock_clean_direct.assert_called_once_with(Path("/tmp/fake-workspace-2"))
+
+        # 3. Test TaskManager.abort_task delegates to mock on lib.tasks
+        mgr = TaskManager(max_workers=1)
+        t = Task(id="abort-clean-test", agent="code_reviewer", prompt="test")
+        t.status = TaskStatus.QUEUED
+        t.cached_workspace_dir = Path("/tmp/graviton-workspaces/cache/abort-clean-test")
+        with mgr._lock:
+            mgr._tasks[t.id] = t
+            mgr._queue.put(t.id)
+
+        with patch("lib.tasks.clean_workspace_dir") as mock_clean:
+            mock_clean.return_value = True
+            aborted = mgr.abort_task(t.id)
+            self.assertTrue(aborted)
+            mock_clean.assert_called_once_with(t.cached_workspace_dir)
+
+    def test_workspaces_mock_delegation(self):
+        from unittest.mock import MagicMock, patch
+        import lib.tasks.workspaces as ws
+
+        # Direct submodule mock delegation
+        with patch("lib.tasks.workspaces.clean_workspace_dir") as mock_direct_clean:
+            self.assertIs(ws._get_effective_clean(), mock_direct_clean)
+
+        with patch("lib.tasks.workspaces.subprocess.run") as mock_direct_subproc:
+            self.assertIs(ws._get_effective_subproc_run(), mock_direct_subproc)
+
+        # Top-level lib.tasks mock delegation
+        with patch("lib.tasks.clean_workspace_dir") as mock_top_clean:
+            self.assertIs(ws._get_effective_clean(), mock_top_clean)
+
+        with patch("lib.tasks.subprocess.run") as mock_top_subproc:
+            self.assertIs(ws._get_effective_subproc_run(), mock_top_subproc)
+
+    def test_manager_queue_state_and_pool_delegation(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _get_effective, TaskManager
+
+        # Test delegation via top-level lib.tasks patch
+        with patch("lib.tasks.dump_queue_state") as mock_dump:
+            mock_dump.return_value = 42
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr.dump_queue_state(), 42)
+            mock_dump.assert_called_once()
+
+        with patch("lib.tasks.restore_queue_state") as mock_restore:
+            mock_restore.return_value = (10, 5)
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr.restore_queue_state(), 5)
+            mock_restore.assert_called_once()
+
+        with patch("lib.tasks.resolve_task_pool_and_model") as mock_resolve:
+            mock_resolve.return_value = ("gemini", "gemini-3.8-flash-medium", False)
+            mgr = TaskManager(max_workers=1)
+            effective_resolve = _get_effective("resolve_task_pool_and_model", None)
+            self.assertIs(effective_resolve, mock_resolve)
+
+        with patch("lib.tasks.get_default_state_path") as mock_path:
+            mock_path.return_value = Path("/tmp/mock_state.json")
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr._get_default_state_path(), Path("/tmp/mock_state.json"))
+            mock_path.assert_called_once()
+
+    def test_reexported_symbols_in_lib_tasks(self):
+        import lib.tasks as tasks
+        from lib.tasks import (
+            ContainerSupervisor,
+            SupervisorResult,
+            SupervisorError,
+            QuotaState,
+            QuotaTracker,
+            DEFAULT_GEMINI_MODELS,
+            DEFAULT_THIRD_PARTY_MODELS,
+        )
+
+        self.assertIsNotNone(ContainerSupervisor)
+        self.assertIsNotNone(SupervisorResult)
+        self.assertIsNotNone(SupervisorError)
+        self.assertIsNotNone(QuotaState)
+        self.assertIsNotNone(QuotaTracker)
+        self.assertIsNotNone(DEFAULT_GEMINI_MODELS)
+        self.assertIsNotNone(DEFAULT_THIRD_PARTY_MODELS)
+
+        for sym in (
+            "ContainerSupervisor",
+            "SupervisorResult",
+            "SupervisorError",
+            "QuotaState",
+            "QuotaTracker",
+            "DEFAULT_GEMINI_MODELS",
+            "DEFAULT_THIRD_PARTY_MODELS",
+        ):
+            self.assertIn(sym, tasks.__all__)
+            self.assertTrue(hasattr(tasks, sym))
+
+    def test_direct_submodule_custom_callable_overrides_in_tasks(self):
+        import lib.tasks.manager as mgr_mod
+        import lib.tasks.workspaces as ws_mod
+        import lib.tasks.persistence as persist_mod
+        import lib.tasks.models as models_mod
+
+        # 1. lib.tasks.workspaces custom callables
+        orig_clean = ws_mod.clean_workspace_dir
+        orig_ws_subproc = ws_mod.subprocess.run
+
+        def custom_clean(path):
+            return True
+
+        def custom_ws_subproc(*args, **kwargs):
+            return "custom_ws_subproc"
+
+        try:
+            ws_mod.clean_workspace_dir = custom_clean
+            ws_mod.subprocess.run = custom_ws_subproc
+
+            self.assertIs(ws_mod._get_effective_clean(), custom_clean)
+            self.assertIs(ws_mod._get_effective_subproc_run(), custom_ws_subproc)
+        finally:
+            ws_mod.clean_workspace_dir = orig_clean
+            ws_mod.subprocess.run = orig_ws_subproc
+
+        # 2. lib.tasks.persistence custom callables
+        orig_write = persist_mod._atomic_write_json
+        orig_state_path = persist_mod.get_default_state_path
+
+        def custom_write(dest, payload):
+            return True
+
+        def custom_state_path(cwd=None, filepath=None):
+            return Path("/tmp/custom_state.json")
+
+        try:
+            persist_mod._atomic_write_json = custom_write
+            persist_mod.get_default_state_path = custom_state_path
+
+            self.assertIs(persist_mod._get_effective_atomic_write(), custom_write)
+            self.assertIs(persist_mod._get_effective_state_path(), custom_state_path)
+        finally:
+            persist_mod._atomic_write_json = orig_write
+            persist_mod.get_default_state_path = orig_state_path
+
+        # 3. lib.tasks.manager custom callables
+        def custom_runner(*args, **kwargs):
+            return "custom_runner"
+
+        def custom_subproc(*args, **kwargs):
+            return "custom_subproc"
+
+        orig_mgr_runner = mgr_mod.run_agent_container
+        orig_mgr_subproc = mgr_mod.subprocess.run
+
+        try:
+            mgr_mod.run_agent_container = custom_runner
+            mgr_mod.subprocess.run = custom_subproc
+
+            self.assertIs(
+                mgr_mod._get_effective("run_agent_container", mgr_mod.run_agent_container),
+                custom_runner,
+            )
+            self.assertIs(mgr_mod._get_effective_subproc_run(), custom_subproc)
+        finally:
+            mgr_mod.run_agent_container = orig_mgr_runner
+            mgr_mod.subprocess.run = orig_mgr_subproc
+
+        # 4. lib.tasks.models AUTO_CONTINUE_PATTERN custom regex / callable
+        import re
+        orig_pat = models_mod.AUTO_CONTINUE_PATTERN
+        custom_pat = re.compile(r"Auto-continuing conversation \(Custom-Attempt (\d+)\)", re.IGNORECASE)
+
+        try:
+            models_mod.AUTO_CONTINUE_PATTERN = custom_pat
+            task = models_mod.Task(id="t1", agent="code_reviewer", prompt="test")
+            self.assertTrue(task.update_attempt_from_line("Auto-continuing conversation (Custom-Attempt 4)"))
+            self.assertEqual(task.attempt, 4)
+        finally:
+            models_mod.AUTO_CONTINUE_PATTERN = orig_pat
+
 
 if __name__ == "__main__":
     unittest.main()

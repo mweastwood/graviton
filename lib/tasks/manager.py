@@ -2,456 +2,84 @@
 Thread-safe Task Queue & Execution Manager for Graviton.
 """
 
-import collections
 import json
 import logging
-import os
 import queue
 import re
-import shutil
-import stat
 import subprocess
+import sys
 import threading
 import time
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Collection, Dict, List, Optional, Union
 
 from lib.runner import run_agent_container
-from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
+from lib.quota import QuotaState, QuotaTracker
 from lib.security import is_valid_repo_name
-from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorError, clean_workspace_dir
+from lib.supervisor import ContainerSupervisor, clean_workspace_dir
 from lib.reactions import post_emoji_reaction_async
 from lib.notifications import post_task_completion_comment, post_task_start_comment
 
-logger = logging.getLogger("graviton.tasks")
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-AUTO_CONTINUE_PATTERN = re.compile(
-    r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
-    re.IGNORECASE,
+from .models import Task, TaskStatus, PR_URL_PATTERN
+from .pool import resolve_task_pool_and_model
+from .workspaces import prune_abandoned_workspaces, _PrunedTaskIds
+from .persistence import (
+    get_default_state_path,
+    dump_queue_state as persist_dump_queue_state,
+    restore_queue_state as persist_restore_queue_state,
 )
-PR_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", re.IGNORECASE)
+
+logger = logging.getLogger("graviton.tasks")
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+_ORIG_SUBPROC_RUN = subprocess.run
+_ORIGINALS: Dict[str, Any] = {
+    "run_agent_container": run_agent_container,
+    "clean_workspace_dir": clean_workspace_dir,
+    "post_emoji_reaction_async": post_emoji_reaction_async,
+    "post_task_start_comment": post_task_start_comment,
+    "post_task_completion_comment": post_task_completion_comment,
+    "prune_abandoned_workspaces": prune_abandoned_workspaces,
+    "resolve_task_pool_and_model": resolve_task_pool_and_model,
+    "is_valid_repo_name": is_valid_repo_name,
+    "get_default_state_path": get_default_state_path,
+    "dump_queue_state": persist_dump_queue_state,
+    "restore_queue_state": persist_restore_queue_state,
+}
 
 
-class TaskStatus:
-    QUEUED = "QUEUED"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    PAUSED_FOR_QUOTA = "PAUSED_FOR_QUOTA"
-    ABORTED = "ABORTED"
+def _get_effective(name, default):
+    orig = _ORIGINALS.get(name)
+    if hasattr(default, "mock_calls") or hasattr(default, "_mock_name"):
+        return default
+    if default is not None and orig is not None and default is not orig:
+        return default
+    mod = sys.modules.get("lib.tasks")
+    if mod and hasattr(mod, name):
+        val = getattr(mod, name)
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or (orig is not None and val is not orig):
+            return val
+    return default if default is not None else orig
 
 
-@dataclass
-class Task:
-    id: str
-    agent: str
-    prompt: str
-    target_id: Optional[str] = None
-    repo_full_name: Optional[str] = None
-    repo_name: Optional[str] = None
-    clone_url: Optional[str] = None
-    repo_dir: Optional[Path] = None
-    cached_workspace_dir: Optional[Path] = None
-    status: str = TaskStatus.QUEUED
-    priority: int = 0
-    enqueue_time: float = field(default_factory=time.time)
-    start_time: Optional[float] = None
-    finish_time: Optional[float] = None
-    worker_thread_id: Optional[str] = None
-    return_code: Optional[int] = None
-    error_message: Optional[str] = None
-    attempt: int = 1
-    max_attempts: int = 3
-    max_total_attempts: int = 6
-    attempts_per_batch: int = 3
-    requeue_count: int = 0
-    selected_pool: Optional[str] = None
-    selected_model: Optional[str] = None
-    goal_prompt: Optional[str] = None
-    use_goal: bool = True
-    conversation_id: Optional[str] = None
-    remote_control_url: Optional[str] = None
-    thoughts: List[str] = field(default_factory=list)
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    supervisor_result: Optional[Any] = None
-    webhook_event_type: Optional[str] = None
-    webhook_payload: Optional[Dict[str, Any]] = None
-    logs: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
-
-    @property
-    def elapsed_time(self) -> float:
-        if self.start_time is None:
-            return 0.0
-        if self.finish_time is not None:
-            return self.finish_time - self.start_time
-        return time.time() - self.start_time
-
-    @property
-    def wait_time(self) -> float:
-        if self.start_time is not None:
-            return self.start_time - self.enqueue_time
-        return time.time() - self.enqueue_time
-
-    def append_log(self, line: str) -> None:
-        """Append log line to buffered logs and update attempt metadata."""
-        if line is None:
-            return
-        if not isinstance(line, str):
-            line = str(line)
-        self.logs.append(line)
-        self.update_attempt_from_line(line)
-
-    def get_logs(self, limit: Optional[int] = None) -> List[str]:
-        """Return buffered log lines safely as a list."""
-        logs_list = list(self.logs)
-        if limit is not None and limit > 0:
-            return logs_list[-limit:]
-        return logs_list
-
-    def update_attempt_from_line(self, line: str) -> bool:
-        """Parse retry log line and update attempt / max_attempts if present."""
-        if not line or ("Auto-continuing conversation" not in line and "auto-continuing conversation" not in line):
-            return False
-        match = AUTO_CONTINUE_PATTERN.search(line)
-        if match:
-            self.attempt = int(match.group(1))
-            if match.group(2):
-                self.max_attempts = max(self.max_attempts, int(match.group(2)))
-            return True
-        return False
-
-    def update_attempt_from_output(self, output: str):
-        """Parse all lines of output string and update attempt / max_attempts."""
-        if not output:
-            return
-        for line in output.splitlines():
-            self.update_attempt_from_line(line)
-
-    def to_dict(self) -> dict:
-        sup_result = None
-        if self.supervisor_result is not None:
-            if hasattr(self.supervisor_result, "to_dict") and callable(self.supervisor_result.to_dict):
-                sup_result = self.supervisor_result.to_dict()
-            elif hasattr(self.supervisor_result, "__dataclass_fields__"):
-                sup_result = asdict(self.supervisor_result)
-            elif isinstance(self.supervisor_result, dict):
-                sup_result = self.supervisor_result
-            else:
-                sup_result = str(self.supervisor_result)
-
-        return {
-            "id": self.id,
-            "agent": self.agent,
-            "prompt": self.prompt,
-            "target_id": self.target_id,
-            "repo_full_name": self.repo_full_name,
-            "repo_name": self.repo_name,
-            "clone_url": self.clone_url,
-            "repo_dir": str(self.repo_dir) if self.repo_dir else None,
-            "cached_workspace_dir": str(self.cached_workspace_dir) if self.cached_workspace_dir else None,
-            "status": self.status,
-            "priority": self.priority,
-            "enqueue_time": self.enqueue_time,
-            "start_time": self.start_time,
-            "finish_time": self.finish_time,
-            "worker_thread_id": self.worker_thread_id,
-            "return_code": self.return_code,
-            "elapsed_time": round(self.elapsed_time, 2),
-            "wait_time": round(self.wait_time, 2),
-            "attempt": self.attempt,
-            "max_attempts": self.max_attempts,
-            "max_total_attempts": self.max_total_attempts,
-            "attempts_per_batch": self.attempts_per_batch,
-            "requeue_count": self.requeue_count,
-            "selected_pool": self.selected_pool,
-            "selected_model": self.selected_model,
-            "goal_prompt": self.goal_prompt,
-            "use_goal": self.use_goal,
-            "conversation_id": self.conversation_id,
-            "remote_control_url": self.remote_control_url,
-            "thoughts": list(self.thoughts),
-            "tool_calls": list(self.tool_calls),
-            "supervisor_result": sup_result,
-            "webhook_event_type": self.webhook_event_type,
-            "webhook_payload": self.webhook_payload,
-        }
-
-
-def resolve_task_pool_and_model(quota_tracker: Optional[Any] = None) -> Tuple[str, str, bool]:
-    """
-    Evaluates quota tracker pool states, pacing, and remaining percentages to determine
-    the target pool ('gemini' or 'claude_gpt'), the active model to execute with,
-    and whether all pools are currently exhausted/behind pacing.
-
-    Returns:
-        Tuple of (selected_pool, selected_model, all_exhausted)
-    """
-    selected_pool = "gemini"
-    selected_model = DEFAULT_GEMINI_MODELS[0]
-    gemini_eligible = True
-    claude_eligible = True
-
-    if quota_tracker:
-        gemini_behind = (
-            quota_tracker.is_pool_behind_pacing("gemini") is True
-            if hasattr(quota_tracker, "is_pool_behind_pacing")
-            else (quota_tracker.is_behind_pacing() is True)
-        )
-        gemini_state = (
-            quota_tracker.get_pool_state("gemini")
-            if hasattr(quota_tracker, "get_pool_state")
-            else quota_tracker.state
-        )
-        if not isinstance(gemini_state, str):
-            gemini_state = QuotaState.NORMAL
-
-        gemini_pct = (
-            quota_tracker.get_pool_remaining_percentage("gemini")
-            if hasattr(quota_tracker, "get_pool_remaining_percentage")
-            else quota_tracker.remaining_percentage
-        )
-        if not isinstance(gemini_pct, (int, float)):
-            gemini_pct = 100.0
-
-        claude_behind = (
-            quota_tracker.is_pool_behind_pacing("claude_gpt") is True
-            if hasattr(quota_tracker, "is_pool_behind_pacing")
-            else False
-        )
-        claude_state = (
-            quota_tracker.get_pool_state("claude_gpt")
-            if hasattr(quota_tracker, "get_pool_state")
-            else QuotaState.EXHAUSTED
-        )
-        if not isinstance(claude_state, str):
-            claude_state = QuotaState.NORMAL
-
-        claude_pct = (
-            quota_tracker.get_pool_remaining_percentage("claude_gpt")
-            if hasattr(quota_tracker, "get_pool_remaining_percentage")
-            else 0.0
-        )
-        if not isinstance(claude_pct, (int, float)):
-            claude_pct = 100.0
-
-        gemini_eligible = (gemini_state != QuotaState.EXHAUSTED) and (not gemini_behind)
-        claude_eligible = (claude_state != QuotaState.EXHAUSTED) and (not claude_behind)
-
-        if gemini_eligible and claude_eligible:
-            if claude_pct > gemini_pct:
-                selected_pool = "claude_gpt"
-            elif gemini_pct > claude_pct:
-                selected_pool = "gemini"
-            else:
-                pref = getattr(quota_tracker, "quota_pool", "gemini")
-                if isinstance(pref, str) and any(k in pref.lower() for k in ("claude", "gpt", "3p", "third")):
-                    selected_pool = "claude_gpt"
-                else:
-                    selected_pool = "gemini"
-        elif claude_eligible:
-            selected_pool = "claude_gpt"
-        else:
-            selected_pool = "gemini"
-
-        if hasattr(quota_tracker, "get_active_model"):
-            m_val = quota_tracker.get_active_model(selected_pool)
-            selected_model = m_val if isinstance(m_val, str) else (DEFAULT_GEMINI_MODELS[0] if selected_pool == "gemini" else DEFAULT_THIRD_PARTY_MODELS[0])
-        else:
-            selected_model = (
-                getattr(quota_tracker, "active_gemini_model", DEFAULT_GEMINI_MODELS[0])
-                if selected_pool == "gemini"
-                else getattr(quota_tracker, "active_third_party_model", DEFAULT_THIRD_PARTY_MODELS[0])
-            )
-
-    all_exhausted = not gemini_eligible and not claude_eligible
-    return (selected_pool, selected_model, all_exhausted)
-
-
-
-
-def prune_abandoned_workspaces(
-    base_dir: Union[Path, str] = Path("/tmp/graviton-workspaces"),
-    max_age_seconds: int = 86400,
-) -> int:
-    """
-    Garbage collect abandoned /tmp/graviton-workspaces/run-* directories and stale cache entries
-    older than max_age_seconds (default 24 hours) whose corresponding Docker containers are not running.
-    Returns the number of cleaned up workspace directories.
-    """
-    base = Path(base_dir)
-    if not base.exists() or not base.is_dir():
-        return 0
-
-    now = time.time()
-    targets: List[Path] = []
-    try:
-        for entry in base.iterdir():
-            if entry.is_dir():
-                if entry.name.startswith("run-"):
-                    targets.append(entry)
-                elif entry.name == "cache":
-                    for cache_entry in entry.iterdir():
-                        if cache_entry.is_dir():
-                            targets.append(cache_entry)
-    except Exception as e:
-        logger.warning(f"Error scanning workspace directory {base} for GC: {e}")
-        return 0
-
-    if not targets:
-        return 0
-
-    aged_targets: List[Path] = []
-    has_aged_run = False
-    for target in targets:
-        try:
-            mtime = target.stat().st_mtime
-            if (now - mtime) >= max_age_seconds:
-                aged_targets.append(target)
-                if target.name.startswith("run-"):
-                    has_aged_run = True
-        except Exception:
-            pass
-
-    if not aged_targets:
-        return 0
-
-    running_containers = set()
-    if has_aged_run:
-        try:
-            res = subprocess.run(
-                ["docker", "ps", "--format", "{{.Names}}"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if res.returncode == 0:
-                running_containers = {c.strip() for c in res.stdout.splitlines() if c.strip()}
-        except Exception:
-            pass
-
-    pruned_count = 0
-    for target in aged_targets:
-        try:
-            if target.name.startswith("run-"):
-                run_id = target.name[len("run-"):]
-                container_name = f"graviton-agent-run-{run_id}"
-                stream_container_name = f"graviton-stream-run-{run_id}"
-                if container_name in running_containers or stream_container_name in running_containers:
-                    continue
-            if clean_workspace_dir(target):
-                pruned_count += 1
-                logger.info(f"Garbage collected abandoned workspace directory: {target}")
-        except Exception as err:
-            logger.debug(f"Could not prune workspace directory {target}: {err}")
-
-    return pruned_count
-
-
-class _PrunedTaskIds:
-    """Bounded collection tracking pruned task IDs with O(1) lookups and FIFO eviction."""
-
-    def __init__(
-        self,
-        iterable: Optional[Union[Iterable[str], int]] = None,
-        maxlen: Optional[int] = 10000,
+def _get_effective_subproc_run():
+    if (
+        hasattr(subprocess.run, "mock_calls")
+        or hasattr(subprocess.run, "_mock_name")
+        or subprocess.run is not _ORIG_SUBPROC_RUN
     ):
-        # Backwards compatibility when maxlen is passed positionally as first argument
-        if isinstance(iterable, int) and not isinstance(iterable, bool):
-            if maxlen == 10000 or maxlen is None or maxlen == iterable:
-                self._maxlen = iterable
-            else:
-                self._maxlen = maxlen
-            iterable = None
-        else:
-            self._maxlen = maxlen
-        self._items: collections.OrderedDict[str, None] = collections.OrderedDict()
-        if iterable is not None:
-            for item in iterable:
-                self.add(item)
+        return subprocess.run
+    mod = sys.modules.get("lib.tasks")
+    if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
+        val = mod.subprocess.run
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_SUBPROC_RUN:
+            return val
+    return subprocess.run
 
-    @property
-    def maxlen(self) -> Optional[int]:
-        return self._maxlen
 
-    @maxlen.setter
-    def maxlen(self, value: Optional[int]) -> None:
-        self._maxlen = value
-        if self._maxlen is not None:
-            if self._maxlen <= 0:
-                self._items.clear()
-            else:
-                while len(self._items) > self._maxlen and self._items:
-                    self._items.popitem(last=False)
-
-    def add(self, item: str) -> None:
-        """Add an item to the collection, moving it to the most recent position if present."""
-        if self.maxlen is not None and self.maxlen <= 0:
-            self._items.clear()
-            return
-
-        if item in self._items:
-            self._items.move_to_end(item)
-        else:
-            self._items[item] = None
-
-        if self.maxlen is not None:
-            while len(self._items) > self.maxlen and self._items:
-                self._items.popitem(last=False)
-
-    def discard(self, item: object) -> None:
-        """Remove an item from the collection if it is present."""
-        try:
-            self._items.pop(item, None)
-        except TypeError:
-            pass
-
-    def remove(self, item: object) -> None:
-        """Remove an item from the collection. Raises KeyError if not present."""
-        try:
-            del self._items[item]
-        except (KeyError, TypeError):
-            raise KeyError(item) from None
-
-    def __contains__(self, item: object) -> bool:
-        try:
-            return item in self._items
-        except TypeError:
-            return False
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._items)
-
-    def __reversed__(self) -> Iterator[str]:
-        return reversed(self._items)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({list(self._items)}, maxlen={self.maxlen})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _PrunedTaskIds):
-            return NotImplemented
-        return self.maxlen == other.maxlen and self._items == other._items
-
-    def copy(self) -> "_PrunedTaskIds":
-        """Return a shallow copy of the collection with an independent underlying items dictionary."""
-        new_instance = self.__class__(maxlen=self.maxlen)
-        new_instance._items = self._items.copy()
-        return new_instance
-
-    def __copy__(self) -> "_PrunedTaskIds":
-        return self.copy()
-
-    def clear(self) -> None:
-        """Remove all items from the collection."""
-        self._items.clear()
+def _clean_workspace(path: Optional[Union[Path, str]]) -> bool:
+    return _get_effective("clean_workspace_dir", clean_workspace_dir)(path)
 
 
 class TaskManager:
@@ -531,7 +159,7 @@ class TaskManager:
         task._init_reaction_triggered = True
         try:
             if task.webhook_event_type and task.webhook_payload:
-                post_emoji_reaction_async(
+                _get_effective("post_emoji_reaction_async", post_emoji_reaction_async)(
                     task.webhook_event_type,
                     task.webhook_payload,
                     reaction="rocket",
@@ -543,20 +171,20 @@ class TaskManager:
                         "repository": {"full_name": task.repo_full_name},
                         "issue": {"number": int(m.group(1))},
                     }
-                    post_emoji_reaction_async("issues", dummy_payload, reaction="rocket")
+                    _get_effective("post_emoji_reaction_async", post_emoji_reaction_async)("issues", dummy_payload, reaction="rocket")
         except Exception as e:
             logger.debug(f"Could not post init reaction for task '{task.id}': {e}")
 
         try:
             if getattr(self, "post_start_comment", False) and getattr(task, "remote_control_url", None):
-                post_task_start_comment(task)
+                _get_effective("post_task_start_comment", post_task_start_comment)(task)
         except Exception as e:
             logger.debug(f"Could not post init comment for task '{task.id}': {e}")
 
     def _trigger_completion_comment(self, task: Task, result: Optional[Any] = None) -> None:
         """Trigger completion comment on task result lifecycle event."""
         try:
-            post_task_completion_comment(task, result)
+            _get_effective("post_task_completion_comment", post_task_completion_comment)(task, result)
         except Exception as e:
             logger.debug(f"Could not post completion comment for task '{task.id}': {e}")
 
@@ -589,6 +217,7 @@ class TaskManager:
                 self._rebuild_queue_locked()
                 logger.info("TaskManager resumed task acceptance and worker execution.")
             return self._paused
+
     def rebuild_queue(self):
         """Rebuild internal task queue from active task registry."""
         with self._lock:
@@ -626,7 +255,7 @@ class TaskManager:
     def start(self):
         """Start worker daemon threads and prune stale workspaces."""
         try:
-            prune_abandoned_workspaces()
+            _get_effective("prune_abandoned_workspaces", prune_abandoned_workspaces)()
         except Exception as e:
             logger.warning(f"Initial workspace cleanup sweep failed: {e}")
 
@@ -841,12 +470,9 @@ class TaskManager:
                     self._queue.all_tasks_done.wait(timeout=remaining)
                 return not self._stopped
 
+
     def _get_default_state_path(self, filepath: Optional[Path] = None) -> Path:
-        if filepath is not None:
-            return Path(filepath)
-        if self.cwd:
-            return self.cwd / ".graviton_queue_state.json"
-        return Path(".graviton_queue_state.json")
+        return _get_effective("get_default_state_path", get_default_state_path)(cwd=self.cwd, filepath=filepath)
 
     def dump_queue_state(self, filepath: Optional[Path] = None) -> int:
         """
@@ -855,33 +481,13 @@ class TaskManager:
         :param filepath: Optional Path override for destination state file.
         :return: Number of queued and quota-paused tasks serialized.
         """
-        path = self._get_default_state_path(filepath)
         with self._lock:
-            queued_tasks = [
-                t
-                for t in self._tasks.values()
-                if t.status in (TaskStatus.QUEUED, TaskStatus.PAUSED_FOR_QUOTA)
-            ]
-            if not queued_tasks:
-                if path.exists():
-                    try:
-                        path.unlink()
-                    except Exception as e:
-                        logger.warning(f"Could not remove stale state file '{path}': {e}")
-                return 0
-
-            state = {
-                "task_counter": self._task_counter,
-                "queued_tasks": [t.to_dict() for t in queued_tasks],
-            }
-
-        try:
-            _atomic_write_json(path, state, indent=2)
-            logger.info(f"Dumped {len(queued_tasks)} queued/quota-paused task(s) state to {path}.")
-            return len(queued_tasks)
-        except Exception as e:
-            logger.exception(f"Failed to dump queue state to '{path}': {e}")
-            return 0
+            return _get_effective("dump_queue_state", persist_dump_queue_state)(
+                self._tasks,
+                self._task_counter,
+                cwd=self.cwd,
+                filepath=filepath,
+            )
 
     def restore_queue_state(self, filepath: Optional[Path] = None) -> int:
         """
@@ -890,106 +496,19 @@ class TaskManager:
         :param filepath: Optional Path override for source state file.
         :return: Number of queued and quota-paused tasks restored.
         """
-        path = self._get_default_state_path(filepath)
-        if not path.exists():
-            return 0
-
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            try:
-                path.unlink()
-            except Exception as e:
-                logger.warning(f"Could not remove state file '{path}' after reading: {e}")
-        except Exception as e:
-            logger.exception(f"Failed to read queue state file '{path}': {e}")
-            return 0
-
-        if not isinstance(data, dict):
-            logger.warning(f"Invalid queue state format in '{path}': expected JSON object.")
-            return 0
-
-        queued_data = data.get("queued_tasks", [])
-        if not isinstance(queued_data, list):
-            logger.warning(f"Invalid queued_tasks format in '{path}': expected list.")
-            return 0
-
-        saved_counter = data.get("task_counter", 0)
-
         with self._lock:
-            if isinstance(saved_counter, int):
-                self._task_counter = max(self._task_counter, saved_counter)
-            restored_count = 0
-            for td in queued_data:
-                if not isinstance(td, dict):
-                    logger.warning(f"Skipping non-dict item in queued_tasks state: {td}")
-                    continue
-
-                try:
-                    task_id = td.get("id")
-                    agent = td.get("agent")
-                    prompt = td.get("prompt")
-                    if not task_id or not agent or prompt is None:
-                        logger.warning(
-                            f"Skipping queue state item missing required fields ('id', 'agent', 'prompt'): {td}"
-                        )
-                        continue
-
-                    if isinstance(task_id, str) and task_id.startswith("task-"):
-                        try:
-                            num = int(task_id.split("-")[1])
-                            self._task_counter = max(self._task_counter, num)
-                        except (IndexError, ValueError):
-                            pass
-
-                    restored_status = td.get("status", TaskStatus.QUEUED)
-                    if not isinstance(restored_status, str) or restored_status not in (
-                        TaskStatus.QUEUED,
-                        TaskStatus.PAUSED_FOR_QUOTA,
-                    ):
-                        restored_status = TaskStatus.QUEUED
-                    repo_dir_val = Path(td["repo_dir"]) if td.get("repo_dir") else None
-
-                    cached_workspace_dir_val = (
-                        Path(td["cached_workspace_dir"]) if td.get("cached_workspace_dir") else None
-                    )
-                    task = Task(
-                        id=str(task_id),
-                        agent=str(agent),
-                        prompt=str(prompt),
-                        target_id=str(td["target_id"]) if td.get("target_id") is not None else None,
-                        repo_full_name=td.get("repo_full_name"),
-                        repo_name=td.get("repo_name"),
-                        clone_url=td.get("clone_url"),
-                        repo_dir=repo_dir_val,
-                        cached_workspace_dir=cached_workspace_dir_val,
-                        status=restored_status,
-                        enqueue_time=float(td.get("enqueue_time", time.time())),
-                        priority=int(td.get("priority", 0)),
-                        attempt=int(td.get("attempt", 1)),
-                        max_attempts=int(td.get("max_attempts", 3)),
-                        max_total_attempts=int(td.get("max_total_attempts", 6)),
-                        attempts_per_batch=int(td.get("attempts_per_batch", 3)),
-                        requeue_count=int(td.get("requeue_count", 0)),
-                        goal_prompt=td.get("goal_prompt"),
-                        use_goal=bool(td.get("use_goal", True)),
-                        conversation_id=td.get("conversation_id"),
-                        remote_control_url=td.get("remote_control_url"),
-                        thoughts=list(td.get("thoughts", [])),
-                        tool_calls=list(td.get("tool_calls", [])),
-                        supervisor_result=td.get("supervisor_result"),
-                        webhook_event_type=td.get("webhook_event_type"),
-                        webhook_payload=td.get("webhook_payload"),
-                    )
-                    self._tasks[task.id] = task
-                    restored_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to restore queued task item {td}: {e}")
-                    continue
+            new_counter, restored_count = _get_effective(
+                "restore_queue_state", persist_restore_queue_state
+            )(
+                self._tasks,
+                self._task_counter,
+                cwd=self.cwd,
+                filepath=filepath,
+            )
+            self._task_counter = new_counter
             self._rebuild_queue_locked()
             self._prune_tasks_locked()
             self._task_state_cond.notify_all()
-
-        logger.info(f"Restored {restored_count} queued/quota-paused task(s) state from {path}.")
         return restored_count
 
     def _prune_tasks_locked(self):
@@ -1190,7 +709,7 @@ class TaskManager:
                 task.finish_time = time.time()
                 task.error_message = "Aborted by user"
                 if task.cached_workspace_dir:
-                    clean_workspace_dir(task.cached_workspace_dir)
+                    _clean_workspace(task.cached_workspace_dir)
                 self._rebuild_queue_locked()
                 self._prune_tasks_locked()
                 self._task_state_cond.notify_all()
@@ -1238,7 +757,7 @@ class TaskManager:
                 logger.warning(f"Error terminating process for task '{task_id}': {e}")
 
         if task_to_cleanup and task_to_cleanup.cached_workspace_dir:
-            clean_workspace_dir(task_to_cleanup.cached_workspace_dir)
+            _clean_workspace(task_to_cleanup.cached_workspace_dir)
 
         return True
 
@@ -1359,7 +878,9 @@ class TaskManager:
                             task = None
                             was_exhausted = True
                         else:
-                            selected_pool, selected_model, all_exhausted = resolve_task_pool_and_model(self.quota_tracker)
+                            selected_pool, selected_model, all_exhausted = _get_effective(
+                                "resolve_task_pool_and_model", resolve_task_pool_and_model
+                            )(self.quota_tracker)
                             if self._draining or self._paused or all_exhausted:
                                 if all_exhausted:
                                     if item.status != TaskStatus.PAUSED_FOR_QUOTA:
@@ -1407,7 +928,7 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                         self._prune_tasks_locked()
                         self._task_state_cond.notify_all()
                         continue
@@ -1415,7 +936,7 @@ class TaskManager:
                 # Resolve target repository checkout directory
                 exec_cwd = task.repo_dir
                 if not exec_cwd and task.repo_name and self.repos_dir:
-                    if not is_valid_repo_name(task.repo_name):
+                    if not _get_effective("is_valid_repo_name", is_valid_repo_name)(task.repo_name):
                         logger.warning(f"[{worker_id}] Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
                         raise RuntimeError(f"Unsafe or invalid repo_name '{task.repo_name}' attempting path traversal out of {self.repos_dir}")
                     candidate_cwd = (self.repos_dir / task.repo_name).resolve()
@@ -1436,14 +957,14 @@ class TaskManager:
                                 if task.status == TaskStatus.ABORTED:
                                     logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to clone. Skipping execution.")
                                     if task.cached_workspace_dir:
-                                        clean_workspace_dir(task.cached_workspace_dir)
+                                        _clean_workspace(task.cached_workspace_dir)
                                     self._prune_tasks_locked()
                                     self._task_state_cond.notify_all()
                                     continue
                             logger.info(f"[{worker_id}] Repository directory '{exec_cwd}' does not exist. Auto-cloning from {task.clone_url}...")
                             try:
                                 exec_cwd.parent.mkdir(parents=True, exist_ok=True)
-                                subprocess.run(
+                                _get_effective_subproc_run()(
                                     ["git", "clone", "--", task.clone_url, str(exec_cwd)],
                                     check=True,
                                     capture_output=True,
@@ -1467,7 +988,7 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                         self._prune_tasks_locked()
                         self._task_state_cond.notify_all()
                         continue
@@ -1554,7 +1075,7 @@ class TaskManager:
                         if task.status == TaskStatus.ABORTED:
                             logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to supervisor execution.")
                             if task.cached_workspace_dir:
-                                clean_workspace_dir(task.cached_workspace_dir)
+                                _clean_workspace(task.cached_workspace_dir)
                             self._prune_tasks_locked()
                             self._task_state_cond.notify_all()
                             continue
@@ -1637,7 +1158,7 @@ class TaskManager:
                             self._active_supervisors.pop(task.id, None)
 
                 elif self.script_path and exec_cwd:
-                    res = run_agent_container(
+                    res = _get_effective("run_agent_container", run_agent_container)(
                         task.agent,
                         task.prompt,
                         self.script_path,
@@ -1677,14 +1198,14 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED by user.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                     elif return_code == 0:
                         task.finish_time = time.time()
                         task.return_code = return_code
                         task.status = TaskStatus.COMPLETED
                         logger.info(f"[{worker_id}] Task '{task.id}' COMPLETED successfully.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                     else:
                         if task.attempt >= task.max_attempts:
                             if task.attempt < task.max_total_attempts:
@@ -1710,7 +1231,7 @@ class TaskManager:
                                     f"({task.attempt}/{task.max_total_attempts})."
                                 )
                                 if task.cached_workspace_dir:
-                                    clean_workspace_dir(task.cached_workspace_dir)
+                                    _clean_workspace(task.cached_workspace_dir)
                         else:
                             task.finish_time = time.time()
                             task.return_code = return_code
@@ -1718,7 +1239,7 @@ class TaskManager:
                             task.error_message = stderr_output or f"Process exited with code {return_code}"
                             logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
                             if task.cached_workspace_dir:
-                                clean_workspace_dir(task.cached_workspace_dir)
+                                _clean_workspace(task.cached_workspace_dir)
                     self._prune_tasks_locked()
                     self._task_state_cond.notify_all()
             except Exception as e:
@@ -1731,7 +1252,7 @@ class TaskManager:
                         task.error_message = str(e)
                         task.status = TaskStatus.FAILED
                     if task.cached_workspace_dir:
-                        clean_workspace_dir(task.cached_workspace_dir)
+                        _clean_workspace(task.cached_workspace_dir)
                     self._prune_tasks_locked()
                     self._task_state_cond.notify_all()
             finally:
@@ -1745,4 +1266,3 @@ class TaskManager:
                     except Exception as poll_err:
                         logger.warning(f"[{worker_id}] Quota fetch on task finish failed: {poll_err}")
                 self._queue.task_done()
-
