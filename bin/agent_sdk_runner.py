@@ -61,10 +61,21 @@ async def run_agent_turn(
 ) -> Dict[str, Any]:
     """Execute a single agent chat turn and stream events over stdout."""
     start_time = time.time()
+    if not prompt or not prompt.strip():
+        return {
+            "status": "FAILED",
+            "error": "Empty prompt provided",
+            "response": "",
+            "duration_seconds": 0.0,
+            "num_turns": turn_index,
+            "usage": {},
+        }
+
     try:
         response = await agent.chat(prompt)
 
         # Stream chunks, thoughts, and tool executions in real-time
+        text_parts = []
         async for chunk in response.chunks:
             chunk_type = type(chunk).__name__
             if chunk_type in ("Thought", "MockThought"):
@@ -76,11 +87,13 @@ async def run_agent_turn(
                     },
                 })
             elif chunk_type in ("Text", "MockText") or (hasattr(chunk, "text") and not hasattr(chunk, "args")):
+                delta = getattr(chunk, "text", str(chunk))
+                text_parts.append(delta)
                 _flush_json({
                     "event": "step_update",
                     "step_update": {
                         "step_type": "agent_response",
-                        "text_delta": getattr(chunk, "text", str(chunk)),
+                        "text_delta": delta,
                     },
                 })
             elif chunk_type in ("ToolCall", "MockToolCall") or (hasattr(chunk, "name") and hasattr(chunk, "args")):
@@ -94,8 +107,22 @@ async def run_agent_turn(
                         "state": "RUNNING",
                     },
                 })
+            elif chunk_type in ("ToolResult", "MockToolResult") or (hasattr(chunk, "name") and hasattr(chunk, "result")):
+                err = getattr(chunk, "error", None) or getattr(chunk, "exception", None)
+                state = "ERROR" if err else "DONE"
+                _flush_json({
+                    "event": "step_update",
+                    "step_update": {
+                        "step_type": "tool",
+                        "tool_name": getattr(chunk, "name", ""),
+                        "id": getattr(chunk, "id", None),
+                        "state": state,
+                    },
+                })
 
         final_text = await response.text()
+        if not final_text and text_parts:
+            final_text = "".join(text_parts)
         elapsed = time.time() - start_time
 
         # Extract usage metadata if available
@@ -155,12 +182,21 @@ async def main_async(args: argparse.Namespace) -> int:
 
     model_name = args.model or os.environ.get("ANTIGRAVITY_MODEL") or os.environ.get("MODEL_NAME")
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    project_id = args.project or os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("PROJECT_ID")
 
     # Configure autonomous execution policies and capabilities
     policies = [policy.allow_all()] if args.dangerously_skip_permissions else None
 
     # Load agent persona instructions if provided
     instructions = args.instructions or os.environ.get("ANTIGRAVITY_SYSTEM_INSTRUCTIONS")
+
+    skills_paths = []
+    default_skills = Path.home() / ".gemini" / "config" / "skills"
+    if default_skills.is_dir():
+        skills_paths.append(str(default_skills))
+    cli_skills = Path(app_data_dir) / "skills"
+    if cli_skills.is_dir():
+        skills_paths.append(str(cli_skills))
 
     agent_config = LocalAgentConfig(
         conversation_id=cid,
@@ -170,6 +206,8 @@ async def main_async(args: argparse.Namespace) -> int:
         save_dir=save_dir,
         model=model_name,
         api_key=api_key,
+        project=project_id,
+        skills_paths=skills_paths or None,
         capabilities=CapabilitiesConfig(),
         policies=policies,
         system_instructions=instructions,
@@ -180,13 +218,22 @@ async def main_async(args: argparse.Namespace) -> int:
     async with Agent(agent_config) as agent:
         # 1. Output initial handshake event for StreamSession
         resolved_cid = getattr(agent.conversation, "conversation_id", None) or cid
+        rc_url = None
+        if args.remote_control:
+            base_url = os.environ.get("ANTIGRAVITY_REMOTE_CONTROL_BASE_URL", "https://antigravity.google.com").rstrip("/")
+            inst = os.environ.get("ANTIGRAVITY_INSTANCE_NAME", "")
+            suffix = f"?instance={inst.strip()}" if inst and inst.strip() else ""
+            rc_url = f"{base_url}/c/{resolved_cid}{suffix}"
+
         init_payload = {
             "event": "init",
             "conversation_id": resolved_cid,
+            "remote_control_url": rc_url,
             "init": {
                 "runner": "antigravity-sdk",
                 "workspace": workspace_dir,
                 "model": model_name,
+                "remote_control_url": rc_url,
             },
         }
         _flush_json(init_payload)

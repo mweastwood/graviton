@@ -5,8 +5,11 @@ Unit tests for bin/agent_sdk_runner.py (Antigravity Python SDK Agent Runner).
 import asyncio
 import io
 import json
+import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bin.agent_sdk_runner import (
@@ -214,6 +217,171 @@ class TestAgentSdkRunner(unittest.TestCase):
             self.assertEqual(lines[1]["event"], "result")
             self.assertEqual(lines[1]["result"]["status"], "SUCCESS")
             self.assertEqual(lines[1]["result"]["response"], "Hello back!")
+
+    def test_run_agent_turn_empty_prompt(self):
+        async def _test():
+            mock_agent = MagicMock()
+            mock_agent.chat = AsyncMock()
+
+            # Empty string
+            result1 = await run_agent_turn(mock_agent, "", turn_index=1)
+            self.assertEqual(result1["status"], "FAILED")
+            self.assertEqual(result1["error"], "Empty prompt provided")
+            self.assertEqual(result1["response"], "")
+            mock_agent.chat.assert_not_called()
+
+            # Whitespace string
+            result2 = await run_agent_turn(mock_agent, "   \n\t  ", turn_index=2)
+            self.assertEqual(result2["status"], "FAILED")
+            self.assertEqual(result2["error"], "Empty prompt provided")
+            mock_agent.chat.assert_not_called()
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_tool_result_streaming(self):
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockToolResult:
+                def __init__(self, name, result, call_id, error=None):
+                    self.name = name
+                    self.result = result
+                    self.id = call_id
+                    self.error = error
+
+            async def _chunk_iter():
+                yield MockToolResult("run_command", "0", "call-1", error=None)
+                yield MockToolResult("read_file", None, "call-2", error="File not found")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Finished execution.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Execute command", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 2)
+            self.assertEqual(tool_events[0]["step_update"]["state"], "DONE")
+            self.assertEqual(tool_events[0]["step_update"]["tool_name"], "run_command")
+            self.assertEqual(tool_events[0]["step_update"]["id"], "call-1")
+
+            self.assertEqual(tool_events[1]["step_update"]["state"], "ERROR")
+            self.assertEqual(tool_events[1]["step_update"]["tool_name"], "read_file")
+            self.assertEqual(tool_events[1]["step_update"]["id"], "call-2")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_text_delta_fallback(self):
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockText:
+                def __init__(self, text):
+                    self.text = text
+
+            async def _chunk_iter():
+                yield MockText("First line. ")
+                yield MockText("Second line.")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            # Simulate response.text() returning None/empty
+            mock_response.text = AsyncMock(return_value="")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Explain", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            self.assertEqual(result["response"], "First line. Second line.")
+
+        asyncio.run(_test())
+
+    def test_main_async_project_and_skills_paths(self):
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                default_skills = fake_home / ".gemini" / "config" / "skills"
+                default_skills.mkdir(parents=True)
+
+                app_data = Path(temp_dir) / "appdata"
+                cli_skills = app_data / "skills"
+                cli_skills.mkdir(parents=True)
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--project", "vertex-project-xyz",
+                    "--app-data-dir", str(app_data),
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                mock_sdk.LocalAgentConfig.assert_called_once()
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertEqual(call_kwargs.get("project"), "vertex-project-xyz")
+                skills = call_kwargs.get("skills_paths")
+                self.assertIsNotNone(skills)
+                self.assertIn(str(default_skills), skills)
+                self.assertIn(str(cli_skills), skills)
+
+        asyncio.run(_test())
+
+    def test_main_async_remote_control_handshake(self):
+        async def _test():
+            mock_sdk = MagicMock()
+            mock_agent_instance = MagicMock()
+            mock_conversation = MagicMock()
+            mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+            mock_agent_instance.conversation = mock_conversation
+
+            mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+            mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+            stdout_mock = io.StringIO()
+            args = parse_args([
+                "--conversation", "test-conv-uuid-1234567890123456",
+                "--remote-control",
+            ])
+
+            env = {
+                "ANTIGRAVITY_REMOTE_CONTROL_BASE_URL": "https://remote.example.com/",
+                "ANTIGRAVITY_INSTANCE_NAME": "instance-node-1",
+            }
+            with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                 patch.dict(os.environ, env), \
+                 patch.object(sys, "stdin", io.StringIO("")), \
+                 patch.object(sys, "stdout", stdout_mock):
+                exit_code = await main_async(args)
+
+            self.assertEqual(exit_code, 0)
+            lines = [json.loads(l) for l in stdout_mock.getvalue().splitlines() if l.strip()]
+            self.assertTrue(len(lines) >= 1)
+            init_event = lines[0]
+            expected_url = "https://remote.example.com/c/test-conv-uuid-1234567890123456?instance=instance-node-1"
+            self.assertEqual(init_event["remote_control_url"], expected_url)
+            self.assertEqual(init_event["init"]["remote_control_url"], expected_url)
 
         asyncio.run(_test())
 
