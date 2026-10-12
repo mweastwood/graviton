@@ -3226,6 +3226,57 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         with patch("lib.tasks.persistence._atomic_write_json") as mock_write:
             self.assertIs(_get_effective_atomic_write(), mock_write)
 
+    def test_clean_workspace_mock_delegation_in_manager(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _clean_workspace, TaskManager, Task, TaskStatus
+
+        # 1. Test top-level lib.tasks patch
+        with patch("lib.tasks.clean_workspace_dir") as mock_clean:
+            mock_clean.return_value = True
+            res = _clean_workspace(Path("/tmp/fake-workspace"))
+            self.assertTrue(res)
+            mock_clean.assert_called_once_with(Path("/tmp/fake-workspace"))
+
+        # 2. Test manager-level patch
+        with patch("lib.tasks.manager.clean_workspace_dir") as mock_clean_direct:
+            mock_clean_direct.return_value = True
+            res = _clean_workspace(Path("/tmp/fake-workspace-2"))
+            self.assertTrue(res)
+            mock_clean_direct.assert_called_once_with(Path("/tmp/fake-workspace-2"))
+
+        # 3. Test TaskManager.abort_task delegates to mock on lib.tasks
+        mgr = TaskManager(max_workers=1)
+        t = Task(id="abort-clean-test", agent="code_reviewer", prompt="test")
+        t.status = TaskStatus.QUEUED
+        t.cached_workspace_dir = Path("/tmp/graviton-workspaces/cache/abort-clean-test")
+        with mgr._lock:
+            mgr._tasks[t.id] = t
+            mgr._queue.put(t.id)
+
+        with patch("lib.tasks.clean_workspace_dir") as mock_clean:
+            mock_clean.return_value = True
+            aborted = mgr.abort_task(t.id)
+            self.assertTrue(aborted)
+            mock_clean.assert_called_once_with(t.cached_workspace_dir)
+
+    def test_workspaces_mock_delegation(self):
+        from unittest.mock import MagicMock, patch
+        import lib.tasks.workspaces as ws
+
+        # Direct submodule mock delegation
+        with patch("lib.tasks.workspaces.clean_workspace_dir") as mock_direct_clean:
+            self.assertIs(ws._get_effective_clean(), mock_direct_clean)
+
+        with patch("lib.tasks.workspaces.subprocess.run") as mock_direct_subproc:
+            self.assertIs(ws._get_effective_subproc_run(), mock_direct_subproc)
+
+        # Top-level lib.tasks mock delegation
+        with patch("lib.tasks.clean_workspace_dir") as mock_top_clean:
+            self.assertIs(ws._get_effective_clean(), mock_top_clean)
+
+        with patch("lib.tasks.subprocess.run") as mock_top_subproc:
+            self.assertIs(ws._get_effective_subproc_run(), mock_top_subproc)
+
 
 if __name__ == "__main__":
     unittest.main()

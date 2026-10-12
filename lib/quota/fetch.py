@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from typing import Dict, List, Optional, Tuple
@@ -16,6 +17,28 @@ from .endpoint import DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT, resolve_antigravity_qu
 from .parse import parse_all_antigravity_quota_json, parse_antigravity_quota_json
 
 logger = logging.getLogger("graviton.quota")
+
+
+def _get_effective_load_oauth_token():
+    if hasattr(load_oauth_token, "mock_calls") or hasattr(load_oauth_token, "_mock_name"):
+        return load_oauth_token
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "load_oauth_token"):
+        val = getattr(mod, "load_oauth_token")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not load_oauth_token:
+            return val
+    return load_oauth_token
+
+
+def _get_effective_resolve_endpoint():
+    if hasattr(resolve_antigravity_quota_endpoint, "mock_calls") or hasattr(resolve_antigravity_quota_endpoint, "_mock_name"):
+        return resolve_antigravity_quota_endpoint
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "resolve_antigravity_quota_endpoint"):
+        val = getattr(mod, "resolve_antigravity_quota_endpoint")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not resolve_antigravity_quota_endpoint:
+            return val
+    return resolve_antigravity_quota_endpoint
 DEFAULT_GEMINI_MODELS: List[str] = [
     "gemini-3.8-flash-medium",
     "gemini-3.6-flash-high",
@@ -87,13 +110,13 @@ def fetch_all_live_antigravity_quota(
     Returns {pool_name: (QuotaWindow_5h, QuotaWindow_1w)} or None if fetch fails or payload is empty.
     """
     if not token:
-        token = load_oauth_token()
+        token = _get_effective_load_oauth_token()()
 
     if not token:
         logger.warning("No OAuth token available for fetching live Antigravity quota.")
         return None
 
-    target_url = resolve_antigravity_quota_endpoint(api_url)
+    target_url = _get_effective_resolve_endpoint()(api_url)
     payload = json.dumps({}).encode("utf-8")
 
     try:
@@ -164,14 +187,14 @@ def fetch_live_antigravity_quota(
     Returns (QuotaWindow_5h, QuotaWindow_1w) or None if fetch fails.
     """
     if not token:
-        token = load_oauth_token()
+        token = _get_effective_load_oauth_token()()
 
     if not token:
         logger.warning("No OAuth token available for fetching live Antigravity quota.")
         return None
 
     pool = quota_pool if quota_pool is not None else os.getenv("ANTIGRAVITY_QUOTA_POOL", "gemini")
-    target_url = resolve_antigravity_quota_endpoint(api_url)
+    target_url = _get_effective_resolve_endpoint()(api_url)
     payload = json.dumps({}).encode("utf-8")
 
     try:

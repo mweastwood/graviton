@@ -72,6 +72,17 @@ def _get_effective_fetch_all_live_quota():
     return fetch_all_live_antigravity_quota
 
 
+def _get_effective_atomic_write():
+    if hasattr(_atomic_write_json, "mock_calls") or hasattr(_atomic_write_json, "_mock_name"):
+        return _atomic_write_json
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "_atomic_write_json"):
+        val = getattr(mod, "_atomic_write_json")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _atomic_write_json:
+            return val
+    return _atomic_write_json
+
+
 class QuotaTracker:
     """
     Thread-safe tracker for Antigravity API model quota levels and rate limits.
@@ -334,7 +345,8 @@ class QuotaTracker:
                 "quota_pool": self.quota_pool,
             }
         try:
-            _atomic_write_json(path, data, indent=2)
+            write_fn = _get_effective_atomic_write()
+            write_fn(path, data, indent=2)
             logger.info(f"Dumped model selection state to {path}.")
             return True
         except Exception as e:

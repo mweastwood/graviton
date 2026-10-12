@@ -15,6 +15,28 @@ from lib.supervisor import clean_workspace_dir
 logger = logging.getLogger("graviton.tasks")
 
 
+def _get_effective_clean():
+    if hasattr(clean_workspace_dir, "mock_calls") or hasattr(clean_workspace_dir, "_mock_name"):
+        return clean_workspace_dir
+    mod = sys.modules.get("lib.tasks")
+    if mod and hasattr(mod, "clean_workspace_dir"):
+        val = getattr(mod, "clean_workspace_dir")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not clean_workspace_dir:
+            return val
+    return clean_workspace_dir
+
+
+def _get_effective_subproc_run():
+    if hasattr(subprocess.run, "mock_calls") or hasattr(subprocess.run, "_mock_name"):
+        return subprocess.run
+    mod = sys.modules.get("lib.tasks")
+    if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
+        val = mod.subprocess.run
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not subprocess.run:
+            return val
+    return subprocess.run
+
+
 def prune_abandoned_workspaces(
     base_dir: Union[Path, str] = Path("/tmp/graviton-workspaces"),
     max_age_seconds: int = 86400,
@@ -64,11 +86,7 @@ def prune_abandoned_workspaces(
     running_containers = set()
     if has_aged_run:
         try:
-            subproc_run = subprocess.run
-            mod = sys.modules.get("lib.tasks")
-            if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
-                subproc_run = mod.subprocess.run
-            res = subproc_run(
+            res = _get_effective_subproc_run()(
                 ["docker", "ps", "--format", "{{.Names}}"],
                 capture_output=True,
                 text=True,
@@ -89,7 +107,7 @@ def prune_abandoned_workspaces(
                 stream_container_name = f"graviton-stream-run-{run_id}"
                 if container_name in running_containers or stream_container_name in running_containers:
                     continue
-            if clean_workspace_dir(target):
+            if _get_effective_clean()(target):
                 pruned_count += 1
                 logger.info(f"Garbage collected abandoned workspace directory: {target}")
         except Exception as err:

@@ -55,6 +55,10 @@ def _get_effective_subproc_run():
     return subprocess.run
 
 
+def _clean_workspace(path: Optional[Union[Path, str]]) -> bool:
+    return _get_effective("clean_workspace_dir", clean_workspace_dir)(path)
+
+
 class TaskManager:
     """
     Thread-safe Task Manager managing pending queued tasks, active workers,
@@ -678,7 +682,7 @@ class TaskManager:
                 task.finish_time = time.time()
                 task.error_message = "Aborted by user"
                 if task.cached_workspace_dir:
-                    clean_workspace_dir(task.cached_workspace_dir)
+                    _clean_workspace(task.cached_workspace_dir)
                 self._rebuild_queue_locked()
                 self._prune_tasks_locked()
                 self._task_state_cond.notify_all()
@@ -726,7 +730,7 @@ class TaskManager:
                 logger.warning(f"Error terminating process for task '{task_id}': {e}")
 
         if task_to_cleanup and task_to_cleanup.cached_workspace_dir:
-            clean_workspace_dir(task_to_cleanup.cached_workspace_dir)
+            _clean_workspace(task_to_cleanup.cached_workspace_dir)
 
         return True
 
@@ -890,7 +894,7 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                         self._prune_tasks_locked()
                         self._task_state_cond.notify_all()
                         continue
@@ -919,7 +923,7 @@ class TaskManager:
                                 if task.status == TaskStatus.ABORTED:
                                     logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to clone. Skipping execution.")
                                     if task.cached_workspace_dir:
-                                        clean_workspace_dir(task.cached_workspace_dir)
+                                        _clean_workspace(task.cached_workspace_dir)
                                     self._prune_tasks_locked()
                                     self._task_state_cond.notify_all()
                                     continue
@@ -950,7 +954,7 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to process creation. Skipping execution.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                         self._prune_tasks_locked()
                         self._task_state_cond.notify_all()
                         continue
@@ -1037,7 +1041,7 @@ class TaskManager:
                         if task.status == TaskStatus.ABORTED:
                             logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED prior to supervisor execution.")
                             if task.cached_workspace_dir:
-                                clean_workspace_dir(task.cached_workspace_dir)
+                                _clean_workspace(task.cached_workspace_dir)
                             self._prune_tasks_locked()
                             self._task_state_cond.notify_all()
                             continue
@@ -1160,14 +1164,14 @@ class TaskManager:
                     if task.status == TaskStatus.ABORTED:
                         logger.info(f"[{worker_id}] Task '{task.id}' was ABORTED by user.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                     elif return_code == 0:
                         task.finish_time = time.time()
                         task.return_code = return_code
                         task.status = TaskStatus.COMPLETED
                         logger.info(f"[{worker_id}] Task '{task.id}' COMPLETED successfully.")
                         if task.cached_workspace_dir:
-                            clean_workspace_dir(task.cached_workspace_dir)
+                            _clean_workspace(task.cached_workspace_dir)
                     else:
                         if task.attempt >= task.max_attempts:
                             if task.attempt < task.max_total_attempts:
@@ -1193,7 +1197,7 @@ class TaskManager:
                                     f"({task.attempt}/{task.max_total_attempts})."
                                 )
                                 if task.cached_workspace_dir:
-                                    clean_workspace_dir(task.cached_workspace_dir)
+                                    _clean_workspace(task.cached_workspace_dir)
                         else:
                             task.finish_time = time.time()
                             task.return_code = return_code
@@ -1201,7 +1205,7 @@ class TaskManager:
                             task.error_message = stderr_output or f"Process exited with code {return_code}"
                             logger.error(f"[{worker_id}] Task '{task.id}' FAILED (exit code {return_code}).")
                             if task.cached_workspace_dir:
-                                clean_workspace_dir(task.cached_workspace_dir)
+                                _clean_workspace(task.cached_workspace_dir)
                     self._prune_tasks_locked()
                     self._task_state_cond.notify_all()
             except Exception as e:
@@ -1214,7 +1218,7 @@ class TaskManager:
                         task.error_message = str(e)
                         task.status = TaskStatus.FAILED
                     if task.cached_workspace_dir:
-                        clean_workspace_dir(task.cached_workspace_dir)
+                        _clean_workspace(task.cached_workspace_dir)
                     self._prune_tasks_locked()
                     self._task_state_cond.notify_all()
             finally:

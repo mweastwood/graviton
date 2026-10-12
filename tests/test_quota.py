@@ -3006,6 +3006,44 @@ class TestParseResetTime(unittest.TestCase):
             quota.fetch_live_antigravity_quota = orig_live
             quota.fetch_all_live_antigravity_quota = orig_all
 
+    def test_atomic_write_mock_delegation_in_quota_tracker(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.tracker as tracker
+        from lib.quota.tracker import QuotaTracker
+
+        # Top-level patch on lib.quota._atomic_write_json
+        with patch("lib.quota._atomic_write_json") as mock_write:
+            self.assertIs(tracker._get_effective_atomic_write(), mock_write)
+            qt = QuotaTracker()
+            qt.dump_model_selection(Path("/tmp/fake_model_selection.json"))
+            mock_write.assert_called_once()
+
+        # Direct patch on lib.quota.tracker._atomic_write_json
+        with patch("lib.quota.tracker._atomic_write_json") as mock_write_direct:
+            self.assertIs(tracker._get_effective_atomic_write(), mock_write_direct)
+
+    def test_fetch_mock_delegation_in_quota_fetch(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.fetch as fetch
+
+        # Direct submodule mock delegation
+        with patch("lib.quota.fetch.load_oauth_token") as mock_direct_token:
+            self.assertIs(fetch._get_effective_load_oauth_token(), mock_direct_token)
+
+        with patch("lib.quota.fetch.resolve_antigravity_quota_endpoint") as mock_direct_endpoint:
+            self.assertIs(fetch._get_effective_resolve_endpoint(), mock_direct_endpoint)
+
+        # Top-level lib.quota mock delegation
+        with patch("lib.quota.load_oauth_token") as mock_top_token:
+            self.assertIs(fetch._get_effective_load_oauth_token(), mock_top_token)
+            mock_top_token.return_value = None
+            res = fetch.fetch_live_antigravity_quota(token=None)
+            self.assertIsNone(res)
+            mock_top_token.assert_called_once()
+
+        with patch("lib.quota.resolve_antigravity_quota_endpoint") as mock_top_endpoint:
+            self.assertIs(fetch._get_effective_resolve_endpoint(), mock_top_endpoint)
+
 
 if __name__ == "__main__":
     unittest.main()
