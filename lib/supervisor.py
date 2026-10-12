@@ -1123,11 +1123,13 @@ class ContainerSupervisor:
         cli_dir: Optional[Union[str, Path]] = None,
         ssh_dir: Optional[Union[str, Path]] = None,
         runner: Optional[str] = None,
+        allow_custom_runner: bool = True,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
         self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).lower()
+        self.allow_custom_runner = allow_custom_runner
         self.image_name = image_name or os.environ.get("ANTIGRAVITY_IMAGE", "antigravity-agent:latest")
         self.remote_control = remote_control
         self.dangerously_skip_permissions = dangerously_skip_permissions
@@ -1396,9 +1398,16 @@ class ContainerSupervisor:
         # Ephemeral workspace mount
         cmd.extend(["-v", f"{self.temp_workspace.resolve()}:/workspace", "-w", "/workspace"])
 
-        # Mount SDK runner script if present
-        sdk_runner_path = self.repo_dir / "bin" / "agent_sdk_runner.py"
-        if not sdk_runner_path.is_file():
+        # Mount SDK runner script if present.
+        # Prioritizing self.repo_dir / "bin" / "agent_sdk_runner.py" enables testing and
+        # runner development for trusted repositories. When allow_custom_runner is False,
+        # only Graviton's internal supervisor runner is mounted.
+        sdk_runner_path = None
+        if self.allow_custom_runner:
+            repo_runner = self.repo_dir / "bin" / "agent_sdk_runner.py"
+            if repo_runner.is_file():
+                sdk_runner_path = repo_runner
+        if not sdk_runner_path:
             sdk_runner_path = Path(__file__).resolve().parent.parent / "bin" / "agent_sdk_runner.py"
         if sdk_runner_path.is_file():
             cmd.extend(["-v", f"{sdk_runner_path.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro"])
@@ -1554,14 +1563,18 @@ class ContainerSupervisor:
                     "--input-format", "stream-json",
                     "--output-format", "stream-json",
                 ]
+                if self.dangerously_skip_permissions:
+                    inner_cmd.append("--dangerously-skip-permissions")
+                else:
+                    inner_cmd.append("--no-dangerously-skip-permissions")
             else:
                 inner_cmd = [
                     "agy",
                     "--input-format", "stream-json",
                     "--output-format", "stream-json",
                 ]
-            if self.dangerously_skip_permissions:
-                inner_cmd.append("--dangerously-skip-permissions")
+                if self.dangerously_skip_permissions:
+                    inner_cmd.append("--dangerously-skip-permissions")
             if self.remote_control:
                 inner_cmd.append("--remote-control")
             # Note: Do not pass '--agent' in container mode. Passing '--agent' causes agy to enter
@@ -1724,11 +1737,12 @@ class ContainerSupervisor:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """Execute an autonomous /goal in the container session."""
         clean_goal = goal.strip()
         prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -1823,6 +1837,7 @@ def run_container_turn(
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
     runner: Optional[str] = None,
+    allow_custom_runner: bool = True,
     **kwargs: Any,
 ) -> SupervisorResult:
     """
@@ -1849,6 +1864,7 @@ def run_container_turn(
         agy_binary=agy_binary,
         cache_dir=cache_dir,
         runner=runner,
+        allow_custom_runner=allow_custom_runner,
     ) as supervisor:
         extra = dict(kwargs)
         if on_thought is not None:
@@ -1896,6 +1912,8 @@ def run_container_goal(
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
     runner: Optional[str] = None,
+    allow_custom_runner: bool = True,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute an autonomous /goal in an isolated container.
@@ -1921,8 +1939,9 @@ def run_container_goal(
         agy_binary=agy_binary,
         cache_dir=cache_dir,
         runner=runner,
+        allow_custom_runner=allow_custom_runner,
     ) as supervisor:
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:

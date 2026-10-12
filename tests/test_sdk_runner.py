@@ -54,6 +54,10 @@ class TestAgentSdkRunner(unittest.TestCase):
         self.assertEqual(args.workspace, "/tmp/test-workspace")
         self.assertTrue(args.remote_control)
 
+    def test_parse_args_no_dangerously_skip_permissions(self):
+        args = parse_args(["--no-dangerously-skip-permissions"])
+        self.assertFalse(args.dangerously_skip_permissions)
+
     def test_extract_prompt(self):
         # Direct prompt field
         self.assertEqual(_extract_prompt({"prompt": "Hello world"}), "Hello world")
@@ -342,6 +346,38 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_tool_call_none_args(self):
+        """Verify chunk.args=None produces empty dictionary for tool_info."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockToolCall:
+                def __init__(self, name, args, call_id):
+                    self.name = name
+                    self.args = args
+                    self.id = call_id
+
+            async def _chunk_iter():
+                yield MockToolCall("custom_tool", None, "call-none-args")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Done.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Run tool", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 1)
+            self.assertEqual(tool_events[0]["step_update"]["tool_name"], "custom_tool")
+            self.assertEqual(tool_events[0]["step_update"]["tool_info"], {})
+
+        asyncio.run(_test())
+
     def test_run_agent_turn_text_delta_fallback(self):
         async def _test():
             mock_agent = MagicMock()
@@ -448,6 +484,36 @@ class TestAgentSdkRunner(unittest.TestCase):
             expected_url = "https://remote.example.com/c/test-conv-uuid-1234567890123456?instance=instance-node-1"
             self.assertEqual(init_event["remote_control_url"], expected_url)
             self.assertEqual(init_event["init"]["remote_control_url"], expected_url)
+
+        asyncio.run(_test())
+
+    def test_main_async_no_dangerously_skip_permissions_policies(self):
+        async def _test():
+            mock_sdk = MagicMock()
+            mock_agent_instance = MagicMock()
+            mock_conversation = MagicMock()
+            mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+            mock_agent_instance.conversation = mock_conversation
+
+            mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+            mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+            args = parse_args([
+                "--conversation", "test-conv-uuid-1234567890123456",
+                "--no-dangerously-skip-permissions",
+            ])
+
+            with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                 patch.object(sys, "stdin", io.StringIO("")), \
+                 patch.object(sys, "stdout", io.StringIO()):
+                exit_code = await main_async(args)
+
+            self.assertEqual(exit_code, 0)
+            mock_sdk.LocalAgentConfig.assert_called_once()
+            call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+            self.assertIsNone(call_kwargs.get("policies"))
+            mock_sdk.policy.allow_all.assert_not_called()
 
         asyncio.run(_test())
 

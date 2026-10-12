@@ -111,7 +111,7 @@ async def run_agent_turn(
                     "step_update": {
                         "step_type": "tool",
                         "tool_name": tool_name,
-                        "tool_info": getattr(chunk, "args", {}),
+                        "tool_info": getattr(chunk, "args", None) or {},
                         "id": tool_id,
                         "call_id": tool_id,
                         "tool_call_id": tool_id,
@@ -307,7 +307,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Antigravity Python SDK Agent Runner for Graviton")
     parser.add_argument("--input-format", default="stream-json", help="Input format (default: stream-json)")
     parser.add_argument("--output-format", default="stream-json", help="Output format (default: stream-json)")
-    parser.add_argument("--dangerously-skip-permissions", action="store_true", default=True, help="Auto-approve tool permissions")
+    parser.add_argument(
+        "--dangerously-skip-permissions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-approve tool permissions",
+    )
     parser.add_argument("--remote-control", action="store_true", help="Enable remote control registration")
     parser.add_argument("--model", type=str, default=None, help="Target model name")
     parser.add_argument("--project", type=str, default=None, help="Project name or ID")

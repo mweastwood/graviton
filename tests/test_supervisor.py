@@ -1398,6 +1398,42 @@ class TestContainerSupervisor(unittest.TestCase):
             if custom_runner.exists():
                 custom_runner.unlink()
 
+    def test_build_docker_command_sdk_runner_allow_custom_runner_false(self):
+        """Verify build_docker_command ignores repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=False."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_disabled_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+                allow_custom_runner=False,
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertNotIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+            self.assertTrue(any("/usr/local/bin/agent_sdk_runner.py:ro" in arg for arg in cmd))
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
+    def test_build_docker_command_sdk_runner_no_dangerously_skip_permissions(self):
+        """Verify build_docker_command with runner='sdk' and dangerously_skip_permissions=False passes --no-dangerously-skip-permissions."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sdk_no_perms_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="sdk",
+            dangerously_skip_permissions=False,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn("--no-dangerously-skip-permissions", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
         """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""
         with patch.dict(os.environ, {}, clear=True), \
@@ -1729,6 +1765,41 @@ class TestContainerSupervisor(unittest.TestCase):
                 runner="sdk",
             )
             self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "sdk")
+
+    def test_run_isolated_agent_goal_kwargs_propagation(self):
+        """Verify run_isolated_agent_goal forwards arbitrary kwargs to supervisor.run_goal."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            res = run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                custom_kwarg="val123",
+                extra_number=99,
+            )
+            self.assertEqual(res.status, "SUCCESS")
+            mock_inst.run_goal.assert_called_once()
+            call_kwargs = mock_inst.run_goal.call_args.kwargs
+            self.assertEqual(call_kwargs.get("custom_kwarg"), "val123")
+            self.assertEqual(call_kwargs.get("extra_number"), 99)
+
+    def test_container_supervisor_run_goal_forwards_kwargs_to_run_turn(self):
+        """Verify ContainerSupervisor.run_goal forwards extra kwargs down to run_turn."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="run_goal_kwargs_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with patch.object(sup, "run_turn") as mock_run_turn:
+            mock_run_turn.return_value = SupervisorResult(status="SUCCESS")
+            res = sup.run_goal("Test goal", custom_param="hello", test_flag=True)
+            self.assertEqual(res.status, "SUCCESS")
+            mock_run_turn.assert_called_once()
+            call_kwargs = mock_run_turn.call_args.kwargs
+            self.assertEqual(call_kwargs.get("custom_param"), "hello")
+            self.assertEqual(call_kwargs.get("test_flag"), True)
 
 
 class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
