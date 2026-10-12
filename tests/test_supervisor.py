@@ -1397,7 +1397,7 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertEqual(sup2.runner, "agy")
 
     def test_build_docker_command_sdk_runner_resolution_order(self):
-        """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py."""
+        """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=True."""
         custom_bin = self.repo_dir / "bin"
         custom_bin.mkdir(parents=True, exist_ok=True)
         custom_runner = custom_bin / "agent_sdk_runner.py"
@@ -1408,6 +1408,7 @@ class TestContainerSupervisor(unittest.TestCase):
                 run_id="sdk_res_order_test",
                 base_workspaces_dir=self.tmp_dir.name,
                 runner="sdk",
+                allow_custom_runner=True,
             )
             sup.prepare_workspace()
             cmd = sup.build_docker_command()
@@ -1415,6 +1416,39 @@ class TestContainerSupervisor(unittest.TestCase):
         finally:
             if custom_runner.exists():
                 custom_runner.unlink()
+
+    def test_build_docker_command_sdk_runner_allow_custom_runner_default_false(self):
+        """Verify build_docker_command ignores repo_dir/bin/agent_sdk_runner.py by default (allow_custom_runner=False)."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_default_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+            )
+            self.assertFalse(sup.allow_custom_runner)
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertNotIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+            self.assertTrue(any("/usr/local/bin/agent_sdk_runner.py:ro" in arg for arg in cmd))
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
+    def test_supervisor_invalid_runner_raises_value_error(self):
+        """Verify ContainerSupervisor raises ValueError when an invalid runner option is passed."""
+        with self.assertRaises(ValueError) as ctx:
+            ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="invalid_runner_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="invalid_runner",
+            )
+        self.assertIn("Invalid runner 'invalid_runner', must be 'sdk' or 'agy'", str(ctx.exception))
 
     def test_build_docker_command_sdk_runner_allow_custom_runner_false(self):
         """Verify build_docker_command ignores repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=False."""

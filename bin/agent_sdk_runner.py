@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -100,13 +101,6 @@ async def run_agent_turn(
         text_parts = []
         async for chunk in response.chunks:
             chunk_type = type(chunk).__name__
-            thought_cls = getattr(ag_types, "Thought", None)
-            is_thought = (
-                chunk_type.endswith("Thought")
-                or (isinstance(thought_cls, type) and isinstance(chunk, thought_cls))
-                or hasattr(chunk, "thought")
-                or hasattr(chunk, "thinking")
-            )
             tool_result_cls = getattr(ag_types, "ToolResult", None)
             is_tool_result = (
                 chunk_type.endswith("ToolResult")
@@ -122,6 +116,17 @@ async def run_agent_turn(
                 )
                 and not is_tool_result
             )
+            thought_cls = getattr(ag_types, "Thought", None)
+            is_thought = (
+                (
+                    chunk_type.endswith("Thought")
+                    or (isinstance(thought_cls, type) and isinstance(chunk, thought_cls))
+                    or hasattr(chunk, "thought")
+                    or hasattr(chunk, "thinking")
+                )
+                and not is_tool_call
+                and not is_tool_result
+            )
             text_cls = getattr(ag_types, "Text", None)
             is_text = (
                 chunk_type.endswith("Text")
@@ -130,12 +135,13 @@ async def run_agent_turn(
             )
 
             if is_thought:
-                thought_text = (
-                    getattr(chunk, "thought", None)
-                    or getattr(chunk, "thinking", None)
-                    or getattr(chunk, "text", None)
-                    or str(chunk)
-                )
+                thought_raw = None
+                for attr in ("thought", "thinking", "text"):
+                    val = getattr(chunk, attr, None)
+                    if val is not None and not callable(val):
+                        thought_raw = val
+                        break
+                thought_text = str(thought_raw) if thought_raw is not None else str(chunk)
                 _flush_json({
                     "event": "step_update",
                     "step_update": {
@@ -274,7 +280,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
     # Load agent persona instructions if provided
     instructions = args.instructions or os.environ.get("ANTIGRAVITY_SYSTEM_INSTRUCTIONS")
-    if not instructions and args.agent:
+    if not instructions and args.agent and re.match(r"^[a-zA-Z0-9_\-]+$", args.agent):
         agent_paths = [
             Path.home() / ".gemini" / "config" / "agents" / args.agent / "agent.md",
             Path.home() / ".gemini" / "config" / "agents" / f"{args.agent}.md",

@@ -1132,12 +1132,14 @@ class ContainerSupervisor:
         cli_dir: Optional[Union[str, Path]] = None,
         ssh_dir: Optional[Union[str, Path]] = None,
         runner: Optional[str] = None,
-        allow_custom_runner: bool = True,
+        allow_custom_runner: bool = False,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
         self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).strip().lower()
+        if self.runner not in ("sdk", "agy"):
+            raise ValueError(f"Invalid runner '{self.runner}', must be 'sdk' or 'agy'")
         self.allow_custom_runner = allow_custom_runner
         self.image_name = image_name or os.environ.get("ANTIGRAVITY_IMAGE", "antigravity-agent:latest")
         self.remote_control = remote_control
@@ -1846,7 +1848,7 @@ def run_container_turn(
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
     runner: Optional[str] = None,
-    allow_custom_runner: bool = True,
+    allow_custom_runner: bool = False,
     **kwargs: Any,
 ) -> SupervisorResult:
     """
@@ -1921,7 +1923,7 @@ def run_container_goal(
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
     runner: Optional[str] = None,
-    allow_custom_runner: bool = True,
+    allow_custom_runner: bool = False,
     **kwargs: Any,
 ) -> SupervisorResult:
     """

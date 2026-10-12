@@ -1192,6 +1192,102 @@ class TestAgentSdkRunner(unittest.TestCase):
         # Nested prompt dict with inner prompt string
         self.assertEqual(_extract_prompt({"prompt": {"prompt": "Inner prompt string"}}), "Inner prompt string")
 
+    def test_main_async_agent_persona_traversal_sanitization(self):
+        """Verify that agent names with directory traversal characters are rejected."""
+        async def _test():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                fake_home = Path(temp_dir) / "home"
+                fake_home.mkdir(parents=True)
+                traversal_target = fake_home / "evil.md"
+                traversal_target.write_text("# Malicious persona", encoding="utf-8")
+
+                mock_sdk = MagicMock()
+                mock_agent_instance = MagicMock()
+                mock_conversation = MagicMock()
+                mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+                mock_agent_instance.conversation = mock_conversation
+
+                mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+                mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+                mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+                args = parse_args([
+                    "--conversation", "test-conv-uuid-1234567890123456",
+                    "--agent", "../../evil",
+                ])
+
+                with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                     patch.object(Path, "home", return_value=fake_home), \
+                     patch.object(sys, "stdin", io.StringIO("")), \
+                     patch.object(sys, "stdout", io.StringIO()):
+                    exit_code = await main_async(args)
+
+                self.assertEqual(exit_code, 0)
+                mock_sdk.LocalAgentConfig.assert_called_once()
+                call_kwargs = mock_sdk.LocalAgentConfig.call_args.kwargs
+                self.assertIsNone(call_kwargs.get("system_instructions"))
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_chunk_classification_collision_prevention(self):
+        """Verify tool calls and tool results with thought/thinking attributes are not misclassified as thoughts."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class ToolCallWithThought:
+                def __init__(self, name, args, call_id):
+                    self.name = name
+                    self.args = args
+                    self.id = call_id
+                    self.thought = "Tool thinking attribute"
+                    self.thinking = "Tool thinking step"
+
+            class ToolResultWithThought:
+                def __init__(self, name, result, call_id):
+                    self.name = name
+                    self.result = result
+                    self.id = call_id
+                    self.thought = "Tool result thought attribute"
+
+            class ThoughtChunkWithCallable:
+                def __init__(self, thinking_val):
+                    self.thinking = thinking_val
+
+                def thought(self):
+                    return "should not be called"
+
+            async def _chunk_iter():
+                yield ToolCallWithThought("search_code", {"query": "supervisor"}, "call-col-1")
+                yield ToolResultWithThought("search_code", {"found": True}, "call-col-1")
+                yield ThoughtChunkWithCallable("Actual thinking string")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Done.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Investigate collisions", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+
+            tool_calls = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool" and l.get("step_update", {}).get("state") == "RUNNING"]
+            tool_results = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool" and l.get("step_update", {}).get("state") == "DONE"]
+            thought_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "agent_response" and "thought" in l.get("step_update", {})]
+
+            self.assertEqual(len(tool_calls), 1)
+            self.assertEqual(tool_calls[0]["step_update"]["tool_name"], "search_code")
+
+            self.assertEqual(len(tool_results), 1)
+            self.assertEqual(tool_results[0]["step_update"]["result"], {"found": True})
+
+            self.assertEqual(len(thought_events), 1)
+            self.assertEqual(thought_events[0]["step_update"]["thought"], "Actual thinking string")
+
+        asyncio.run(_test())
+
 
 if __name__ == "__main__":
     unittest.main()
