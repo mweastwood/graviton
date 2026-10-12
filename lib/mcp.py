@@ -251,16 +251,43 @@ class GravitonMCPServer:
         ]
         tasks = data.get("tasks", {})
         if tasks:
+            active_workers = tasks.get("active_workers")
+            if active_workers is None:
+                active_workers = tasks.get("running", 0) if tasks.get("running") is not None else 0
+
+            max_workers = tasks.get("max_workers")
+            if max_workers is None:
+                max_workers = 0
+
+            running_tasks = tasks.get("active_tasks")
+            if running_tasks is None:
+                running_tasks = tasks.get("running", 0) if tasks.get("running") is not None else 0
+
+            queued_tasks = tasks.get("queued_tasks")
+            if queued_tasks is None:
+                if "queued" in tasks or "paused" in tasks:
+                    queued_tasks = (tasks.get("queued") or 0) + (tasks.get("paused") or 0)
+                else:
+                    queued_tasks = 0
+
+            completed_tasks = tasks.get("completed_tasks")
+            if completed_tasks is None:
+                completed_tasks = tasks.get("completed", 0) if tasks.get("completed") is not None else 0
+
             failed_count = tasks.get("failed_tasks")
             if failed_count is None:
-                failed_count = tasks.get("failed", 0) + tasks.get("aborted", 0) if ("failed" in tasks or "aborted" in tasks) else 0
+                if "failed" in tasks or "aborted" in tasks:
+                    failed_count = (tasks.get("failed") or 0) + (tasks.get("aborted") or 0)
+                else:
+                    failed_count = 0
+
             lines.extend([
                 "",
                 "📊 **Task Pipeline**:",
-                f"- Active Workers: {tasks.get('active_workers', tasks.get('running', 0))} / {tasks.get('max_workers', 0)}",
-                f"- Running Tasks: {tasks.get('active_tasks', tasks.get('running', 0))}",
-                f"- Queued Tasks: {tasks.get('queued_tasks', tasks.get('queued', 0))}",
-                f"- Completed: {tasks.get('completed_tasks', tasks.get('completed', 0))}",
+                f"- Active Workers: {active_workers} / {max_workers}",
+                f"- Running Tasks: {running_tasks}",
+                f"- Queued Tasks: {queued_tasks}",
+                f"- Completed: {completed_tasks}",
                 f"- Failed: {failed_count}",
             ])
         quota = data.get("quota", {})

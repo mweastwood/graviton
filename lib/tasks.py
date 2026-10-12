@@ -1316,7 +1316,7 @@ class TaskManager:
                 "aborted": aborted,
                 "active_workers": running,
                 "active_tasks": running,
-                "queued_tasks": queued,
+                "queued_tasks": queued + paused,
                 "completed_tasks": completed,
                 "failed_tasks": failed + aborted,
                 "max_workers": self.max_workers,

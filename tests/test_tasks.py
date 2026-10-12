@@ -1774,21 +1774,27 @@ class TestTaskManager(unittest.TestCase):
         manager = TaskManager(max_workers=3)
         t_run = Task(id="t-run", agent="code_reviewer", prompt="run", status=TaskStatus.RUNNING)
         t_queued = Task(id="t-q", agent="code_fixer", prompt="queue", status=TaskStatus.QUEUED)
+        t_paused = Task(id="t-paused", agent="code_reviewer", prompt="pause", status=TaskStatus.PAUSED_FOR_QUOTA)
         t_done = Task(id="t-done", agent="pr_drafter", prompt="done", status=TaskStatus.COMPLETED)
         t_fail = Task(id="t-fail", agent="code_fixer", prompt="fail", status=TaskStatus.FAILED)
         t_abort = Task(id="t-abort", agent="code_reviewer", prompt="abort", status=TaskStatus.ABORTED)
         with manager._lock:
             manager._tasks = {
-                t.id: t for t in [t_run, t_queued, t_done, t_fail, t_abort]
+                t.id: t for t in [t_run, t_queued, t_paused, t_done, t_fail, t_abort]
             }
 
         stats = manager.get_stats()
         self.assertEqual(stats["active_workers"], 1)
         self.assertEqual(stats["active_tasks"], 1)
-        self.assertEqual(stats["queued_tasks"], 1)
+        self.assertEqual(stats["queued_tasks"], 2)
         self.assertEqual(stats["completed_tasks"], 1)
         self.assertEqual(stats["failed_tasks"], 2)
         self.assertEqual(stats["max_workers"], 3)
+        self.assertEqual(stats["total"], 6)
+        self.assertEqual(
+            stats["active_tasks"] + stats["queued_tasks"] + stats["completed_tasks"] + stats["failed_tasks"],
+            stats["total"],
+        )
 
     def test_worker_loop_paused_or_draining_backoff(self):
         manager = TaskManager(max_workers=0)

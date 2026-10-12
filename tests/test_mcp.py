@@ -102,6 +102,47 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertIn("95.0%", content)
 
     @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_status_fallback_and_none(self, mock_http):
+        mock_http.return_value = (
+            200,
+            {
+                "service": "graviton-server",
+                "status": "ok",
+                "reviewer_agent": "code_reviewer",
+                "fixer_agent": "code_fixer",
+                "tasks": {
+                    "active_workers": None,
+                    "max_workers": 4,
+                    "active_tasks": None,
+                    "queued_tasks": None,
+                    "completed_tasks": None,
+                    "failed_tasks": None,
+                    "running": 2,
+                    "queued": 3,
+                    "paused": 1,
+                    "completed": 5,
+                    "failed": 1,
+                    "aborted": 1,
+                },
+                "quota": {"current_pool": "gemini", "gemini_remaining_percentage": 95.0},
+            },
+        )
+        req = {
+            "jsonrpc": "2.0",
+            "id": 66,
+            "method": "tools/call",
+            "params": {"name": "graviton_status", "arguments": {}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("Active Workers: 2 / 4", content)
+        self.assertIn("Running Tasks: 2", content)
+        self.assertIn("Queued Tasks: 4", content)
+        self.assertIn("Completed: 5", content)
+        self.assertIn("Failed: 2", content)
+
+    @patch.object(GravitonMCPServer, "_http_request")
     def test_tool_graviton_list_tasks(self, mock_http):
         mock_http.return_value = (
             200,
