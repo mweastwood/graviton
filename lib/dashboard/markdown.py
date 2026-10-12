@@ -13,6 +13,7 @@ from lib.dashboard.common import (
     _build_pacing_details,
     format_duration,
     format_percentage,
+    format_timestamp,
     is_safe_url,
     logger,
     resolve_target_url,
@@ -547,24 +548,37 @@ def _md_history(ctx: Dict[str, Any]) -> List[str]:
     ]
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Model | Target | Duration | Status | Details |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
-            dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-            icon = "✅" if t.status == TaskStatus.COMPLETED else "❌"
-            target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            is_dict = isinstance(t, dict)
+            t_finish = t.get("finish_time") if is_dict else getattr(t, "finish_time", None)
+            t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+            dur = format_duration(t_finish - t_start) if (t_finish and t_start) else "N/A"
+            t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
+            icon = "✅" if str(t_status) in (TaskStatus.COMPLETED, "COMPLETED", "TaskStatus.COMPLETED") else "❌"
+            target_disp = (t.get("target_id") or t.get("repo_full_name")) if is_dict else (getattr(t, "target_id", None) or (getattr(t, "repo_full_name", None) if getattr(t, "repo_full_name", None) else "N/A"))
+            target_disp = target_disp or "N/A"
+            model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
             model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
-            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+            agent_val = t.get("agent") if is_dict else getattr(t, "agent", None)
+            target_url = resolve_target_url(target_disp, repo=repo_val, agent=agent_val)
             target_cell = _format_target_markdown_cell(target_disp, target_url)
-            if t.error_message:
-                clean_err = str(t.error_message).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            ts_val = (t.get("timestamp") or t_finish or t_start) if is_dict else (t_finish or t_start)
+            ts_disp = format_timestamp(ts_val).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            err_msg = t.get("error_message") if is_dict else getattr(t, "error_message", None)
+            if err_msg:
+                clean_err = str(err_msg).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
                 detail = f"`{clean_err[:40]}...`" if len(clean_err) > 40 else f"`{clean_err}`"
             else:
-                detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t.status}` | {detail} |")
+                raw_detail = t.get("details", "Finished") if is_dict else "Finished"
+                detail = str(raw_detail).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+            t_agent = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+            lines.append(f"| `{t_id}` | `{t_agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t_status}` | {ts_disp} | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])

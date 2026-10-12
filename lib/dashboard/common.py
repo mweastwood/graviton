@@ -4,7 +4,9 @@ Common utilities, constants, formatting, and target URL resolution for Graviton 
 Zero external dependencies (Python standard library only).
 """
 
+import datetime
 import logging
+import math
 import os
 import re
 import subprocess
@@ -116,6 +118,69 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
     except (ValueError, TypeError):
         return default
+
+
+_REAL_DATETIME = datetime.datetime
+_REAL_DATE = datetime.date
+
+
+def format_timestamp(ts: Any) -> str:
+    """Format Unix timestamp, ISO string, datetime, or date into human readable UTC timestamp (e.g., 2026-10-11 20:07:00 UTC)."""
+    if ts is None or ts == "" or ts == "-" or isinstance(ts, bool):
+        return "-"
+    try:
+        if isinstance(ts, _REAL_DATETIME):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=datetime.timezone.utc)
+            return ts.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except TypeError:
+        pass
+    if hasattr(ts, "strftime") and hasattr(ts, "astimezone"):
+        try:
+            if getattr(ts, "tzinfo", None) is None:
+                ts = ts.replace(tzinfo=datetime.timezone.utc)
+            return ts.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            pass
+    try:
+        if isinstance(ts, _REAL_DATE):
+            dt = _REAL_DATETIME.combine(ts, datetime.time.min, tzinfo=datetime.timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except TypeError:
+        pass
+    if hasattr(ts, "strftime") and not hasattr(ts, "astimezone"):
+        try:
+            dt = _REAL_DATETIME.combine(ts, datetime.time.min, tzinfo=datetime.timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            pass
+    if isinstance(ts, (int, float)):
+        try:
+            val = float(ts)
+            if math.isnan(val) or math.isinf(val):
+                return "-"
+            return _REAL_DATETIME.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError, OverflowError, OSError):
+            return "-"
+    if not isinstance(ts, str):
+        return "-"
+    clean = ts.strip()
+    if not clean or clean == "-" or clean.lower() in ("none", "null", "n/a", "unknown"):
+        return "-"
+    try:
+        val = float(clean)
+        if math.isnan(val) or math.isinf(val):
+            return "-"
+        return _REAL_DATETIME.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    try:
+        dt = _REAL_DATETIME.fromisoformat(clean.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return clean
 
 
 def is_safe_url(url: Optional[str]) -> bool:

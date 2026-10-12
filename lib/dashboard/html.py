@@ -25,6 +25,7 @@ from lib.dashboard.common import (
     calculate_target_pacing_from_details,
     format_duration,
     format_percentage,
+    format_timestamp,
     get_quota_color,
     is_safe_url,
     logger,
@@ -342,6 +343,8 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         else:
             detail_html = '<span class="text-muted">Finished</span>'
         model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
+        timestamp = html.escape(str(t.get("timestamp", "-") or "-"))
+        ts_cell = f'<span class="text-muted">{timestamp}</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
@@ -349,11 +352,12 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             f'<td>{target_html}</td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
+            f'<td>{ts_cell}</td>'
             f'<td>{detail_html}</td></tr>'
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -439,51 +443,77 @@ def _enrich_dashboard_data(
                 if act_objs:
                     now_ts = time.time()
                     for t in act_objs:
-                        elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
-                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        is_dict = isinstance(t, dict)
+                        t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+                        elapsed = format_duration(now_ts - t_start) if t_start else "starting..."
+                        model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                        repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                        agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                        target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                        target_id = target_disp or "N/A"
+                        t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                        t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
                         data["active_tasks"].append({
-                            "id": t.id,
-                            "agent": t.agent,
+                            "id": t_id,
+                            "agent": agent_val,
                             "model": model_name,
                             "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                            "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
                             "elapsed": elapsed,
-                            "status": str(t.status),
+                            "status": str(t_status),
                         })
             if not data["queued_tasks_list"]:
                 q_objs = task_manager.get_queued_tasks()
                 if q_objs:
                     now_ts = time.time()
                     for t in q_objs:
-                        q_dur = format_duration(now_ts - t.enqueue_time)
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                        is_dict = isinstance(t, dict)
+                        t_enqueue = t.get("enqueue_time", now_ts) if is_dict else getattr(t, "enqueue_time", now_ts)
+                        q_dur = format_duration(now_ts - t_enqueue)
+                        repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                        agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                        target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                        target_id = target_disp or "N/A"
+                        t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                        t_pri = t.get("priority", "") if is_dict else getattr(t, "priority", "")
                         data["queued_tasks_list"].append({
-                            "id": t.id,
-                            "agent": t.agent,
+                            "id": t_id,
+                            "agent": agent_val,
                             "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
-                            "priority": str(t.priority),
+                            "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
+                            "priority": str(t_pri),
                             "wait_time": q_dur,
                         })
             if not data["history_tasks"]:
                 h_objs = task_manager.get_task_history(limit=10)
                 if h_objs:
                     for t in h_objs:
-                        dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-                        detail = t.error_message or "Finished"
-                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        is_dict = isinstance(t, dict)
+                        t_finish = t.get("finish_time") if is_dict else getattr(t, "finish_time", None)
+                        t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+                        dur = format_duration(t_finish - t_start) if (t_finish and t_start) else "N/A"
+                        err_msg = t.get("error_message") if is_dict else getattr(t, "error_message", None)
+                        detail = err_msg or (t.get("details", "Finished") if is_dict else "Finished")
+                        model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                        repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                        agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                        target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                        target_id = target_disp or "N/A"
+                        ts_val = (t.get("timestamp") or t_finish or t_start) if is_dict else (t_finish or t_start)
+                        timestamp = format_timestamp(ts_val)
+                        t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                        t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
                         data["history_tasks"].append({
-                            "id": t.id,
-                            "agent": t.agent,
+                            "id": t_id,
+                            "agent": agent_val,
                             "model": model_name,
                             "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                            "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
                             "duration": dur,
-                            "status": str(t.status),
+                            "status": str(t_status),
+                            "timestamp": timestamp,
                             "details": detail,
                         })
         except Exception as e:

@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +32,7 @@ from lib.dashboard import (
     format_dashboard_markdown,
     format_duration,
     format_percentage,
+    format_timestamp,
     get_quota_color,
     is_safe_url,
     parse_countdown_to_seconds,
@@ -2846,7 +2847,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIsNotNone(history_link_match)
         self.assertEqual(history_link_match.group(1), "`PR #99`")
         self.assertEqual(history_link_match.group(2), "https://github.com/owner/repo/pull/99")
-        self.assertEqual(history_cells[6], "Finished")
+        self.assertEqual(history_cells[7], "Finished")
 
         # 5. ONLINE status verification when no active tasks
         mock_tm.get_active_tasks.return_value = []
@@ -2937,7 +2938,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn("| `task-act` | `code_reviewer` | `gemini-3.8-flash-medium` | [`#50`](", md)
 
         # Check History table headers and rows
-        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Details |", md)
+        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |", md)
         self.assertIn("| `task-hist1` | `code_fixer` | `claude-3-5-sonnet` | [`#51`](", md)
         self.assertIn("| `task-hist2` | `pr_drafter` | - | [`#52`](", md)
 
@@ -3043,7 +3044,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         """Verify render_dashboard_html client JS contains Model column header in active and history tables."""
         html_out = render_dashboard_html("# Test Dashboard")
         self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Elapsed</th><th>Status</th>", html_out)
-        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th>", html_out)
+        self.assertIn("<th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th>", html_out)
 
     def test_format_dashboard_markdown_third_party_pool_capacity_no_leakage(self):
         """Verify third-party active pool assigns remaining_percentage to Third-Party Remaining and does not leak into Gemini capacity or windows."""
@@ -3313,9 +3314,9 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         # Active tasks 5-column backwards compatibility guard
         self.assertIn("r.length >= 6 && (activeSec.includes('| Model |')", template)
         self.assertIn("const statusRaw = (hasModel ? r[5] : r[4]) || '';", template)
-        # History tasks 5-column backwards compatibility guard
-        self.assertIn("r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'))", template)
-        self.assertIn("const rawStatus = (hasModel ? r[5] : r[4]) || '';", template)
+        # History tasks header-aware backwards compatibility guards
+        self.assertIn("const hasModelHdr = historySec.includes('| Model |');", template)
+        self.assertIn("const hasTimestampHdr = historySec.includes('| Timestamp |') || historySec.includes('| Time |');", template)
 
     def test_parse_countdown_to_seconds(self):
         self.assertEqual(parse_countdown_to_seconds("02:15:00"), 8100.0)
@@ -3727,6 +3728,319 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         }
         md_tp = format_dashboard_markdown(quota_tracker=None, extra_info=extra_tp)
         self.assertRegex(md_tp, r"\| \*\*Third-Party \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
+    def test_format_timestamp(self):
+        """Verify format_timestamp correctly formats timestamps and handles edge cases."""
+        self.assertEqual(format_timestamp(None), "-")
+        self.assertEqual(format_timestamp(""), "-")
+        self.assertEqual(format_timestamp("-"), "-")
+        self.assertEqual(format_timestamp("invalid"), "invalid")
+        self.assertEqual(format_timestamp(float("nan")), "-")
+        self.assertEqual(format_timestamp(float("inf")), "-")
+
+        # Booleans (bool is a subclass of int in Python)
+        self.assertEqual(format_timestamp(False), "-")
+        self.assertEqual(format_timestamp(True), "-")
+
+        # Non-finite numeric strings
+        self.assertEqual(format_timestamp("nan"), "-")
+        self.assertEqual(format_timestamp("inf"), "-")
+        self.assertEqual(format_timestamp("-inf"), "-")
+
+        # Unix epoch
+        self.assertEqual(format_timestamp(0), "1970-01-01 00:00:00 UTC")
+        self.assertEqual(format_timestamp(0.0), "1970-01-01 00:00:00 UTC")
+
+        # Specific known UTC timestamp: 2026-10-11 20:00:00 UTC
+        known_dt = datetime(2026, 10, 11, 20, 0, 0, tzinfo=timezone.utc)
+        known_ts = known_dt.timestamp()
+        self.assertEqual(format_timestamp(known_ts), "2026-10-11 20:00:00 UTC")
+        self.assertEqual(format_timestamp(str(known_ts)), "2026-10-11 20:00:00 UTC")
+
+        # ISO timestamp string
+        self.assertEqual(format_timestamp("2026-10-11T20:00:00Z"), "2026-10-11 20:00:00 UTC")
+
+        # Whitespace strings
+        self.assertEqual(format_timestamp("   "), "-")
+        self.assertEqual(format_timestamp(" \t\n "), "-")
+
+        # Placeholder strings
+        self.assertEqual(format_timestamp("None"), "-")
+        self.assertEqual(format_timestamp("null"), "-")
+        self.assertEqual(format_timestamp("N/A"), "-")
+        self.assertEqual(format_timestamp("unknown"), "-")
+        self.assertEqual(format_timestamp("  none  "), "-")
+        self.assertEqual(format_timestamp("  NULL  "), "-")
+        self.assertEqual(format_timestamp("  n/a  "), "-")
+        self.assertEqual(format_timestamp("  UNKNOWN  "), "-")
+
+        # Datetime and Date objects
+        self.assertEqual(format_timestamp(known_dt), "2026-10-11 20:00:00 UTC")
+        naive_dt = datetime(2026, 10, 11, 20, 0, 0)
+        self.assertEqual(format_timestamp(naive_dt), "2026-10-11 20:00:00 UTC")
+        date_obj = date(2026, 10, 11)
+        self.assertEqual(format_timestamp(date_obj), "2026-10-11 00:00:00 UTC")
+
+        # Non-string / non-numeric types
+        self.assertEqual(format_timestamp([]), "-")
+        self.assertEqual(format_timestamp({}), "-")
+        self.assertEqual(format_timestamp(set()), "-")
+        self.assertEqual(format_timestamp(object()), "-")
+
+    def test_parse_dashboard_markdown_with_and_without_timestamp_column(self):
+        """Verify parse_dashboard_markdown handles 8-column (with Timestamp), 7-column, and 6-column history tables."""
+        # 8-column markdown (Task ID, Agent, Model, Target, Duration, Status, Timestamp, Details)
+        md_8col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-8` | `code_reviewer` | `gemini-3.8-flash-medium` | `#10` | 15s | ✅ COMPLETED | 2026-10-11 20:00:00 UTC | Finished |\n"
+        )
+        parsed_8 = parse_dashboard_markdown(md_8col)
+        self.assertEqual(len(parsed_8["history_tasks"]), 1)
+        h8 = parsed_8["history_tasks"][0]
+        self.assertEqual(h8["id"], "task-8")
+        self.assertEqual(h8["agent"], "code_reviewer")
+        self.assertEqual(h8["model"], "gemini-3.8-flash-medium")
+        self.assertEqual(h8["target"], "#10")
+        self.assertEqual(h8["duration"], "15s")
+        self.assertEqual(h8["status"], "COMPLETED")
+        self.assertEqual(h8["timestamp"], "2026-10-11 20:00:00 UTC")
+        self.assertEqual(h8["details"], "Finished")
+
+        # 7-column markdown legacy (without Timestamp)
+        md_7col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Model | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-7` | `code_fixer` | `claude-3-5-sonnet` | `#11` | 42s | ✅ COMPLETED | Finished |\n"
+        )
+        parsed_7 = parse_dashboard_markdown(md_7col)
+        self.assertEqual(len(parsed_7["history_tasks"]), 1)
+        h7 = parsed_7["history_tasks"][0]
+        self.assertEqual(h7["id"], "task-7")
+        self.assertEqual(h7["model"], "claude-3-5-sonnet")
+        self.assertEqual(h7["timestamp"], "-")
+        self.assertEqual(h7["details"], "Finished")
+
+        # 7-column markdown with Timestamp but without Model (Task ID, Agent, Target, Duration, Status, Timestamp, Details)
+        md_7col_nomodel = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Timestamp | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-7nm` | `code_fixer` | `#55` | 50s | ✅ COMPLETED | 2026-10-11 20:00:00 UTC | All tests passed |\n"
+        )
+        parsed_7nm = parse_dashboard_markdown(md_7col_nomodel)
+        self.assertEqual(len(parsed_7nm["history_tasks"]), 1)
+        h7nm = parsed_7nm["history_tasks"][0]
+        self.assertEqual(h7nm["id"], "task-7nm")
+        self.assertEqual(h7nm["agent"], "code_fixer")
+        self.assertEqual(h7nm["model"], "-")
+        self.assertEqual(h7nm["target"], "#55")
+        self.assertEqual(h7nm["duration"], "50s")
+        self.assertEqual(h7nm["status"], "COMPLETED")
+        self.assertEqual(h7nm["timestamp"], "2026-10-11 20:00:00 UTC")
+        self.assertEqual(h7nm["details"], "All tests passed")
+
+        # 6-column markdown legacy (without Model and without Timestamp)
+        md_6col = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-6` | `pr_drafter` | `#12` | 30s | ❌ FAILED | Error msg |\n"
+        )
+        parsed_6 = parse_dashboard_markdown(md_6col)
+        self.assertEqual(len(parsed_6["history_tasks"]), 1)
+        h6 = parsed_6["history_tasks"][0]
+        self.assertEqual(h6["id"], "task-6")
+        self.assertEqual(h6["model"], "-")
+        self.assertEqual(h6["timestamp"], "-")
+        self.assertEqual(h6["details"], "Error msg")
+
+    def test_render_html_history_table_with_timestamp_column(self):
+        """Verify _render_history_tasks_table renders Timestamp header and values."""
+        from lib.dashboard import _render_history_tasks_table
+
+        history_data = [
+            {
+                "id": "task-hist-1",
+                "agent": "code_fixer",
+                "model": "claude-3-5-sonnet",
+                "target": "#103",
+                "duration": "1m",
+                "status": "COMPLETED",
+                "timestamp": "2026-10-11 20:05:00 UTC",
+                "details": "Finished",
+            },
+            {
+                "id": "task-hist-2",
+                "agent": "code_reviewer",
+                "model": "-",
+                "target": "#104",
+                "duration": "10s",
+                "status": "FAILED",
+                "timestamp": "-",
+                "details": "Build failed",
+            },
+        ]
+        history_html = _render_history_tasks_table(history_data)
+        self.assertIn("<th>Timestamp</th>", history_html)
+        self.assertIn("2026-10-11 20:05:00 UTC", history_html)
+        self.assertIn('<span class="text-muted">-</span>', history_html)
+
+    def test_format_dashboard_markdown_renders_history_timestamp(self):
+        """Verify format_dashboard_markdown populates finish timestamp in history table."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+
+        fixed_time = datetime(2026, 10, 11, 20, 0, 0, tzinfo=timezone.utc).timestamp()
+        t_hist = Task(
+            id="t-done",
+            agent="code_reviewer",
+            prompt="review",
+            target_id="#99",
+            status=TaskStatus.COMPLETED,
+            start_time=fixed_time - 30.0,
+            finish_time=fixed_time,
+        )
+        mock_tm.get_task_history.return_value = [t_hist]
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |", md)
+        self.assertIn("2026-10-11 20:00:00 UTC", md)
+
+        # Dictionary-based task record (e.g. from deserialized payloads or mock history providers)
+        t_hist_dict = {
+            "id": "t-dict-1",
+            "agent": "code_fixer",
+            "model": "claude-3-5-sonnet",
+            "target_id": "#101",
+            "status": "COMPLETED",
+            "start_time": fixed_time - 60.0,
+            "finish_time": fixed_time,
+            "details": "All tests passed",
+        }
+        mock_tm.get_task_history.return_value = [t_hist_dict]
+        md_dict = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| `t-dict-1` | `code_fixer` | `claude-3-5-sonnet` | [`#101`](", md_dict)
+        self.assertIn("2026-10-11 20:00:00 UTC", md_dict)
+        self.assertIn("All tests passed", md_dict)
+        self.assertIn("✅ `COMPLETED`", md_dict)
+
+        # Failed dictionary task with error_message
+        t_hist_dict_fail = {
+            "id": "t-dict-2",
+            "agent": "pr_drafter",
+            "target_id": "#102",
+            "status": "FAILED",
+            "start_time": fixed_time - 10.0,
+            "finish_time": fixed_time,
+            "error_message": "Build failure: missing dependency",
+        }
+        mock_tm.get_task_history.return_value = [t_hist_dict_fail]
+        md_fail = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| `t-dict-2` | `pr_drafter` | - | [`#102`](", md_fail)
+        self.assertIn("❌ `FAILED`", md_fail)
+        self.assertIn("`Build failure: missing dependency`", md_fail)
+
+    def test_render_dashboard_html_with_dictionary_tasks(self):
+        """Verify render_dashboard_html properly renders dictionary task history from task_manager.get_task_history()."""
+        _reset_dashboard_template_cache()
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        fixed_time = 1791748800.0  # 2026-10-11 20:00:00 UTC
+        mock_tm.get_task_history.return_value = [
+            {
+                "id": "t-dict-1",
+                "agent": "code_fixer",
+                "model": "claude-3-5-sonnet",
+                "target_id": "#101",
+                "status": "COMPLETED",
+                "start_time": fixed_time - 60.0,
+                "finish_time": fixed_time,
+                "details": "All tests passed",
+            },
+            {
+                "id": "t-dict-2",
+                "agent": "pr_drafter",
+                "model": "-",
+                "target_id": "#102",
+                "status": "FAILED",
+                "start_time": fixed_time - 10.0,
+                "finish_time": fixed_time,
+                "error_message": "Build failure: missing dependency",
+            },
+        ]
+        html_out = render_dashboard_html("# Graviton Live Dashboard\n", task_manager=mock_tm)
+        self.assertIn("t-dict-1", html_out)
+        self.assertIn("code_fixer", html_out)
+        self.assertIn("claude-3-5-sonnet", html_out)
+        self.assertIn("2026-10-11 20:00:00 UTC", html_out)
+        self.assertIn("All tests passed", html_out)
+        self.assertIn("t-dict-2", html_out)
+        self.assertIn("pr_drafter", html_out)
+        self.assertIn("FAILED", html_out)
+        self.assertIn("Build failure: missing dependency", html_out)
+
+    def test_format_dashboard_markdown_sanitizes_pipes_and_newlines_in_history(self):
+        """Verify format_dashboard_markdown sanitizes pipes and newlines in timestamps and task details."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {}
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        fixed_time = 1791748800.0
+        mock_tm.get_task_history.return_value = [
+            {
+                "id": "t-corrupt-1",
+                "agent": "code_fixer",
+                "model": "gemini-3.8-flash",
+                "target_id": "#123",
+                "status": "COMPLETED",
+                "timestamp": "2026-10-11 | 20:00:00\r\nUTC",
+                "details": "Finished | Extra Column 1 | Extra Column 2\r\nNewline text",
+            },
+            {
+                "id": "t-corrupt-2",
+                "agent": "code_reviewer",
+                "model": "-",
+                "target_id": "#124",
+                "status": "FAILED",
+                "start_time": fixed_time - 10.0,
+                "finish_time": fixed_time,
+                "error_message": "Error occurred | invalid pipe\nLine 2 details",
+            },
+        ]
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn(r"2026-10-11 \| 20:00:00  UTC", md)
+        self.assertIn(r"Finished \| Extra Column 1 \| Extra Column 2  Newline text", md)
+        self.assertIn(r"`Error occurred \| invalid pipe Line 2 de...`", md)
+
+        # Ensure markdown parser cleanly parses 8 columns without table corruption
+        parsed = parse_dashboard_markdown(md)
+        self.assertEqual(len(parsed["history_tasks"]), 2)
+        h1 = parsed["history_tasks"][0]
+        self.assertEqual(h1["id"], "t-corrupt-1")
+        self.assertEqual(h1["agent"], "code_fixer")
+        self.assertEqual(h1["model"], "gemini-3.8-flash")
+        self.assertEqual(h1["target"], "#123")
+        self.assertIn("2026-10-11 | 20:00:00  UTC", h1["timestamp"])
+        self.assertIn("Finished | Extra Column 1 | Extra Column 2  Newline text", h1["details"])
+
+        h2 = parsed["history_tasks"][1]
+        self.assertEqual(h2["id"], "t-corrupt-2")
+        self.assertEqual(h2["agent"], "code_reviewer")
+        self.assertEqual(h2["details"], "Error occurred | invalid pipe Line 2 de...")
 
     def test_format_dashboard_markdown_and_html_with_real_task_manager(self):
         """Verify KPI metric cards display accurate metrics when rendered with a real TaskManager, including PAUSED_FOR_QUOTA tasks."""
@@ -3885,4 +4199,3 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

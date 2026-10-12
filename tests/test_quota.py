@@ -46,7 +46,7 @@ class TestQuotaTracker(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self._models_patcher = patch(
-            "lib.quota.fetch_cli_models",
+            "lib.quota.tracker.fetch_cli_models",
             return_value=(DEFAULT_GEMINI_MODELS.copy(), DEFAULT_THIRD_PARTY_MODELS.copy()),
         )
         self._models_patcher.start()
@@ -607,8 +607,8 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertEqual(t2.quota_pool, "claude_gpt")
 
     @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
-    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value=None)
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_mocked(self, mock_urlopen, mock_detect):
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -649,8 +649,8 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(payload, {})
 
     @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
-    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value=None)
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_error_returns_none(self, mock_urlopen, mock_detect):
         # Simulated API HTTP error payload
         mock_resp = MagicMock()
@@ -674,7 +674,7 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(tracker.remaining_percentage, 20.0)
 
         # Test poll_live_quota fallback when fetch returns None
-        with patch("lib.quota.fetch_live_antigravity_quota", return_value=None):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=None):
             polled_5h, polled_1w = tracker.poll_live_quota(token="invalid-token", force=True)
             # Must preserve existing state instead of overwriting with dummy 100%
             self.assertEqual(polled_5h.remaining_percentage, 65.0)
@@ -690,32 +690,32 @@ class TestQuotaTracker(unittest.TestCase):
 
         start_time = 1000.0
 
-        with patch("lib.quota.time.time", return_value=start_time):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v1, w1w_v1)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v1, w1w_v1)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
                 self.assertEqual(w_1w.remaining_percentage, 80.0)
 
         # 5 seconds later: no TTL expired, should not fetch
-        with patch("lib.quota.time.time", return_value=start_time + 5.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 5.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 0)
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
                 self.assertEqual(w_1w.remaining_percentage, 80.0)
 
         # 12 seconds later: 60s TTL not expired yet -> should not fetch
-        with patch("lib.quota.time.time", return_value=start_time + 12.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 12.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 0)
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
                 self.assertEqual(w_1w.remaining_percentage, 80.0)
 
         # 62 seconds later: 60s TTL expired -> fetch triggers and updates BOTH windows from API payload
-        with patch("lib.quota.time.time", return_value=start_time + 62.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 62.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
                 self.assertEqual(w_5h.remaining_percentage, 70.0)
@@ -731,20 +731,20 @@ class TestQuotaTracker(unittest.TestCase):
 
         start_time = 2000.0
 
-        with patch("lib.quota.time.time", return_value=start_time):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v1, w1w_v1)):
+        with patch("lib.quota.tracker.time.time", return_value=start_time):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v1, w1w_v1)):
                 tracker.poll_live_quota()
 
         # At start_time + 2s, force=False does not fetch
-        with patch("lib.quota.time.time", return_value=start_time + 2.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 2.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota(force=False)
                 self.assertEqual(mock_fetch.call_count, 0)
                 self.assertEqual(w_5h.remaining_percentage, 90.0)
 
         # At start_time + 2s, force=True forces fetch and updates both windows
-        with patch("lib.quota.time.time", return_value=start_time + 2.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 2.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h_v2, w1w_v2)) as mock_fetch:
                 w_5h, w_1w = tracker.poll_live_quota(force=True)
                 self.assertEqual(mock_fetch.call_count, 1)
                 self.assertEqual(w_5h.remaining_percentage, 50.0)
@@ -758,7 +758,7 @@ class TestQuotaTracker(unittest.TestCase):
 
         self.assertFalse(tracker.is_polling())
 
-        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
             tracker.start_background_polling(poll_interval=0.05)
             self.assertTrue(tracker.is_polling())
 
@@ -775,7 +775,7 @@ class TestQuotaTracker(unittest.TestCase):
         self.addCleanup(tracker.stop_background_polling)
         w5h = QuotaWindow(name="5H", remaining_percentage=85.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=75.0)
-        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
             tracker.start_background_polling(poll_interval=0.0)
             self.assertTrue(tracker.is_polling())
             self.assertEqual(tracker._polling_thread._args[2], 5.0)
@@ -824,7 +824,7 @@ class TestQuotaTracker(unittest.TestCase):
             tracker._stop_polling_event.set()
 
         tracker._stop_polling_event.wait = fake_wait
-        with patch("lib.quota.time.sleep") as mock_sleep, patch.object(tracker, "poll_all_pools"):
+        with patch("lib.quota.tracker.time.sleep") as mock_sleep, patch.object(tracker, "poll_all_pools"):
             tracker._background_polling_loop()
             mock_sleep.assert_called_with(1.0)
 
@@ -846,7 +846,7 @@ class TestQuotaTracker(unittest.TestCase):
                 raise TimeoutError("Timed out waiting for fetch_resume signal")
             return w5h, w1w
 
-        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=controlled_fetch):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", side_effect=controlled_fetch):
             t1 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
             t2 = threading.Thread(target=tracker.poll_live_quota, kwargs={"force": True})
 
@@ -883,7 +883,7 @@ class TestQuotaTracker(unittest.TestCase):
                 return w5h_claude, w1w_claude
             return w5h_gemini, w1w_gemini
 
-        with patch("lib.quota.fetch_live_antigravity_quota", side_effect=slow_fetch):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", side_effect=slow_fetch):
             t1 = threading.Thread(target=tracker.poll_live_quota, kwargs={"quota_pool": "gemini", "force": True})
             t2 = threading.Thread(target=tracker.poll_live_quota, kwargs={"quota_pool": "claude_gpt", "force": True})
             t1.start()
@@ -904,20 +904,20 @@ class TestQuotaTracker(unittest.TestCase):
         start_time = 5000.0
 
         # Initial fetch returns None (API error)
-        with patch("lib.quota.time.time", return_value=start_time):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=None) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=None) as mock_fetch:
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
 
         # 1 second later: TTL (60s) not reached, must NOT retry
-        with patch("lib.quota.time.time", return_value=start_time + 1.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 1.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 0)
 
         # 60 seconds later: TTL expired, retries API call
-        with patch("lib.quota.time.time", return_value=start_time + 60.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 60.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h, w1w)) as mock_fetch:
                 tracker.poll_live_quota()
                 self.assertEqual(mock_fetch.call_count, 1)
 
@@ -926,7 +926,7 @@ class TestQuotaTracker(unittest.TestCase):
         w5h = QuotaWindow(name="5H", remaining_percentage=88.0)
         w1w = QuotaWindow(name="1W", remaining_percentage=92.0)
 
-        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w5h, w1w)):
             t = tracker.poll_live_quota_async(force=True)
             t.join(timeout=2.0)
             self.assertEqual(tracker.window_5h.remaining_percentage, 88.0)
@@ -935,7 +935,7 @@ class TestQuotaTracker(unittest.TestCase):
     def test_poll_live_quota_async_exception_handled(self):
         tracker = QuotaTracker()
         with patch.object(tracker, "poll_live_quota", side_effect=RuntimeError("Quota API failed")):
-            with patch("lib.quota.logger.warning") as mock_warning:
+            with patch("lib.quota.tracker.logger.warning") as mock_warning:
                 t = tracker.poll_live_quota_async(force=True)
                 t.join(timeout=2.0)
                 mock_warning.assert_called_once_with("Async live quota poll failed: Quota API failed")
@@ -984,7 +984,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_5h_claude = QuotaWindow(name="5H", remaining_percentage=40.0)
         w_1w_claude = QuotaWindow(name="1W", remaining_percentage=35.0)
 
-        with patch("lib.quota.fetch_live_antigravity_quota", return_value=(w_5h_claude, w_1w_claude)) as mock_fetch:
+        with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=(w_5h_claude, w_1w_claude)) as mock_fetch:
             polled_5h, polled_1w = tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=True)
 
             mock_fetch.assert_called_once_with(token="test-token", quota_pool="claude_gpt")
@@ -1027,20 +1027,20 @@ class TestQuotaTracker(unittest.TestCase):
         w_claude = (QuotaWindow(name="5H", remaining_percentage=80.0), QuotaWindow(name="1W", remaining_percentage=85.0))
 
         start_time = 1000.0
-        with patch("lib.quota.time.time", return_value=start_time):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=w_gemini) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=w_gemini) as mock_fetch:
                 tracker.poll_live_quota(token="t1", quota_pool="gemini", force=False)
                 mock_fetch.assert_called_once_with(token="t1", quota_pool="gemini")
 
         # 10s later: poll claude_gpt. It must poll API because claude_gpt TTL was not updated by gemini
-        with patch("lib.quota.time.time", return_value=start_time + 10.0):
-            with patch("lib.quota.fetch_live_antigravity_quota", return_value=w_claude) as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 10.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota", return_value=w_claude) as mock_fetch:
                 tracker.poll_live_quota(token="t1", quota_pool="claude_gpt", force=False)
                 mock_fetch.assert_called_once_with(token="t1", quota_pool="claude_gpt")
 
         # Another gemini call at start_time + 20s must NOT poll API due to TTL
-        with patch("lib.quota.time.time", return_value=start_time + 20.0):
-            with patch("lib.quota.fetch_live_antigravity_quota") as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=start_time + 20.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota") as mock_fetch:
                 tracker.poll_live_quota(token="t1", quota_pool="gemini", force=False)
                 mock_fetch.assert_not_called()
 
@@ -1100,7 +1100,7 @@ class TestQuotaTracker(unittest.TestCase):
         w_1w = QuotaWindow(name="1W", duration_seconds=604800.0, remaining_percentage=85.0)
 
         now_time = 5000.0
-        with patch("lib.quota.time.time", return_value=now_time):
+        with patch("lib.quota.tracker.time.time", return_value=now_time):
             tracker.update_windows(w_5h, w_1w, quota_pool=None)
 
             # Both pool TTL timestamps should be populated
@@ -1110,8 +1110,8 @@ class TestQuotaTracker(unittest.TestCase):
             self.assertEqual(tracker._last_fetch_1w.get("claude_gpt"), now_time)
 
         # Subsequent live quota polls for both pools within TTL should NOT trigger API fetch
-        with patch("lib.quota.time.time", return_value=now_time + 10.0):
-            with patch("lib.quota.fetch_live_antigravity_quota") as mock_fetch:
+        with patch("lib.quota.tracker.time.time", return_value=now_time + 10.0):
+            with patch("lib.quota.tracker.fetch_live_antigravity_quota") as mock_fetch:
                 tracker.poll_live_quota(token="test-token", quota_pool="claude_gpt", force=False)
                 tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=False)
                 mock_fetch.assert_not_called()
@@ -1368,7 +1368,7 @@ class TestQuotaTracker(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / ".graviton_model_selection.json"
             tracker = QuotaTracker(state_path=state_file)
-            with patch("lib.quota._atomic_write_json", side_effect=OSError("Disk full")):
+            with patch("lib.quota.tracker._atomic_write_json", side_effect=OSError("Disk full")):
                 res = tracker.dump_model_selection(filepath=state_file)
                 self.assertFalse(res)
                 self.assertFalse(state_file.exists())
@@ -1428,7 +1428,7 @@ class TestQuotaTracker(unittest.TestCase):
         tracker_uq.update_quota(60.0)
         self.assertTrue(tracker_uq.is_quota_ready())
 
-    @patch("lib.quota.fetch_live_antigravity_quota")
+    @patch("lib.quota.tracker.fetch_live_antigravity_quota")
     def test_poll_all_pools_updates_all_pools(self, mock_fetch):
         w_gemini = (QuotaWindow(name="5H", remaining_percentage=88.0), QuotaWindow(name="1W", remaining_percentage=92.0))
         w_claude = (QuotaWindow(name="5H", remaining_percentage=78.0), QuotaWindow(name="1W", remaining_percentage=82.0))
@@ -1549,8 +1549,8 @@ class TestQuotaTracker(unittest.TestCase):
         self.assertEqual(parse_all_antigravity_quota_json({}), {})
 
     @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
-    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value=None)
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota(self, mock_urlopen, mock_detect):
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1590,7 +1590,7 @@ class TestQuotaTracker(unittest.TestCase):
         res_fail = fetch_all_live_antigravity_quota(token="test-oauth-token")
         self.assertIsNone(res_fail)
 
-    @patch("lib.quota.fetch_all_live_antigravity_quota")
+    @patch("lib.quota.tracker.fetch_all_live_antigravity_quota")
     def test_poll_all_pools_single_rpc(self, mock_fetch_all):
         w_gemini = (QuotaWindow(name="5H", remaining_percentage=92.0), QuotaWindow(name="1W", remaining_percentage=94.0))
         w_claude = (QuotaWindow(name="5H", remaining_percentage=82.0), QuotaWindow(name="1W", remaining_percentage=84.0))
@@ -1681,7 +1681,7 @@ class TestFetchCliModels(unittest.TestCase):
         self.assertEqual(gemini2, DEFAULT_GEMINI_MODELS)
         self.assertEqual(third_party2, DEFAULT_THIRD_PARTY_MODELS)
 
-    @patch("lib.quota.fetch_cli_models")
+    @patch("lib.quota.tracker.fetch_cli_models")
     def test_quota_tracker_refresh_available_models(self, mock_fetch):
         mock_fetch.return_value = (
             ["gemini-custom-model"],
@@ -1783,7 +1783,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
 
         # 4. Auto-detected log when env vars are clear
         with patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""}):
-            with patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value="https://detected-daily/v1internal:retrieveUserQuotaSummary"):
+            with patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value="https://detected-daily/v1internal:retrieveUserQuotaSummary"):
                 self.assertEqual(
                     resolve_antigravity_quota_endpoint(),
                     "https://detected-daily/v1internal:retrieveUserQuotaSummary",
@@ -1791,13 +1791,13 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
 
         # 5. Default when nothing detected
         with patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""}):
-            with patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None):
+            with patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value=None):
                 self.assertEqual(
                     resolve_antigravity_quota_endpoint(),
                     DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT,
                 )
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_custom_endpoint(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1824,7 +1824,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         req = mock_urlopen.call_args[0][0]
         self.assertEqual(req.full_url, custom_url)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota_custom_endpoint(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1849,7 +1849,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         req = mock_urlopen.call_args[0][0]
         self.assertEqual(req.full_url, custom_url)
 
-    @patch("lib.quota.fetch_all_live_antigravity_quota")
+    @patch("lib.quota.tracker.fetch_all_live_antigravity_quota")
     def test_quota_tracker_passes_custom_api_url(self, mock_fetch_all):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         tracker = QuotaTracker(api_url=custom_url)
@@ -1862,7 +1862,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         tracker.poll_all_pools(token="test-token")
         mock_fetch_all.assert_called_once_with(token="test-token", api_url=custom_url)
 
-    @patch("lib.quota.fetch_live_antigravity_quota")
+    @patch("lib.quota.tracker.fetch_live_antigravity_quota")
     def test_quota_tracker_poll_live_quota_passes_custom_api_url(self, mock_fetch_live):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         tracker = QuotaTracker(api_url=custom_url)
@@ -1873,7 +1873,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         tracker.poll_live_quota(token="test-token", quota_pool="gemini", force=True)
         mock_fetch_live.assert_called_once_with(token="test-token", quota_pool="gemini", api_url=custom_url)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota_fallback_on_exception(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         fallback_resp = MagicMock()
@@ -1904,7 +1904,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
         self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota_fallback_on_non_200(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         error_resp = MagicMock()
@@ -1937,7 +1937,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
         self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_all_live_antigravity_quota_fallback_failure_returns_none(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         mock_urlopen.side_effect = [
@@ -1949,7 +1949,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertIsNone(res)
         self.assertEqual(mock_urlopen.call_count, 2)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_fallback_on_exception(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         fallback_resp = MagicMock()
@@ -1982,7 +1982,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
         self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_fallback_on_non_200(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         error_resp = MagicMock()
@@ -2017,7 +2017,7 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_args_list[0][0][0].full_url, custom_url)
         self.assertEqual(mock_urlopen.call_args_list[1][0][0].full_url, DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT)
 
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fetch_live_antigravity_quota_fallback_failure_returns_none(self, mock_urlopen):
         custom_url = "https://custom-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
         mock_urlopen.side_effect = [
@@ -2030,8 +2030,8 @@ class TestAntigravityQuotaEndpoint(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_count, 2)
 
     @patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""})
-    @patch("lib.quota.detect_antigravity_quota_endpoint_from_logs", return_value=None)
-    @patch("lib.quota.urllib.request.urlopen")
+    @patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs", return_value=None)
+    @patch("lib.quota.fetch.urllib.request.urlopen")
     def test_fallback_not_attempted_if_already_default_endpoint(self, mock_urlopen, mock_detect):
         mock_resp = MagicMock()
         mock_resp.status = 500
@@ -2905,7 +2905,7 @@ class TestParseResetTime(unittest.TestCase):
         for exc in (OverflowError("timestamp out of range"), OSError("mktime failed"), ValueError("invalid datetime")):
             mock_dt = MagicMock(spec=datetime)
             mock_dt.timestamp.side_effect = exc
-            with patch("lib.quota.parse_reset_time_to_datetime", return_value=mock_dt):
+            with patch("lib.quota.time_utils.parse_reset_time_to_datetime", return_value=mock_dt):
                 self.assertIsNone(parse_reset_time_to_timestamp("2026-09-25T16:00:00Z"))
 
     def test_quota_window_target_pacing_percentage(self):
@@ -2972,6 +2972,321 @@ class TestParseResetTime(unittest.TestCase):
         self.assertIn("third_party_1w_target_pacing_percentage", d)
         self.assertIsNotNone(d["third_party_5h_target_pacing_percentage"])
         self.assertIsNotNone(d["third_party_1w_target_pacing_percentage"])
+
+    def test_custom_callable_in_quota_get_effective(self):
+        import lib.quota.tracker as tracker
+        import lib.quota as quota
+
+        custom_called = []
+        def custom_fetch_cli():
+            custom_called.append("cli")
+            return ["custom-model"]
+
+        def custom_fetch_live(*args, **kwargs):
+            custom_called.append("live")
+            return None
+
+        def custom_fetch_all(*args, **kwargs):
+            custom_called.append("all")
+            return {}
+
+        orig_cli = getattr(quota, "fetch_cli_models")
+        orig_live = getattr(quota, "fetch_live_antigravity_quota")
+        orig_all = getattr(quota, "fetch_all_live_antigravity_quota")
+        try:
+            quota.fetch_cli_models = custom_fetch_cli
+            quota.fetch_live_antigravity_quota = custom_fetch_live
+            quota.fetch_all_live_antigravity_quota = custom_fetch_all
+
+            self.assertIs(tracker._get_effective_fetch_cli_models(), custom_fetch_cli)
+            self.assertIs(tracker._get_effective_fetch_live_quota(), custom_fetch_live)
+            self.assertIs(tracker._get_effective_fetch_all_live_quota(), custom_fetch_all)
+        finally:
+            quota.fetch_cli_models = orig_cli
+            quota.fetch_live_antigravity_quota = orig_live
+            quota.fetch_all_live_antigravity_quota = orig_all
+
+    def test_atomic_write_mock_delegation_in_quota_tracker(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.tracker as tracker
+        from lib.quota.tracker import QuotaTracker
+
+        # Top-level patch on lib.quota._atomic_write_json
+        with patch("lib.quota._atomic_write_json") as mock_write:
+            self.assertIs(tracker._get_effective_atomic_write(), mock_write)
+            qt = QuotaTracker(
+                available_gemini_models=["gemini-3.8-flash-medium"],
+                available_third_party_models=["claude-sonnet-5-5-medium"],
+            )
+            qt.dump_model_selection(Path("/tmp/fake_model_selection.json"))
+            mock_write.assert_called_once()
+
+        # Direct patch on lib.quota.tracker._atomic_write_json
+        with patch("lib.quota.tracker._atomic_write_json") as mock_write_direct:
+            self.assertIs(tracker._get_effective_atomic_write(), mock_write_direct)
+
+    def test_fetch_mock_delegation_in_quota_fetch(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.fetch as fetch
+
+        # Direct submodule mock delegation
+        with patch("lib.quota.fetch.load_oauth_token") as mock_direct_token:
+            self.assertIs(fetch._get_effective_load_oauth_token(), mock_direct_token)
+
+        with patch("lib.quota.fetch.resolve_antigravity_quota_endpoint") as mock_direct_endpoint:
+            self.assertIs(fetch._get_effective_resolve_endpoint(), mock_direct_endpoint)
+
+        with patch("lib.quota.fetch.parse_all_antigravity_quota_json") as mock_direct_parse_all:
+            self.assertIs(fetch._get_effective_parse_all_json(), mock_direct_parse_all)
+
+        with patch("lib.quota.fetch.parse_antigravity_quota_json") as mock_direct_parse:
+            self.assertIs(fetch._get_effective_parse_json(), mock_direct_parse)
+
+        # Top-level lib.quota mock delegation
+        with patch("lib.quota.load_oauth_token") as mock_top_token:
+            self.assertIs(fetch._get_effective_load_oauth_token(), mock_top_token)
+            mock_top_token.return_value = None
+            res = fetch.fetch_live_antigravity_quota(token=None)
+            self.assertIsNone(res)
+            mock_top_token.assert_called_once()
+
+        with patch("lib.quota.resolve_antigravity_quota_endpoint") as mock_top_endpoint:
+            self.assertIs(fetch._get_effective_resolve_endpoint(), mock_top_endpoint)
+
+        with patch("lib.quota.parse_all_antigravity_quota_json") as mock_top_parse_all:
+            self.assertIs(fetch._get_effective_parse_all_json(), mock_top_parse_all)
+
+        with patch("lib.quota.parse_antigravity_quota_json") as mock_top_parse:
+            self.assertIs(fetch._get_effective_parse_json(), mock_top_parse)
+
+    def test_parse_quota_headers_mock_delegation_in_quota_tracker(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.tracker as tracker
+        from lib.quota.tracker import QuotaTracker
+
+        # Direct submodule patch
+        with patch("lib.quota.tracker.parse_quota_headers") as mock_direct:
+            self.assertIs(tracker._get_effective_parse_quota_headers(), mock_direct)
+
+        # Top-level lib.quota patch
+        with patch("lib.quota.parse_quota_headers") as mock_top:
+            self.assertIs(tracker._get_effective_parse_quota_headers(), mock_top)
+            mock_top.return_value = {"remaining_percentage": 75.0}
+            qt = QuotaTracker(
+                available_gemini_models=["gemini-3.8-flash-medium"],
+                available_third_party_models=["claude-sonnet-5-5-medium"],
+            )
+            qt.parse_quota_headers({"x-quota-remaining": "75.0"})
+            mock_top.assert_called_once()
+
+    def test_direct_submodule_custom_callable_overrides_in_quota(self):
+        import lib.quota.fetch as fetch
+        import lib.quota.tracker as tracker
+
+        # Test fetch submodule custom callables
+        orig_fetch_token = fetch.load_oauth_token
+        orig_fetch_endpoint = fetch.resolve_antigravity_quota_endpoint
+        orig_fetch_parse_all = fetch.parse_all_antigravity_quota_json
+        orig_fetch_parse = fetch.parse_antigravity_quota_json
+
+        def custom_token():
+            return "custom-token-123"
+
+        def custom_endpoint(url):
+            return "https://custom.endpoint"
+
+        def custom_parse_all(data):
+            return {"custom": "all"}
+
+        def custom_parse(data, pool=None):
+            return {"custom": "single"}
+
+        try:
+            fetch.load_oauth_token = custom_token
+            fetch.resolve_antigravity_quota_endpoint = custom_endpoint
+            fetch.parse_all_antigravity_quota_json = custom_parse_all
+            fetch.parse_antigravity_quota_json = custom_parse
+
+            self.assertIs(fetch._get_effective_load_oauth_token(), custom_token)
+            self.assertIs(fetch._get_effective_resolve_endpoint(), custom_endpoint)
+            self.assertIs(fetch._get_effective_parse_all_json(), custom_parse_all)
+            self.assertIs(fetch._get_effective_parse_json(), custom_parse)
+        finally:
+            fetch.load_oauth_token = orig_fetch_token
+            fetch.resolve_antigravity_quota_endpoint = orig_fetch_endpoint
+            fetch.parse_all_antigravity_quota_json = orig_fetch_parse_all
+            fetch.parse_antigravity_quota_json = orig_fetch_parse
+
+        # Test tracker submodule custom callables
+        orig_cli = tracker.fetch_cli_models
+        orig_live = tracker.fetch_live_antigravity_quota
+        orig_all = tracker.fetch_all_live_antigravity_quota
+        orig_write = tracker._atomic_write_json
+        orig_headers = tracker.parse_quota_headers
+
+        def custom_cli():
+            return (["custom-gemini"], ["custom-claude"])
+
+        def custom_live(*args, **kwargs):
+            return {"custom": "live"}
+
+        def custom_all_live(*args, **kwargs):
+            return {"custom": "all_live"}
+
+        def custom_write(dest, payload):
+            return True
+
+        def custom_headers(headers):
+            return {"remaining_percentage": 99.0}
+
+        try:
+            tracker.fetch_cli_models = custom_cli
+            tracker.fetch_live_antigravity_quota = custom_live
+            tracker.fetch_all_live_antigravity_quota = custom_all_live
+            tracker._atomic_write_json = custom_write
+            tracker.parse_quota_headers = custom_headers
+
+            self.assertIs(tracker._get_effective_fetch_cli_models(), custom_cli)
+            self.assertIs(tracker._get_effective_fetch_live_quota(), custom_live)
+            self.assertIs(tracker._get_effective_fetch_all_live_quota(), custom_all_live)
+            self.assertIs(tracker._get_effective_atomic_write(), custom_write)
+            self.assertIs(tracker._get_effective_parse_quota_headers(), custom_headers)
+        finally:
+            tracker.fetch_cli_models = orig_cli
+            tracker.fetch_live_antigravity_quota = orig_live
+            tracker.fetch_all_live_antigravity_quota = orig_all
+            tracker._atomic_write_json = orig_write
+            tracker.parse_quota_headers = orig_headers
+
+    def test_endpoint_mock_delegation_in_quota_endpoint(self):
+        import lib.quota.endpoint as endpoint
+        from lib.quota.endpoint import resolve_antigravity_quota_endpoint
+
+        # 1. Direct submodule mock delegation
+        with patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs") as mock_direct_detect:
+            self.assertIs(endpoint._get_effective_detect_logs(), mock_direct_detect)
+
+        with patch("lib.quota.endpoint.normalize_antigravity_quota_endpoint") as mock_direct_norm:
+            self.assertIs(endpoint._get_effective_normalize_endpoint(), mock_direct_norm)
+
+        # 2. Top-level lib.quota mock delegation
+        with patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""}):
+            with patch("lib.quota.detect_antigravity_quota_endpoint_from_logs") as mock_top_detect:
+                self.assertIs(endpoint._get_effective_detect_logs(), mock_top_detect)
+                mock_top_detect.return_value = "https://mocked-endpoint.com/v1internal:retrieveUserQuotaSummary"
+                res = resolve_antigravity_quota_endpoint()
+                self.assertEqual(res, "https://mocked-endpoint.com/v1internal:retrieveUserQuotaSummary")
+                mock_top_detect.assert_called_once()
+
+            with patch("lib.quota.normalize_antigravity_quota_endpoint") as mock_top_norm:
+                self.assertIs(endpoint._get_effective_normalize_endpoint(), mock_top_norm)
+                mock_top_norm.return_value = "https://normalized-mocked.com"
+                res = resolve_antigravity_quota_endpoint("https://custom-url")
+                self.assertEqual(res, "https://normalized-mocked.com")
+                mock_top_norm.assert_called_once_with("https://custom-url")
+
+    def test_time_utils_mock_delegation(self):
+        import lib.quota.time_utils as time_utils
+        from lib.quota.time_utils import (
+            parse_reset_time_to_timestamp,
+            format_reset_countdown,
+        )
+
+        # 1. Direct submodule mock delegation
+        with patch("lib.quota.time_utils.parse_reset_time_to_datetime") as mock_direct_parse:
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), mock_direct_parse)
+
+        with patch("lib.quota.time_utils._normalize_now_datetime") as mock_direct_norm:
+            self.assertIs(time_utils._get_effective_normalize_now(), mock_direct_norm)
+
+        # 2. Top-level lib.quota mock delegation
+        mock_dt = datetime(2026, 12, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with patch("lib.quota.parse_reset_time_to_datetime") as mock_top_parse:
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), mock_top_parse)
+            mock_top_parse.return_value = mock_dt
+            ts = parse_reset_time_to_timestamp("dummy-reset-time")
+            self.assertEqual(ts, mock_dt.timestamp())
+            mock_top_parse.assert_called_once_with("dummy-reset-time")
+
+        mock_now = datetime(2026, 12, 1, 9, 30, 0, tzinfo=timezone.utc)
+        with patch("lib.quota._normalize_now_datetime") as mock_top_norm:
+            self.assertIs(time_utils._get_effective_normalize_now(), mock_top_norm)
+            mock_top_norm.return_value = mock_now
+            cd = format_reset_countdown(mock_dt, now_dt="custom_now")
+            self.assertEqual(cd, "00:30:00")
+            mock_top_norm.assert_called_once_with("custom_now")
+
+    def test_models_mock_delegation_in_quota_window(self):
+        mock_reset_dt = datetime(2026, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mock_now_dt = datetime(2026, 12, 1, 11, 30, 0, tzinfo=timezone.utc)
+
+        with patch("lib.quota.parse_reset_time_to_datetime") as mock_top_parse:
+            mock_top_parse.return_value = mock_reset_dt
+            w = QuotaWindow(name="5H", reset_time="dummy-reset")
+            self.assertEqual(w.reset_datetime, mock_reset_dt)
+            mock_top_parse.assert_called_once_with("dummy-reset")
+
+        with patch("lib.quota._normalize_now_datetime") as mock_top_norm:
+            mock_top_norm.return_value = mock_now_dt
+            w = QuotaWindow(name="5H", reset_datetime=mock_reset_dt)
+            rem = w.get_remaining_seconds(now_dt="custom-now")
+            self.assertEqual(rem, 1800.0)
+            mock_top_norm.assert_called_with("custom-now")
+
+    def test_module_reexports_and_mocks_in_lib_quota(self):
+        import lib.quota as quota
+
+        self.assertIn("time", quota.__all__)
+        self.assertIn("urllib", quota.__all__)
+        self.assertIs(quota.time, time)
+        self.assertTrue(hasattr(quota, "urllib"))
+
+        # Verify patching lib.quota.time.time
+        with patch("lib.quota.time.time", return_value=123456789.0):
+            self.assertEqual(quota.time.time(), 123456789.0)
+
+        # Verify patching lib.quota.urllib.request.urlopen
+        with patch("lib.quota.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = MagicMock()
+            quota.urllib.request.urlopen("https://example.com")
+            mock_urlopen.assert_called_once_with("https://example.com")
+
+    def test_direct_submodule_custom_callable_overrides_in_endpoint_and_time_utils(self):
+        import lib.quota.endpoint as endpoint
+        import lib.quota.time_utils as time_utils
+
+        orig_detect = endpoint.detect_antigravity_quota_endpoint_from_logs
+        orig_norm = endpoint.normalize_antigravity_quota_endpoint
+        orig_parse_dt = time_utils.parse_reset_time_to_datetime
+        orig_norm_now = time_utils._normalize_now_datetime
+
+        def custom_detect():
+            return "https://custom-detected.endpoint"
+
+        def custom_norm(url):
+            return "https://custom-normalized.endpoint"
+
+        def custom_parse_dt(val):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def custom_norm_now(val):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        try:
+            endpoint.detect_antigravity_quota_endpoint_from_logs = custom_detect
+            endpoint.normalize_antigravity_quota_endpoint = custom_norm
+            time_utils.parse_reset_time_to_datetime = custom_parse_dt
+            time_utils._normalize_now_datetime = custom_norm_now
+
+            self.assertIs(endpoint._get_effective_detect_logs(), custom_detect)
+            self.assertIs(endpoint._get_effective_normalize_endpoint(), custom_norm)
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), custom_parse_dt)
+            self.assertIs(time_utils._get_effective_normalize_now(), custom_norm_now)
+        finally:
+            endpoint.detect_antigravity_quota_endpoint_from_logs = orig_detect
+            endpoint.normalize_antigravity_quota_endpoint = orig_norm
+            time_utils.parse_reset_time_to_datetime = orig_parse_dt
+            time_utils._normalize_now_datetime = orig_norm_now
 
 
 if __name__ == "__main__":

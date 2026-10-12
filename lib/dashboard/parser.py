@@ -440,16 +440,18 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
     table_rows = _extract_table_rows(sec_lines)
     history_tasks: List[Dict[str, Any]] = []
     has_model_hdr = any("Model" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line)
+    has_timestamp_hdr = any("Timestamp" in line or "Time" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line and "Duration" in line)
 
     for cells in table_rows:
-        if len(cells) >= 7:
+        if len(cells) >= 8:
             tid = cells[0].strip("`")
             agent = cells[1].strip("`")
             model = cells[2].strip("`")
             target, target_url = _parse_target_cell(cells[3], agent=agent)
             duration = cells[4]
             status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
-            detail_cell = cells[6]
+            timestamp = cells[6].strip("`").strip()
+            detail_cell = cells[7]
             rc_url = None
             url_m = MD_LINK_PATTERN.search(detail_cell)
             if url_m:
@@ -471,6 +473,49 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                 "target_url": target_url,
                 "duration": duration,
                 "status": status_raw,
+                "timestamp": timestamp,
+                "details": detail,
+                "remote_control_url": rc_url,
+            })
+        elif len(cells) >= 7:
+            tid = cells[0].strip("`")
+            agent = cells[1].strip("`")
+            if has_timestamp_hdr and not has_model_hdr:
+                model = "-"
+                target, target_url = _parse_target_cell(cells[2], agent=agent)
+                duration = cells[3]
+                status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                timestamp = cells[5].strip("`").strip()
+                detail_cell = cells[6]
+            else:
+                model = cells[2].strip("`")
+                target, target_url = _parse_target_cell(cells[3], agent=agent)
+                duration = cells[4]
+                status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                timestamp = "-"
+                detail_cell = cells[6]
+            rc_url = None
+            url_m = MD_LINK_PATTERN.search(detail_cell)
+            if url_m:
+                cand = url_m.group(1).strip()
+                if is_safe_url(cand):
+                    rc_url = cand
+                    detail = "Remote Control"
+                else:
+                    detail = detail_cell.strip("`").strip()
+            else:
+                detail = detail_cell.strip("`").strip()
+            if detail in ("Remote Control", "Remote Session"):
+                detail = "Finished"
+            history_tasks.append({
+                "id": tid,
+                "agent": agent,
+                "model": model,
+                "target": target,
+                "target_url": target_url,
+                "duration": duration,
+                "status": status_raw,
+                "timestamp": timestamp,
                 "details": detail,
                 "remote_control_url": rc_url,
             })
@@ -482,6 +527,7 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                 target, target_url = _parse_target_cell(cells[3], agent=agent)
                 duration = cells[4]
                 status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                timestamp = "-"
                 detail = "Finished"
                 rc_url = None
             else:
@@ -489,6 +535,7 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                 target, target_url = _parse_target_cell(cells[2], agent=agent)
                 duration = cells[3]
                 status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                timestamp = "-"
                 detail_cell = cells[5]
                 rc_url = None
                 url_m = MD_LINK_PATTERN.search(detail_cell)
@@ -501,8 +548,8 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                         detail = detail_cell.strip("`").strip()
                 else:
                     detail = detail_cell.strip("`").strip()
-                if detail in ("Remote Control", "Remote Session"):
-                    detail = "Finished"
+            if detail in ("Remote Control", "Remote Session"):
+                detail = "Finished"
             history_tasks.append({
                 "id": tid,
                 "agent": agent,
@@ -511,6 +558,7 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                 "target_url": target_url,
                 "duration": duration,
                 "status": status_raw,
+                "timestamp": timestamp,
                 "details": detail,
                 "remote_control_url": rc_url,
             })
@@ -528,6 +576,7 @@ def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
                 "target_url": target_url,
                 "duration": duration,
                 "status": status_raw,
+                "timestamp": "-",
                 "details": "Finished",
                 "remote_control_url": None,
             })
