@@ -522,17 +522,30 @@ class TestAgentSdkRunner(unittest.TestCase):
         async def _test():
             mock_agent = MagicMock()
 
-            # Subclass of types.Thought with arbitrary name
+            # Define or mock ag_types
             try:
                 from google.antigravity import types as ag_types
-                class SpecialIdea(ag_types.Thought):
-                    pass
-                thought_instance = SpecialIdea(step_index=0, text="Deep thought from subclass")
             except Exception:
-                class SpecialIdea:
-                    def __init__(self, text):
+                class MockBaseThought:
+                    def __init__(self, text="", step_index=0, **kwargs):
                         self.text = text
-                thought_instance = SpecialIdea("Deep thought from subclass")
+                        self.step_index = step_index
+
+                class MockBaseText:
+                    def __init__(self, text="", step_index=0, **kwargs):
+                        self.text = text
+                        self.step_index = step_index
+
+                class MockAgTypes:
+                    Thought = MockBaseThought
+                    Text = MockBaseText
+
+                ag_types = MockAgTypes
+
+            class SpecialIdea(ag_types.Thought):
+                pass
+
+            thought_instance = SpecialIdea(step_index=0, text="Deep thought from subclass")
 
             # Mock class ending with Thought but not inheriting types.Thought
             class CustomAgentThought:
@@ -540,16 +553,10 @@ class TestAgentSdkRunner(unittest.TestCase):
                     self.text = text
 
             # Subclass of Text
-            try:
-                from google.antigravity import types as ag_types
-                class CustomTextChunk(ag_types.Text):
-                    pass
-                text_instance = CustomTextChunk(step_index=1, text="Result text")
-            except Exception:
-                class CustomTextChunk:
-                    def __init__(self, text):
-                        self.text = text
-                text_instance = CustomTextChunk("Result text")
+            class CustomTextChunk(ag_types.Text):
+                pass
+
+            text_instance = CustomTextChunk(step_index=1, text="Result text")
 
             async def _chunk_iter():
                 yield thought_instance
@@ -562,7 +569,8 @@ class TestAgentSdkRunner(unittest.TestCase):
             mock_agent.chat = AsyncMock(return_value=mock_response)
 
             buf = io.StringIO()
-            with patch.object(sys, "stdout", buf):
+            with patch("bin.agent_sdk_runner.ag_types", ag_types), \
+                 patch.object(sys, "stdout", buf):
                 result = await run_agent_turn(mock_agent, "Think and answer", turn_index=1)
 
             self.assertEqual(result["status"], "SUCCESS")
@@ -578,6 +586,44 @@ class TestAgentSdkRunner(unittest.TestCase):
             # Only CustomTextChunk should be classified as text_delta
             self.assertEqual(len(text_events), 1)
             self.assertEqual(text_events[0]["step_update"]["text_delta"], "Result text")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_tool_result_with_text_attribute(self):
+        """Verify tool results with a .text attribute are emitted as tool events and not text_delta."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class ToolResultChunk:
+                def __init__(self, name, result, text, tool_call_id="call-123"):
+                    self.name = name
+                    self.result = result
+                    self.text = text
+                    self.id = tool_call_id
+
+            async def _chunk_iter():
+                yield ToolResultChunk("run_command", "output data", text="output data text")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Final response")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Execute command", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            text_events = [l for l in lines if l.get("step_update", {}).get("text_delta")]
+
+            self.assertEqual(len(tool_events), 1)
+            self.assertEqual(tool_events[0]["step_update"]["tool_name"], "run_command")
+            self.assertEqual(tool_events[0]["step_update"]["result"], "output data")
+            self.assertEqual(tool_events[0]["step_update"]["state"], "DONE")
+            # Must NOT be classified as text_delta
+            self.assertEqual(len(text_events), 0)
 
         asyncio.run(_test())
 

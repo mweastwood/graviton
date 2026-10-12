@@ -89,11 +89,6 @@ async def run_agent_turn(
                 chunk_type.endswith("Thought")
                 or (ag_types is not None and hasattr(ag_types, "Thought") and isinstance(chunk, ag_types.Thought))
             )
-            is_text = (
-                chunk_type.endswith("Text")
-                or (ag_types is not None and hasattr(ag_types, "Text") and isinstance(chunk, ag_types.Text))
-                or (hasattr(chunk, "text") and not hasattr(chunk, "args"))
-            )
             is_tool_call = (
                 chunk_type.endswith("ToolCall")
                 or (ag_types is not None and hasattr(ag_types, "ToolCall") and isinstance(chunk, ag_types.ToolCall))
@@ -104,6 +99,11 @@ async def run_agent_turn(
                 or (ag_types is not None and hasattr(ag_types, "ToolResult") and isinstance(chunk, ag_types.ToolResult))
                 or (hasattr(chunk, "name") and hasattr(chunk, "result"))
             )
+            is_text = (
+                chunk_type.endswith("Text")
+                or (ag_types is not None and hasattr(ag_types, "Text") and isinstance(chunk, ag_types.Text))
+                or (hasattr(chunk, "text") and not is_thought and not is_tool_call and not is_tool_result)
+            )
 
             if is_thought:
                 _flush_json({
@@ -111,16 +111,6 @@ async def run_agent_turn(
                     "step_update": {
                         "step_type": "agent_response",
                         "thought": getattr(chunk, "text", str(chunk)),
-                    },
-                })
-            elif is_text:
-                delta = getattr(chunk, "text", str(chunk))
-                text_parts.append(delta)
-                _flush_json({
-                    "event": "step_update",
-                    "step_update": {
-                        "step_type": "agent_response",
-                        "text_delta": delta,
                     },
                 })
             elif is_tool_call:
@@ -143,7 +133,7 @@ async def run_agent_turn(
                         "state": "RUNNING",
                     },
                 })
-            elif chunk_type in ("ToolResult", "MockToolResult") or (hasattr(chunk, "name") and hasattr(chunk, "result")):
+            elif is_tool_result:
                 raw_name = getattr(chunk, "name", "")
                 tool_name = getattr(raw_name, "value", str(raw_name))
                 err = getattr(chunk, "error", None) or getattr(chunk, "exception", None)
@@ -169,6 +159,16 @@ async def run_agent_turn(
                 _flush_json({
                     "event": "step_update",
                     "step_update": step_data,
+                })
+            elif is_text:
+                delta = getattr(chunk, "text", str(chunk))
+                text_parts.append(delta)
+                _flush_json({
+                    "event": "step_update",
+                    "step_update": {
+                        "step_type": "agent_response",
+                        "text_delta": delta,
+                    },
                 })
 
         final_text = await response.text()
