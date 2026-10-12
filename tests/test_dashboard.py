@@ -1433,6 +1433,15 @@ class TestDashboardFormatting(unittest.TestCase):
 
         _reset_detected_repo_cache()
 
+    def test_render_dashboard_html_top_level_mock_patch_compatibility(self):
+        # Top-level patch lib.dashboard._detect_git_repo_full_name
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="top-org/top-repo"):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "top-org/top-repo";', html_out)
+
+        _reset_detected_repo_cache()
+
 
 class TestDashboardUpdater(unittest.TestCase):
     """Test DashboardUpdater file registration and auto-writing loop."""
@@ -3335,6 +3344,23 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         mock_get_git.assert_called_once_with(REPO_ROOT)
         self.assertIn('id="meta-branch">feature-x</code>', html_out)
         self.assertIn('id="meta-commit">cafe123</code>', html_out)
+
+    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
+    def test_render_dashboard_html_top_level_mock_patch_get_hot_reload_state(self, mock_get_reload):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_reload.assert_called_once()
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
+
+    @patch("lib.dashboard.get_cached_git_info", return_value=("toplevel99", "top-branch-99"))
+    def test_render_dashboard_html_top_level_mock_patch_get_cached_git_info(self, mock_get_git):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_git.assert_called_once_with(REPO_ROOT)
+        self.assertIn('id="meta-branch">top-branch-99</code>', html_out)
+        self.assertIn('id="meta-commit">toplevel99</code>', html_out)
 
     def test_render_dashboard_html_default_branch_and_commit_resolution(self):
         _reset_dashboard_template_cache()

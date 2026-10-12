@@ -2,16 +2,20 @@
 """
 Dashboard HTML rendering, template loading, and table generators for Graviton.
 Zero external dependencies (Python standard library only).
+
+Note on mock patch targets:
+Functions in this module provide top-level module indirection for `_detect_git_repo_full_name`,
+`get_cached_git_info`, and `get_hot_reload_state`. Tests and external callers may patch either
+`lib.dashboard.<symbol>` or `lib.dashboard.html.<symbol>`.
 """
 
 import html
-import logging
-import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from lib.dashboard.common import (
     REPO_ROOT,
@@ -35,10 +39,67 @@ from lib.quota import (
 )
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager
-from lib.updater import get_cached_git_info, get_git_info, get_hot_reload_state
+from lib.updater import get_cached_git_info, get_hot_reload_state
 
 _TEMPLATE_LOCK = threading.Lock()
 _DASHBOARD_TEMPLATE_CACHE: Optional[str] = None
+
+# Default callables saved at module load time for top-level patch indirection
+_default_detect_git_repo_full_name = _detect_git_repo_full_name
+_default_get_cached_git_info = get_cached_git_info
+_default_get_hot_reload_state = get_hot_reload_state
+
+
+def _get_effective_detect_repo() -> Any:
+    """Resolve repository detection callable supporting lib.dashboard, lib.dashboard.html, and common patches."""
+    if _detect_git_repo_full_name is not _default_detect_git_repo_full_name:
+        return _detect_git_repo_full_name
+    dash_mod = sys.modules.get("lib.dashboard")
+    if dash_mod:
+        top_fn = getattr(dash_mod, "_detect_git_repo_full_name", None)
+        if top_fn is not None and top_fn is not _default_detect_git_repo_full_name:
+            return top_fn
+    common_mod = sys.modules.get("lib.dashboard.common")
+    if common_mod:
+        common_fn = getattr(common_mod, "_detect_git_repo_full_name", None)
+        if common_fn is not None and common_fn is not _default_detect_git_repo_full_name:
+            return common_fn
+    return _detect_git_repo_full_name
+
+
+def _get_effective_get_cached_git_info() -> Any:
+    """Resolve get_cached_git_info callable supporting lib.dashboard, lib.dashboard.html, and updater patches."""
+    if get_cached_git_info is not _default_get_cached_git_info:
+        return get_cached_git_info
+    dash_mod = sys.modules.get("lib.dashboard")
+    if dash_mod:
+        top_fn = getattr(dash_mod, "get_cached_git_info", None)
+        if top_fn is not None and top_fn is not _default_get_cached_git_info:
+            return top_fn
+    updater_mod = sys.modules.get("lib.updater")
+    if updater_mod:
+        updater_fn = getattr(updater_mod, "get_cached_git_info", None)
+        if updater_fn is not None and updater_fn is not _default_get_cached_git_info:
+            return updater_fn
+    return get_cached_git_info
+
+
+def _get_effective_get_hot_reload_state() -> Any:
+    """Resolve get_hot_reload_state callable supporting lib.dashboard, lib.dashboard.html, and updater patches."""
+    if get_hot_reload_state is not _default_get_hot_reload_state:
+        return get_hot_reload_state
+    dash_mod = sys.modules.get("lib.dashboard")
+    if dash_mod:
+        top_fn = getattr(dash_mod, "get_hot_reload_state", None)
+        if top_fn is not None and top_fn is not _default_get_hot_reload_state:
+            return top_fn
+    updater_mod = sys.modules.get("lib.updater")
+    if updater_mod:
+        updater_fn = getattr(updater_mod, "get_hot_reload_state", None)
+        if updater_fn is not None and updater_fn is not _default_get_hot_reload_state:
+            return updater_fn
+    return get_hot_reload_state
+
 
 
 def _get_dashboard_template() -> str:
@@ -555,7 +616,7 @@ def _render_header_html(data: Dict[str, Any], extra_info: Optional[Dict[str, Any
     status_text = html.escape(data["status_text"])
     status_class = html.escape(data["status_class"])
 
-    raw_repo = _detect_git_repo_full_name() or ""
+    raw_repo = _get_effective_detect_repo()() or ""
     default_repo = raw_repo if re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", raw_repo) else ""
 
     commit = (extra_info.get("commit") if extra_info else None) or data.get("commit")
@@ -563,7 +624,7 @@ def _render_header_html(data: Dict[str, Any], extra_info: Optional[Dict[str, Any
 
     if not commit or not branch or commit == "unknown" or branch == "unknown":
         try:
-            c, b = get_cached_git_info(REPO_ROOT)
+            c, b = _get_effective_get_cached_git_info()(REPO_ROOT)
             commit = (commit if commit and commit != "unknown" else c) or "unknown"
             branch = (branch if branch and branch != "unknown" else b) or "unknown"
         except Exception:
@@ -575,7 +636,7 @@ def _render_header_html(data: Dict[str, Any], extra_info: Optional[Dict[str, Any
         reload_state = str(extra_info["reload_state"])
     else:
         try:
-            reload_state = get_hot_reload_state()
+            reload_state = _get_effective_get_hot_reload_state()()
         except Exception:
             reload_state = (data.get("reload_state") if data else "IDLE") or "IDLE"
     reload_state = reload_state or "IDLE"

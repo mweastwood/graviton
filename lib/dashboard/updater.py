@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import List, Optional, Set, Union
 
 from lib.dashboard.common import logger
 from lib.pr_tracker import PRTracker

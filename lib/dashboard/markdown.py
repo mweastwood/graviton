@@ -27,7 +27,7 @@ from lib.quota import (
     format_reset_countdown,
 )
 from lib.scheduler import TaskScheduler
-from lib.tasks import Task, TaskManager, TaskStatus
+from lib.tasks import TaskManager, TaskStatus
 
 
 def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
@@ -216,41 +216,6 @@ def _md_active_tasks(ctx: Dict[str, Any]) -> List[str]:
         lines.extend(["*No container tasks currently running.*", ""])
     lines.extend(["---", ""])
     return lines
-
-
-def _md_quota_gemini_rows(
-    pool: str,
-    gemini_model: str,
-    g_5h_val: str,
-    g_5h_details: str,
-    g_1w_val: str,
-    g_1w_details: str,
-    gemini_disp: str,
-) -> List[str]:
-    """Render markdown table rows specific to Gemini quota windows and capacity."""
-    return [
-        f"| **Active Gemini Model** | `{gemini_model}` | Active Gemini model persona |",
-        f"| **Gemini (5H)** | `{g_5h_val}` | {g_5h_details} |",
-        f"| **Gemini (1W)** | `{g_1w_val}` | {g_1w_details} |",
-        f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |",
-    ]
-
-
-def _md_quota_third_party_rows(
-    tp_model: str,
-    c_5h_val: str,
-    c_5h_details: str,
-    c_1w_val: str,
-    c_1w_details: str,
-    tp_disp: str,
-) -> List[str]:
-    """Render markdown table rows specific to Third-Party quota windows and capacity."""
-    return [
-        f"| **Active Third-Party Model** | `{tp_model}` | Active Third-Party model persona |",
-        f"| **Third-Party (5H)** | `{c_5h_val}` | {c_5h_details} |",
-        f"| **Third-Party (1W)** | `{c_1w_val}` | {c_1w_details} |",
-        f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |",
-    ]
 
 
 def _md_quota(ctx: Dict[str, Any], quota_tracker: Optional[QuotaTracker] = None) -> List[str]:

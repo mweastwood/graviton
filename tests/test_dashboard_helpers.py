@@ -13,8 +13,7 @@ from lib.dashboard.html import (
 from lib.dashboard.markdown import (
     _md_header,
     _md_pipeline,
-    _md_quota_gemini_rows,
-    _md_quota_third_party_rows,
+    _md_quota,
 )
 from lib.dashboard.parser import (
     _parse_active,
@@ -40,6 +39,11 @@ class TestDashboardSectionHelpers(unittest.TestCase):
                 "completed_tasks": 5,
                 "failed_tasks": 0,
             },
+            "quota_info": {
+                "quota_pool": "gemini",
+                "active_gemini_model": "gemini-3.8-flash",
+                "active_third_party_model": "claude-sonnet",
+            },
         }
 
         header_lines = _md_header(ctx)
@@ -50,13 +54,10 @@ class TestDashboardSectionHelpers(unittest.TestCase):
         self.assertIn("## 📊 Task Pipeline", pipeline_lines)
         self.assertTrue(any("`1 / 4`" in line for line in pipeline_lines))
 
-        gemini_rows = _md_quota_gemini_rows("gemini", "gemini-3.8-flash", "80%", "Reset: 02:00", "90%", "Reset: 4d", "80%")
-        self.assertEqual(len(gemini_rows), 4)
-        self.assertIn("gemini-3.8-flash", gemini_rows[0])
-
-        tp_rows = _md_quota_third_party_rows("claude-sonnet", "50%", "Reset: 01:00", "60%", "Reset: 2d", "50%")
-        self.assertEqual(len(tp_rows), 4)
-        self.assertIn("claude-sonnet", tp_rows[0])
+        quota_lines = _md_quota(ctx)
+        self.assertIn("## 🎯 Model Quota & Pacing", quota_lines)
+        self.assertTrue(any("gemini-3.8-flash" in line for line in quota_lines))
+        self.assertTrue(any("claude-sonnet" in line for line in quota_lines))
 
     def test_parser_helpers_in_isolation(self):
         sample_md = """# Dashboard

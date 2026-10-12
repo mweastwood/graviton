@@ -2,6 +2,9 @@
 Graviton Live Dashboard Generator and Auto-Updater package.
 
 Re-exports public and internal API for full backwards compatibility.
+Provides top-level module indirection so tests and external callers patching
+`lib.dashboard.<symbol>` (such as `_detect_git_repo_full_name`, `get_cached_git_info`,
+and `get_hot_reload_state`) continue to intercept calls inside `render_dashboard_html()`.
 """
 
 from lib.dashboard.common import (
@@ -55,8 +58,6 @@ from lib.dashboard.markdown import (
     _md_history,
     _md_pipeline,
     _md_quota,
-    _md_quota_gemini_rows,
-    _md_quota_third_party_rows,
     _md_queued,
     format_dashboard_markdown,
 )
@@ -88,6 +89,8 @@ from lib.dashboard.updater import DashboardUpdater
 __all__ = [
     # common
     "REPO_ROOT",
+    "_DETECTED_REPO",
+    "_DETECTED_REPO_CHECKED",
     "logger",
     "format_duration",
     "format_percentage",
@@ -109,8 +112,6 @@ __all__ = [
     "_md_pipeline",
     "_md_active_tasks",
     "_md_quota",
-    "_md_quota_gemini_rows",
-    "_md_quota_third_party_rows",
     "_md_queued",
     "_md_approved_prs",
     "_md_history",
