@@ -39,6 +39,8 @@ def _get_effective_resolve_endpoint():
         if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not resolve_antigravity_quota_endpoint:
             return val
     return resolve_antigravity_quota_endpoint
+
+
 DEFAULT_GEMINI_MODELS: List[str] = [
     "gemini-3.8-flash-medium",
     "gemini-3.6-flash-high",

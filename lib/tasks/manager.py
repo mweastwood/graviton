@@ -194,6 +194,7 @@ class TaskManager:
                 self._rebuild_queue_locked()
                 logger.info("TaskManager resumed task acceptance and worker execution.")
             return self._paused
+
     def rebuild_queue(self):
         """Rebuild internal task queue from active task registry."""
         with self._lock:
@@ -458,7 +459,7 @@ class TaskManager:
         :return: Number of queued and quota-paused tasks serialized.
         """
         with self._lock:
-            return persist_dump_queue_state(
+            return _get_effective("dump_queue_state", persist_dump_queue_state)(
                 self._tasks,
                 self._task_counter,
                 cwd=self.cwd,
@@ -473,7 +474,9 @@ class TaskManager:
         :return: Number of queued and quota-paused tasks restored.
         """
         with self._lock:
-            new_counter, restored_count = persist_restore_queue_state(
+            new_counter, restored_count = _get_effective(
+                "restore_queue_state", persist_restore_queue_state
+            )(
                 self._tasks,
                 self._task_counter,
                 cwd=self.cwd,
@@ -484,6 +487,7 @@ class TaskManager:
             self._prune_tasks_locked()
             self._task_state_cond.notify_all()
         return restored_count
+
     def _prune_tasks_locked(self):
         """
         Evict oldest finished tasks (COMPLETED, FAILED, or ABORTED) if total tasks exceed max_tasks limit.
@@ -846,7 +850,9 @@ class TaskManager:
                             task = None
                             was_exhausted = True
                         else:
-                            selected_pool, selected_model, all_exhausted = resolve_task_pool_and_model(self.quota_tracker)
+                            selected_pool, selected_model, all_exhausted = _get_effective(
+                                "resolve_task_pool_and_model", resolve_task_pool_and_model
+                            )(self.quota_tracker)
                             if self._draining or self._paused or all_exhausted:
                                 if all_exhausted:
                                     if item.status != TaskStatus.PAUSED_FOR_QUOTA:

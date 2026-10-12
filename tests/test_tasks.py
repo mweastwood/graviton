@@ -3277,6 +3277,29 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         with patch("lib.tasks.subprocess.run") as mock_top_subproc:
             self.assertIs(ws._get_effective_subproc_run(), mock_top_subproc)
 
+    def test_manager_queue_state_and_pool_delegation(self):
+        from unittest.mock import MagicMock, patch
+        from lib.tasks.manager import _get_effective, TaskManager
+
+        # Test delegation via top-level lib.tasks patch
+        with patch("lib.tasks.dump_queue_state") as mock_dump:
+            mock_dump.return_value = 42
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr.dump_queue_state(), 42)
+            mock_dump.assert_called_once()
+
+        with patch("lib.tasks.restore_queue_state") as mock_restore:
+            mock_restore.return_value = (10, 5)
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr.restore_queue_state(), 5)
+            mock_restore.assert_called_once()
+
+        with patch("lib.tasks.resolve_task_pool_and_model") as mock_resolve:
+            mock_resolve.return_value = ("gemini", "gemini-3.8-flash-medium", False)
+            mgr = TaskManager(max_workers=1)
+            effective_resolve = _get_effective("resolve_task_pool_and_model", None)
+            self.assertIs(effective_resolve, mock_resolve)
+
 
 if __name__ == "__main__":
     unittest.main()
