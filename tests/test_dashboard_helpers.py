@@ -14,6 +14,8 @@ from lib.dashboard.markdown import (
     _md_header,
     _md_pipeline,
     _md_quota,
+    _md_quota_gemini_rows,
+    _md_quota_third_party_rows,
 )
 from lib.dashboard.parser import (
     _parse_active,
@@ -58,6 +60,30 @@ class TestDashboardSectionHelpers(unittest.TestCase):
         self.assertIn("## 🎯 Model Quota & Pacing", quota_lines)
         self.assertTrue(any("gemini-3.8-flash" in line for line in quota_lines))
         self.assertTrue(any("claude-sonnet" in line for line in quota_lines))
+
+    def test_markdown_quota_rows_helpers_in_isolation(self):
+        # Test Gemini rows helper
+        g_rows = _md_quota_gemini_rows("gemini-3.8-pro", "85%", "Reset: 01:00", "90%", "Reset: 2d", "85%")
+        self.assertEqual(len(g_rows), 4)
+        self.assertEqual(g_rows[0], "| **Active Gemini Model** | `gemini-3.8-pro` | Active Gemini model persona |")
+        self.assertEqual(g_rows[1], "| **Gemini (5H)** | `85%` | Reset: 01:00 |")
+        self.assertEqual(g_rows[2], "| **Gemini (1W)** | `90%` | Reset: 2d |")
+        self.assertEqual(g_rows[3], "| **Gemini Remaining** | `85%` | Live Gemini API capacity |")
+
+        # Test Third-Party rows helper
+        tp_rows = _md_quota_third_party_rows("claude-sonnet-4", "60%", "Reset: 03:00", "70%", "Reset: 5d", "60%")
+        self.assertEqual(len(tp_rows), 4)
+        self.assertEqual(tp_rows[0], "| **Active Third-Party Model** | `claude-sonnet-4` | Active Third-Party model persona |")
+        self.assertEqual(tp_rows[1], "| **Third-Party (5H)** | `60%` | Reset: 03:00 |")
+        self.assertEqual(tp_rows[2], "| **Third-Party (1W)** | `70%` | Reset: 5d |")
+        self.assertEqual(tp_rows[3], "| **Third-Party Remaining** | `60%` | Fallback model capacity |")
+
+        # Verify re-exports from lib.dashboard package
+        import lib.dashboard as dashboard_pkg
+        self.assertTrue(hasattr(dashboard_pkg, "_md_quota_gemini_rows"))
+        self.assertTrue(hasattr(dashboard_pkg, "_md_quota_third_party_rows"))
+        self.assertIn("_md_quota_gemini_rows", dashboard_pkg.__all__)
+        self.assertIn("_md_quota_third_party_rows", dashboard_pkg.__all__)
 
     def test_parser_helpers_in_isolation(self):
         sample_md = """# Dashboard

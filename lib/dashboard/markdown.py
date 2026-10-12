@@ -218,6 +218,40 @@ def _md_active_tasks(ctx: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _md_quota_gemini_rows(
+    gemini_model: str,
+    g_5h_val: str,
+    g_5h_details: str,
+    g_1w_val: str,
+    g_1w_details: str,
+    gemini_disp: str,
+) -> List[str]:
+    """Render markdown table rows for Gemini model quota and pacing."""
+    return [
+        f"| **Active Gemini Model** | `{gemini_model}` | Active Gemini model persona |",
+        f"| **Gemini (5H)** | `{g_5h_val}` | {g_5h_details} |",
+        f"| **Gemini (1W)** | `{g_1w_val}` | {g_1w_details} |",
+        f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |",
+    ]
+
+
+def _md_quota_third_party_rows(
+    tp_model: str,
+    c_5h_val: str,
+    c_5h_details: str,
+    c_1w_val: str,
+    c_1w_details: str,
+    tp_disp: str,
+) -> List[str]:
+    """Render markdown table rows for third-party model quota and pacing."""
+    return [
+        f"| **Active Third-Party Model** | `{tp_model}` | Active Third-Party model persona |",
+        f"| **Third-Party (5H)** | `{c_5h_val}` | {c_5h_details} |",
+        f"| **Third-Party (1W)** | `{c_1w_val}` | {c_1w_details} |",
+        f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |",
+    ]
+
+
 def _md_quota(ctx: Dict[str, Any], quota_tracker: Optional[QuotaTracker] = None) -> List[str]:
     """Render model quota pacing table for both Gemini and third-party models."""
     quota_info = ctx["quota_info"]
@@ -380,15 +414,9 @@ def _md_quota(ctx: Dict[str, Any], quota_tracker: Optional[QuotaTracker] = None)
         f"| **Active Pool** | `{pool}` | Configured quota bucket |",
         f"| **Active Model** | `{model}` | Active Gemini / LLM persona |",
     ]
-    # Gemini section rows
-    lines.append(f"| **Active Gemini Model** | `{gemini_model}` | Active Gemini model persona |")
-    lines.append(f"| **Active Third-Party Model** | `{tp_model}` | Active Third-Party model persona |")
-    lines.append(f"| **Gemini (5H)** | `{g_5h_val}` | {g_5h_details} |")
-    lines.append(f"| **Gemini (1W)** | `{g_1w_val}` | {g_1w_details} |")
-    lines.append(f"| **Third-Party (5H)** | `{c_5h_val}` | {c_5h_details} |")
-    lines.append(f"| **Third-Party (1W)** | `{c_1w_val}` | {c_1w_details} |")
-    lines.append(f"| **Gemini Remaining** | `{gemini_disp}` | Live Gemini API capacity |")
-    lines.append(f"| **Third-Party Remaining** | `{tp_disp}` | Fallback model capacity |")
+    g_rows = _md_quota_gemini_rows(gemini_model, g_5h_val, g_5h_details, g_1w_val, g_1w_details, gemini_disp)
+    tp_rows = _md_quota_third_party_rows(tp_model, c_5h_val, c_5h_details, c_1w_val, c_1w_details, tp_disp)
+    lines.extend([g_rows[0], tp_rows[0], g_rows[1], g_rows[2], tp_rows[1], tp_rows[2], g_rows[3], tp_rows[3]])
     lines.extend(["", "---", ""])
     return lines
 

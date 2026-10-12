@@ -58,6 +58,8 @@ from lib.dashboard.markdown import (
     _md_history,
     _md_pipeline,
     _md_quota,
+    _md_quota_gemini_rows,
+    _md_quota_third_party_rows,
     _md_queued,
     format_dashboard_markdown,
 )
@@ -112,6 +114,8 @@ __all__ = [
     "_md_pipeline",
     "_md_active_tasks",
     "_md_quota",
+    "_md_quota_gemini_rows",
+    "_md_quota_third_party_rows",
     "_md_queued",
     "_md_approved_prs",
     "_md_history",
