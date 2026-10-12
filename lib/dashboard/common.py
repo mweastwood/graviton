@@ -59,6 +59,27 @@ def _detect_git_repo_full_name() -> Optional[str]:
     return _DETECTED_REPO
 
 
+# Default callable saved at module load time for top-level patch indirection
+_default_detect_git_repo_full_name = _detect_git_repo_full_name
+
+
+def _get_effective_detect_repo() -> Any:
+    """Resolve repository detection callable supporting lib.dashboard, lib.dashboard.html, and common patches."""
+    if _detect_git_repo_full_name is not _default_detect_git_repo_full_name:
+        return _detect_git_repo_full_name
+    dash_mod = sys.modules.get("lib.dashboard")
+    if dash_mod:
+        top_fn = getattr(dash_mod, "_detect_git_repo_full_name", None)
+        if top_fn is not None and top_fn is not _default_detect_git_repo_full_name:
+            return top_fn
+    html_mod = sys.modules.get("lib.dashboard.html")
+    if html_mod:
+        html_fn = getattr(html_mod, "_detect_git_repo_full_name", None)
+        if html_fn is not None and html_fn is not _default_detect_git_repo_full_name:
+            return html_fn
+    return _detect_git_repo_full_name
+
+
 def format_duration(seconds: Optional[float]) -> str:
     """Format elapsed seconds into human readable duration string (e.g., 2m 14s)."""
     if seconds is None or seconds < 0:
@@ -255,7 +276,7 @@ def resolve_target_url(
         cand = f"https://{raw}"
         return cand if is_safe_url(cand) else None
 
-    eff_repo = repo or _detect_git_repo_full_name()
+    eff_repo = repo or _get_effective_detect_repo()()
     if eff_repo:
         eff_repo = eff_repo.strip()
         if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", eff_repo):

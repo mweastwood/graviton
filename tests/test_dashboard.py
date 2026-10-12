@@ -1413,20 +1413,20 @@ class TestDashboardFormatting(unittest.TestCase):
     def test_render_dashboard_html_default_repo_handling(self):
         # When repo cannot be detected, defaultRepo in JS template is empty string
         _reset_detected_repo_cache()
-        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value=None):
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value=None):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "";', html_out)
             self.assertNotIn('const defaultRepo = "None";', html_out)
 
         # When repo is detected, defaultRepo is populated
         _reset_detected_repo_cache()
-        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value="my-org/my-repo"):
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="my-org/my-repo"):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "my-org/my-repo";', html_out)
 
         # When repo detection returns invalid/malicious string, it is sanitized to empty string
         _reset_detected_repo_cache()
-        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value='"; alert("xss");//'):
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value='"; alert("xss");//'):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "";', html_out)
             self.assertNotIn('alert("xss")', html_out)
@@ -1439,6 +1439,120 @@ class TestDashboardFormatting(unittest.TestCase):
         with patch("lib.dashboard._detect_git_repo_full_name", return_value="top-org/top-repo"):
             html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
             self.assertIn('const defaultRepo = "top-org/top-repo";', html_out)
+
+        # Submodule patch lib.dashboard.html._detect_git_repo_full_name
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value="html-org/html-repo"):
+            html_out = render_dashboard_html("# 🌌 Graviton Live Dashboard\n\n**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE**\n")
+            self.assertIn('const defaultRepo = "html-org/html-repo";', html_out)
+
+        _reset_detected_repo_cache()
+
+    def test_resolve_target_url_top_level_mock_patch(self):
+        _reset_detected_repo_cache()
+        # Top-level patch lib.dashboard._detect_git_repo_full_name
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="mocked-org/mocked-repo"):
+            self.assertEqual(
+                resolve_target_url("#42"),
+                "https://github.com/mocked-org/mocked-repo/pull/42",
+            )
+            self.assertEqual(
+                resolve_target_url("PR #42"),
+                "https://github.com/mocked-org/mocked-repo/pull/42",
+            )
+            self.assertEqual(
+                resolve_target_url("#100", agent="issue_triager"),
+                "https://github.com/mocked-org/mocked-repo/issues/100",
+            )
+            # Explicit repo overrides detected repo
+            self.assertEqual(
+                resolve_target_url("#42", repo="override-org/override-repo"),
+                "https://github.com/override-org/override-repo/pull/42",
+            )
+
+        # Submodule patch lib.dashboard.html._detect_git_repo_full_name
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard.html._detect_git_repo_full_name", return_value="html-org/html-repo"):
+            self.assertEqual(
+                resolve_target_url("#55"),
+                "https://github.com/html-org/html-repo/pull/55",
+            )
+
+        # Common patch lib.dashboard.common._detect_git_repo_full_name
+        _reset_detected_repo_cache()
+        with patch("lib.dashboard.common._detect_git_repo_full_name", return_value="common-org/common-repo"):
+            self.assertEqual(
+                resolve_target_url("#77"),
+                "https://github.com/common-org/common-repo/pull/77",
+            )
+
+        _reset_detected_repo_cache()
+
+    def test_format_dashboard_markdown_top_level_mock_patch_target_urls(self):
+        _reset_detected_repo_cache()
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "active_workers": 1,
+            "max_workers": 2,
+            "active_tasks": 1,
+            "queued_tasks": 1,
+            "completed_tasks": 1,
+            "failed_tasks": 0,
+        }
+
+        active_task = Task(
+            id="task-201",
+            agent="code_reviewer",
+            prompt="Review PR #21",
+            target_id="#21",
+            repo_full_name=None,
+            status=TaskStatus.RUNNING,
+            start_time=time.time() - 30.0,
+            remote_control_url="https://antigravity.google.com/c/conv-201",
+        )
+        queued_task = Task(
+            id="task-202",
+            agent="code_fixer",
+            prompt="Fix PR #22",
+            target_id="#22",
+            repo_full_name=None,
+            status=TaskStatus.QUEUED,
+            priority=2,
+            enqueue_time=time.time() - 10.0,
+        )
+        completed_task = Task(
+            id="task-200",
+            agent="issue_triager",
+            prompt="Triage issue #23",
+            target_id="#23",
+            repo_full_name=None,
+            status=TaskStatus.COMPLETED,
+            start_time=time.time() - 100.0,
+            finish_time=time.time() - 40.0,
+            remote_control_url="https://antigravity.google.com/c/conv-200",
+        )
+
+        mock_tm.get_active_tasks.return_value = [active_task]
+        mock_tm.get_queued_tasks.return_value = [queued_task]
+        mock_tm.get_task_history.return_value = [completed_task]
+
+        with patch("lib.dashboard._detect_git_repo_full_name", return_value="patch-org/patch-repo"):
+            md = format_dashboard_markdown(mock_tm)
+            self.assertIn("[`#21`](https://github.com/patch-org/patch-repo/pull/21)", md)
+            self.assertIn("[`#22`](https://github.com/patch-org/patch-repo/pull/22)", md)
+            self.assertIn("[`#23`](https://github.com/patch-org/patch-repo/issues/23)", md)
+
+            # Verify parse_dashboard_markdown correctly reconstructs target URLs
+            parsed = parse_dashboard_markdown(md)
+            self.assertEqual(len(parsed["active_tasks"]), 1)
+            self.assertEqual(parsed["active_tasks"][0]["target"], "#21")
+            self.assertEqual(parsed["active_tasks"][0]["target_url"], "https://github.com/patch-org/patch-repo/pull/21")
+            self.assertEqual(len(parsed["queued_tasks_list"]), 1)
+            self.assertEqual(parsed["queued_tasks_list"][0]["target"], "#22")
+            self.assertEqual(parsed["queued_tasks_list"][0]["target_url"], "https://github.com/patch-org/patch-repo/pull/22")
+            self.assertEqual(len(parsed["history_tasks"]), 1)
+            self.assertEqual(parsed["history_tasks"][0]["target"], "#23")
+            self.assertEqual(parsed["history_tasks"][0]["target_url"], "https://github.com/patch-org/patch-repo/issues/23")
 
         _reset_detected_repo_cache()
 
@@ -3327,7 +3441,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('id="meta-commit">a1b2c3d</code>', html_out)
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
 
-    @patch("lib.dashboard.html.get_hot_reload_state", return_value="DRAINING_TASKS")
+    @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
     def test_render_dashboard_html_explicit_idle_reload_state(self, mock_get_reload):
         _reset_dashboard_template_cache()
         sample_md = "# 🌌 Graviton Live Dashboard\n"
@@ -3336,7 +3450,7 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         mock_get_reload.assert_not_called()
         self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-idle">IDLE</span>', html_out)
 
-    @patch("lib.dashboard.html.get_cached_git_info", return_value=("cafe123", "feature-x"))
+    @patch("lib.dashboard.get_cached_git_info", return_value=("cafe123", "feature-x"))
     def test_render_dashboard_html_passes_repo_root_to_get_cached_git_info(self, mock_get_git):
         _reset_dashboard_template_cache()
         sample_md = "# 🌌 Graviton Live Dashboard\n"
@@ -3344,6 +3458,23 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         mock_get_git.assert_called_once_with(REPO_ROOT)
         self.assertIn('id="meta-branch">feature-x</code>', html_out)
         self.assertIn('id="meta-commit">cafe123</code>', html_out)
+
+    @patch("lib.dashboard.html.get_hot_reload_state", return_value="DRAINING_TASKS")
+    def test_render_dashboard_html_submodule_mock_patch_get_hot_reload_state(self, mock_get_reload):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_reload.assert_called_once()
+        self.assertIn('id="meta-reload-state" class="reload-badge reload-badge-draining">DRAINING_TASKS</span>', html_out)
+
+    @patch("lib.dashboard.html.get_cached_git_info", return_value=("submod99", "sub-branch-99"))
+    def test_render_dashboard_html_submodule_mock_patch_get_cached_git_info(self, mock_get_git):
+        _reset_dashboard_template_cache()
+        sample_md = "# 🌌 Graviton Live Dashboard\n"
+        html_out = render_dashboard_html(sample_md)
+        mock_get_git.assert_called_once_with(REPO_ROOT)
+        self.assertIn('id="meta-branch">sub-branch-99</code>', html_out)
+        self.assertIn('id="meta-commit">submod99</code>', html_out)
 
     @patch("lib.dashboard.get_hot_reload_state", return_value="DRAINING_TASKS")
     def test_render_dashboard_html_top_level_mock_patch_get_hot_reload_state(self, mock_get_reload):

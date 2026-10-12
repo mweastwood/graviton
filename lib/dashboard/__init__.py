@@ -14,6 +14,7 @@ from lib.dashboard.common import (
     _build_pacing_details,
     _detect_git_repo_full_name,
     _extract_countdown,
+    _get_effective_detect_repo,
     _reset_detected_repo_cache,
     calculate_target_pacing_from_details,
     format_duration,
@@ -104,6 +105,7 @@ __all__ = [
     "_build_pacing_details",
     "resolve_target_url",
     "_detect_git_repo_full_name",
+    "_get_effective_detect_repo",
     "_reset_detected_repo_cache",
     # markdown
     "format_dashboard_markdown",

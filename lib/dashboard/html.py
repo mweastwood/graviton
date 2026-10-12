@@ -21,6 +21,7 @@ from lib.dashboard.common import (
     REPO_ROOT,
     _build_pacing_details,
     _detect_git_repo_full_name,
+    _get_effective_detect_repo,
     calculate_target_pacing_from_details,
     format_duration,
     format_percentage,
@@ -45,26 +46,8 @@ _TEMPLATE_LOCK = threading.Lock()
 _DASHBOARD_TEMPLATE_CACHE: Optional[str] = None
 
 # Default callables saved at module load time for top-level patch indirection
-_default_detect_git_repo_full_name = _detect_git_repo_full_name
 _default_get_cached_git_info = get_cached_git_info
 _default_get_hot_reload_state = get_hot_reload_state
-
-
-def _get_effective_detect_repo() -> Any:
-    """Resolve repository detection callable supporting lib.dashboard, lib.dashboard.html, and common patches."""
-    if _detect_git_repo_full_name is not _default_detect_git_repo_full_name:
-        return _detect_git_repo_full_name
-    dash_mod = sys.modules.get("lib.dashboard")
-    if dash_mod:
-        top_fn = getattr(dash_mod, "_detect_git_repo_full_name", None)
-        if top_fn is not None and top_fn is not _default_detect_git_repo_full_name:
-            return top_fn
-    common_mod = sys.modules.get("lib.dashboard.common")
-    if common_mod:
-        common_fn = getattr(common_mod, "_detect_git_repo_full_name", None)
-        if common_fn is not None and common_fn is not _default_detect_git_repo_full_name:
-            return common_fn
-    return _detect_git_repo_full_name
 
 
 def _get_effective_get_cached_git_info() -> Any:
