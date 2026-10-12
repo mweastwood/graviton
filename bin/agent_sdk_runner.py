@@ -85,26 +85,30 @@ async def run_agent_turn(
         text_parts = []
         async for chunk in response.chunks:
             chunk_type = type(chunk).__name__
+            thought_cls = getattr(ag_types, "Thought", None)
             is_thought = (
                 chunk_type.endswith("Thought")
-                or (ag_types is not None and hasattr(ag_types, "Thought") and isinstance(chunk, ag_types.Thought))
+                or (isinstance(thought_cls, type) and isinstance(chunk, thought_cls))
             )
+            tool_result_cls = getattr(ag_types, "ToolResult", None)
             is_tool_result = (
                 chunk_type.endswith("ToolResult")
-                or (ag_types is not None and hasattr(ag_types, "ToolResult") and isinstance(chunk, ag_types.ToolResult))
+                or (isinstance(tool_result_cls, type) and isinstance(chunk, tool_result_cls))
                 or (hasattr(chunk, "name") and (hasattr(chunk, "result") or hasattr(chunk, "error") or hasattr(chunk, "exception")))
             )
+            tool_call_cls = getattr(ag_types, "ToolCall", None)
             is_tool_call = (
                 (
                     chunk_type.endswith("ToolCall")
-                    or (ag_types is not None and hasattr(ag_types, "ToolCall") and isinstance(chunk, ag_types.ToolCall))
+                    or (isinstance(tool_call_cls, type) and isinstance(chunk, tool_call_cls))
                     or (hasattr(chunk, "name") and hasattr(chunk, "args"))
                 )
                 and not is_tool_result
             )
+            text_cls = getattr(ag_types, "Text", None)
             is_text = (
                 chunk_type.endswith("Text")
-                or (ag_types is not None and hasattr(ag_types, "Text") and isinstance(chunk, ag_types.Text))
+                or (isinstance(text_cls, type) and isinstance(chunk, text_cls))
                 or (hasattr(chunk, "text") and not is_thought and not is_tool_call and not is_tool_result)
             )
 

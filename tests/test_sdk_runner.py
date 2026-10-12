@@ -24,6 +24,16 @@ from bin.agent_sdk_runner import (
 class TestAgentSdkRunner(unittest.TestCase):
     """Test suite for SDK agent runner helper functions and async loop."""
 
+    def setUp(self):
+        super().setUp()
+        import bin.agent_sdk_runner as runner_module
+        self._orig_ag_types = runner_module.ag_types
+
+    def tearDown(self):
+        import bin.agent_sdk_runner as runner_module
+        runner_module.ag_types = self._orig_ag_types
+        super().tearDown()
+
     def test_parse_args_defaults(self):
         args = parse_args([])
         self.assertEqual(args.input_format, "stream-json")
@@ -867,6 +877,67 @@ class TestAgentSdkRunner(unittest.TestCase):
             self.assertEqual(step2["state"], "ERROR")
             self.assertEqual(step2["tool_name"], "write_file")
             self.assertIn("Disk full", step2["error"])
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_mock_ag_types_safety(self):
+        """Verify run_agent_turn functions reliably when ag_types contains mock or non-type attributes."""
+        async def _test():
+            import bin.agent_sdk_runner as runner_module
+            mock_types = MagicMock()
+            runner_module.ag_types = mock_types
+
+            mock_agent = MagicMock()
+
+            class CustomThought:
+                def __init__(self, text):
+                    self.text = text
+
+            class CustomToolCall:
+                def __init__(self, name, args, call_id):
+                    self.name = name
+                    self.args = args
+                    self.id = call_id
+
+            class CustomToolResult:
+                def __init__(self, name, result, call_id):
+                    self.name = name
+                    self.result = result
+                    self.id = call_id
+
+            class CustomText:
+                def __init__(self, text):
+                    self.text = text
+
+            async def _chunk_iter():
+                yield CustomThought("Safe thought without type collision")
+                yield CustomToolCall("check_status", {"verbose": True}, "call-safe-1")
+                yield CustomToolResult("check_status", {"ok": True}, "call-safe-1")
+                yield CustomText("Turn finished safely.")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Turn finished safely.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Perform safe turn", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            self.assertEqual(result["response"], "Turn finished safely.")
+
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            thought_events = [l for l in lines if l.get("step_update", {}).get("thought")]
+            self.assertEqual(len(thought_events), 1)
+            self.assertEqual(thought_events[0]["step_update"]["thought"], "Safe thought without type collision")
+
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 2)
+            self.assertEqual(tool_events[0]["step_update"]["tool_name"], "check_status")
+            self.assertEqual(tool_events[0]["step_update"]["state"], "RUNNING")
+            self.assertEqual(tool_events[1]["step_update"]["tool_name"], "check_status")
+            self.assertEqual(tool_events[1]["step_update"]["state"], "DONE")
 
         asyncio.run(_test())
 
