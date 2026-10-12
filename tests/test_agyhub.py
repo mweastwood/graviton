@@ -1,14 +1,11 @@
 """Unit tests for lib/agyhub.py (Protobuf codec and agyhub sync helpers)."""
 
-import json
-import os
 import sqlite3
 import struct
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from lib.agyhub import (
     _build_workspace_proto,
@@ -298,6 +295,14 @@ class TestAgyhubSync(unittest.TestCase):
         entries = _read_agyhub_entries(hub_pb.read_bytes())
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0][0], cid)
+
+        # Verify trajectory_metadata_blob updated
+        with sqlite3.connect(str(conv_db_path)) as c_conn:
+            c_cur = c_conn.cursor()
+            c_cur.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'")
+            traj_row = c_cur.fetchone()
+            self.assertIsNotNone(traj_row)
+            self.assertNotEqual(traj_row[0], initial_f17)
 
     def test_parse_git_repo_info_non_git(self):
         repo_name, git_url, branch = _parse_git_repo_info(self.repo_dir)

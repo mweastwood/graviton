@@ -41,6 +41,14 @@ class TestProjectDiscovery(unittest.TestCase):
         self.assertIsNone(_extract_uri({"gitFolder": {"folderUri": 123}}))
 
     def test_ensure_default_project_creates_and_reuses(self):
+        # 0. Create project with default name
+        pid_def, pname_def = ensure_default_project(self.projects_dir, self.repo_dir)
+        self.assertEqual(pname_def, DEFAULT_PROJECT_NAME)
+        proj_def_file = self.projects_dir / f"{pid_def}.json"
+        self.assertTrue(proj_def_file.exists())
+        def_data = json.loads(proj_def_file.read_text(encoding="utf-8"))
+        self.assertEqual(def_data["name"], DEFAULT_PROJECT_NAME)
+
         # 1. Create project file
         pid, pname = ensure_default_project(self.projects_dir, self.repo_dir, name="Test Project")
         self.assertEqual(pname, "Test Project")
@@ -176,6 +184,13 @@ class TestProjectDiscovery(unittest.TestCase):
             find_project_for_repo(spaced_dir, config_dir=self.projects_dir),
             ("project-spaced", "Spaced Project"),
         )
+
+    def test_find_project_for_repo_default_worker_fallback(self):
+        pid, pname = ensure_default_project(self.projects_dir, name=DEFAULT_PROJECT_NAME)
+        unrelated = self.base / "unrelated_repo"
+        unrelated.mkdir()
+        res = find_project_for_repo(unrelated, config_dir=self.projects_dir)
+        self.assertEqual(res, (pid, DEFAULT_PROJECT_NAME))
 
 
 class TestEnsureWorkspaceTrusted(unittest.TestCase):
