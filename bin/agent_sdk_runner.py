@@ -32,16 +32,14 @@ def _flush_json(data: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _extract_prompt(payload: Dict[str, Any]) -> str:
-    """Extract user prompt text from stream-json prompt events."""
-    if "prompt" in payload and isinstance(payload["prompt"], str):
-        return payload["prompt"]
-
-    msg = payload.get("message")
-    if isinstance(msg, str):
-        return msg
-    if isinstance(msg, dict):
-        content = msg.get("content")
+def _extract_from_obj(val: Any) -> Optional[str]:
+    """Helper to extract text from a nested prompt or message field."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, dict):
+        if "prompt" in val and isinstance(val["prompt"], str):
+            return val["prompt"]
+        content = val.get("content")
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -52,8 +50,25 @@ def _extract_prompt(payload: Dict[str, Any]) -> str:
                 elif isinstance(item, str):
                     parts.append(item)
             return "".join(parts)
-        if "text" in msg:
-            return str(msg["text"])
+        if "text" in val:
+            return str(val["text"])
+    elif isinstance(val, list):
+        parts = []
+        for item in val:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return None
+
+
+def _extract_prompt(payload: Dict[str, Any]) -> str:
+    """Extract user prompt text from stream-json prompt events."""
+    for field in ("prompt", "message"):
+        extracted = _extract_from_obj(payload.get(field))
+        if extracted is not None:
+            return extracted
 
     if "text" in payload:
         return str(payload["text"])
@@ -89,6 +104,8 @@ async def run_agent_turn(
             is_thought = (
                 chunk_type.endswith("Thought")
                 or (isinstance(thought_cls, type) and isinstance(chunk, thought_cls))
+                or hasattr(chunk, "thought")
+                or hasattr(chunk, "thinking")
             )
             tool_result_cls = getattr(ag_types, "ToolResult", None)
             is_tool_result = (
@@ -113,11 +130,17 @@ async def run_agent_turn(
             )
 
             if is_thought:
+                thought_text = (
+                    getattr(chunk, "thought", None)
+                    or getattr(chunk, "thinking", None)
+                    or getattr(chunk, "text", None)
+                    or str(chunk)
+                )
                 _flush_json({
                     "event": "step_update",
                     "step_update": {
                         "step_type": "agent_response",
-                        "thought": getattr(chunk, "text", str(chunk)),
+                        "thought": thought_text,
                     },
                 })
             elif is_tool_call:
@@ -351,6 +374,11 @@ async def main_async(args: argparse.Namespace) -> int:
                 event = json.loads(stripped)
             except json.JSONDecodeError as err:
                 sys.stderr.write(f"SDK Runner: Invalid JSON on stdin: {err}\n")
+                sys.stderr.flush()
+                continue
+
+            if not isinstance(event, dict):
+                sys.stderr.write(f"SDK Runner: Expected JSON object on stdin, got {type(event).__name__}\n")
                 sys.stderr.flush()
                 continue
 

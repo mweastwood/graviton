@@ -1060,6 +1060,138 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_main_async_ignores_non_dict_json_on_stdin(self):
+        """Verify non-object JSON on stdin is discarded without terminating the runner loop."""
+        async def _test():
+            mock_sdk = MagicMock()
+            mock_agent_instance = MagicMock()
+            mock_conversation = MagicMock()
+            mock_conversation.conversation_id = "test-conv-uuid-1234567890123456"
+            mock_agent_instance.conversation = mock_conversation
+
+            mock_sdk.Agent.return_value.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+            mock_sdk.Agent.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_sdk.types.SessionContinuationMode.CREATE_OR_RESUME = "create_or_resume"
+
+            # Supply non-dict JSON lines (array, string, int), followed by a valid user event and then exit
+            stdin_content = (
+                "[1, 2, 3]\n"
+                "\"just a string\"\n"
+                "42\n"
+                + json.dumps({"event": "user", "prompt": "Process after non-dict JSON"}) + "\n"
+                + json.dumps({"event": "exit"}) + "\n"
+            )
+            stdin_mock = io.StringIO(stdin_content)
+            stdout_mock = io.StringIO()
+            stderr_mock = io.StringIO()
+
+            args = parse_args(["--conversation", "test-conv-uuid-1234567890123456"])
+
+            with patch.dict(sys.modules, {"google.antigravity": mock_sdk}), \
+                 patch.object(sys, "stdin", stdin_mock), \
+                 patch.object(sys, "stdout", stdout_mock), \
+                 patch.object(sys, "stderr", stderr_mock), \
+                 patch("bin.agent_sdk_runner.run_agent_turn", new_callable=AsyncMock) as mock_turn:
+                mock_turn.return_value = {
+                    "status": "SUCCESS",
+                    "response": "Processed successfully",
+                    "duration_seconds": 0.2,
+                    "num_turns": 1,
+                    "usage": {},
+                }
+                exit_code = await main_async(args)
+
+            self.assertEqual(exit_code, 0)
+            stderr_val = stderr_mock.getvalue()
+            self.assertIn("Expected JSON object on stdin, got list", stderr_val)
+            self.assertIn("Expected JSON object on stdin, got str", stderr_val)
+            self.assertIn("Expected JSON object on stdin, got int", stderr_val)
+
+            lines = [json.loads(l) for l in stdout_mock.getvalue().splitlines() if l.strip()]
+            event_types = [l.get("event") for l in lines]
+            self.assertIn("init", event_types)
+            self.assertIn("result", event_types)
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_thought_chunk_with_thought_attribute(self):
+        """Verify thought chunks exposing .thought or .thinking are extracted correctly into the thought event."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class CustomThought:
+                def __init__(self, thought):
+                    self.thought = thought
+
+            class ThinkingThought:
+                def __init__(self, thinking):
+                    self.thinking = thinking
+
+            class CustomChunkWithThought:
+                def __init__(self, thought):
+                    self.thought = thought
+
+            class CustomChunkWithThinking:
+                def __init__(self, thinking):
+                    self.thinking = thinking
+
+            async def _chunk_iter():
+                yield CustomThought("Reasoning step 1 using .thought on Thought class")
+                yield ThinkingThought("Reasoning step 2 using .thinking on Thought class")
+                yield CustomChunkWithThought("Reasoning step 3 using .thought on generic object")
+                yield CustomChunkWithThinking("Reasoning step 4 using .thinking on generic object")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Final response.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Think carefully", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            thought_events = [l for l in lines if l.get("step_update", {}).get("thought")]
+            self.assertEqual(len(thought_events), 4)
+            self.assertEqual(thought_events[0]["step_update"]["thought"], "Reasoning step 1 using .thought on Thought class")
+            self.assertEqual(thought_events[1]["step_update"]["thought"], "Reasoning step 2 using .thinking on Thought class")
+            self.assertEqual(thought_events[2]["step_update"]["thought"], "Reasoning step 3 using .thought on generic object")
+            self.assertEqual(thought_events[3]["step_update"]["thought"], "Reasoning step 4 using .thinking on generic object")
+
+        asyncio.run(_test())
+
+    def test_extract_prompt_nested_prompt_dict(self):
+        """Verify nested dictionary and list structures in prompt fields are parsed accurately."""
+        # Nested prompt dict with text
+        self.assertEqual(_extract_prompt({"prompt": {"text": "Analyze this file"}}), "Analyze this file")
+
+        # Nested prompt dict with content string
+        self.assertEqual(_extract_prompt({"prompt": {"content": "Inspect repository"}}), "Inspect repository")
+
+        # Nested prompt dict with content list
+        payload_list = {
+            "prompt": {
+                "content": [
+                    {"type": "text", "text": "Refactor "},
+                    {"type": "text", "text": "agent module"},
+                ]
+            }
+        }
+        self.assertEqual(_extract_prompt(payload_list), "Refactor agent module")
+
+        # Prompt field as list of items
+        payload_direct_list = {
+            "prompt": [
+                {"type": "text", "text": "Run "},
+                {"type": "text", "text": "tests"},
+            ]
+        }
+        self.assertEqual(_extract_prompt(payload_direct_list), "Run tests")
+
+        # Nested prompt dict with inner prompt string
+        self.assertEqual(_extract_prompt({"prompt": {"prompt": "Inner prompt string"}}), "Inner prompt string")
+
 
 if __name__ == "__main__":
     unittest.main()
