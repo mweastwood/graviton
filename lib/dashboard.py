@@ -14,6 +14,7 @@ import datetime
 import html
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -188,6 +189,47 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         return f"{int(flt)}%" if flt.is_integer() else f"{flt:.1f}%"
     except (ValueError, TypeError):
         return default
+
+
+def format_timestamp(ts: Any) -> str:
+    """Format Unix timestamp, ISO string, datetime, or date into human readable UTC timestamp (e.g., 2026-10-11 20:07:00 UTC)."""
+    if ts is None or ts == "" or ts == "-" or isinstance(ts, bool):
+        return "-"
+    if isinstance(ts, datetime.datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
+        return ts.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if isinstance(ts, datetime.date):
+        dt = datetime.datetime.combine(ts, datetime.time.min, tzinfo=datetime.timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    if isinstance(ts, (int, float)):
+        try:
+            val = float(ts)
+            if math.isnan(val) or math.isinf(val):
+                return "-"
+            return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError, OverflowError, OSError):
+            return "-"
+    if not isinstance(ts, str):
+        return "-"
+    clean = ts.strip()
+    if not clean or clean == "-" or clean.lower() in ("none", "null", "n/a", "unknown"):
+        return "-"
+    try:
+        val = float(clean)
+        if math.isnan(val) or math.isinf(val):
+            return "-"
+        return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    try:
+        dt = datetime.datetime.fromisoformat(clean.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return clean
+
 
 
 def is_safe_url(url: Optional[str]) -> bool:
@@ -650,24 +692,37 @@ def format_dashboard_markdown(
 
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Model | Target | Duration | Status | Details |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
-            dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-            icon = "✅" if t.status == TaskStatus.COMPLETED else "❌"
-            target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            is_dict = isinstance(t, dict)
+            t_finish = t.get("finish_time") if is_dict else getattr(t, "finish_time", None)
+            t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+            dur = format_duration(t_finish - t_start) if (t_finish and t_start) else "N/A"
+            t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
+            icon = "✅" if str(t_status) in (TaskStatus.COMPLETED, "COMPLETED", "TaskStatus.COMPLETED") else "❌"
+            target_disp = (t.get("target_id") or t.get("repo_full_name")) if is_dict else (getattr(t, "target_id", None) or (getattr(t, "repo_full_name", None) if getattr(t, "repo_full_name", None) else "N/A"))
+            target_disp = target_disp or "N/A"
+            model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
             model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
-            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+            agent_val = t.get("agent") if is_dict else getattr(t, "agent", None)
+            target_url = resolve_target_url(target_disp, repo=repo_val, agent=agent_val)
             target_cell = _format_target_markdown_cell(target_disp, target_url)
-            if t.error_message:
-                clean_err = str(t.error_message).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            ts_val = (t.get("timestamp") or t_finish or t_start) if is_dict else (t_finish or t_start)
+            ts_disp = format_timestamp(ts_val).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            err_msg = t.get("error_message") if is_dict else getattr(t, "error_message", None)
+            if err_msg:
+                clean_err = str(err_msg).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
                 detail = f"`{clean_err[:40]}...`" if len(clean_err) > 40 else f"`{clean_err}`"
             else:
-                detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t.status}` | {detail} |")
+                raw_detail = t.get("details", "Finished") if is_dict else "Finished"
+                detail = str(raw_detail).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+            t_agent = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+            lines.append(f"| `{t_id}` | `{t_agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t_status}` | {ts_disp} | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])
@@ -1244,15 +1299,17 @@ def parse_dashboard_markdown(
 
         elif "Recent Task Execution History" in title_line:
             has_model_hdr = any("Model" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line)
+            has_timestamp_hdr = any("Timestamp" in line or "Time" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line and "Duration" in line)
             for cells in table_rows:
-                if len(cells) >= 7:
+                if len(cells) >= 8:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     model = cells[2].strip("`")
                     target, target_url = _parse_target_cell(cells[3], agent=agent)
                     duration = cells[4]
                     status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
-                    detail_cell = cells[6]
+                    timestamp = cells[6].strip("`").strip()
+                    detail_cell = cells[7]
                     rc_url = None
                     url_m = MD_LINK_PATTERN.search(detail_cell)
                     if url_m:
@@ -1274,6 +1331,49 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": timestamp,
+                        "details": detail,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    if has_timestamp_hdr and not has_model_hdr:
+                        model = "-"
+                        target, target_url = _parse_target_cell(cells[2], agent=agent)
+                        duration = cells[3]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        timestamp = cells[5].strip("`").strip()
+                        detail_cell = cells[6]
+                    else:
+                        model = cells[2].strip("`")
+                        target, target_url = _parse_target_cell(cells[3], agent=agent)
+                        duration = cells[4]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        timestamp = "-"
+                        detail_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(detail_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                            detail = "Remote Control"
+                        else:
+                            detail = detail_cell.strip("`").strip()
+                    else:
+                        detail = detail_cell.strip("`").strip()
+                    if detail in ("Remote Control", "Remote Session"):
+                        detail = "Finished"
+                    history_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "target_url": target_url,
+                        "duration": duration,
+                        "status": status_raw,
+                        "timestamp": timestamp,
                         "details": detail,
                         "remote_control_url": rc_url,
                     })
@@ -1285,6 +1385,7 @@ def parse_dashboard_markdown(
                         target, target_url = _parse_target_cell(cells[3], agent=agent)
                         duration = cells[4]
                         status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        timestamp = "-"
                         detail = "Finished"
                         rc_url = None
                     else:
@@ -1292,6 +1393,7 @@ def parse_dashboard_markdown(
                         target, target_url = _parse_target_cell(cells[2], agent=agent)
                         duration = cells[3]
                         status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        timestamp = "-"
                         detail_cell = cells[5]
                         rc_url = None
                         url_m = MD_LINK_PATTERN.search(detail_cell)
@@ -1314,6 +1416,7 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": timestamp,
                         "details": detail,
                         "remote_control_url": rc_url,
                     })
@@ -1331,6 +1434,7 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": "-",
                         "details": "Finished",
                         "remote_control_url": None,
                     })
@@ -1554,6 +1658,8 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         else:
             detail_html = '<span class="text-muted">Finished</span>'
         model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
+        timestamp = html.escape(str(t.get("timestamp", "-") or "-"))
+        ts_cell = f'<span class="text-muted">{timestamp}</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
@@ -1561,11 +1667,12 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             f'<td>{target_html}</td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
+            f'<td>{ts_cell}</td>'
             f'<td>{detail_html}</td></tr>'
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -1662,49 +1769,75 @@ def render_dashboard_html(
             if not data["active_tasks"] and act_objs:
                 now_ts = time.time()
                 for t in act_objs:
-                    elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
-                    model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                    is_dict = isinstance(t, dict)
+                    t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+                    elapsed = format_duration(now_ts - t_start) if t_start else "starting..."
+                    model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
                     model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
-                    target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                    repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                    agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                    target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                    target_id = target_disp or "N/A"
+                    t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                    t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
                     data["active_tasks"].append({
-                        "id": t.id,
-                        "agent": t.agent,
+                        "id": t_id,
+                        "agent": agent_val,
                         "model": model_name,
                         "target": target_id,
-                        "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                        "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
                         "elapsed": elapsed,
-                        "status": str(t.status),
+                        "status": str(t_status),
                     })
             if not data["queued_tasks_list"] and q_objs:
                 now_ts = time.time()
                 for t in q_objs:
-                    q_dur = format_duration(now_ts - t.enqueue_time)
-                    target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                    is_dict = isinstance(t, dict)
+                    t_enqueue = t.get("enqueue_time", now_ts) if is_dict else getattr(t, "enqueue_time", now_ts)
+                    q_dur = format_duration(now_ts - t_enqueue)
+                    repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                    agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                    target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                    target_id = target_disp or "N/A"
+                    t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                    t_pri = t.get("priority", "") if is_dict else getattr(t, "priority", "")
                     data["queued_tasks_list"].append({
-                        "id": t.id,
-                        "agent": t.agent,
+                        "id": t_id,
+                        "agent": agent_val,
                         "target": target_id,
-                        "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
-                        "priority": str(t.priority),
+                        "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
+                        "priority": str(t_pri),
                         "wait_time": q_dur,
                     })
             if not data["history_tasks"]:
                 h_objs = task_manager.get_task_history(limit=10) or []
                 if h_objs:
                     for t in h_objs:
-                        dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-                        detail = t.error_message or "Finished"
-                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                        is_dict = isinstance(t, dict)
+                        t_finish = t.get("finish_time") if is_dict else getattr(t, "finish_time", None)
+                        t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+                        dur = format_duration(t_finish - t_start) if (t_finish and t_start) else "N/A"
+                        err_msg = t.get("error_message") if is_dict else getattr(t, "error_message", None)
+                        detail = err_msg or (t.get("details", "Finished") if is_dict else "Finished")
+                        model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                        repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+                        agent_val = t.get("agent", "") if is_dict else getattr(t, "agent", "")
+                        target_disp = (t.get("target_id") or repo_val) if is_dict else (getattr(t, "target_id", None) or (repo_val if repo_val else "N/A"))
+                        target_id = target_disp or "N/A"
+                        ts_val = (t.get("timestamp") or t_finish or t_start) if is_dict else (t_finish or t_start)
+                        timestamp = format_timestamp(ts_val)
+                        t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+                        t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
                         data["history_tasks"].append({
-                            "id": t.id,
-                            "agent": t.agent,
+                            "id": t_id,
+                            "agent": agent_val,
                             "model": model_name,
                             "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                            "target_url": resolve_target_url(target_id, repo=repo_val, agent=agent_val),
                             "duration": dur,
-                            "status": str(t.status),
+                            "status": str(t_status),
+                            "timestamp": timestamp,
                             "details": detail,
                         })
         except Exception as e:
