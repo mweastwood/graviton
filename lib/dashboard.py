@@ -278,11 +278,11 @@ def format_dashboard_markdown(
         "",
         "| Metric | Count | Description |",
         "| :--- | :--- | :--- |",
-        f"| **Active Workers** | `{stats.get('active_workers', 0)} / {stats.get('max_workers', 0)}` | Worker threads currently processing tasks |",
-        f"| **Running Tasks** | `{stats.get('active_tasks', 0)}` | Active containerized supervisor sessions |",
-        f"| **Queued Tasks** | `{stats.get('queued_tasks', 0)}` | Tasks awaiting available worker slot |",
-        f"| **Completed Tasks** | `{stats.get('completed_tasks', 0)}` | Successfully finished tasks |",
-        f"| **Failed Tasks** | `{stats.get('failed_tasks', 0)}` | Failed or aborted executions |",
+        f"| **Active Workers** | `{stats.get('active_workers', stats.get('running', len(active_tasks)))} / {stats.get('max_workers', getattr(task_manager, 'max_workers', 0))}` | Worker threads currently processing tasks |",
+        f"| **Running Tasks** | `{stats.get('active_tasks', stats.get('running', len(active_tasks)))}` | Active containerized supervisor sessions |",
+        f"| **Queued Tasks** | `{stats.get('queued_tasks', stats.get('queued', len(queued_tasks)))}` | Tasks awaiting available worker slot |",
+        f"| **Completed Tasks** | `{stats.get('completed_tasks', stats.get('completed', 0))}` | Successfully finished tasks |",
+        f"| **Failed Tasks** | `{stats.get('failed_tasks', stats.get('failed', 0) + stats.get('aborted', 0))}` | Failed or aborted executions |",
         "",
         "---",
         "",
@@ -1562,12 +1562,18 @@ def render_dashboard_html(
         try:
             stats = task_manager.get_stats()
             if stats:
-                data["active_workers"] = stats.get("active_workers", data["active_workers"])
-                data["max_workers"] = stats.get("max_workers", data["max_workers"])
-                data["running_tasks"] = stats.get("active_tasks", data["running_tasks"])
-                data["queued_tasks"] = stats.get("queued_tasks", data["queued_tasks"])
-                data["completed_tasks"] = stats.get("completed_tasks", data["completed_tasks"])
-                data["failed_tasks"] = stats.get("failed_tasks", data["failed_tasks"])
+                data["active_workers"] = stats.get("active_workers", stats.get("running", data["active_workers"]))
+                data["max_workers"] = stats.get("max_workers", getattr(task_manager, "max_workers", data["max_workers"]))
+                data["running_tasks"] = stats.get("active_tasks", stats.get("running", data["running_tasks"]))
+                data["queued_tasks"] = stats.get("queued_tasks", stats.get("queued", data["queued_tasks"]))
+                data["completed_tasks"] = stats.get("completed_tasks", stats.get("completed", data["completed_tasks"]))
+                failed_val = stats.get("failed_tasks")
+                if failed_val is None:
+                    if "failed" in stats or "aborted" in stats:
+                        failed_val = stats.get("failed", 0) + stats.get("aborted", 0)
+                    else:
+                        failed_val = data["failed_tasks"]
+                data["failed_tasks"] = failed_val
             if not data["active_tasks"]:
                 act_objs = task_manager.get_active_tasks()
                 if act_objs:

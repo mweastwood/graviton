@@ -3569,6 +3569,70 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         md_tp = format_dashboard_markdown(quota_tracker=None, extra_info=extra_tp)
         self.assertRegex(md_tp, r"\| \*\*Third-Party \(1W\)\*\* \| `20%` \| Reset: \d+d \d+h \| Pacing: BEHIND_PACING \(Resume in 3d \d+h\) \|")
 
+    def test_format_dashboard_markdown_and_html_with_real_task_manager(self):
+        """Verify KPI metric cards display accurate metrics when rendered with a real TaskManager."""
+        from lib.tasks import TaskManager
+        tm = TaskManager(max_workers=4)
+        t_run = Task(id="t1", agent="code_reviewer", prompt="test", status=TaskStatus.RUNNING, start_time=time.time())
+        t_queued = Task(id="t2", agent="code_fixer", prompt="test", status=TaskStatus.QUEUED)
+        t_done = Task(id="t3", agent="code_reviewer", prompt="test", status=TaskStatus.COMPLETED, finish_time=time.time())
+        t_fail = Task(id="t4", agent="code_fixer", prompt="test", status=TaskStatus.FAILED, finish_time=time.time())
+
+        with tm._lock:
+            tm._tasks = {
+                t.id: t for t in [t_run, t_queued, t_done, t_fail]
+            }
+
+        md = format_dashboard_markdown(task_manager=tm)
+        self.assertIn("| **Active Workers** | `1 / 4` |", md)
+        self.assertIn("| **Running Tasks** | `1` |", md)
+        self.assertIn("| **Queued Tasks** | `1` |", md)
+        self.assertIn("| **Completed Tasks** | `1` |", md)
+        self.assertIn("| **Failed Tasks** | `1` |", md)
+
+        html = render_dashboard_html(md, task_manager=tm)
+        self.assertIn('id="kpi-workers">1 / 4</div>', html)
+        self.assertIn('id="kpi-workers-bar" style="width: 25%;"', html)
+        self.assertIn('id="kpi-running-val">1</span>', html)
+        self.assertIn('id="kpi-running-pulse" style="display: inline-block;"', html)
+        self.assertIn('id="kpi-queued">1</div>', html)
+        self.assertIn('id="kpi-completed">1</div>', html)
+        self.assertIn('id="kpi-failed">1</div>', html)
+        self.assertIn('class="kpi-value text-red"', html)
+
+    def test_dashboard_kpi_cards_with_fallback_stats_keys(self):
+        """Verify format_dashboard_markdown and render_dashboard_html fall back gracefully if stats only have legacy keys."""
+        mock_tm = MagicMock()
+        mock_tm.get_stats.return_value = {
+            "running": 2,
+            "max_workers": 4,
+            "queued": 3,
+            "completed": 5,
+            "failed": 1,
+            "aborted": 1,
+        }
+        mock_tm.get_active_tasks.return_value = []
+        mock_tm.get_queued_tasks.return_value = []
+        mock_tm.get_task_history.return_value = []
+        mock_tm._draining = False
+        mock_tm._paused = False
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| **Active Workers** | `2 / 4` |", md)
+        self.assertIn("| **Running Tasks** | `2` |", md)
+        self.assertIn("| **Queued Tasks** | `3` |", md)
+        self.assertIn("| **Completed Tasks** | `5` |", md)
+        self.assertIn("| **Failed Tasks** | `2` |", md)
+
+        html = render_dashboard_html(md, task_manager=mock_tm)
+        self.assertIn('id="kpi-workers">2 / 4</div>', html)
+        self.assertIn('id="kpi-workers-bar" style="width: 50%;"', html)
+        self.assertIn('id="kpi-running-val">2</span>', html)
+        self.assertIn('id="kpi-queued">3</div>', html)
+        self.assertIn('id="kpi-completed">5</div>', html)
+        self.assertIn('id="kpi-failed">2</div>', html)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1769,6 +1769,27 @@ class TestTaskManager(unittest.TestCase):
         stats_exhausted = manager.get_stats()
         self.assertEqual(stats_exhausted["queue_status"], "PAUSED_FOR_QUOTA")
 
+    def test_get_stats_includes_pipeline_metrics(self):
+        """Verify TaskManager.get_stats() includes active_workers, active_tasks, queued_tasks, completed_tasks, failed_tasks."""
+        manager = TaskManager(max_workers=3)
+        t_run = Task(id="t-run", agent="code_reviewer", prompt="run", status=TaskStatus.RUNNING)
+        t_queued = Task(id="t-q", agent="code_fixer", prompt="queue", status=TaskStatus.QUEUED)
+        t_done = Task(id="t-done", agent="pr_drafter", prompt="done", status=TaskStatus.COMPLETED)
+        t_fail = Task(id="t-fail", agent="code_fixer", prompt="fail", status=TaskStatus.FAILED)
+        t_abort = Task(id="t-abort", agent="code_reviewer", prompt="abort", status=TaskStatus.ABORTED)
+        with manager._lock:
+            manager._tasks = {
+                t.id: t for t in [t_run, t_queued, t_done, t_fail, t_abort]
+            }
+
+        stats = manager.get_stats()
+        self.assertEqual(stats["active_workers"], 1)
+        self.assertEqual(stats["active_tasks"], 1)
+        self.assertEqual(stats["queued_tasks"], 1)
+        self.assertEqual(stats["completed_tasks"], 1)
+        self.assertEqual(stats["failed_tasks"], 2)
+        self.assertEqual(stats["max_workers"], 3)
+
     def test_worker_loop_paused_or_draining_backoff(self):
         manager = TaskManager(max_workers=0)
         manager.pause()

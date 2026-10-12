@@ -251,14 +251,17 @@ class GravitonMCPServer:
         ]
         tasks = data.get("tasks", {})
         if tasks:
+            failed_count = tasks.get("failed_tasks")
+            if failed_count is None:
+                failed_count = tasks.get("failed", 0) + tasks.get("aborted", 0) if ("failed" in tasks or "aborted" in tasks) else 0
             lines.extend([
                 "",
                 "📊 **Task Pipeline**:",
-                f"- Active Workers: {tasks.get('active_workers', 0)} / {tasks.get('max_workers', 0)}",
-                f"- Running Tasks: {tasks.get('active_tasks', 0)}",
-                f"- Queued Tasks: {tasks.get('queued_tasks', 0)}",
-                f"- Completed: {tasks.get('completed_tasks', 0)}",
-                f"- Failed: {tasks.get('failed_tasks', 0)}",
+                f"- Active Workers: {tasks.get('active_workers', tasks.get('running', 0))} / {tasks.get('max_workers', 0)}",
+                f"- Running Tasks: {tasks.get('active_tasks', tasks.get('running', 0))}",
+                f"- Queued Tasks: {tasks.get('queued_tasks', tasks.get('queued', 0))}",
+                f"- Completed: {tasks.get('completed_tasks', tasks.get('completed', 0))}",
+                f"- Failed: {failed_count}",
             ])
         quota = data.get("quota", {})
         if quota:
