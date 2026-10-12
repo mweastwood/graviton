@@ -1347,8 +1347,9 @@ class TestContainerSupervisor(unittest.TestCase):
             # Image
             self.assertIn("test-agent-image:custom", cmd)
 
-            # Inner agy command
-            self.assertIn("agy", cmd)
+            # Inner SDK runner command
+            self.assertIn("python3", cmd)
+            self.assertIn("/usr/local/bin/agent_sdk_runner.py", cmd)
             self.assertIn("--input-format", cmd)
             self.assertIn("stream-json", cmd)
             self.assertIn("--output-format", cmd)
@@ -1360,6 +1361,20 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("--project", cmd)
             self.assertIn("project-xyz-123", cmd)
             self.assertIn("--verbose", cmd)
+
+    def test_build_docker_command_with_agy_runner(self):
+        """Verify build_docker_command falls back to agy when runner='agy'."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="agy_runner_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="agy",
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn("agy", cmd)
+        self.assertIn("--input-format", cmd)
+        self.assertIn("stream-json", cmd)
 
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
         """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""

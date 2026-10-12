@@ -1120,10 +1120,12 @@ class ContainerSupervisor:
         container_home: Optional[str] = None,
         cli_dir: Optional[Union[str, Path]] = None,
         ssh_dir: Optional[Union[str, Path]] = None,
+        runner: Optional[str] = None,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
+        self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).lower()
         self.image_name = image_name or os.environ.get("ANTIGRAVITY_IMAGE", "antigravity-agent:latest")
         self.remote_control = remote_control
         self.dangerously_skip_permissions = dangerously_skip_permissions
@@ -1392,6 +1394,11 @@ class ContainerSupervisor:
         # Ephemeral workspace mount
         cmd.extend(["-v", f"{self.temp_workspace.resolve()}:/workspace", "-w", "/workspace"])
 
+        # Mount SDK runner script if present
+        sdk_runner_path = Path(__file__).resolve().parent.parent / "bin" / "agent_sdk_runner.py"
+        if sdk_runner_path.is_file():
+            cmd.extend(["-v", f"{sdk_runner_path.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro"])
+
         # Host agy binary mount
         host_agy = self.agy_binary or shutil.which("agy")
         if host_agy and Path(host_agy).exists():
@@ -1536,11 +1543,19 @@ class ContainerSupervisor:
         if agy_args is not None:
             cmd.extend(agy_args)
         else:
-            inner_cmd = [
-                "agy",
-                "--input-format", "stream-json",
-                "--output-format", "stream-json",
-            ]
+            if self.runner == "sdk":
+                inner_cmd = [
+                    "python3",
+                    "/usr/local/bin/agent_sdk_runner.py",
+                    "--input-format", "stream-json",
+                    "--output-format", "stream-json",
+                ]
+            else:
+                inner_cmd = [
+                    "agy",
+                    "--input-format", "stream-json",
+                    "--output-format", "stream-json",
+                ]
             if self.dangerously_skip_permissions:
                 inner_cmd.append("--dangerously-skip-permissions")
             if self.remote_control:
