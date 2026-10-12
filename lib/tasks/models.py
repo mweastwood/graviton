@@ -3,7 +3,6 @@ Task and TaskStatus data models for Graviton task queue.
 """
 
 import collections
-import json
 import re
 import time
 from dataclasses import dataclass, field, asdict
@@ -15,8 +14,6 @@ AUTO_CONTINUE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PR_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", re.IGNORECASE)
-
-
 
 
 class TaskStatus:
@@ -169,6 +166,3 @@ class Task:
             "webhook_event_type": self.webhook_event_type,
             "webhook_payload": self.webhook_payload,
         }
-
-
-

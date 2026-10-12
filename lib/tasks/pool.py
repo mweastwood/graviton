@@ -5,6 +5,7 @@ Model and pool resolver for Graviton tasks based on QuotaTracker state.
 from typing import Any, Optional, Tuple
 from lib.quota import QuotaState, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS
 
+
 def resolve_task_pool_and_model(quota_tracker: Optional[Any] = None) -> Tuple[str, str, bool]:
     """
     Evaluates quota tracker pool states, pacing, and remaining percentages to determine
@@ -93,7 +94,3 @@ def resolve_task_pool_and_model(quota_tracker: Optional[Any] = None) -> Tuple[st
 
     all_exhausted = not gemini_eligible and not claude_eligible
     return (selected_pool, selected_model, all_exhausted)
-
-
-
-

@@ -7,11 +7,12 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Set, Union
+from typing import Iterable, Iterator, List, Optional, Union
 
 from lib.supervisor import clean_workspace_dir
 
 logger = logging.getLogger("graviton.tasks")
+
 
 def prune_abandoned_workspaces(
     base_dir: Union[Path, str] = Path("/tmp/graviton-workspaces"),
@@ -197,6 +198,3 @@ class _PrunedTaskIds:
     def clear(self) -> None:
         """Remove all items from the collection."""
         self._items.clear()
-
-
-

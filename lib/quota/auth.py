@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("graviton.quota")
+
+
 def _atomic_write_json(target_path: Path, data: Any, indent: int = 2):
     """
     Atomically write JSON data to target_path using a temporary file in the target directory.

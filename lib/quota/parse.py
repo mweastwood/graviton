@@ -5,12 +5,14 @@ Contains no network I/O or HTTP client dependencies.
 
 import logging
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 from .models import QuotaWindow
 from .time_utils import _normalize_pool_key
 
 logger = logging.getLogger("graviton.quota")
+
+
 def _group_matches_pool(group: dict, pool: str) -> bool:
     """Check if group matches requested pool (e.g. 'gemini' or 'claude_gpt')."""
     if not isinstance(group, dict):

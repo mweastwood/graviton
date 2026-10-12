@@ -48,6 +48,34 @@ class TestQuotaTimeUtilsFocused(unittest.TestCase):
         self.assertIsNone(parse_reset_time_to_datetime("invalid-date-string"))
         self.assertIsNone(parse_reset_time_to_timestamp(None))
 
+    def test_normalize_now_datetime(self):
+        self.assertIsNone(_normalize_now_datetime(None))
+        self.assertIsNone(_normalize_now_datetime(True))
+        self.assertIsNone(_normalize_now_datetime(False))
+        self.assertIsNone(_normalize_now_datetime("invalid"))
+
+        # Naive datetime gets converted to UTC
+        naive_dt = datetime(2026, 10, 7, 12, 0, 0)
+        norm = _normalize_now_datetime(naive_dt)
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm.tzinfo, timezone.utc)
+        self.assertEqual(norm.hour, 12)
+
+        # Timezone-aware UTC datetime
+        aware_dt = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        norm_aware = _normalize_now_datetime(aware_dt)
+        self.assertEqual(norm_aware, aware_dt)
+
+        # Numeric timestamp
+        ts = 1791374400.0
+        norm_ts = _normalize_now_datetime(ts)
+        self.assertIsNotNone(norm_ts)
+        self.assertEqual(norm_ts.timestamp(), ts)
+        self.assertEqual(norm_ts.tzinfo, timezone.utc)
+
+        # Out-of-range numeric timestamp
+        self.assertIsNone(_normalize_now_datetime(1e25))
+
     def test_normalize_pool_key(self):
         self.assertEqual(_normalize_pool_key("gemini"), "gemini")
         self.assertEqual(_normalize_pool_key("Gemini-3.8"), "gemini")

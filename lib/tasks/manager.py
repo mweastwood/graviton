@@ -2,30 +2,25 @@
 Thread-safe Task Queue & Execution Manager for Graviton.
 """
 
-import collections
 import json
 import logging
-import os
 import queue
 import re
-import shutil
-import stat
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Collection, Dict, List, Optional, Union
 
 from lib.runner import run_agent_container
-from lib.quota import QuotaState, QuotaTracker, DEFAULT_GEMINI_MODELS, DEFAULT_THIRD_PARTY_MODELS, _atomic_write_json
+from lib.quota import QuotaState, QuotaTracker
 from lib.security import is_valid_repo_name
-from lib.supervisor import ContainerSupervisor, SupervisorResult, SupervisorError, clean_workspace_dir
+from lib.supervisor import ContainerSupervisor, clean_workspace_dir
 from lib.reactions import post_emoji_reaction_async
 from lib.notifications import post_task_completion_comment, post_task_start_comment
 
-from .models import Task, TaskStatus, AUTO_CONTINUE_PATTERN, PR_URL_PATTERN
+from .models import Task, TaskStatus, PR_URL_PATTERN
 from .pool import resolve_task_pool_and_model
 from .workspaces import prune_abandoned_workspaces, _PrunedTaskIds
 from .persistence import (
@@ -54,6 +49,7 @@ def _get_effective_subproc_run():
         if val is not subprocess.run or hasattr(val, "mock_calls") or hasattr(val, "_mock_name"):
             return val
     return subprocess.run
+
 
 class TaskManager:
     """

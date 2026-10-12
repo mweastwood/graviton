@@ -5,7 +5,7 @@ Data models and window abstractions for Antigravity Quota tracking.
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 from .time_utils import (
     parse_reset_time_to_datetime,
@@ -13,6 +13,8 @@ from .time_utils import (
     format_reset_countdown,
     format_pacing_recovery_countdown,
 )
+
+
 class QuotaState:
     NORMAL = "NORMAL"
     LOW_QUOTA = "LOW_QUOTA"
