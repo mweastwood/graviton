@@ -26,6 +26,17 @@ def _get_effective_atomic_write():
     return _atomic_write_json
 
 
+def _get_effective_state_path():
+    if hasattr(get_default_state_path, "mock_calls") or hasattr(get_default_state_path, "_mock_name"):
+        return get_default_state_path
+    mod = sys.modules.get("lib.tasks")
+    if mod and hasattr(mod, "get_default_state_path"):
+        val = getattr(mod, "get_default_state_path")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not get_default_state_path:
+            return val
+    return get_default_state_path
+
+
 def get_default_state_path(cwd: Optional[Path] = None, filepath: Optional[Path] = None) -> Path:
     """Return destination state file path given optional cwd and explicit filepath override."""
     if filepath is not None:
@@ -50,7 +61,7 @@ def dump_queue_state(
     :param filepath: Optional Path override for destination state file.
     :return: Number of queued and quota-paused tasks serialized.
     """
-    path = get_default_state_path(cwd=cwd, filepath=filepath)
+    path = _get_effective_state_path()(cwd=cwd, filepath=filepath)
     queued_tasks = [
         t
         for t in tasks.values()
@@ -94,7 +105,7 @@ def restore_queue_state(
     :param filepath: Optional Path override for source state file.
     :return: Tuple of (new_task_counter, number_of_restored_tasks).
     """
-    path = get_default_state_path(cwd=cwd, filepath=filepath)
+    path = _get_effective_state_path()(cwd=cwd, filepath=filepath)
     if not path.exists():
         return current_task_counter, 0
 

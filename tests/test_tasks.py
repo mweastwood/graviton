@@ -3226,6 +3226,12 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
         with patch("lib.tasks.persistence._atomic_write_json") as mock_write:
             self.assertIs(_get_effective_atomic_write(), mock_write)
 
+        from lib.tasks.persistence import _get_effective_state_path
+        with patch("lib.tasks.persistence.get_default_state_path") as mock_direct_path:
+            self.assertIs(_get_effective_state_path(), mock_direct_path)
+        with patch("lib.tasks.get_default_state_path") as mock_top_path:
+            self.assertIs(_get_effective_state_path(), mock_top_path)
+
     def test_clean_workspace_mock_delegation_in_manager(self):
         from unittest.mock import MagicMock, patch
         from lib.tasks.manager import _clean_workspace, TaskManager, Task, TaskStatus
@@ -3299,6 +3305,12 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
             mgr = TaskManager(max_workers=1)
             effective_resolve = _get_effective("resolve_task_pool_and_model", None)
             self.assertIs(effective_resolve, mock_resolve)
+
+        with patch("lib.tasks.get_default_state_path") as mock_path:
+            mock_path.return_value = Path("/tmp/mock_state.json")
+            mgr = TaskManager(max_workers=1)
+            self.assertEqual(mgr._get_default_state_path(), Path("/tmp/mock_state.json"))
+            mock_path.assert_called_once()
 
 
 if __name__ == "__main__":

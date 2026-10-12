@@ -3014,7 +3014,10 @@ class TestParseResetTime(unittest.TestCase):
         # Top-level patch on lib.quota._atomic_write_json
         with patch("lib.quota._atomic_write_json") as mock_write:
             self.assertIs(tracker._get_effective_atomic_write(), mock_write)
-            qt = QuotaTracker()
+            qt = QuotaTracker(
+                available_gemini_models=["gemini-3.8-flash-medium"],
+                available_third_party_models=["claude-sonnet-5-5-medium"],
+            )
             qt.dump_model_selection(Path("/tmp/fake_model_selection.json"))
             mock_write.assert_called_once()
 
@@ -3033,6 +3036,12 @@ class TestParseResetTime(unittest.TestCase):
         with patch("lib.quota.fetch.resolve_antigravity_quota_endpoint") as mock_direct_endpoint:
             self.assertIs(fetch._get_effective_resolve_endpoint(), mock_direct_endpoint)
 
+        with patch("lib.quota.fetch.parse_all_antigravity_quota_json") as mock_direct_parse_all:
+            self.assertIs(fetch._get_effective_parse_all_json(), mock_direct_parse_all)
+
+        with patch("lib.quota.fetch.parse_antigravity_quota_json") as mock_direct_parse:
+            self.assertIs(fetch._get_effective_parse_json(), mock_direct_parse)
+
         # Top-level lib.quota mock delegation
         with patch("lib.quota.load_oauth_token") as mock_top_token:
             self.assertIs(fetch._get_effective_load_oauth_token(), mock_top_token)
@@ -3043,6 +3052,32 @@ class TestParseResetTime(unittest.TestCase):
 
         with patch("lib.quota.resolve_antigravity_quota_endpoint") as mock_top_endpoint:
             self.assertIs(fetch._get_effective_resolve_endpoint(), mock_top_endpoint)
+
+        with patch("lib.quota.parse_all_antigravity_quota_json") as mock_top_parse_all:
+            self.assertIs(fetch._get_effective_parse_all_json(), mock_top_parse_all)
+
+        with patch("lib.quota.parse_antigravity_quota_json") as mock_top_parse:
+            self.assertIs(fetch._get_effective_parse_json(), mock_top_parse)
+
+    def test_parse_quota_headers_mock_delegation_in_quota_tracker(self):
+        from unittest.mock import MagicMock, patch
+        import lib.quota.tracker as tracker
+        from lib.quota.tracker import QuotaTracker
+
+        # Direct submodule patch
+        with patch("lib.quota.tracker.parse_quota_headers") as mock_direct:
+            self.assertIs(tracker._get_effective_parse_quota_headers(), mock_direct)
+
+        # Top-level lib.quota patch
+        with patch("lib.quota.parse_quota_headers") as mock_top:
+            self.assertIs(tracker._get_effective_parse_quota_headers(), mock_top)
+            mock_top.return_value = {"remaining_percentage": 75.0}
+            qt = QuotaTracker(
+                available_gemini_models=["gemini-3.8-flash-medium"],
+                available_third_party_models=["claude-sonnet-5-5-medium"],
+            )
+            qt.parse_quota_headers({"x-quota-remaining": "75.0"})
+            mock_top.assert_called_once()
 
 
 if __name__ == "__main__":

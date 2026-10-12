@@ -449,7 +449,7 @@ class TaskManager:
 
 
     def _get_default_state_path(self, filepath: Optional[Path] = None) -> Path:
-        return get_default_state_path(cwd=self.cwd, filepath=filepath)
+        return _get_effective("get_default_state_path", get_default_state_path)(cwd=self.cwd, filepath=filepath)
 
     def dump_queue_state(self, filepath: Optional[Path] = None) -> int:
         """

@@ -83,6 +83,17 @@ def _get_effective_atomic_write():
     return _atomic_write_json
 
 
+def _get_effective_parse_quota_headers():
+    if hasattr(parse_quota_headers, "mock_calls") or hasattr(parse_quota_headers, "_mock_name"):
+        return parse_quota_headers
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "parse_quota_headers"):
+        val = getattr(mod, "parse_quota_headers")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_quota_headers:
+            return val
+    return parse_quota_headers
+
+
 class QuotaTracker:
     """
     Thread-safe tracker for Antigravity API model quota levels and rate limits.
@@ -901,7 +912,7 @@ class QuotaTracker:
         """
         Parse HTTP response headers or dictionary for quota & rate limit details.
         """
-        parsed = parse_quota_headers(headers)
+        parsed = _get_effective_parse_quota_headers()(headers)
         if parsed:
             new_pct = parsed.get("remaining_percentage", self.remaining_percentage)
             self.update_quota(

@@ -41,6 +41,28 @@ def _get_effective_resolve_endpoint():
     return resolve_antigravity_quota_endpoint
 
 
+def _get_effective_parse_all_json():
+    if hasattr(parse_all_antigravity_quota_json, "mock_calls") or hasattr(parse_all_antigravity_quota_json, "_mock_name"):
+        return parse_all_antigravity_quota_json
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "parse_all_antigravity_quota_json"):
+        val = getattr(mod, "parse_all_antigravity_quota_json")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_all_antigravity_quota_json:
+            return val
+    return parse_all_antigravity_quota_json
+
+
+def _get_effective_parse_json():
+    if hasattr(parse_antigravity_quota_json, "mock_calls") or hasattr(parse_antigravity_quota_json, "_mock_name"):
+        return parse_antigravity_quota_json
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "parse_antigravity_quota_json"):
+        val = getattr(mod, "parse_antigravity_quota_json")
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_antigravity_quota_json:
+            return val
+    return parse_antigravity_quota_json
+
+
 DEFAULT_GEMINI_MODELS: List[str] = [
     "gemini-3.8-flash-medium",
     "gemini-3.6-flash-high",
@@ -143,7 +165,7 @@ def fetch_all_live_antigravity_quota(
                 )
             body = resp.read().decode("utf-8")
             data = json.loads(body)
-            res = parse_all_antigravity_quota_json(data)
+            res = _get_effective_parse_all_json()(data)
             return res if res else None
     except Exception as e:
         logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
@@ -170,7 +192,7 @@ def fetch_all_live_antigravity_quota(
                         return None
                     body = resp.read().decode("utf-8")
                     data = json.loads(body)
-                    res = parse_all_antigravity_quota_json(data)
+                    res = _get_effective_parse_all_json()(data)
                     if res:
                         return res
             except Exception as retry_err:
@@ -221,7 +243,7 @@ def fetch_live_antigravity_quota(
                 )
             body = resp.read().decode("utf-8")
             data = json.loads(body)
-            return parse_antigravity_quota_json(data, pool=pool)
+            return _get_effective_parse_json()(data, pool=pool)
     except Exception as e:
         logger.warning(f"Failed to fetch live Antigravity quota from {target_url}: {e}")
         if target_url != DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT:
@@ -247,7 +269,7 @@ def fetch_live_antigravity_quota(
                         return None
                     body = resp.read().decode("utf-8")
                     data = json.loads(body)
-                    return parse_antigravity_quota_json(data, pool=pool)
+                    return _get_effective_parse_json()(data, pool=pool)
             except Exception as retry_err:
                 logger.warning(f"Fallback fetch to default endpoint also failed: {retry_err}")
         return None
