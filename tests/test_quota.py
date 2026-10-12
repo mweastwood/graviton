@@ -3158,6 +3158,136 @@ class TestParseResetTime(unittest.TestCase):
             tracker._atomic_write_json = orig_write
             tracker.parse_quota_headers = orig_headers
 
+    def test_endpoint_mock_delegation_in_quota_endpoint(self):
+        import lib.quota.endpoint as endpoint
+        from lib.quota.endpoint import resolve_antigravity_quota_endpoint
+
+        # 1. Direct submodule mock delegation
+        with patch("lib.quota.endpoint.detect_antigravity_quota_endpoint_from_logs") as mock_direct_detect:
+            self.assertIs(endpoint._get_effective_detect_logs(), mock_direct_detect)
+
+        with patch("lib.quota.endpoint.normalize_antigravity_quota_endpoint") as mock_direct_norm:
+            self.assertIs(endpoint._get_effective_normalize_endpoint(), mock_direct_norm)
+
+        # 2. Top-level lib.quota mock delegation
+        with patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_ENDPOINT": "", "ANTIGRAVITY_API_URL": "", "ANTIGRAVITY_ENDPOINT": ""}):
+            with patch("lib.quota.detect_antigravity_quota_endpoint_from_logs") as mock_top_detect:
+                self.assertIs(endpoint._get_effective_detect_logs(), mock_top_detect)
+                mock_top_detect.return_value = "https://mocked-endpoint.com/v1internal:retrieveUserQuotaSummary"
+                res = resolve_antigravity_quota_endpoint()
+                self.assertEqual(res, "https://mocked-endpoint.com/v1internal:retrieveUserQuotaSummary")
+                mock_top_detect.assert_called_once()
+
+            with patch("lib.quota.normalize_antigravity_quota_endpoint") as mock_top_norm:
+                self.assertIs(endpoint._get_effective_normalize_endpoint(), mock_top_norm)
+                mock_top_norm.return_value = "https://normalized-mocked.com"
+                res = resolve_antigravity_quota_endpoint("https://custom-url")
+                self.assertEqual(res, "https://normalized-mocked.com")
+                mock_top_norm.assert_called_once_with("https://custom-url")
+
+    def test_time_utils_mock_delegation(self):
+        import lib.quota.time_utils as time_utils
+        from lib.quota.time_utils import (
+            parse_reset_time_to_timestamp,
+            format_reset_countdown,
+        )
+
+        # 1. Direct submodule mock delegation
+        with patch("lib.quota.time_utils.parse_reset_time_to_datetime") as mock_direct_parse:
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), mock_direct_parse)
+
+        with patch("lib.quota.time_utils._normalize_now_datetime") as mock_direct_norm:
+            self.assertIs(time_utils._get_effective_normalize_now(), mock_direct_norm)
+
+        # 2. Top-level lib.quota mock delegation
+        mock_dt = datetime(2026, 12, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with patch("lib.quota.parse_reset_time_to_datetime") as mock_top_parse:
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), mock_top_parse)
+            mock_top_parse.return_value = mock_dt
+            ts = parse_reset_time_to_timestamp("dummy-reset-time")
+            self.assertEqual(ts, mock_dt.timestamp())
+            mock_top_parse.assert_called_once_with("dummy-reset-time")
+
+        mock_now = datetime(2026, 12, 1, 9, 30, 0, tzinfo=timezone.utc)
+        with patch("lib.quota._normalize_now_datetime") as mock_top_norm:
+            self.assertIs(time_utils._get_effective_normalize_now(), mock_top_norm)
+            mock_top_norm.return_value = mock_now
+            cd = format_reset_countdown(mock_dt, now_dt="custom_now")
+            self.assertEqual(cd, "00:30:00")
+            mock_top_norm.assert_called_once_with("custom_now")
+
+    def test_models_mock_delegation_in_quota_window(self):
+        mock_reset_dt = datetime(2026, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mock_now_dt = datetime(2026, 12, 1, 11, 30, 0, tzinfo=timezone.utc)
+
+        with patch("lib.quota.parse_reset_time_to_datetime") as mock_top_parse:
+            mock_top_parse.return_value = mock_reset_dt
+            w = QuotaWindow(name="5H", reset_time="dummy-reset")
+            self.assertEqual(w.reset_datetime, mock_reset_dt)
+            mock_top_parse.assert_called_once_with("dummy-reset")
+
+        with patch("lib.quota._normalize_now_datetime") as mock_top_norm:
+            mock_top_norm.return_value = mock_now_dt
+            w = QuotaWindow(name="5H", reset_datetime=mock_reset_dt)
+            rem = w.get_remaining_seconds(now_dt="custom-now")
+            self.assertEqual(rem, 1800.0)
+            mock_top_norm.assert_called_with("custom-now")
+
+    def test_module_reexports_and_mocks_in_lib_quota(self):
+        import lib.quota as quota
+
+        self.assertIn("time", quota.__all__)
+        self.assertIn("urllib", quota.__all__)
+        self.assertIs(quota.time, time)
+        self.assertTrue(hasattr(quota, "urllib"))
+
+        # Verify patching lib.quota.time.time
+        with patch("lib.quota.time.time", return_value=123456789.0):
+            self.assertEqual(quota.time.time(), 123456789.0)
+
+        # Verify patching lib.quota.urllib.request.urlopen
+        with patch("lib.quota.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = MagicMock()
+            quota.urllib.request.urlopen("https://example.com")
+            mock_urlopen.assert_called_once_with("https://example.com")
+
+    def test_direct_submodule_custom_callable_overrides_in_endpoint_and_time_utils(self):
+        import lib.quota.endpoint as endpoint
+        import lib.quota.time_utils as time_utils
+
+        orig_detect = endpoint.detect_antigravity_quota_endpoint_from_logs
+        orig_norm = endpoint.normalize_antigravity_quota_endpoint
+        orig_parse_dt = time_utils.parse_reset_time_to_datetime
+        orig_norm_now = time_utils._normalize_now_datetime
+
+        def custom_detect():
+            return "https://custom-detected.endpoint"
+
+        def custom_norm(url):
+            return "https://custom-normalized.endpoint"
+
+        def custom_parse_dt(val):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def custom_norm_now(val):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        try:
+            endpoint.detect_antigravity_quota_endpoint_from_logs = custom_detect
+            endpoint.normalize_antigravity_quota_endpoint = custom_norm
+            time_utils.parse_reset_time_to_datetime = custom_parse_dt
+            time_utils._normalize_now_datetime = custom_norm_now
+
+            self.assertIs(endpoint._get_effective_detect_logs(), custom_detect)
+            self.assertIs(endpoint._get_effective_normalize_endpoint(), custom_norm)
+            self.assertIs(time_utils._get_effective_parse_reset_datetime(), custom_parse_dt)
+            self.assertIs(time_utils._get_effective_normalize_now(), custom_norm_now)
+        finally:
+            endpoint.detect_antigravity_quota_endpoint_from_logs = orig_detect
+            endpoint.normalize_antigravity_quota_endpoint = orig_norm
+            time_utils.parse_reset_time_to_datetime = orig_parse_dt
+            time_utils._normalize_now_datetime = orig_norm_now
+
 
 if __name__ == "__main__":
     unittest.main()

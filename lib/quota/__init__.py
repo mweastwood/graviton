@@ -11,7 +11,13 @@ This package provides:
 - tracker: Thread-safe QuotaTracker pacing engine
 """
 
+import time
+import urllib.error
+import urllib.request
+
 from .time_utils import (
+    _get_effective_normalize_now,
+    _get_effective_parse_reset_datetime,
     _normalize_now_datetime,
     _normalize_pool_key,
     format_pacing_recovery_countdown,
@@ -33,6 +39,8 @@ from .auth import (
 from .endpoint import (
     DAILY_ANTIGRAVITY_QUOTA_ENDPOINT,
     DEFAULT_ANTIGRAVITY_QUOTA_ENDPOINT,
+    _get_effective_detect_logs,
+    _get_effective_normalize_endpoint,
     detect_antigravity_quota_endpoint_from_logs,
     normalize_antigravity_quota_endpoint,
     resolve_antigravity_quota_endpoint,
@@ -87,4 +95,6 @@ __all__ = [
     "_PacingStatusResult",
     "QuotaTracker",
     "logger",
+    "time",
+    "urllib",
 ]

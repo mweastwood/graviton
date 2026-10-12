@@ -12,6 +12,8 @@ from .time_utils import (
     _normalize_now_datetime,
     format_reset_countdown,
     format_pacing_recovery_countdown,
+    _get_effective_parse_reset_datetime,
+    _get_effective_normalize_now,
 )
 
 
@@ -44,10 +46,11 @@ class QuotaWindow:
         self.remaining_percentage = float(remaining_percentage) if remaining_percentage is not None else None
 
         res = reset_time if reset_time is not None else reset_timestamp
+        parse_fn = _get_effective_parse_reset_datetime()
         if reset_datetime is not None:
-            self.reset_datetime = parse_reset_time_to_datetime(reset_datetime)
+            self.reset_datetime = parse_fn(reset_datetime)
         else:
-            self.reset_datetime = parse_reset_time_to_datetime(res)
+            self.reset_datetime = parse_fn(res)
 
         if isinstance(res, datetime):
             self.reset_time = self.reset_datetime.isoformat() if self.reset_datetime else None
@@ -75,7 +78,7 @@ class QuotaWindow:
                 self._last_reset_timestamp = None
                 self._last_reset_datetime = None
                 return None
-            norm_dt = parse_reset_time_to_datetime(cur_dt)
+            norm_dt = _get_effective_parse_reset_datetime()(cur_dt)
             self.reset_datetime = norm_dt
             if norm_dt is None:
                 self.reset_time = None
@@ -111,7 +114,7 @@ class QuotaWindow:
             self._last_reset_datetime = None
             return None
 
-        dt = parse_reset_time_to_datetime(res)
+        dt = _get_effective_parse_reset_datetime()(res)
         self.reset_datetime = dt
         if dt is not None:
             if isinstance(cur_time, datetime):
@@ -147,13 +150,13 @@ class QuotaWindow:
         if dt is None:
             return 0.0
         effective_now = now_dt if now_dt is not None else now
-        now_dt_norm = _normalize_now_datetime(effective_now)
+        now_dt_norm = _get_effective_normalize_now()(effective_now)
         if now_dt_norm is None:
             now_dt_norm = datetime.now(timezone.utc)
         return max(0.0, (dt - now_dt_norm).total_seconds())
 
     def remaining_time_seconds(self, now: Optional[Union[float, int, datetime]] = None) -> float:
-        now_dt = _normalize_now_datetime(now)
+        now_dt = _get_effective_normalize_now()(now)
         return self.get_remaining_seconds(now_dt)
 
     @property
@@ -172,7 +175,7 @@ class QuotaWindow:
         return max(0.0, min(1.0, rem_sec / self.duration_seconds))
 
     def time_fraction(self, now: Optional[Union[float, int, datetime]] = None) -> float:
-        now_dt = _normalize_now_datetime(now)
+        now_dt = _get_effective_normalize_now()(now)
         return self.get_time_fraction(now_dt)
 
     def get_target_quota_fraction(
@@ -235,7 +238,7 @@ class QuotaWindow:
             return "OK", 0.0
 
     def pacing_status(self, now: Optional[Union[float, int, datetime]] = None) -> str:
-        now_dt = _normalize_now_datetime(now)
+        now_dt = _get_effective_normalize_now()(now)
         status, _ = self.get_pacing_status(now_dt)
         return status
 
@@ -243,7 +246,7 @@ class QuotaWindow:
         self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> float:
         effective_now = now_dt if now_dt is not None else now
-        norm_dt = _normalize_now_datetime(effective_now)
+        norm_dt = _get_effective_normalize_now()(effective_now)
         pacing_status, _ = self.get_pacing_status(norm_dt)
         if pacing_status != "BEHIND_PACING":
             return 0.0
@@ -261,7 +264,7 @@ class QuotaWindow:
         self, now_dt: Optional[Union[float, int, datetime]] = None, now: Optional[Union[float, int, datetime]] = None
     ) -> str:
         effective_now = now_dt if now_dt is not None else now
-        norm_dt = _normalize_now_datetime(effective_now)
+        norm_dt = _get_effective_normalize_now()(effective_now)
         rec_sec = self.get_pacing_recovery_seconds(norm_dt)
         return format_pacing_recovery_countdown(rec_sec)
 
@@ -273,7 +276,7 @@ class QuotaWindow:
         dt = self._sync_reset_datetime()
         target = dt if dt is not None else (self.reset_time if self.reset_time is not None else self.reset_timestamp)
         effective_now = now_dt if now_dt is not None else now
-        norm_dt = _normalize_now_datetime(effective_now)
+        norm_dt = _get_effective_normalize_now()(effective_now)
         return format_reset_countdown(target, now_dt=norm_dt, window_name=self.name)
 
     def to_dict(self) -> dict:

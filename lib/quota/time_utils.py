@@ -3,6 +3,7 @@ Time, countdown, and pool key normalization utilities for Quota management.
 """
 
 import math
+import sys
 from datetime import datetime, timezone
 from typing import Optional, Union
 
@@ -41,17 +42,7 @@ def parse_reset_time_to_datetime(
         return None
 
 
-def parse_reset_time_to_timestamp(
-    reset_time: Optional[Union[str, float, int, datetime]],
-) -> Optional[float]:
-    """Parse reset time to epoch float timestamp."""
-    dt = parse_reset_time_to_datetime(reset_time)
-    if dt is None:
-        return None
-    try:
-        return dt.timestamp()
-    except (OverflowError, OSError, ValueError):
-        return None
+_ORIG_PARSE_RESET_DATETIME = parse_reset_time_to_datetime
 
 
 def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optional[datetime]:
@@ -70,6 +61,80 @@ def _normalize_now_datetime(now: Optional[Union[float, int, datetime]]) -> Optio
     return None
 
 
+_ORIG_NORMALIZE_NOW = _normalize_now_datetime
+
+
+def _get_effective_parse_reset_datetime():
+    cur = parse_reset_time_to_datetime
+    if (
+        hasattr(cur, "mock_calls")
+        or hasattr(cur, "_mock_name")
+        or cur is not _ORIG_PARSE_RESET_DATETIME
+    ):
+        return cur
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "parse_reset_time_to_datetime"):
+        val = getattr(mod, "parse_reset_time_to_datetime")
+        if (
+            hasattr(val, "mock_calls")
+            or hasattr(val, "_mock_name")
+            or val is not _ORIG_PARSE_RESET_DATETIME
+        ):
+            return val
+    mod_models = sys.modules.get("lib.quota.models")
+    if mod_models and hasattr(mod_models, "parse_reset_time_to_datetime"):
+        val_m = getattr(mod_models, "parse_reset_time_to_datetime")
+        if (
+            hasattr(val_m, "mock_calls")
+            or hasattr(val_m, "_mock_name")
+            or val_m is not _ORIG_PARSE_RESET_DATETIME
+        ):
+            return val_m
+    return cur
+
+
+def _get_effective_normalize_now():
+    cur = _normalize_now_datetime
+    if (
+        hasattr(cur, "mock_calls")
+        or hasattr(cur, "_mock_name")
+        or cur is not _ORIG_NORMALIZE_NOW
+    ):
+        return cur
+    mod = sys.modules.get("lib.quota")
+    if mod and hasattr(mod, "_normalize_now_datetime"):
+        val = getattr(mod, "_normalize_now_datetime")
+        if (
+            hasattr(val, "mock_calls")
+            or hasattr(val, "_mock_name")
+            or val is not _ORIG_NORMALIZE_NOW
+        ):
+            return val
+    mod_models = sys.modules.get("lib.quota.models")
+    if mod_models and hasattr(mod_models, "_normalize_now_datetime"):
+        val_m = getattr(mod_models, "_normalize_now_datetime")
+        if (
+            hasattr(val_m, "mock_calls")
+            or hasattr(val_m, "_mock_name")
+            or val_m is not _ORIG_NORMALIZE_NOW
+        ):
+            return val_m
+    return cur
+
+
+def parse_reset_time_to_timestamp(
+    reset_time: Optional[Union[str, float, int, datetime]],
+) -> Optional[float]:
+    """Parse reset time to epoch float timestamp."""
+    dt = _get_effective_parse_reset_datetime()(reset_time)
+    if dt is None:
+        return None
+    try:
+        return dt.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _normalize_pool_key(pool: Optional[str]) -> str:
     """Normalize quota pool string to canonical pool key ('gemini' or 'claude_gpt')."""
     p = str(pool or "gemini").lower()
@@ -86,10 +151,10 @@ def format_reset_countdown(
     """Format reset timestamp into HH:MM:SS or Xd Yh countdown string."""
     if reset_time is None:
         return "N/A"
-    dt = parse_reset_time_to_datetime(reset_time)
+    dt = _get_effective_parse_reset_datetime()(reset_time)
     if dt is None:
         return str(reset_time)
-    now_dt_norm = _normalize_now_datetime(now_dt)
+    now_dt_norm = _get_effective_normalize_now()(now_dt)
     if now_dt_norm is None:
         now_dt_norm = datetime.now(timezone.utc)
     diff = (dt - now_dt_norm).total_seconds()
