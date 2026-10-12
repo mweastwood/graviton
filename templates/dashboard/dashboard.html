@@ -1507,7 +1507,7 @@
                 if (validHistoryRows.length === 0) {{
                     historyContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📜</span><p class="empty-text">No completed tasks in history yet.</p></div>';
                 }} else {{
-                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead><tbody>';
+                    let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th></tr></thead><tbody>';
                     for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
@@ -1517,12 +1517,21 @@
                         const targetHtml = formatTargetCell(targetRaw, r[1]);
                         const dur = escapeHtml(hasModel ? r[4] : r[3]);
                         const rawStatus = (hasModel ? r[5] : r[4]) || '';
+                        let timestamp = '-';
+                        let detailRaw = '';
+                        if (r.length >= 8) {{
+                            timestamp = escapeHtml(r[6].replace(/`/g, ''));
+                            detailRaw = r[7] || '';
+                        }} else if (r.length >= 7) {{
+                            detailRaw = r[6] || '';
+                        }} else if (r.length >= 6) {{
+                            detailRaw = hasModel ? '' : (r[5] || '');
+                        }}
                         const isSuccess = rawStatus.includes('✅') || rawStatus.toLowerCase().includes('complete') || rawStatus.toLowerCase().includes('finish');
                         const statusClean = escapeHtml(rawStatus.replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';
                         const statusPillClass = isSuccess ? 'status-completed' : 'status-failed';
                         let detailHtml = '<span class="text-muted">Finished</span>';
-                        const detailRaw = hasModel ? (r.length >= 7 ? r[6] : '') : (r.length >= 6 ? r[5] : '');
                         if (detailRaw) {{
                             const rawTrimmed = detailRaw.trim();
                             if (rawTrimmed && rawTrimmed !== 'Finished' && !rawTrimmed.toLowerCase().includes('remote')) {{
@@ -1534,7 +1543,8 @@
                             }}
                         }}
                         const modelHtml = model !== '-' ? `<code>${{model}}</code>` : '<span class="text-muted">-</span>';
-                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td>${{targetHtml}}</td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{detailHtml}}</td></tr>`;
+                        const tsHtml = timestamp !== '-' ? `<span class="text-muted">${{timestamp}}</span>` : '<span class="text-muted">-</span>';
+                        htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td>${{targetHtml}}</td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{tsHtml}}</td><td>${{detailHtml}}</td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';
                     historyContainer.innerHTML = htmlStr;

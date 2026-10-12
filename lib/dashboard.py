@@ -190,6 +190,29 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
         return default
 
 
+def format_timestamp(ts: Optional[Union[float, int, str]]) -> str:
+    """Format Unix timestamp or ISO string into human readable UTC timestamp (e.g., 2026-10-11 20:07:00 UTC)."""
+    if ts is None or ts == "" or ts == "-":
+        return "-"
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError, OverflowError, OSError):
+            return "-"
+    try:
+        val = float(ts)
+        return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    try:
+        dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return str(ts)
+
+
 def is_safe_url(url: Optional[str]) -> bool:
     """Validate that a URL uses safe http or https schemes to prevent javascript: XSS."""
     if not url or not isinstance(url, str):
@@ -608,8 +631,8 @@ def format_dashboard_markdown(
 
     if recent_history:
         lines.extend([
-            "| Task ID | Agent | Model | Target | Duration | Status | Details |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
             dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
@@ -620,12 +643,18 @@ def format_dashboard_markdown(
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
             target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
             target_cell = _format_target_markdown_cell(target_disp, target_url)
-            if t.error_message:
-                clean_err = str(t.error_message).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+            ts_val = t.get("timestamp") or t.get("finish_time") or t.get("start_time") if isinstance(t, dict) else (getattr(t, "finish_time", None) or getattr(t, "start_time", None))
+            ts_disp = format_timestamp(ts_val)
+            err_msg = t.get("error_message") if isinstance(t, dict) else getattr(t, "error_message", None)
+            if err_msg:
+                clean_err = str(err_msg).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
                 detail = f"`{clean_err[:40]}...`" if len(clean_err) > 40 else f"`{clean_err}`"
             else:
-                detail = "Finished"
-            lines.append(f"| `{t.id}` | `{t.agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t.status}` | {detail} |")
+                detail = t.get("details", "Finished") if isinstance(t, dict) else "Finished"
+            t_id = t.get("id", "") if isinstance(t, dict) else t.id
+            t_agent = t.get("agent", "") if isinstance(t, dict) else t.agent
+            t_status = t.get("status", "") if isinstance(t, dict) else t.status
+            lines.append(f"| `{t_id}` | `{t_agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t_status}` | {ts_disp} | {detail} |")
         lines.append("")
     else:
         lines.extend(["*No completed tasks in history yet.*", ""])
@@ -1202,15 +1231,17 @@ def parse_dashboard_markdown(
 
         elif "Recent Task Execution History" in title_line:
             has_model_hdr = any("Model" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line)
+            has_timestamp_hdr = any("Timestamp" in line or "Time" in line for line in sec_lines if line.strip().startswith("|") and "Task ID" in line and "Duration" in line)
             for cells in table_rows:
-                if len(cells) >= 7:
+                if len(cells) >= 8:
                     tid = cells[0].strip("`")
                     agent = cells[1].strip("`")
                     model = cells[2].strip("`")
                     target, target_url = _parse_target_cell(cells[3], agent=agent)
                     duration = cells[4]
                     status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
-                    detail_cell = cells[6]
+                    timestamp = cells[6].strip("`").strip()
+                    detail_cell = cells[7]
                     rc_url = None
                     url_m = MD_LINK_PATTERN.search(detail_cell)
                     if url_m:
@@ -1232,6 +1263,49 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": timestamp,
+                        "details": detail,
+                        "remote_control_url": rc_url,
+                    })
+                elif len(cells) >= 7:
+                    tid = cells[0].strip("`")
+                    agent = cells[1].strip("`")
+                    if has_timestamp_hdr and not has_model_hdr:
+                        model = "-"
+                        target, target_url = _parse_target_cell(cells[2], agent=agent)
+                        duration = cells[3]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        timestamp = cells[5].strip("`").strip()
+                        detail_cell = cells[6]
+                    else:
+                        model = cells[2].strip("`")
+                        target, target_url = _parse_target_cell(cells[3], agent=agent)
+                        duration = cells[4]
+                        status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        timestamp = "-"
+                        detail_cell = cells[6]
+                    rc_url = None
+                    url_m = MD_LINK_PATTERN.search(detail_cell)
+                    if url_m:
+                        cand = url_m.group(1).strip()
+                        if is_safe_url(cand):
+                            rc_url = cand
+                            detail = "Remote Control"
+                        else:
+                            detail = detail_cell.strip("`").strip()
+                    else:
+                        detail = detail_cell.strip("`").strip()
+                    if detail in ("Remote Control", "Remote Session"):
+                        detail = "Finished"
+                    history_tasks.append({
+                        "id": tid,
+                        "agent": agent,
+                        "model": model,
+                        "target": target,
+                        "target_url": target_url,
+                        "duration": duration,
+                        "status": status_raw,
+                        "timestamp": timestamp,
                         "details": detail,
                         "remote_control_url": rc_url,
                     })
@@ -1243,6 +1317,7 @@ def parse_dashboard_markdown(
                         target, target_url = _parse_target_cell(cells[3], agent=agent)
                         duration = cells[4]
                         status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[5]).strip()
+                        timestamp = "-"
                         detail = "Finished"
                         rc_url = None
                     else:
@@ -1250,6 +1325,7 @@ def parse_dashboard_markdown(
                         target, target_url = _parse_target_cell(cells[2], agent=agent)
                         duration = cells[3]
                         status_raw = STATUS_HISTORY_CLEANUP_PATTERN.sub(" ", cells[4]).strip()
+                        timestamp = "-"
                         detail_cell = cells[5]
                         rc_url = None
                         url_m = MD_LINK_PATTERN.search(detail_cell)
@@ -1272,6 +1348,7 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": timestamp,
                         "details": detail,
                         "remote_control_url": rc_url,
                     })
@@ -1289,6 +1366,7 @@ def parse_dashboard_markdown(
                         "target_url": target_url,
                         "duration": duration,
                         "status": status_raw,
+                        "timestamp": "-",
                         "details": "Finished",
                         "remote_control_url": None,
                     })
@@ -1512,6 +1590,8 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
         else:
             detail_html = '<span class="text-muted">Finished</span>'
         model_cell = f'<code>{model}</code>' if model != "-" else '<span class="text-muted">-</span>'
+        timestamp = html.escape(str(t.get("timestamp", "-") or "-"))
+        ts_cell = f'<span class="text-muted">{timestamp}</span>'
         rows.append(
             f'<tr><td><code>{tid}</code></td>'
             f'<td><span class="agent-badge">{agent}</span></td>'
@@ -1519,11 +1599,12 @@ def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
             f'<td>{target_html}</td>'
             f'<td><span class="text-muted">{duration}</span></td>'
             f'<td><span class="status-pill {status_class}">{status_icon} {status_disp}</span></td>'
+            f'<td>{ts_cell}</td>'
             f'<td>{detail_html}</td></tr>'
         )
     return (
         '<div class="table-wrapper"><table class="data-table">'
-        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Details</th></tr></thead>'
+        '<thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -1610,6 +1691,8 @@ def render_dashboard_html(
                         model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
                         model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
                         target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                        ts_val = getattr(t, "finish_time", None) or getattr(t, "start_time", None)
+                        timestamp = format_timestamp(ts_val)
                         data["history_tasks"].append({
                             "id": t.id,
                             "agent": t.agent,
@@ -1618,6 +1701,7 @@ def render_dashboard_html(
                             "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
                             "duration": dur,
                             "status": str(t.status),
+                            "timestamp": timestamp,
                             "details": detail,
                         })
         except Exception as e:
