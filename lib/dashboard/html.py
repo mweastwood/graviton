@@ -378,14 +378,62 @@ def _enrich_dashboard_data(
 
     if task_manager:
         try:
-            stats = task_manager.get_stats()
-            if stats:
-                data["active_workers"] = stats.get("active_workers", data["active_workers"])
-                data["max_workers"] = stats.get("max_workers", data["max_workers"])
-                data["running_tasks"] = stats.get("active_tasks", data["running_tasks"])
-                data["queued_tasks"] = stats.get("queued_tasks", data["queued_tasks"])
-                data["completed_tasks"] = stats.get("completed_tasks", data["completed_tasks"])
-                data["failed_tasks"] = stats.get("failed_tasks", data["failed_tasks"])
+            stats = task_manager.get_stats() or {}
+            act_objs = task_manager.get_active_tasks() or []
+            q_objs = task_manager.get_queued_tasks() or []
+
+            workers_val = stats.get("active_workers")
+            if workers_val is None:
+                workers_val = stats.get("running")
+                if workers_val is None:
+                    workers_val = len(act_objs)
+            if workers_val is not None:
+                data["active_workers"] = workers_val
+
+            max_workers_val = stats.get("max_workers")
+            if max_workers_val is None:
+                raw_mw = getattr(task_manager, "max_workers", None)
+                if isinstance(raw_mw, (int, float)):
+                    max_workers_val = int(raw_mw)
+            elif isinstance(max_workers_val, (int, float)):
+                max_workers_val = int(max_workers_val)
+            else:
+                try:
+                    max_workers_val = int(max_workers_val)
+                except (ValueError, TypeError):
+                    max_workers_val = None
+            if max_workers_val is not None:
+                data["max_workers"] = max_workers_val
+
+            running_val = stats.get("active_tasks")
+            if running_val is None:
+                running_val = stats.get("running")
+                if running_val is None:
+                    running_val = len(act_objs)
+            if running_val is not None:
+                data["running_tasks"] = running_val
+
+            queued_val = stats.get("queued_tasks")
+            if queued_val is None:
+                if "queued" in stats or "paused" in stats:
+                    queued_val = (stats.get("queued") or 0) + (stats.get("paused") or 0)
+                else:
+                    queued_val = len(q_objs)
+            if queued_val is not None:
+                data["queued_tasks"] = queued_val
+
+            completed_val = stats.get("completed_tasks")
+            if completed_val is None:
+                completed_val = stats.get("completed")
+            if completed_val is not None:
+                data["completed_tasks"] = completed_val
+
+            failed_val = stats.get("failed_tasks")
+            if failed_val is None:
+                if "failed" in stats or "aborted" in stats:
+                    failed_val = (stats.get("failed") or 0) + (stats.get("aborted") or 0)
+            if failed_val is not None:
+                data["failed_tasks"] = failed_val
             if not data["active_tasks"]:
                 act_objs = task_manager.get_active_tasks()
                 if act_objs:
@@ -643,19 +691,28 @@ def _render_header_html(data: Dict[str, Any], extra_info: Optional[Dict[str, Any
 
 def _render_metrics_html(data: Dict[str, Any]) -> Dict[str, Any]:
     """Compute HTML template parameters for pipeline execution metrics."""
-    active_workers = data["active_workers"]
-    max_workers = data["max_workers"]
-    workers_pct = min(100, int((active_workers / max_workers) * 100)) if max_workers > 0 else 0
-    running_tasks = data["running_tasks"]
-    running_pulse_style = "display: inline-block;" if running_tasks > 0 else "display: none;"
-    queued_tasks_count = data["queued_tasks"]
-    completed_tasks = data["completed_tasks"]
-    failed_tasks = data["failed_tasks"]
-    failed_class = "kpi-value text-red" if failed_tasks > 0 else "kpi-value text-muted"
+    active_workers = data.get("active_workers")
+    max_workers = data.get("max_workers")
+    try:
+        workers_pct = min(100, int((float(active_workers) / float(max_workers)) * 100)) if (max_workers and float(max_workers) > 0 and active_workers is not None) else 0
+    except (ValueError, TypeError, ZeroDivisionError):
+        workers_pct = 0
+    running_tasks = data.get("running_tasks") or 0
+    try:
+        running_pulse_style = "display: inline-block;" if int(running_tasks) > 0 else "display: none;"
+    except (ValueError, TypeError):
+        running_pulse_style = "display: none;"
+    queued_tasks_count = data.get("queued_tasks") or 0
+    completed_tasks = data.get("completed_tasks") or 0
+    failed_tasks = data.get("failed_tasks") or 0
+    try:
+        failed_class = "kpi-value text-red" if int(failed_tasks) > 0 else "kpi-value text-muted"
+    except (ValueError, TypeError):
+        failed_class = "kpi-value text-muted"
 
     return {
-        "active_workers": active_workers,
-        "max_workers": max_workers,
+        "active_workers": active_workers if active_workers is not None else 0,
+        "max_workers": max_workers if max_workers is not None else 0,
         "workers_pct": workers_pct,
         "running_tasks": running_tasks,
         "running_pulse_style": running_pulse_style,

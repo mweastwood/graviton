@@ -114,10 +114,10 @@ def _gather_markdown_context(
 ) -> Dict[str, Any]:
     """Gather server, manager, and quota data into a normalized context dictionary for markdown generation."""
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    stats = task_manager.get_stats() if task_manager else {}
-    active_tasks = task_manager.get_active_tasks() if task_manager else []
-    queued_tasks = task_manager.get_queued_tasks() if task_manager else []
-    recent_history = task_manager.get_task_history(limit=10) if task_manager else []
+    stats = (task_manager.get_stats() if task_manager else {}) or {}
+    active_tasks = (task_manager.get_active_tasks() if task_manager else []) or []
+    queued_tasks = (task_manager.get_queued_tasks() if task_manager else []) or []
+    recent_history = (task_manager.get_task_history(limit=10) if task_manager else []) or []
     quota_info = quota_tracker.get_info().to_dict() if quota_tracker else {}
     if not quota_info and extra_info and "quota_info" in extra_info:
         quota_info = extra_info.get("quota_info") or {}
@@ -143,6 +143,7 @@ def _gather_markdown_context(
 
     return {
         "now_iso": now_iso,
+        "task_manager": task_manager,
         "stats": stats,
         "active_tasks": active_tasks,
         "queued_tasks": queued_tasks,
@@ -172,17 +173,62 @@ def _md_header(ctx: Dict[str, Any]) -> List[str]:
 
 def _md_pipeline(ctx: Dict[str, Any]) -> List[str]:
     """Render task pipeline execution summary table."""
-    stats = ctx["stats"]
+    stats = ctx.get("stats") or {}
+    active_tasks = ctx.get("active_tasks") or []
+    queued_tasks = ctx.get("queued_tasks") or []
+    task_manager = ctx.get("task_manager")
+
+    active_workers_val = stats.get("active_workers")
+    if active_workers_val is None:
+        active_workers_val = stats.get("running")
+        if active_workers_val is None:
+            active_workers_val = len(active_tasks)
+
+    max_workers_val = stats.get("max_workers")
+    if max_workers_val is None:
+        raw_mw = getattr(task_manager, "max_workers", 0) if task_manager else 0
+        if isinstance(raw_mw, (int, float)):
+            max_workers_val = int(raw_mw)
+        else:
+            try:
+                max_workers_val = int(raw_mw)
+            except (ValueError, TypeError):
+                max_workers_val = 0
+
+    running_tasks_val = stats.get("active_tasks")
+    if running_tasks_val is None:
+        running_tasks_val = stats.get("running")
+        if running_tasks_val is None:
+            running_tasks_val = len(active_tasks)
+
+    queued_tasks_val = stats.get("queued_tasks")
+    if queued_tasks_val is None:
+        if "queued" in stats or "paused" in stats:
+            queued_tasks_val = (stats.get("queued") or 0) + (stats.get("paused") or 0)
+        else:
+            queued_tasks_val = len(queued_tasks)
+
+    completed_tasks_val = stats.get("completed_tasks")
+    if completed_tasks_val is None:
+        completed_tasks_val = stats.get("completed") if stats.get("completed") is not None else 0
+
+    failed_tasks_val = stats.get("failed_tasks")
+    if failed_tasks_val is None:
+        if "failed" in stats or "aborted" in stats:
+            failed_tasks_val = (stats.get("failed") or 0) + (stats.get("aborted") or 0)
+        else:
+            failed_tasks_val = 0
+
     return [
         "## 📊 Task Pipeline",
         "",
         "| Metric | Count | Description |",
         "| :--- | :--- | :--- |",
-        f"| **Active Workers** | `{stats.get('active_workers', 0)} / {stats.get('max_workers', 0)}` | Worker threads currently processing tasks |",
-        f"| **Running Tasks** | `{stats.get('active_tasks', 0)}` | Active containerized supervisor sessions |",
-        f"| **Queued Tasks** | `{stats.get('queued_tasks', 0)}` | Tasks awaiting available worker slot |",
-        f"| **Completed Tasks** | `{stats.get('completed_tasks', 0)}` | Successfully finished tasks |",
-        f"| **Failed Tasks** | `{stats.get('failed_tasks', 0)}` | Failed or aborted executions |",
+        f"| **Active Workers** | `{active_workers_val} / {max_workers_val}` | Worker threads currently processing tasks |",
+        f"| **Running Tasks** | `{running_tasks_val}` | Active containerized supervisor sessions |",
+        f"| **Queued Tasks** | `{queued_tasks_val}` | Tasks awaiting available worker slot |",
+        f"| **Completed Tasks** | `{completed_tasks_val}` | Successfully finished tasks |",
+        f"| **Failed Tasks** | `{failed_tasks_val}` | Failed or aborted executions |",
         "",
         "---",
         "",
