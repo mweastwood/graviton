@@ -102,10 +102,19 @@ async def run_agent_turn(
         async for chunk in response.chunks:
             chunk_type = type(chunk).__name__
             tool_result_cls = getattr(ag_types, "ToolResult", None)
+            res_val = getattr(chunk, "result", None)
+            err_val = getattr(chunk, "error", None) or getattr(chunk, "exception", None)
             is_tool_result = (
                 chunk_type.endswith("ToolResult")
                 or (isinstance(tool_result_cls, type) and isinstance(chunk, tool_result_cls))
-                or (hasattr(chunk, "name") and (hasattr(chunk, "result") or hasattr(chunk, "error") or hasattr(chunk, "exception")))
+                or (
+                    hasattr(chunk, "name")
+                    and (
+                        (res_val is not None and not callable(res_val))
+                        or (err_val is not None and not callable(err_val))
+                        or (hasattr(chunk, "result") and not hasattr(chunk, "args"))
+                    )
+                )
             )
             tool_call_cls = getattr(ag_types, "ToolCall", None)
             is_tool_call = (
@@ -117,12 +126,14 @@ async def run_agent_turn(
                 and not is_tool_result
             )
             thought_cls = getattr(ag_types, "Thought", None)
+            thought_val = getattr(chunk, "thought", None)
+            thinking_val = getattr(chunk, "thinking", None)
             is_thought = (
                 (
                     chunk_type.endswith("Thought")
                     or (isinstance(thought_cls, type) and isinstance(chunk, thought_cls))
-                    or hasattr(chunk, "thought")
-                    or hasattr(chunk, "thinking")
+                    or (thought_val is not None and not callable(thought_val))
+                    or (thinking_val is not None and not callable(thinking_val))
                 )
                 and not is_tool_call
                 and not is_tool_result

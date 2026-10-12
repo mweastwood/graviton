@@ -1288,6 +1288,88 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_tool_call_with_none_result_not_misclassified(self):
+        """Verify tool calls with result=None or error=None are emitted as RUNNING tool calls with tool_info."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class CustomToolCallChunk:
+                def __init__(self, name, args, call_id):
+                    self.name = name
+                    self.args = args
+                    self.id = call_id
+                    self.result = None
+                    self.error = None
+
+            async def _chunk_iter():
+                yield CustomToolCallChunk("execute_bash", {"cmd": "pytest"}, "call-none-res-1")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Command executed.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Run bash", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+
+            self.assertEqual(len(tool_events), 1)
+            step = tool_events[0]["step_update"]
+            self.assertEqual(step["state"], "RUNNING")
+            self.assertEqual(step["tool_name"], "execute_bash")
+            self.assertEqual(step["tool_info"], {"cmd": "pytest"})
+            self.assertEqual(step["id"], "call-none-res-1")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_text_chunk_with_none_or_callable_thought_not_misclassified(self):
+        """Verify text chunks with thought=None or thought as a method are emitted as text_delta."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class CustomTextChunkWithNoneField:
+                def __init__(self, text):
+                    self.text = text
+                    self.thought = None
+                    self.thinking = None
+
+            class CustomTextChunkWithMethod:
+                def __init__(self, text):
+                    self.text = text
+
+                def thought(self):
+                    return "method representation"
+
+            async def _chunk_iter():
+                yield CustomTextChunkWithNoneField("First part of answer. ")
+                yield CustomTextChunkWithMethod("Second part of answer.")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="First part of answer. Second part of answer.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Answer question", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            thought_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "agent_response" and "thought" in l.get("step_update", {})]
+            text_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "agent_response" and "text_delta" in l.get("step_update", {})]
+
+            self.assertEqual(len(thought_events), 0)
+            self.assertEqual(len(text_events), 2)
+            self.assertEqual(text_events[0]["step_update"]["text_delta"], "First part of answer. ")
+            self.assertEqual(text_events[1]["step_update"]["text_delta"], "Second part of answer.")
+
+        asyncio.run(_test())
+
 
 if __name__ == "__main__":
     unittest.main()
+
