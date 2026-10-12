@@ -237,10 +237,10 @@ def format_dashboard_markdown(
     suitable for Antigravity's Auxiliary Pane Artifact viewer.
     """
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    stats = task_manager.get_stats() if task_manager else {}
-    active_tasks = task_manager.get_active_tasks() if task_manager else []
-    queued_tasks = task_manager.get_queued_tasks() if task_manager else []
-    recent_history = task_manager.get_task_history(limit=10) if task_manager else []
+    stats = (task_manager.get_stats() if task_manager else {}) or {}
+    active_tasks = (task_manager.get_active_tasks() if task_manager else []) or []
+    queued_tasks = (task_manager.get_queued_tasks() if task_manager else []) or []
+    recent_history = (task_manager.get_task_history(limit=10) if task_manager else []) or []
     quota_info = quota_tracker.get_info().to_dict() if quota_tracker else {}
     if not quota_info and extra_info and "quota_info" in extra_info:
         quota_info = extra_info.get("quota_info") or {}
@@ -274,7 +274,14 @@ def format_dashboard_markdown(
 
     max_workers_val = stats.get("max_workers")
     if max_workers_val is None:
-        max_workers_val = getattr(task_manager, "max_workers", 0) or 0
+        raw_mw = getattr(task_manager, "max_workers", 0)
+        if isinstance(raw_mw, (int, float)):
+            max_workers_val = int(raw_mw)
+        else:
+            try:
+                max_workers_val = int(raw_mw)
+            except (ValueError, TypeError):
+                max_workers_val = 0
 
     running_tasks_val = stats.get("active_tasks")
     if running_tasks_val is None:
@@ -1595,80 +1602,94 @@ def render_dashboard_html(
 
     if task_manager:
         try:
-            stats = task_manager.get_stats()
-            if stats:
-                workers_val = stats.get("active_workers")
+            stats = task_manager.get_stats() or {}
+            act_objs = task_manager.get_active_tasks() or []
+            q_objs = task_manager.get_queued_tasks() or []
+
+            workers_val = stats.get("active_workers")
+            if workers_val is None:
+                workers_val = stats.get("running")
                 if workers_val is None:
-                    workers_val = stats.get("running")
-                if workers_val is not None:
-                    data["active_workers"] = workers_val
+                    workers_val = len(act_objs)
+            if workers_val is not None:
+                data["active_workers"] = workers_val
 
-                max_workers_val = stats.get("max_workers")
-                if max_workers_val is None:
-                    max_workers_val = getattr(task_manager, "max_workers", None)
-                if max_workers_val is not None:
-                    data["max_workers"] = max_workers_val
+            max_workers_val = stats.get("max_workers")
+            if max_workers_val is None:
+                raw_mw = getattr(task_manager, "max_workers", None)
+                if isinstance(raw_mw, (int, float)):
+                    max_workers_val = int(raw_mw)
+            elif isinstance(max_workers_val, (int, float)):
+                max_workers_val = int(max_workers_val)
+            else:
+                try:
+                    max_workers_val = int(max_workers_val)
+                except (ValueError, TypeError):
+                    max_workers_val = None
+            if max_workers_val is not None:
+                data["max_workers"] = max_workers_val
 
-                running_val = stats.get("active_tasks")
+            running_val = stats.get("active_tasks")
+            if running_val is None:
+                running_val = stats.get("running")
                 if running_val is None:
-                    running_val = stats.get("running")
-                if running_val is not None:
-                    data["running_tasks"] = running_val
+                    running_val = len(act_objs)
+            if running_val is not None:
+                data["running_tasks"] = running_val
 
-                queued_val = stats.get("queued_tasks")
-                if queued_val is None:
-                    if "queued" in stats or "paused" in stats:
-                        queued_val = (stats.get("queued") or 0) + (stats.get("paused") or 0)
-                if queued_val is not None:
-                    data["queued_tasks"] = queued_val
+            queued_val = stats.get("queued_tasks")
+            if queued_val is None:
+                if "queued" in stats or "paused" in stats:
+                    queued_val = (stats.get("queued") or 0) + (stats.get("paused") or 0)
+                else:
+                    queued_val = len(q_objs)
+            if queued_val is not None:
+                data["queued_tasks"] = queued_val
 
-                completed_val = stats.get("completed_tasks")
-                if completed_val is None:
-                    completed_val = stats.get("completed")
-                if completed_val is not None:
-                    data["completed_tasks"] = completed_val
+            completed_val = stats.get("completed_tasks")
+            if completed_val is None:
+                completed_val = stats.get("completed")
+            if completed_val is not None:
+                data["completed_tasks"] = completed_val
 
-                failed_val = stats.get("failed_tasks")
-                if failed_val is None:
-                    if "failed" in stats or "aborted" in stats:
-                        failed_val = (stats.get("failed") or 0) + (stats.get("aborted") or 0)
-                if failed_val is not None:
-                    data["failed_tasks"] = failed_val
-            if not data["active_tasks"]:
-                act_objs = task_manager.get_active_tasks()
-                if act_objs:
-                    now_ts = time.time()
-                    for t in act_objs:
-                        elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
-                        model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
-                        model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-                        data["active_tasks"].append({
-                            "id": t.id,
-                            "agent": t.agent,
-                            "model": model_name,
-                            "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
-                            "elapsed": elapsed,
-                            "status": str(t.status),
-                        })
-            if not data["queued_tasks_list"]:
-                q_objs = task_manager.get_queued_tasks()
-                if q_objs:
-                    now_ts = time.time()
-                    for t in q_objs:
-                        q_dur = format_duration(now_ts - t.enqueue_time)
-                        target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-                        data["queued_tasks_list"].append({
-                            "id": t.id,
-                            "agent": t.agent,
-                            "target": target_id,
-                            "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
-                            "priority": str(t.priority),
-                            "wait_time": q_dur,
-                        })
+            failed_val = stats.get("failed_tasks")
+            if failed_val is None:
+                if "failed" in stats or "aborted" in stats:
+                    failed_val = (stats.get("failed") or 0) + (stats.get("aborted") or 0)
+            if failed_val is not None:
+                data["failed_tasks"] = failed_val
+
+            if not data["active_tasks"] and act_objs:
+                now_ts = time.time()
+                for t in act_objs:
+                    elapsed = format_duration(now_ts - t.start_time) if t.start_time else "starting..."
+                    model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+                    model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
+                    target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                    data["active_tasks"].append({
+                        "id": t.id,
+                        "agent": t.agent,
+                        "model": model_name,
+                        "target": target_id,
+                        "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                        "elapsed": elapsed,
+                        "status": str(t.status),
+                    })
+            if not data["queued_tasks_list"] and q_objs:
+                now_ts = time.time()
+                for t in q_objs:
+                    q_dur = format_duration(now_ts - t.enqueue_time)
+                    target_id = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
+                    data["queued_tasks_list"].append({
+                        "id": t.id,
+                        "agent": t.agent,
+                        "target": target_id,
+                        "target_url": resolve_target_url(target_id, repo=getattr(t, "repo_full_name", None), agent=t.agent),
+                        "priority": str(t.priority),
+                        "wait_time": q_dur,
+                    })
             if not data["history_tasks"]:
-                h_objs = task_manager.get_task_history(limit=10)
+                h_objs = task_manager.get_task_history(limit=10) or []
                 if h_objs:
                     for t in h_objs:
                         dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"

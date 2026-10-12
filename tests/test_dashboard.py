@@ -3676,6 +3676,53 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertIn('id="kpi-completed">3</div>', html)
         self.assertIn('id="kpi-failed">1</div>', html)
 
+    def test_dashboard_markdown_and_html_when_task_manager_get_stats_returns_none(self):
+        """Verify format_dashboard_markdown and render_dashboard_html handle task_manager.get_stats() returning None."""
+        t_active = Task(
+            id="t-1",
+            agent="code_reviewer",
+            prompt="review PR",
+            status=TaskStatus.RUNNING,
+            repo_full_name="org/repo",
+            target_id="#10",
+            start_time=time.time() - 30.0,
+        )
+        t_queued = Task(
+            id="t-2",
+            agent="code_fixer",
+            prompt="fix PR",
+            status=TaskStatus.QUEUED,
+            repo_full_name="org/repo",
+            target_id="#11",
+            enqueue_time=time.time() - 10.0,
+        )
+
+        mock_tm = MagicMock()
+        mock_tm.max_workers = 3
+        mock_tm.get_stats.return_value = None
+        mock_tm.get_active_tasks.return_value = [t_active]
+        mock_tm.get_queued_tasks.return_value = [t_queued]
+        mock_tm.get_task_history.return_value = []
+        mock_tm._draining = False
+        mock_tm._paused = False
+
+        md = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertNotIn("`None`", md)
+        self.assertNotIn("None /", md)
+        self.assertNotIn("/ None", md)
+        self.assertIn("| **Active Workers** | `1 / 3` |", md)
+        self.assertIn("| **Running Tasks** | `1` |", md)
+        self.assertIn("| **Queued Tasks** | `1` |", md)
+        self.assertIn("| **Completed Tasks** | `0` |", md)
+        self.assertIn("| **Failed Tasks** | `0` |", md)
+
+        html = render_dashboard_html(md, task_manager=mock_tm)
+        self.assertIn('id="kpi-workers">1 / 3</div>', html)
+        self.assertIn('id="kpi-running-val">1</span>', html)
+        self.assertIn('id="kpi-queued">1</div>', html)
+        self.assertIn('id="kpi-completed">0</div>', html)
+        self.assertIn('id="kpi-failed">0</div>', html)
+
 
 if __name__ == "__main__":
     unittest.main()

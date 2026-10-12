@@ -143,6 +143,32 @@ class TestGravitonMCPServer(unittest.TestCase):
         self.assertIn("Failed: 2", content)
 
     @patch.object(GravitonMCPServer, "_http_request")
+    def test_tool_graviton_status_with_explicit_none_tasks_and_quota(self, mock_http):
+        mock_http.return_value = (
+            200,
+            {
+                "service": "graviton-server",
+                "status": "ok",
+                "reviewer_agent": "code_reviewer",
+                "fixer_agent": "code_fixer",
+                "tasks": None,
+                "quota": None,
+            },
+        )
+        req = {
+            "jsonrpc": "2.0",
+            "id": 67,
+            "method": "tools/call",
+            "params": {"name": "graviton_status", "arguments": {}},
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        content = resp["result"]["content"][0]["text"]
+        self.assertIn("Graviton Server Status", content)
+        self.assertNotIn("Task Pipeline", content)
+        self.assertNotIn("Quota Status", content)
+
+    @patch.object(GravitonMCPServer, "_http_request")
     def test_tool_graviton_list_tasks(self, mock_http):
         mock_http.return_value = (
             200,

@@ -249,7 +249,7 @@ class GravitonMCPServer:
             f"- **Reviewer Agent**: `{data.get('reviewer_agent')}`",
             f"- **Fixer Agent**: `{data.get('fixer_agent')}`",
         ]
-        tasks = data.get("tasks", {})
+        tasks = data.get("tasks") or {}
         if tasks:
             active_workers = tasks.get("active_workers")
             if active_workers is None:
@@ -290,7 +290,7 @@ class GravitonMCPServer:
                 f"- Completed: {completed_tasks}",
                 f"- Failed: {failed_count}",
             ])
-        quota = data.get("quota", {})
+        quota = data.get("quota") or {}
         if quota:
             lines.extend([
                 "",
@@ -299,7 +299,7 @@ class GravitonMCPServer:
                 f"- Gemini Remaining: {quota.get('gemini_remaining_percentage', 'N/A')}%",
                 f"- Third-Party Remaining: {quota.get('third_party_remaining_percentage', 'N/A')}%",
             ])
-        rc_links = data.get("active_remote_control_urls", {})
+        rc_links = data.get("active_remote_control_urls") or {}
         if rc_links:
             lines.extend(["", "🌐 **Active Remote Control Links**:"])
             for tid, url in rc_links.items():

@@ -95,10 +95,10 @@ def cmd_status(args):
     print(f"   PID File : {args.pid_file}")
     print(f"   Log File : {args.log_file}")
 
-    details = status.get("details", {})
+    details = status.get("details") or {}
     if healthy and isinstance(details, dict):
-        tasks = details.get("tasks", {})
-        quota = details.get("quota", {})
+        tasks = details.get("tasks") or {}
+        quota = details.get("quota") or {}
         active = tasks.get("active_tasks")
         if active is None:
             active = tasks.get("running", 0) if tasks.get("running") is not None else 0

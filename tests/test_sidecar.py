@@ -470,6 +470,27 @@ class TestGravitonSidecarCLI(unittest.TestCase):
             self.assertIn("3 active, 3 queued", output)
 
     @patch.object(sidecar_cli, "get_sidecar_status")
+    def test_cli_status_text_with_none_tasks_and_quota(self, mock_status):
+        mock_status.return_value = {
+            "running": True,
+            "healthy": True,
+            "pid": 5678,
+            "endpoint": "http://127.0.0.1:8000",
+            "details": {
+                "tasks": None,
+                "quota": None,
+            },
+        }
+        with patch("sys.argv", ["graviton-sidecar", "status"]), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            sidecar_cli.main()
+            output = mock_out.getvalue()
+            self.assertIn("RUNNING (HEALTHY)", output)
+            self.assertIn("5678", output)
+            self.assertIn("0 active, 0 queued", output)
+            self.assertIn("active pool 'unknown'", output)
+
+    @patch.object(sidecar_cli, "get_sidecar_status")
     def test_cli_status_json(self, mock_status):
         mock_status.return_value = {
             "running": True,
