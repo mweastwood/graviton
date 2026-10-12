@@ -34,8 +34,15 @@ class TestDashboardGoldenOutput(unittest.TestCase):
         return mock_dt
 
     def test_golden_empty_state(self):
+        extra = {
+            "commit": "cafe123",
+            "branch": "main",
+            "reload_state": "IDLE",
+        }
         with patch("time.time", return_value=1700000000.0), \
              patch("datetime.datetime", new=self._fixed_dt_mock()), \
+             patch("lib.dashboard.html.get_cached_git_info", return_value=("cafe123", "main")), \
+             patch("lib.dashboard.html.get_hot_reload_state", return_value="IDLE"), \
              patch("lib.updater.get_cached_git_info", return_value=("cafe123", "main")), \
              patch("lib.updater.get_hot_reload_state", return_value="IDLE"), \
              patch("lib.dashboard.html._detect_git_repo_full_name", return_value="mweastwood/graviton"):
@@ -55,20 +62,26 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             self.assertEqual(parsed["history_tasks"], [])
             self.assertEqual(parsed["approved_prs"], [])
 
-            html_out = render_dashboard_html(md, host="127.0.0.1", port=9000)
+            html_out = render_dashboard_html(md, host="127.0.0.1", port=9000, extra_info=extra)
             self.assertIn("No container tasks currently running.", html_out)
             self.assertIn("Queue is empty.", html_out)
             self.assertIn("No approved PRs awaiting merge.", html_out)
             self.assertIn("No completed tasks in history yet.", html_out)
+            self.assertIn("cafe123", html_out)
+            self.assertIn("main", html_out)
+            self.assertIn("IDLE", html_out)
+            self.assertIn("mweastwood/graviton", html_out)
 
             import hashlib
+            # SHA256 checksums verify deterministic byte-level regression safety across refactorings.
+            # If the template or markdown format changes intentionally, update these golden hashes.
             self.assertEqual(
                 hashlib.sha256(md.encode()).hexdigest(),
                 "6371a59825d51a5ae8de43adb6ea37c990711403370e296b121e8da3e15e44ca",
             )
             self.assertEqual(
                 hashlib.sha256(html_out.encode()).hexdigest(),
-                "948aac13d95f658be2cb87daceb4fbf93f3f738aa8a12f6602d2fdf921ecb9b1",
+                "f73a94b5c1ed76d9e2c864fa2d37b330991978b171d3b2183d0ba3d9a3a523f3",
             )
 
     def test_golden_populated_state(self):
@@ -213,6 +226,8 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             self.assertIn("feature/refactor", html_out)
 
             import hashlib
+            # SHA256 checksums verify deterministic byte-level regression safety across refactorings.
+            # If the template or markdown format changes intentionally, update these golden hashes.
             self.assertEqual(
                 hashlib.sha256(md.encode()).hexdigest(),
                 "f52d24cbafc2347d8d25d4cb07d904008b85347c0d55172f750707c2c6f25cd2",

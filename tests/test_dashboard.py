@@ -112,7 +112,9 @@ class TestDashboardFormatting(unittest.TestCase):
         self.assertIn("| **Gemini Remaining** | `95%` |", md)
 
     def test_format_dashboard_markdown_with_real_quota_tracker(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {"ANTIGRAVITY_QUOTA_POOL": "gemini"}, clear=False), \
+             patch("lib.quota.fetch_cli_models", return_value=(["gemini-3.8-flash-medium", "gemini-2.5-pro"], ["claude-sonnet-4-6"])):
             tracker = QuotaTracker(state_path=Path(tmpdir) / ".graviton_model_selection.json")
             md = format_dashboard_markdown(quota_tracker=tracker)
             self.assertIn("| **Active Pool** | `gemini` |", md)

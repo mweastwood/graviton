@@ -53,7 +53,7 @@ def _get_dashboard_template() -> str:
 
         possible_paths = [
             REPO_ROOT / "templates" / "dashboard" / "dashboard.html",
-            Path(__file__).resolve().parent.parent / "templates" / "dashboard" / "dashboard.html",
+            Path(__file__).resolve().parent.parent.parent / "templates" / "dashboard" / "dashboard.html",
         ]
         for path in possible_paths:
             if path.is_file():
