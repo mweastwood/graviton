@@ -1508,25 +1508,64 @@
                     historyContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📜</span><p class="empty-text">No completed tasks in history yet.</p></div>';
                 }} else {{
                     let htmlStr = '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Task ID</th><th>Agent</th><th>Model</th><th>Target</th><th>Duration</th><th>Status</th><th>Timestamp</th><th>Details</th></tr></thead><tbody>';
+                    const hasModelHdr = historySec.includes('| Model |');
+                    const hasTimestampHdr = historySec.includes('| Timestamp |') || historySec.includes('| Time |');
                     for (const r of validHistoryRows) {{
                         const tid = escapeHtml(r[0].replace(/`/g, ''));
                         const agent = escapeHtml(r[1].replace(/`/g, ''));
-                        const hasModel = r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'));
-                        const model = hasModel ? escapeHtml(r[2].replace(/`/g, '')) : '-';
-                        const targetRaw = hasModel ? r[3] : r[2];
-                        const targetHtml = formatTargetCell(targetRaw, r[1]);
-                        const dur = escapeHtml(hasModel ? r[4] : r[3]);
-                        const rawStatus = (hasModel ? r[5] : r[4]) || '';
+                        let model = '-';
+                        let targetRaw = '';
+                        let dur = '';
+                        let rawStatus = '';
                         let timestamp = '-';
                         let detailRaw = '';
                         if (r.length >= 8) {{
+                            model = escapeHtml(r[2].replace(/`/g, ''));
+                            targetRaw = r[3];
+                            dur = escapeHtml(r[4]);
+                            rawStatus = r[5] || '';
                             timestamp = escapeHtml(r[6].replace(/`/g, ''));
                             detailRaw = r[7] || '';
-                        }} else if (r.length >= 7) {{
-                            detailRaw = r[6] || '';
-                        }} else if (r.length >= 6) {{
-                            detailRaw = hasModel ? '' : (r[5] || '');
+                        }} else if (r.length === 7) {{
+                            if (hasTimestampHdr && !hasModelHdr) {{
+                                model = '-';
+                                targetRaw = r[2];
+                                dur = escapeHtml(r[3]);
+                                rawStatus = r[4] || '';
+                                timestamp = escapeHtml(r[5].replace(/`/g, ''));
+                                detailRaw = r[6] || '';
+                            }} else {{
+                                model = escapeHtml(r[2].replace(/`/g, ''));
+                                targetRaw = r[3];
+                                dur = escapeHtml(r[4]);
+                                rawStatus = r[5] || '';
+                                timestamp = '-';
+                                detailRaw = r[6] || '';
+                            }}
+                        }} else if (r.length === 6) {{
+                            if (hasModelHdr) {{
+                                model = escapeHtml(r[2].replace(/`/g, ''));
+                                targetRaw = r[3];
+                                dur = escapeHtml(r[4]);
+                                rawStatus = r[5] || '';
+                                timestamp = '-';
+                                detailRaw = '';
+                            }} else {{
+                                model = '-';
+                                targetRaw = r[2];
+                                dur = escapeHtml(r[3]);
+                                rawStatus = r[4] || '';
+                                timestamp = '-';
+                                detailRaw = r[5] || '';
+                            }}
+                        }} else {{
+                            targetRaw = r[2];
+                            dur = escapeHtml(r[3]);
+                            rawStatus = r[4] || '';
+                            timestamp = '-';
+                            detailRaw = '';
                         }}
+                        const targetHtml = formatTargetCell(targetRaw, r[1]);
                         const isSuccess = rawStatus.includes('✅') || rawStatus.toLowerCase().includes('complete') || rawStatus.toLowerCase().includes('finish');
                         const statusClean = escapeHtml(rawStatus.replace(/[✅❌`]/g, '').trim());
                         const statusIcon = isSuccess ? '✅' : '❌';
@@ -1543,7 +1582,7 @@
                             }}
                         }}
                         const modelHtml = model !== '-' ? `<code>${{model}}</code>` : '<span class="text-muted">-</span>';
-                        const tsHtml = timestamp !== '-' ? `<span class="text-muted">${{timestamp}}</span>` : '<span class="text-muted">-</span>';
+                        const tsHtml = `<span class="text-muted">${{timestamp}}</span>`;
                         htmlStr += `<tr><td><code>${{tid}}</code></td><td><span class="agent-badge">${{agent}}</span></td><td>${{modelHtml}}</td><td>${{targetHtml}}</td><td><span class="text-muted">${{dur}}</span></td><td><span class="status-pill ${{statusPillClass}}">${{statusIcon}} ${{statusClean}}</span></td><td>${{tsHtml}}</td><td>${{detailHtml}}</td></tr>`;
                     }}
                     htmlStr += '</tbody></table></div>';

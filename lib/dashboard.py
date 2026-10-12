@@ -14,6 +14,7 @@ import datetime
 import html
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -192,15 +193,20 @@ def format_percentage(val: Any, default: str = "N/A") -> str:
 
 def format_timestamp(ts: Optional[Union[float, int, str]]) -> str:
     """Format Unix timestamp or ISO string into human readable UTC timestamp (e.g., 2026-10-11 20:07:00 UTC)."""
-    if ts is None or ts == "" or ts == "-":
+    if ts is None or ts == "" or ts == "-" or isinstance(ts, bool):
         return "-"
     if isinstance(ts, (int, float)):
         try:
-            return datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            val = float(ts)
+            if math.isnan(val) or math.isinf(val):
+                return "-"
+            return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         except (ValueError, TypeError, OverflowError, OSError):
             return "-"
     try:
         val = float(ts)
+        if math.isnan(val) or math.isinf(val):
+            return "-"
         return datetime.datetime.fromtimestamp(val, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except (ValueError, TypeError, OverflowError, OSError):
         pass
@@ -635,25 +641,31 @@ def format_dashboard_markdown(
             "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
         for t in recent_history:
-            dur = format_duration(t.finish_time - t.start_time) if (t.finish_time and t.start_time) else "N/A"
-            icon = "✅" if t.status == TaskStatus.COMPLETED else "❌"
-            target_disp = t.target_id or (t.repo_full_name if t.repo_full_name else "N/A")
-            model_val = getattr(t, "selected_model", None) or getattr(t, "selected_pool", None)
+            is_dict = isinstance(t, dict)
+            t_finish = t.get("finish_time") if is_dict else getattr(t, "finish_time", None)
+            t_start = t.get("start_time") if is_dict else getattr(t, "start_time", None)
+            dur = format_duration(t_finish - t_start) if (t_finish and t_start) else "N/A"
+            t_status = t.get("status", "") if is_dict else getattr(t, "status", "")
+            icon = "✅" if str(t_status) in (TaskStatus.COMPLETED, "COMPLETED", "TaskStatus.COMPLETED") else "❌"
+            target_disp = (t.get("target_id") or t.get("repo_full_name")) if is_dict else (getattr(t, "target_id", None) or (getattr(t, "repo_full_name", None) if getattr(t, "repo_full_name", None) else "N/A"))
+            target_disp = target_disp or "N/A"
+            model_val = (t.get("model") or t.get("selected_model") or t.get("selected_pool")) if is_dict else (getattr(t, "selected_model", None) or getattr(t, "selected_pool", None))
             model_name = model_val if isinstance(model_val, str) and model_val.strip() else "-"
             model_disp = f"`{model_name}`" if model_name != "-" else "-"
-            target_url = resolve_target_url(target_disp, repo=getattr(t, "repo_full_name", None), agent=getattr(t, "agent", None))
+            repo_val = t.get("repo_full_name") if is_dict else getattr(t, "repo_full_name", None)
+            agent_val = t.get("agent") if is_dict else getattr(t, "agent", None)
+            target_url = resolve_target_url(target_disp, repo=repo_val, agent=agent_val)
             target_cell = _format_target_markdown_cell(target_disp, target_url)
-            ts_val = t.get("timestamp") or t.get("finish_time") or t.get("start_time") if isinstance(t, dict) else (getattr(t, "finish_time", None) or getattr(t, "start_time", None))
+            ts_val = (t.get("timestamp") or t_finish or t_start) if is_dict else (t_finish or t_start)
             ts_disp = format_timestamp(ts_val)
-            err_msg = t.get("error_message") if isinstance(t, dict) else getattr(t, "error_message", None)
+            err_msg = t.get("error_message") if is_dict else getattr(t, "error_message", None)
             if err_msg:
                 clean_err = str(err_msg).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
                 detail = f"`{clean_err[:40]}...`" if len(clean_err) > 40 else f"`{clean_err}`"
             else:
-                detail = t.get("details", "Finished") if isinstance(t, dict) else "Finished"
-            t_id = t.get("id", "") if isinstance(t, dict) else t.id
-            t_agent = t.get("agent", "") if isinstance(t, dict) else t.agent
-            t_status = t.get("status", "") if isinstance(t, dict) else t.status
+                detail = t.get("details", "Finished") if is_dict else "Finished"
+            t_id = t.get("id", "") if is_dict else getattr(t, "id", "")
+            t_agent = t.get("agent", "") if is_dict else getattr(t, "agent", "")
             lines.append(f"| `{t_id}` | `{t_agent}` | {model_disp} | {target_cell} | {dur} | {icon} `{t_status}` | {ts_disp} | {detail} |")
         lines.append("")
     else:

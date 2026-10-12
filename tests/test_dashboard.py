@@ -3189,9 +3189,9 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         # Active tasks 5-column backwards compatibility guard
         self.assertIn("r.length >= 6 && (activeSec.includes('| Model |')", template)
         self.assertIn("const statusRaw = (hasModel ? r[5] : r[4]) || '';", template)
-        # History tasks 5-column backwards compatibility guard
-        self.assertIn("r.length >= 7 || (r.length === 6 && historySec.includes('| Model |'))", template)
-        self.assertIn("const rawStatus = (hasModel ? r[5] : r[4]) || '';", template)
+        # History tasks header-aware backwards compatibility guards
+        self.assertIn("const hasModelHdr = historySec.includes('| Model |');", template)
+        self.assertIn("const hasTimestampHdr = historySec.includes('| Timestamp |') || historySec.includes('| Time |');", template)
 
     def test_parse_countdown_to_seconds(self):
         self.assertEqual(parse_countdown_to_seconds("02:15:00"), 8100.0)
@@ -3579,6 +3579,15 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(format_timestamp(float("nan")), "-")
         self.assertEqual(format_timestamp(float("inf")), "-")
 
+        # Booleans (bool is a subclass of int in Python)
+        self.assertEqual(format_timestamp(False), "-")
+        self.assertEqual(format_timestamp(True), "-")
+
+        # Non-finite numeric strings
+        self.assertEqual(format_timestamp("nan"), "-")
+        self.assertEqual(format_timestamp("inf"), "-")
+        self.assertEqual(format_timestamp("-inf"), "-")
+
         # Unix epoch
         self.assertEqual(format_timestamp(0), "1970-01-01 00:00:00 UTC")
         self.assertEqual(format_timestamp(0.0), "1970-01-01 00:00:00 UTC")
@@ -3631,6 +3640,27 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         self.assertEqual(h7["model"], "claude-3-5-sonnet")
         self.assertEqual(h7["timestamp"], "-")
         self.assertEqual(h7["details"], "Finished")
+
+        # 7-column markdown with Timestamp but without Model (Task ID, Agent, Target, Duration, Status, Timestamp, Details)
+        md_7col_nomodel = (
+            "# 🌌 Graviton Live Dashboard\n\n"
+            "**Server**: `localhost:8000` | **Status**: 🟢 **ONLINE** | **Mode**: HEADLESS\n\n"
+            "## 📜 Recent Task Execution History (1)\n\n"
+            "| Task ID | Agent | Target | Duration | Status | Timestamp | Details |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| `task-7nm` | `code_fixer` | `#55` | 50s | ✅ COMPLETED | 2026-10-11 20:00:00 UTC | All tests passed |\n"
+        )
+        parsed_7nm = parse_dashboard_markdown(md_7col_nomodel)
+        self.assertEqual(len(parsed_7nm["history_tasks"]), 1)
+        h7nm = parsed_7nm["history_tasks"][0]
+        self.assertEqual(h7nm["id"], "task-7nm")
+        self.assertEqual(h7nm["agent"], "code_fixer")
+        self.assertEqual(h7nm["model"], "-")
+        self.assertEqual(h7nm["target"], "#55")
+        self.assertEqual(h7nm["duration"], "50s")
+        self.assertEqual(h7nm["status"], "COMPLETED")
+        self.assertEqual(h7nm["timestamp"], "2026-10-11 20:00:00 UTC")
+        self.assertEqual(h7nm["details"], "All tests passed")
 
         # 6-column markdown legacy (without Model and without Timestamp)
         md_6col = (
@@ -3702,6 +3732,40 @@ class TestDashboardTemplateLoaderAndOptimization(unittest.TestCase):
         md = format_dashboard_markdown(task_manager=mock_tm)
         self.assertIn("| Task ID | Agent | Model | Target | Duration | Status | Timestamp | Details |", md)
         self.assertIn("2026-10-11 20:00:00 UTC", md)
+
+        # Dictionary-based task record (e.g. from deserialized payloads or mock history providers)
+        t_hist_dict = {
+            "id": "t-dict-1",
+            "agent": "code_fixer",
+            "model": "claude-3-5-sonnet",
+            "target_id": "#101",
+            "status": "COMPLETED",
+            "start_time": fixed_time - 60.0,
+            "finish_time": fixed_time,
+            "details": "All tests passed",
+        }
+        mock_tm.get_task_history.return_value = [t_hist_dict]
+        md_dict = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| `t-dict-1` | `code_fixer` | `claude-3-5-sonnet` | [`#101`](", md_dict)
+        self.assertIn("2026-10-11 20:00:00 UTC", md_dict)
+        self.assertIn("All tests passed", md_dict)
+        self.assertIn("✅ `COMPLETED`", md_dict)
+
+        # Failed dictionary task with error_message
+        t_hist_dict_fail = {
+            "id": "t-dict-2",
+            "agent": "pr_drafter",
+            "target_id": "#102",
+            "status": "FAILED",
+            "start_time": fixed_time - 10.0,
+            "finish_time": fixed_time,
+            "error_message": "Build failure: missing dependency",
+        }
+        mock_tm.get_task_history.return_value = [t_hist_dict_fail]
+        md_fail = format_dashboard_markdown(task_manager=mock_tm)
+        self.assertIn("| `t-dict-2` | `pr_drafter` | - | [`#102`](", md_fail)
+        self.assertIn("❌ `FAILED`", md_fail)
+        self.assertIn("`Build failure: missing dependency`", md_fail)
 
 
 if __name__ == "__main__":
