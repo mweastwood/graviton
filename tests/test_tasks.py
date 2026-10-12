@@ -3339,6 +3339,120 @@ class TestTaskManagerSupervisorIntegration(unittest.TestCase):
             self.assertEqual(mgr._get_default_state_path(), Path("/tmp/mock_state.json"))
             mock_path.assert_called_once()
 
+    def test_reexported_symbols_in_lib_tasks(self):
+        import lib.tasks as tasks
+        from lib.tasks import (
+            ContainerSupervisor,
+            SupervisorResult,
+            SupervisorError,
+            QuotaState,
+            QuotaTracker,
+            DEFAULT_GEMINI_MODELS,
+            DEFAULT_THIRD_PARTY_MODELS,
+        )
+
+        self.assertIsNotNone(ContainerSupervisor)
+        self.assertIsNotNone(SupervisorResult)
+        self.assertIsNotNone(SupervisorError)
+        self.assertIsNotNone(QuotaState)
+        self.assertIsNotNone(QuotaTracker)
+        self.assertIsNotNone(DEFAULT_GEMINI_MODELS)
+        self.assertIsNotNone(DEFAULT_THIRD_PARTY_MODELS)
+
+        for sym in (
+            "ContainerSupervisor",
+            "SupervisorResult",
+            "SupervisorError",
+            "QuotaState",
+            "QuotaTracker",
+            "DEFAULT_GEMINI_MODELS",
+            "DEFAULT_THIRD_PARTY_MODELS",
+        ):
+            self.assertIn(sym, tasks.__all__)
+            self.assertTrue(hasattr(tasks, sym))
+
+    def test_direct_submodule_custom_callable_overrides_in_tasks(self):
+        import lib.tasks.manager as mgr_mod
+        import lib.tasks.workspaces as ws_mod
+        import lib.tasks.persistence as persist_mod
+        import lib.tasks.models as models_mod
+
+        # 1. lib.tasks.workspaces custom callables
+        orig_clean = ws_mod.clean_workspace_dir
+        orig_ws_subproc = ws_mod.subprocess.run
+
+        def custom_clean(path):
+            return True
+
+        def custom_ws_subproc(*args, **kwargs):
+            return "custom_ws_subproc"
+
+        try:
+            ws_mod.clean_workspace_dir = custom_clean
+            ws_mod.subprocess.run = custom_ws_subproc
+
+            self.assertIs(ws_mod._get_effective_clean(), custom_clean)
+            self.assertIs(ws_mod._get_effective_subproc_run(), custom_ws_subproc)
+        finally:
+            ws_mod.clean_workspace_dir = orig_clean
+            ws_mod.subprocess.run = orig_ws_subproc
+
+        # 2. lib.tasks.persistence custom callables
+        orig_write = persist_mod._atomic_write_json
+        orig_state_path = persist_mod.get_default_state_path
+
+        def custom_write(dest, payload):
+            return True
+
+        def custom_state_path(cwd=None, filepath=None):
+            return Path("/tmp/custom_state.json")
+
+        try:
+            persist_mod._atomic_write_json = custom_write
+            persist_mod.get_default_state_path = custom_state_path
+
+            self.assertIs(persist_mod._get_effective_atomic_write(), custom_write)
+            self.assertIs(persist_mod._get_effective_state_path(), custom_state_path)
+        finally:
+            persist_mod._atomic_write_json = orig_write
+            persist_mod.get_default_state_path = orig_state_path
+
+        # 3. lib.tasks.manager custom callables
+        def custom_runner(*args, **kwargs):
+            return "custom_runner"
+
+        def custom_subproc(*args, **kwargs):
+            return "custom_subproc"
+
+        orig_mgr_runner = mgr_mod.run_agent_container
+        orig_mgr_subproc = mgr_mod.subprocess.run
+
+        try:
+            mgr_mod.run_agent_container = custom_runner
+            mgr_mod.subprocess.run = custom_subproc
+
+            self.assertIs(
+                mgr_mod._get_effective("run_agent_container", mgr_mod.run_agent_container),
+                custom_runner,
+            )
+            self.assertIs(mgr_mod._get_effective_subproc_run(), custom_subproc)
+        finally:
+            mgr_mod.run_agent_container = orig_mgr_runner
+            mgr_mod.subprocess.run = orig_mgr_subproc
+
+        # 4. lib.tasks.models AUTO_CONTINUE_PATTERN custom regex / callable
+        import re
+        orig_pat = models_mod.AUTO_CONTINUE_PATTERN
+        custom_pat = re.compile(r"Auto-continuing conversation \(Custom-Attempt (\d+)\)", re.IGNORECASE)
+
+        try:
+            models_mod.AUTO_CONTINUE_PATTERN = custom_pat
+            task = models_mod.Task(id="t1", agent="code_reviewer", prompt="test")
+            self.assertTrue(task.update_attempt_from_line("Auto-continuing conversation (Custom-Attempt 4)"))
+            self.assertEqual(task.attempt, 4)
+        finally:
+            models_mod.AUTO_CONTINUE_PATTERN = orig_pat
+
 
 if __name__ == "__main__":
     unittest.main()

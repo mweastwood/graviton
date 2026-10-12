@@ -19,46 +19,68 @@ from .parse import parse_all_antigravity_quota_json, parse_antigravity_quota_jso
 logger = logging.getLogger("graviton.quota")
 
 
+_ORIG_LOAD_OAUTH_TOKEN = load_oauth_token
+_ORIG_RESOLVE_ENDPOINT = resolve_antigravity_quota_endpoint
+_ORIG_PARSE_ALL_JSON = parse_all_antigravity_quota_json
+_ORIG_PARSE_JSON = parse_antigravity_quota_json
+
+
 def _get_effective_load_oauth_token():
-    if hasattr(load_oauth_token, "mock_calls") or hasattr(load_oauth_token, "_mock_name"):
+    if (
+        hasattr(load_oauth_token, "mock_calls")
+        or hasattr(load_oauth_token, "_mock_name")
+        or load_oauth_token is not _ORIG_LOAD_OAUTH_TOKEN
+    ):
         return load_oauth_token
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "load_oauth_token"):
         val = getattr(mod, "load_oauth_token")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not load_oauth_token:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_LOAD_OAUTH_TOKEN:
             return val
     return load_oauth_token
 
 
 def _get_effective_resolve_endpoint():
-    if hasattr(resolve_antigravity_quota_endpoint, "mock_calls") or hasattr(resolve_antigravity_quota_endpoint, "_mock_name"):
+    if (
+        hasattr(resolve_antigravity_quota_endpoint, "mock_calls")
+        or hasattr(resolve_antigravity_quota_endpoint, "_mock_name")
+        or resolve_antigravity_quota_endpoint is not _ORIG_RESOLVE_ENDPOINT
+    ):
         return resolve_antigravity_quota_endpoint
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "resolve_antigravity_quota_endpoint"):
         val = getattr(mod, "resolve_antigravity_quota_endpoint")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not resolve_antigravity_quota_endpoint:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_RESOLVE_ENDPOINT:
             return val
     return resolve_antigravity_quota_endpoint
 
 
 def _get_effective_parse_all_json():
-    if hasattr(parse_all_antigravity_quota_json, "mock_calls") or hasattr(parse_all_antigravity_quota_json, "_mock_name"):
+    if (
+        hasattr(parse_all_antigravity_quota_json, "mock_calls")
+        or hasattr(parse_all_antigravity_quota_json, "_mock_name")
+        or parse_all_antigravity_quota_json is not _ORIG_PARSE_ALL_JSON
+    ):
         return parse_all_antigravity_quota_json
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "parse_all_antigravity_quota_json"):
         val = getattr(mod, "parse_all_antigravity_quota_json")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_all_antigravity_quota_json:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_PARSE_ALL_JSON:
             return val
     return parse_all_antigravity_quota_json
 
 
 def _get_effective_parse_json():
-    if hasattr(parse_antigravity_quota_json, "mock_calls") or hasattr(parse_antigravity_quota_json, "_mock_name"):
+    if (
+        hasattr(parse_antigravity_quota_json, "mock_calls")
+        or hasattr(parse_antigravity_quota_json, "_mock_name")
+        or parse_antigravity_quota_json is not _ORIG_PARSE_JSON
+    ):
         return parse_antigravity_quota_json
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "parse_antigravity_quota_json"):
         val = getattr(mod, "parse_antigravity_quota_json")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_antigravity_quota_json:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_PARSE_JSON:
             return val
     return parse_antigravity_quota_json
 

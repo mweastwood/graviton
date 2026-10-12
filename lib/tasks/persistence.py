@@ -14,25 +14,40 @@ from .models import Task, TaskStatus
 
 logger = logging.getLogger("graviton.tasks")
 
+_ORIG_ATOMIC_WRITE = _atomic_write_json
+
 
 def _get_effective_atomic_write():
-    if hasattr(_atomic_write_json, "mock_calls") or hasattr(_atomic_write_json, "_mock_name"):
+    if (
+        hasattr(_atomic_write_json, "mock_calls")
+        or hasattr(_atomic_write_json, "_mock_name")
+        or _atomic_write_json is not _ORIG_ATOMIC_WRITE
+    ):
         return _atomic_write_json
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "_atomic_write_json"):
         val = getattr(mod, "_atomic_write_json")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _atomic_write_json:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_ATOMIC_WRITE:
             return val
     return _atomic_write_json
 
 
 def _get_effective_state_path():
-    if hasattr(get_default_state_path, "mock_calls") or hasattr(get_default_state_path, "_mock_name"):
+    if (
+        hasattr(get_default_state_path, "mock_calls")
+        or hasattr(get_default_state_path, "_mock_name")
+        or (
+            "_ORIG_STATE_PATH" in globals()
+            and get_default_state_path is not _ORIG_STATE_PATH
+        )
+    ):
         return get_default_state_path
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "get_default_state_path"):
         val = getattr(mod, "get_default_state_path")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not get_default_state_path:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or (
+            "_ORIG_STATE_PATH" in globals() and val is not _ORIG_STATE_PATH
+        ):
             return val
     return get_default_state_path
 
@@ -44,6 +59,9 @@ def get_default_state_path(cwd: Optional[Path] = None, filepath: Optional[Path] 
     if cwd:
         return Path(cwd) / ".graviton_queue_state.json"
     return Path(".graviton_queue_state.json")
+
+
+_ORIG_STATE_PATH = get_default_state_path
 
 
 def dump_queue_state(

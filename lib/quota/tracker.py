@@ -38,58 +38,84 @@ from .parse import parse_quota_headers
 
 logger = logging.getLogger("graviton.quota")
 
+_ORIG_FETCH_CLI_MODELS = fetch_cli_models
+_ORIG_FETCH_LIVE_QUOTA = fetch_live_antigravity_quota
+_ORIG_FETCH_ALL_LIVE_QUOTA = fetch_all_live_antigravity_quota
+_ORIG_ATOMIC_WRITE = _atomic_write_json
+_ORIG_PARSE_QUOTA_HEADERS = parse_quota_headers
+
 
 def _get_effective_fetch_cli_models():
-    if hasattr(fetch_cli_models, "mock_calls") or hasattr(fetch_cli_models, "_mock_name"):
+    if (
+        hasattr(fetch_cli_models, "mock_calls")
+        or hasattr(fetch_cli_models, "_mock_name")
+        or fetch_cli_models is not _ORIG_FETCH_CLI_MODELS
+    ):
         return fetch_cli_models
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_cli_models"):
         val = getattr(mod, "fetch_cli_models")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_cli_models:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_FETCH_CLI_MODELS:
             return val
     return fetch_cli_models
 
 
 def _get_effective_fetch_live_quota():
-    if hasattr(fetch_live_antigravity_quota, "mock_calls") or hasattr(fetch_live_antigravity_quota, "_mock_name"):
+    if (
+        hasattr(fetch_live_antigravity_quota, "mock_calls")
+        or hasattr(fetch_live_antigravity_quota, "_mock_name")
+        or fetch_live_antigravity_quota is not _ORIG_FETCH_LIVE_QUOTA
+    ):
         return fetch_live_antigravity_quota
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_live_antigravity_quota"):
         val = getattr(mod, "fetch_live_antigravity_quota")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_live_antigravity_quota:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_FETCH_LIVE_QUOTA:
             return val
     return fetch_live_antigravity_quota
 
 
 def _get_effective_fetch_all_live_quota():
-    if hasattr(fetch_all_live_antigravity_quota, "mock_calls") or hasattr(fetch_all_live_antigravity_quota, "_mock_name"):
+    if (
+        hasattr(fetch_all_live_antigravity_quota, "mock_calls")
+        or hasattr(fetch_all_live_antigravity_quota, "_mock_name")
+        or fetch_all_live_antigravity_quota is not _ORIG_FETCH_ALL_LIVE_QUOTA
+    ):
         return fetch_all_live_antigravity_quota
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "fetch_all_live_antigravity_quota"):
         val = getattr(mod, "fetch_all_live_antigravity_quota")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not fetch_all_live_antigravity_quota:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_FETCH_ALL_LIVE_QUOTA:
             return val
     return fetch_all_live_antigravity_quota
 
 
 def _get_effective_atomic_write():
-    if hasattr(_atomic_write_json, "mock_calls") or hasattr(_atomic_write_json, "_mock_name"):
+    if (
+        hasattr(_atomic_write_json, "mock_calls")
+        or hasattr(_atomic_write_json, "_mock_name")
+        or _atomic_write_json is not _ORIG_ATOMIC_WRITE
+    ):
         return _atomic_write_json
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "_atomic_write_json"):
         val = getattr(mod, "_atomic_write_json")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _atomic_write_json:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_ATOMIC_WRITE:
             return val
     return _atomic_write_json
 
 
 def _get_effective_parse_quota_headers():
-    if hasattr(parse_quota_headers, "mock_calls") or hasattr(parse_quota_headers, "_mock_name"):
+    if (
+        hasattr(parse_quota_headers, "mock_calls")
+        or hasattr(parse_quota_headers, "_mock_name")
+        or parse_quota_headers is not _ORIG_PARSE_QUOTA_HEADERS
+    ):
         return parse_quota_headers
     mod = sys.modules.get("lib.quota")
     if mod and hasattr(mod, "parse_quota_headers"):
         val = getattr(mod, "parse_quota_headers")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not parse_quota_headers:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_PARSE_QUOTA_HEADERS:
             return val
     return parse_quota_headers
 
@@ -704,11 +730,15 @@ class QuotaTracker:
         """
         fetch_single_fn = _get_effective_fetch_live_quota()
         fetch_all_fn = _get_effective_fetch_all_live_quota()
-        is_fetch_single_mock = hasattr(fetch_single_fn, "mock_calls") or hasattr(
-            fetch_single_fn, "_mock_name"
+        is_fetch_single_mock = (
+            hasattr(fetch_single_fn, "mock_calls")
+            or hasattr(fetch_single_fn, "_mock_name")
+            or fetch_single_fn is not _ORIG_FETCH_LIVE_QUOTA
         )
-        is_fetch_all_mock = hasattr(fetch_all_fn, "mock_calls") or hasattr(
-            fetch_all_fn, "_mock_name"
+        is_fetch_all_mock = (
+            hasattr(fetch_all_fn, "mock_calls")
+            or hasattr(fetch_all_fn, "_mock_name")
+            or fetch_all_fn is not _ORIG_FETCH_ALL_LIVE_QUOTA
         )
 
         # Fallback to individual pool polling if fetch_live_antigravity_quota is patched in legacy tests

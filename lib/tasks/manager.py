@@ -33,24 +33,47 @@ logger = logging.getLogger("graviton.tasks")
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+_ORIG_SUBPROC_RUN = subprocess.run
+_ORIGINALS: Dict[str, Any] = {
+    "run_agent_container": run_agent_container,
+    "clean_workspace_dir": clean_workspace_dir,
+    "post_emoji_reaction_async": post_emoji_reaction_async,
+    "post_task_start_comment": post_task_start_comment,
+    "post_task_completion_comment": post_task_completion_comment,
+    "prune_abandoned_workspaces": prune_abandoned_workspaces,
+    "resolve_task_pool_and_model": resolve_task_pool_and_model,
+    "is_valid_repo_name": is_valid_repo_name,
+    "get_default_state_path": get_default_state_path,
+    "dump_queue_state": persist_dump_queue_state,
+    "restore_queue_state": persist_restore_queue_state,
+}
+
+
 def _get_effective(name, default):
+    orig = _ORIGINALS.get(name)
     if hasattr(default, "mock_calls") or hasattr(default, "_mock_name"):
+        return default
+    if default is not None and orig is not None and default is not orig:
         return default
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, name):
         val = getattr(mod, name)
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not default:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or (orig is not None and val is not orig):
             return val
-    return default
+    return default if default is not None else orig
 
 
 def _get_effective_subproc_run():
-    if hasattr(subprocess.run, "mock_calls") or hasattr(subprocess.run, "_mock_name"):
+    if (
+        hasattr(subprocess.run, "mock_calls")
+        or hasattr(subprocess.run, "_mock_name")
+        or subprocess.run is not _ORIG_SUBPROC_RUN
+    ):
         return subprocess.run
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
         val = mod.subprocess.run
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not subprocess.run:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_SUBPROC_RUN:
             return val
     return subprocess.run
 

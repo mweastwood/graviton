@@ -14,6 +14,7 @@ AUTO_CONTINUE_PATTERN = re.compile(
     r"Auto-continuing conversation \(Attempt\s+(\d+)(?:/(\d+))?\)",
     re.IGNORECASE,
 )
+_ORIG_AUTO_CONTINUE_PATTERN = AUTO_CONTINUE_PATTERN
 PR_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+", re.IGNORECASE)
 
 
@@ -98,16 +99,22 @@ class Task:
         if not line or ("Auto-continuing conversation" not in line and "auto-continuing conversation" not in line):
             return False
         pat = AUTO_CONTINUE_PATTERN
-        if not (hasattr(pat, "mock_calls") or hasattr(pat, "_mock_name")):
+        if (
+            hasattr(pat, "mock_calls")
+            or hasattr(pat, "_mock_name")
+            or pat is not _ORIG_AUTO_CONTINUE_PATTERN
+        ):
+            pass
+        else:
             mod = sys.modules.get("lib.tasks")
             if mod and hasattr(mod, "AUTO_CONTINUE_PATTERN"):
                 val = getattr(mod, "AUTO_CONTINUE_PATTERN")
-                if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not AUTO_CONTINUE_PATTERN:
+                if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_AUTO_CONTINUE_PATTERN:
                     pat = val
         match = pat.search(line)
         if match:
             self.attempt = int(match.group(1))
-            if match.group(2):
+            if len(match.groups()) >= 2 and match.group(2):
                 self.max_attempts = max(self.max_attempts, int(match.group(2)))
             return True
         return False

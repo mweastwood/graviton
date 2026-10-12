@@ -12,9 +12,20 @@ Provides:
 import subprocess
 
 from lib.runner import run_agent_container
-from lib.quota import _atomic_write_json
+from lib.quota import (
+    DEFAULT_GEMINI_MODELS,
+    DEFAULT_THIRD_PARTY_MODELS,
+    QuotaState,
+    QuotaTracker,
+    _atomic_write_json,
+)
 from lib.security import is_valid_repo_name
-from lib.supervisor import clean_workspace_dir
+from lib.supervisor import (
+    ContainerSupervisor,
+    SupervisorError,
+    SupervisorResult,
+    clean_workspace_dir,
+)
 from lib.reactions import post_emoji_reaction_async
 from lib.notifications import post_task_completion_comment, post_task_start_comment
 
@@ -55,6 +66,13 @@ __all__ = [
     "logger",
     "REPO_ROOT",
     "run_agent_container",
+    "ContainerSupervisor",
+    "SupervisorResult",
+    "SupervisorError",
+    "QuotaState",
+    "QuotaTracker",
+    "DEFAULT_GEMINI_MODELS",
+    "DEFAULT_THIRD_PARTY_MODELS",
     "post_emoji_reaction_async",
     "post_task_start_comment",
     "post_task_completion_comment",

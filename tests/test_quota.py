@@ -3079,6 +3079,85 @@ class TestParseResetTime(unittest.TestCase):
             qt.parse_quota_headers({"x-quota-remaining": "75.0"})
             mock_top.assert_called_once()
 
+    def test_direct_submodule_custom_callable_overrides_in_quota(self):
+        import lib.quota.fetch as fetch
+        import lib.quota.tracker as tracker
+
+        # Test fetch submodule custom callables
+        orig_fetch_token = fetch.load_oauth_token
+        orig_fetch_endpoint = fetch.resolve_antigravity_quota_endpoint
+        orig_fetch_parse_all = fetch.parse_all_antigravity_quota_json
+        orig_fetch_parse = fetch.parse_antigravity_quota_json
+
+        def custom_token():
+            return "custom-token-123"
+
+        def custom_endpoint(url):
+            return "https://custom.endpoint"
+
+        def custom_parse_all(data):
+            return {"custom": "all"}
+
+        def custom_parse(data, pool=None):
+            return {"custom": "single"}
+
+        try:
+            fetch.load_oauth_token = custom_token
+            fetch.resolve_antigravity_quota_endpoint = custom_endpoint
+            fetch.parse_all_antigravity_quota_json = custom_parse_all
+            fetch.parse_antigravity_quota_json = custom_parse
+
+            self.assertIs(fetch._get_effective_load_oauth_token(), custom_token)
+            self.assertIs(fetch._get_effective_resolve_endpoint(), custom_endpoint)
+            self.assertIs(fetch._get_effective_parse_all_json(), custom_parse_all)
+            self.assertIs(fetch._get_effective_parse_json(), custom_parse)
+        finally:
+            fetch.load_oauth_token = orig_fetch_token
+            fetch.resolve_antigravity_quota_endpoint = orig_fetch_endpoint
+            fetch.parse_all_antigravity_quota_json = orig_fetch_parse_all
+            fetch.parse_antigravity_quota_json = orig_fetch_parse
+
+        # Test tracker submodule custom callables
+        orig_cli = tracker.fetch_cli_models
+        orig_live = tracker.fetch_live_antigravity_quota
+        orig_all = tracker.fetch_all_live_antigravity_quota
+        orig_write = tracker._atomic_write_json
+        orig_headers = tracker.parse_quota_headers
+
+        def custom_cli():
+            return (["custom-gemini"], ["custom-claude"])
+
+        def custom_live(*args, **kwargs):
+            return {"custom": "live"}
+
+        def custom_all_live(*args, **kwargs):
+            return {"custom": "all_live"}
+
+        def custom_write(dest, payload):
+            return True
+
+        def custom_headers(headers):
+            return {"remaining_percentage": 99.0}
+
+        try:
+            tracker.fetch_cli_models = custom_cli
+            tracker.fetch_live_antigravity_quota = custom_live
+            tracker.fetch_all_live_antigravity_quota = custom_all_live
+            tracker._atomic_write_json = custom_write
+            tracker.parse_quota_headers = custom_headers
+
+            self.assertIs(tracker._get_effective_fetch_cli_models(), custom_cli)
+            self.assertIs(tracker._get_effective_fetch_live_quota(), custom_live)
+            self.assertIs(tracker._get_effective_fetch_all_live_quota(), custom_all_live)
+            self.assertIs(tracker._get_effective_atomic_write(), custom_write)
+            self.assertIs(tracker._get_effective_parse_quota_headers(), custom_headers)
+        finally:
+            tracker.fetch_cli_models = orig_cli
+            tracker.fetch_live_antigravity_quota = orig_live
+            tracker.fetch_all_live_antigravity_quota = orig_all
+            tracker._atomic_write_json = orig_write
+            tracker.parse_quota_headers = orig_headers
+
 
 if __name__ == "__main__":
     unittest.main()

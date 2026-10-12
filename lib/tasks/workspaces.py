@@ -14,25 +14,36 @@ from lib.supervisor import clean_workspace_dir
 
 logger = logging.getLogger("graviton.tasks")
 
+_ORIG_CLEAN_WORKSPACE_DIR = clean_workspace_dir
+_ORIG_SUBPROCESS_RUN = subprocess.run
+
 
 def _get_effective_clean():
-    if hasattr(clean_workspace_dir, "mock_calls") or hasattr(clean_workspace_dir, "_mock_name"):
+    if (
+        hasattr(clean_workspace_dir, "mock_calls")
+        or hasattr(clean_workspace_dir, "_mock_name")
+        or clean_workspace_dir is not _ORIG_CLEAN_WORKSPACE_DIR
+    ):
         return clean_workspace_dir
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "clean_workspace_dir"):
         val = getattr(mod, "clean_workspace_dir")
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not clean_workspace_dir:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_CLEAN_WORKSPACE_DIR:
             return val
     return clean_workspace_dir
 
 
 def _get_effective_subproc_run():
-    if hasattr(subprocess.run, "mock_calls") or hasattr(subprocess.run, "_mock_name"):
+    if (
+        hasattr(subprocess.run, "mock_calls")
+        or hasattr(subprocess.run, "_mock_name")
+        or subprocess.run is not _ORIG_SUBPROCESS_RUN
+    ):
         return subprocess.run
     mod = sys.modules.get("lib.tasks")
     if mod and hasattr(mod, "subprocess") and hasattr(mod.subprocess, "run"):
         val = mod.subprocess.run
-        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not subprocess.run:
+        if hasattr(val, "mock_calls") or hasattr(val, "_mock_name") or val is not _ORIG_SUBPROCESS_RUN:
             return val
     return subprocess.run
 
