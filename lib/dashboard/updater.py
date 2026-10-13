@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Set, Union
+from typing import Any, List, Optional, Set, Union
 
 from lib.dashboard.common import logger
 from lib.pr_tracker import PRTracker
@@ -37,11 +37,13 @@ class DashboardUpdater:
         port: int = 8000,
         update_interval: float = 2.0,
         min_interval: float = 0.5,
+        agent_manager: Optional[Any] = None,
     ):
         self.task_manager = task_manager
         self.quota_tracker = quota_tracker
         self.scheduler = scheduler
         self.pr_tracker = pr_tracker
+        self.agent_manager = agent_manager
         self.host = host
         self.port = port
         self.update_interval = update_interval
@@ -118,6 +120,7 @@ class DashboardUpdater:
             pr_tracker=self.pr_tracker,
             host=self.host,
             port=self.port,
+            agent_manager=self.agent_manager,
         )
 
     def update_now(self) -> Optional[str]:

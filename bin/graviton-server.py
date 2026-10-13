@@ -59,6 +59,13 @@ from lib.release import (
     resolve_repo_dir,
 )
 from lib.dashboard import DashboardUpdater, format_dashboard_markdown, render_dashboard_html
+from lib.agents import (
+    AGENT_TO_ROLE,
+    CANONICAL_AGENTS,
+    ROLE_TO_AGENT,
+    AgentManager,
+    canonicalize_agent_name,
+)
 
 
 _is_shutting_down = False
@@ -213,6 +220,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
     server_repo_name: str = get_server_repo_name(REPO_ROOT)
     scheduler: Optional[TaskScheduler] = None
     task_manager: Optional[TaskManager] = None
+    agent_manager: Optional[AgentManager] = None
     pr_tracker: Optional[PRTracker] = None
     quota_tracker: Optional[QuotaTracker] = None
     dashboard_updater: Optional[DashboardUpdater] = None
@@ -253,6 +261,16 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     for t in self.task_manager.get_active_tasks()
                     if getattr(t, "remote_control_url", None)
                 }
+            agents_status = (
+                self.agent_manager.get_status()
+                if self.agent_manager
+                else {a: True for a in CANONICAL_AGENTS}
+            )
+            roles_status = (
+                self.agent_manager.get_roles_status()
+                if self.agent_manager
+                else {AGENT_TO_ROLE.get(a, a): True for a in CANONICAL_AGENTS}
+            )
             self._send_json(200, {
                 "status": "ok",
                 "service": "graviton-server",
@@ -260,6 +278,8 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "fixer_agent": self.default_fixer,
                 "triager_agent": self.default_triager,
                 "drafter_agent": self.default_drafter,
+                "agents": agents_status,
+                "roles": roles_status,
                 "scheduler_enabled": sched is not None,
                 "scheduler_running": sched.is_running() if sched else False,
                 "active_jobs": len(sched.jobs) if sched else 0,
@@ -288,6 +308,25 @@ class GravitonHandler(BaseHTTPRequestHandler):
             else:
                 repo_status_info = default_summary
             self._send_json(200, repo_status_info)
+        elif path_clean in ("/api/agents", "/agents"):
+            if not self.agent_manager:
+                self._send_json(200, {
+                    "status": "ok",
+                    "agents": {a: True for a in CANONICAL_AGENTS},
+                    "roles": {AGENT_TO_ROLE.get(a, a): True for a in CANONICAL_AGENTS},
+                    "all_enabled": True,
+                    "any_disabled": False,
+                    "enabled_count": len(CANONICAL_AGENTS),
+                    "disabled_count": 0,
+                    "enabled_agents": list(CANONICAL_AGENTS),
+                    "disabled_agents": [],
+                })
+                return
+            self._send_json(200, {
+                "status": "ok",
+                **self.agent_manager.get_summary(),
+            })
+            return
         elif path_clean == "/tasks":
             if not self.task_manager:
                 self._send_json(200, {"active": [], "queued": [], "history": [], "stats": {}})
@@ -325,6 +364,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
+                    agent_manager=self.agent_manager,
                 )
             )
             commit, branch = get_cached_git_info(REPO_ROOT)
@@ -357,6 +397,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     pr_tracker=self.pr_tracker,
                     host=host,
                     port=port,
+                    agent_manager=self.agent_manager,
                 )
             )
             targets = self.dashboard_updater.get_targets() if self.dashboard_updater else []
@@ -541,6 +582,61 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
             return
 
+        if path_clean in ("/api/agents", "/api/agents/toggle", "/agents", "/agents/toggle"):
+            try:
+                data = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+                if not isinstance(data, dict):
+                    self._send_json(400, {"error": "Invalid JSON payload, expected object"})
+                    return
+            except Exception:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+
+            if not self.agent_manager:
+                self._send_json(503, {"error": "AgentManager not initialized"})
+                return
+
+            action = str(data.get("action", "")).lower()
+            agent_input = data.get("agent")
+            is_toggle_path = path_clean.endswith("/toggle")
+
+            if agent_input:
+                if is_toggle_path or action == "toggle":
+                    new_val = self.agent_manager.toggle(agent_input)
+                    if new_val is None:
+                        self._send_json(400, {"error": f"Unknown agent '{agent_input}'"})
+                        return
+                elif action in ("enable", "enabled", "on"):
+                    self.agent_manager.enable(agent_input)
+                elif action in ("disable", "disabled", "off"):
+                    self.agent_manager.disable(agent_input)
+                elif "enabled" in data:
+                    self.agent_manager.set_enabled(agent_input, bool(data["enabled"]))
+                else:
+                    self._send_json(400, {"error": "Missing 'enabled' or 'action' field"})
+                    return
+            elif "agents" in data and isinstance(data["agents"], dict):
+                self.agent_manager.update_from_dict(data["agents"])
+            else:
+                direct_updates = {
+                    k: v for k, v in data.items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS
+                }
+                if direct_updates:
+                    self.agent_manager.update_from_dict(direct_updates)
+                else:
+                    self._send_json(400, {"error": "No valid agent configuration provided"})
+                    return
+
+            if self.dashboard_updater:
+                self.dashboard_updater.trigger_update()
+
+            self._send_json(200, {
+                "status": "ok",
+                **self.agent_manager.get_summary(),
+            })
+            return
+
         # Verify HMAC signature if secret is configured
         if self.secret:
             sig_header = self.headers.get("X-Hub-Signature-256", "")
@@ -573,6 +669,7 @@ class GravitonHandler(BaseHTTPRequestHandler):
             server_repo_name=getattr(self, "server_repo_name", get_server_repo_name(REPO_ROOT)),
             repo_root=REPO_ROOT,
             repos_dir=getattr(self, "repos_dir", None),
+            agent_manager=getattr(self, "agent_manager", None),
         )
 
         status = decision.get("status", "unknown")
@@ -870,6 +967,25 @@ def main():
     parser.add_argument("--fixer", default=os.getenv("DEFAULT_FIXER", "code_fixer"), help="Fixer agent name (default: code_fixer)")
     parser.add_argument("--triager", default=os.getenv("DEFAULT_TRIAGER", "issue_triager"), help="Triager agent name (default: issue_triager)")
     parser.add_argument("--drafter", default=os.getenv("DEFAULT_DRAFTER", "pr_drafter"), help="Drafter agent name (default: pr_drafter)")
+
+    parser.add_argument("--enable-reviewer", action="store_true", default=None, help="Explicitly enable reviewer agent")
+    parser.add_argument("--disable-reviewer", "--no-reviewer", action="store_true", default=None, help="Explicitly disable reviewer agent")
+
+    parser.add_argument("--enable-fixer", action="store_true", default=None, help="Explicitly enable fixer agent")
+    parser.add_argument("--disable-fixer", "--no-fixer", action="store_true", default=None, help="Explicitly disable fixer agent")
+
+    parser.add_argument("--enable-triager", action="store_true", default=None, help="Explicitly enable triager agent")
+    parser.add_argument("--disable-triager", "--no-triager", action="store_true", default=None, help="Explicitly disable triager agent")
+
+    parser.add_argument("--enable-drafter", action="store_true", default=None, help="Explicitly enable drafter agent")
+    parser.add_argument("--disable-drafter", "--no-drafter", action="store_true", default=None, help="Explicitly disable drafter agent")
+
+    parser.add_argument("--enable-auditor", action="store_true", default=None, help="Explicitly enable auditor agent")
+    parser.add_argument("--disable-auditor", "--no-auditor", action="store_true", default=None, help="Explicitly disable auditor agent")
+
+    parser.add_argument("--enabled-agents", default=os.getenv("GRAVITON_ENABLED_AGENTS", ""), help="Comma-separated list of agents to enable")
+    parser.add_argument("--disabled-agents", default=os.getenv("GRAVITON_DISABLED_AGENTS", ""), help="Comma-separated list of agents to disable")
+    parser.add_argument("--agents-state", default=os.getenv("AGENTS_STATE", str(REPO_ROOT / ".graviton_agents_state.json")), help="Path to persisted agent states JSON file")
     parser.add_argument("--schedules-config", default=os.getenv("SCHEDULES_CONFIG", str(REPO_ROOT / "config" / "schedules.json")), help="Path to schedule JSON configuration file")
     parser.add_argument("--schedules-state", default=os.getenv("SCHEDULES_STATE", str(REPO_ROOT / ".graviton_scheduler_state.json")), help="Path to schedule execution state JSON file")
     parser.add_argument("--smee-url", default=os.getenv("SMEE_URL") or os.getenv("WEBHOOK_PROXY_URL", ""), help="Smee.io channel URL for launching local webhook proxy listener (env: SMEE_URL or WEBHOOK_PROXY_URL)")
@@ -1001,6 +1117,45 @@ def main():
     GravitonHandler.default_drafter = args.drafter
     GravitonHandler.repos_dir = repos_dir
 
+    agents_state_path = Path(args.agents_state)
+    agent_manager = AgentManager(state_path=agents_state_path)
+
+    if args.enabled_agents:
+        for a in args.enabled_agents.split(","):
+            if a.strip():
+                agent_manager.enable(a.strip())
+    if args.disabled_agents:
+        for a in args.disabled_agents.split(","):
+            if a.strip():
+                agent_manager.disable(a.strip())
+
+    if args.disable_reviewer:
+        agent_manager.disable("reviewer")
+    elif args.enable_reviewer:
+        agent_manager.enable("reviewer")
+
+    if args.disable_fixer:
+        agent_manager.disable("fixer")
+    elif args.enable_fixer:
+        agent_manager.enable("fixer")
+
+    if args.disable_triager:
+        agent_manager.disable("triager")
+    elif args.enable_triager:
+        agent_manager.enable("triager")
+
+    if args.disable_drafter:
+        agent_manager.disable("drafter")
+    elif args.enable_drafter:
+        agent_manager.enable("drafter")
+
+    if args.disable_auditor:
+        agent_manager.disable("auditor")
+    elif args.enable_auditor:
+        agent_manager.enable("auditor")
+
+    GravitonHandler.agent_manager = agent_manager
+
     if not args.use_supervisor:
         logger.warning("[DEPRECATED] --no-supervisor is deprecated. ContainerSupervisor is the standard execution runtime.")
         if not RUN_CONTAINER_SCRIPT.exists():
@@ -1097,6 +1252,7 @@ def main():
             task_manager=task_manager,
             quota_tracker=quota_tracker,
             repos_dir=repos_dir,
+            agent_manager=agent_manager,
         )
         scheduler.start()
         GravitonHandler.scheduler = scheduler
@@ -1162,6 +1318,7 @@ def main():
             pr_tracker=pr_tracker,
             host=args.host,
             port=args.port,
+            agent_manager=agent_manager,
         )
         for target_path in args.dashboard_target:
             dashboard_updater.register_target(target_path)

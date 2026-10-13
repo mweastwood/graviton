@@ -21,6 +21,47 @@ def clear_pr_review_cache():
         _pr_review_timestamps.clear()
 
 
+def is_agent_enabled(agent: str, agent_manager: Optional[Any] = None) -> bool:
+    """
+    Check if an agent is enabled given an optional AgentManager, dict, or collection.
+    If agent_manager is None, defaults to True.
+    """
+    if agent_manager is None or not agent:
+        return True
+    if hasattr(agent_manager, "is_enabled") and callable(agent_manager.is_enabled):
+        return bool(agent_manager.is_enabled(agent))
+    if isinstance(agent_manager, dict):
+        if agent in agent_manager:
+            return bool(agent_manager[agent])
+        try:
+            from lib.agents import canonicalize_agent_name, agent_to_role
+            canonical = canonicalize_agent_name(agent)
+            if canonical and canonical in agent_manager:
+                return bool(agent_manager[canonical])
+            role = agent_to_role(agent)
+            if role and role in agent_manager:
+                return bool(agent_manager[role])
+        except ImportError:
+            pass
+        alt = agent.replace("-", "_") if "-" in agent else agent.replace("_", "-")
+        if alt in agent_manager:
+            return bool(agent_manager[alt])
+        return True
+    if isinstance(agent_manager, (set, list, tuple)):
+        try:
+            from lib.agents import canonicalize_agent_name, agent_to_role
+            canonical = canonicalize_agent_name(agent)
+            role = agent_to_role(agent)
+            if canonical and canonical in agent_manager:
+                return True
+            if role and role in agent_manager:
+                return True
+        except ImportError:
+            pass
+        return agent in agent_manager or agent.replace("-", "_") in agent_manager
+    return True
+
+
 def is_pr_created_by_us(pr: Dict[str, Any]) -> bool:
     """
     Check whether a pull request was created by Graviton / Antigravity agent.

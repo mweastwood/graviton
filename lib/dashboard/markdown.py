@@ -112,6 +112,7 @@ def _gather_markdown_context(
     port: int = 8000,
     extra_info: Optional[Dict[str, Any]] = None,
     pr_tracker: Optional[PRTracker] = None,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Gather server, manager, and quota data into a normalized context dictionary for markdown generation."""
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -149,6 +150,19 @@ def _gather_markdown_context(
     if not open_issues and extra_info and "open_issues" in extra_info:
         open_issues = extra_info.get("open_issues") or []
 
+    agent_status = None
+    if agent_manager:
+        if hasattr(agent_manager, "get_status") and callable(agent_manager.get_status):
+            agent_status = agent_manager.get_status()
+        elif isinstance(agent_manager, dict):
+            agent_status = agent_manager
+    elif extra_info:
+        if "agent_status" in extra_info:
+            agent_status = extra_info["agent_status"]
+        elif "agent_manager" in extra_info:
+            am = extra_info["agent_manager"]
+            agent_status = am.get_status() if hasattr(am, "get_status") and callable(am.get_status) else am
+
     if active_tasks:
         status_badge = "🟡 **BUSY**"
     elif task_manager and getattr(task_manager, "_draining", False):
@@ -171,6 +185,7 @@ def _gather_markdown_context(
         "approved_prs": approved_prs,
         "open_prs": open_prs,
         "open_issues": open_issues,
+        "agent_status": agent_status,
         "status_badge": status_badge,
         "web_url": web_url,
         "host": host,
@@ -705,6 +720,42 @@ def _md_history(ctx: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _md_agents(ctx: Dict[str, Any]) -> List[str]:
+    """Render autonomous agents status table if agent_status is present."""
+    agent_status = ctx.get("agent_status")
+    if not agent_status:
+        return []
+
+    lines = [
+        "## 🤖 Autonomous Agents",
+        "",
+        "| Agent | Role | Status | Description |",
+        "| :--- | :--- | :--- | :--- |",
+    ]
+    descriptions = {
+        "code_reviewer": "Reviews pull requests upon open/sync/reopen and /review comments",
+        "code_fixer": "Formulates code fixes for PR review feedback and /fix comments",
+        "issue_triager": "Triages incoming issues and formulates implementation specs",
+        "pr_drafter": "Drafts pull requests for issues marked ready-for-pr",
+        "codebase_auditor": "Runs scheduled sweeps for bugs, quality, and maintenance",
+    }
+    roles = {
+        "code_reviewer": "reviewer",
+        "code_fixer": "fixer",
+        "issue_triager": "triager",
+        "pr_drafter": "drafter",
+        "codebase_auditor": "auditor",
+    }
+    for agent_name in ("code_reviewer", "code_fixer", "issue_triager", "pr_drafter", "codebase_auditor"):
+        enabled = agent_status.get(agent_name, True)
+        status_disp = "🟢 `ENABLED`" if enabled else "🔴 `DISABLED`"
+        role_disp = f"`{roles.get(agent_name, agent_name)}`"
+        desc = descriptions.get(agent_name, "Autonomous agent worker")
+        lines.append(f"| `{agent_name}` | {role_disp} | {status_disp} | {desc} |")
+    lines.extend(["", "---", ""])
+    return lines
+
+
 def _md_footer() -> List[str]:
     """Render the dashboard tip and agent control callout footer."""
     return [
@@ -722,6 +773,7 @@ def format_dashboard_markdown(
     port: int = 8000,
     extra_info: Optional[Dict[str, Any]] = None,
     pr_tracker: Optional[PRTracker] = None,
+    agent_manager: Optional[Any] = None,
 ) -> str:
     """
     Format live server, task, and quota state as rich GitHub Flavored Markdown
@@ -735,11 +787,13 @@ def format_dashboard_markdown(
         port=port,
         extra_info=extra_info,
         pr_tracker=pr_tracker,
+        agent_manager=agent_manager,
     )
 
     lines: List[str] = []
     lines.extend(_md_header(ctx))
     lines.extend(_md_pipeline(ctx))
+    lines.extend(_md_agents(ctx))
     lines.extend(_md_active_tasks(ctx))
     lines.extend(_md_quota(ctx, quota_tracker=quota_tracker))
     lines.extend(_md_queued(ctx))

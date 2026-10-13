@@ -17,6 +17,7 @@ from lib.routers.base import (
     clear_pr_review_cache,
     get_server_repo_name,
     has_explicit_command,
+    is_agent_enabled,
     is_pr_created_by_us,
 )
 from lib.routers.issue_router import (
@@ -113,6 +114,8 @@ def route_webhook_event(
     server_repo_name: Optional[str] = None,
     repo_root: Optional[Path] = None,
     repos_dir: Optional[Path] = None,
+    agent_manager: Optional[Any] = None,
+    enabled_agents: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Route an incoming GitHub webhook event payload and return a decision dictionary.
@@ -128,16 +131,33 @@ def route_webhook_event(
     :param server_repo_name: Optional repository name for graviton server to check on push events.
     :param repo_root: Optional Path to server repository root directory for inspecting git remote origin.
     :param repos_dir: Optional Path to directory containing managed repositories.
+    :param agent_manager: Optional AgentManager, dict, or collection of enabled agents.
+    :param enabled_agents: Alias for agent_manager.
     :return: Dict containing status ('accepted' | 'ignored'), optional agent, prompt, and metadata.
     """
+    effective_agent_manager = agent_manager if agent_manager is not None else enabled_agents
+
     handlers = {
         "ping": handle_ping_event,
         "push": lambda p: handle_push_event(p, server_repo_name=server_repo_name, repo_root=repo_root),
         "pull_request": lambda p: handle_pull_request_event(
-            p, default_reviewer=default_reviewer, pr_tracker=pr_tracker, debounce_window=debounce_window
+            p,
+            default_reviewer=default_reviewer,
+            pr_tracker=pr_tracker,
+            debounce_window=debounce_window,
+            agent_manager=effective_agent_manager,
         ),
-        "pull_request_review": lambda p: handle_pull_request_review_event(p, default_fixer=default_fixer, pr_tracker=pr_tracker),
-        "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(p, default_fixer=default_fixer),
+        "pull_request_review": lambda p: handle_pull_request_review_event(
+            p,
+            default_fixer=default_fixer,
+            pr_tracker=pr_tracker,
+            agent_manager=effective_agent_manager,
+        ),
+        "pull_request_review_comment": lambda p: handle_pull_request_review_comment_event(
+            p,
+            default_fixer=default_fixer,
+            agent_manager=effective_agent_manager,
+        ),
         "issues": lambda p: handle_issues_event(
             p,
             default_triager=default_triager,
@@ -145,6 +165,7 @@ def route_webhook_event(
             default_drafter=default_drafter,
             repo_root=repo_root,
             repos_dir=repos_dir,
+            agent_manager=effective_agent_manager,
         ),
         "issue_comment": lambda p: handle_issue_comment_event(
             p,
@@ -155,12 +176,21 @@ def route_webhook_event(
             pr_tracker=pr_tracker,
             repo_root=repo_root,
             repos_dir=repos_dir,
+            agent_manager=effective_agent_manager,
         ),
     }
 
     handler = handlers.get(event_type)
     if handler:
-        return handler(payload)
+        decision = handler(payload)
+        if decision.get("status") == "accepted" and decision.get("agent"):
+            agent = decision["agent"]
+            if not is_agent_enabled(agent, effective_agent_manager):
+                return {
+                    "status": "ignored",
+                    "reason": f"Agent '{agent}' is disabled",
+                }
+        return decision
 
     return {
         "status": "ignored",
@@ -172,6 +202,7 @@ __all__ = [
     "route_webhook_event",
     "format_event_summary",
     "clear_pr_review_cache",
+    "is_agent_enabled",
     "is_pr_created_by_us",
     "has_explicit_command",
     "get_server_repo_name",

@@ -512,6 +512,7 @@ class TaskScheduler:
         task_manager: Optional[Any] = None,
         quota_tracker: Optional[Any] = None,
         repos_dir: Optional[Path] = None,
+        agent_manager: Optional[Any] = None,
     ):
         self._lock = threading.RLock()
         self._save_lock = threading.Lock()
@@ -529,6 +530,7 @@ class TaskScheduler:
         self.check_interval_seconds = check_interval_seconds
         self.task_manager = task_manager
         self.quota_tracker = quota_tracker
+        self.agent_manager = agent_manager
         if repos_dir is not None:
             self.repos_dir = Path(repos_dir)
         elif task_manager is not None and getattr(task_manager, "repos_dir", None) is not None:
@@ -827,7 +829,7 @@ class TaskScheduler:
         with self._lock:
             return self.jobs.get(job_id)
 
-    def trigger_job(self, job_id: str) -> bool:
+    def trigger_job(self, job_id: str, force: bool = False) -> bool:
         """
         Manually trigger a job immediately.
         """
@@ -836,6 +838,15 @@ class TaskScheduler:
         if not job:
             logger.warning(f"Cannot trigger unknown job '{job_id}'")
             return False
+
+        if not force and self.agent_manager:
+            is_en = getattr(self.agent_manager, "is_enabled", None)
+            if callable(is_en) and not is_en(job.agent):
+                logger.warning(f"Cannot trigger job '{job.job_id}': agent '{job.agent}' is disabled")
+                return False
+            elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
+                logger.warning(f"Cannot trigger job '{job.job_id}': agent '{job.agent}' is disabled")
+                return False
 
         logger.info(f"Manually triggering job '{job.job_id}' ({job.name})")
         self._execute_job(job)
@@ -868,6 +879,15 @@ class TaskScheduler:
         """
         Hand off job prompt to runner or custom handler and update job state.
         """
+        if self.agent_manager:
+            is_en = getattr(self.agent_manager, "is_enabled", None)
+            if callable(is_en) and not is_en(job.agent):
+                logger.info(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+                return
+            elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
+                logger.info(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+                return
+
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
 
@@ -1020,6 +1040,14 @@ class TaskScheduler:
         for job in jobs_to_check:
             if self._stop_event.is_set():
                 break
+            if self.agent_manager:
+                is_en = getattr(self.agent_manager, "is_enabled", None)
+                if callable(is_en) and not is_en(job.agent):
+                    logger.debug(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+                    continue
+                elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
+                    logger.debug(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+                    continue
             with self._lock:
                 due = job.is_due(now_dt)
             if due:
