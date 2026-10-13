@@ -194,7 +194,7 @@ class PRTracker:
         self._poll_interval: float = 30.0
         self._repo_root: Optional[Path] = None
         self._repos_dir: Optional[Path] = None
-        self._on_sync: Optional[Callable[[], None]] = None
+        self._on_sync: Optional[Callable[..., None]] = None
 
     def add_approved_pr(
         self,

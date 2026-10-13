@@ -343,7 +343,6 @@ def _render_open_prs_table(open_prs: List[Dict[str, Any]]) -> str:
         author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
         author_str = str(author_val or "").strip().lstrip("@")
         author = html.escape(author_str) if author_str else "-"
-        status = html.escape(str(pr.get("status") or ("Draft" if pr.get("is_draft") else "Open")))
         url = pr.get("url", "")
         if not url and raw_repo != "-" and has_num:
             url = f"https://github.com/{raw_repo}/pull/{raw_num}"
@@ -357,11 +356,14 @@ def _render_open_prs_table(open_prs: List[Dict[str, Any]]) -> str:
 
         repo_html = f'<code>{repo}</code>' if repo != "-" else '<span class="text-muted">-</span>'
         author_html = f'<span class="author-badge">@{author}</span>' if author != "-" else '<span class="text-muted">-</span>'
-        if status == "APPROVED":
+        raw_status = str(pr.get("status") or ("DRAFT" if pr.get("is_draft") else "OPEN")).strip()
+        status_upper = raw_status.upper()
+        status = html.escape(status_upper)
+        if status_upper == "APPROVED":
             status_pill_class = "status-completed"
-        elif status == "OPEN":
+        elif status_upper == "OPEN":
             status_pill_class = "status-running"
-        elif status == "CHANGES_REQUESTED":
+        elif status_upper == "CHANGES_REQUESTED":
             status_pill_class = "status-failed"
         else:
             status_pill_class = "status-queued"
@@ -422,7 +424,8 @@ def _render_open_issues_table(open_issues: List[Dict[str, Any]]) -> str:
         labels_html_list = []
         if isinstance(raw_labels, list) and raw_labels:
             for l in raw_labels[:4]:
-                clean_l = str(l).strip()
+                lbl_val = l.get("name") if isinstance(l, dict) else l
+                clean_l = str(lbl_val or "").strip()
                 if clean_l:
                     labels_html_list.append(f'<span class="agent-badge">{html.escape(clean_l)}</span>')
             labels_html = " ".join(labels_html_list) if labels_html_list else '<span class="text-muted">-</span>'

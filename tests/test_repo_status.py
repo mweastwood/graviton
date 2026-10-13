@@ -467,6 +467,17 @@ class TestRepoStatusDashboard(unittest.TestCase):
         self.assertIn("statusUpper === 'APPROVED'", html)
         self.assertIn("parts[0] !== 'Issue #'", html)
 
+        from lib.dashboard.html import _render_open_issues_table, _render_open_prs_table
+        table_html = _render_open_issues_table([{"number": 88, "labels": [{"name": "bug"}, {"name": "ui"}]}])
+        self.assertIn('<span class="agent-badge">bug</span>', table_html)
+        self.assertNotIn("{&#x27;name&#x27;", table_html)
+        self.assertNotIn("{'name'", table_html)
+
+        prs_html_open = _render_open_prs_table([{"number": 15, "status": "open"}])
+        self.assertIn("status-running", prs_html_open)
+        prs_html_default = _render_open_prs_table([{"number": 16, "is_draft": False}])
+        self.assertIn("status-running", prs_html_default)
+
     def test_parser_fallback_cells0_link_and_no_cells4_fallback(self):
         table_md = (
             "## 📦 Repository Status\n\n"
@@ -492,6 +503,23 @@ class TestRepoStatusDashboard(unittest.TestCase):
         self.assertEqual(issues[0]["number"], 99)
         self.assertEqual(issues[0]["url"], "https://github.com/owner/repo/issues/99")
         self.assertNotEqual(issues[0]["url"], "https://evil.com")
+
+    def test_parser_placeholder_labels_ignored(self):
+        table_md = (
+            "## 📦 Repository Status\n\n"
+            "### Open Issues\n\n"
+            "| Issue # | Repository | Title | Author | Labels |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| #1 | `owner/repo` | Issue 1 | `@alice` | `-` |\n"
+            "| #2 | `owner/repo` | Issue 2 | `@bob` | `None` |\n"
+            "| #3 | `owner/repo` | Issue 3 | `@charlie` | N/A |\n"
+        )
+        parsed = parse_dashboard_markdown(table_md)
+        issues = parsed.get("open_issues", [])
+        self.assertEqual(len(issues), 3)
+        self.assertEqual(issues[0]["labels"], [])
+        self.assertEqual(issues[1]["labels"], [])
+        self.assertEqual(issues[2]["labels"], [])
 
 
 class TestRepoStatusServerIntegration(unittest.TestCase):

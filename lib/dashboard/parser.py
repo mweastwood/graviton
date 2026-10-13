@@ -494,7 +494,8 @@ def _parse_repo_status(sec_str: str) -> Tuple[List[Dict[str, Any]], List[Dict[st
                     title_cell = cells[2].strip()
                     author_cell = cells[3].strip("@` ")
                     labels_raw = cells[4].strip() if len(cells) >= 5 else ""
-                    labels = [l.strip("` ") for l in labels_raw.split(",") if l.strip("` ")] if labels_raw != "-" else []
+                    labels_clean = labels_raw.strip("` ")
+                    labels = [l.strip("` ") for l in labels_raw.split(",") if l.strip("` ")] if labels_clean not in ("-", "", "None", "N/A") else []
                     url_cell = ""
                     if len(cells) >= 6:
                         m_link = MD_LINK_PATTERN.search(cells[5])
