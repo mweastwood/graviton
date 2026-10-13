@@ -535,6 +535,7 @@ class StreamSession:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **_kwargs: Any,
     ) -> SupervisorResult:
         """
         Stream events from stdout until a 'result' event signals turn completion.
@@ -756,13 +757,14 @@ class StreamSession:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """
         Execute an autonomous multi-turn goal. Automatically prepends '/goal ' if needed.
         """
         clean_goal = goal.strip()
         prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -903,6 +905,7 @@ def run_goal_turn(
     extra_args: Optional[List[str]] = None,
     agy_binary: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute an autonomous /goal using StreamSession.
@@ -917,7 +920,7 @@ def run_goal_turn(
         agy_binary=agy_binary,
         env=env,
     ) as session:
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -1848,6 +1851,7 @@ def run_container_turn(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    project_id: Optional[str] = None,
     runner: Optional[str] = None,
     allow_custom_runner: bool = False,
     **kwargs: Any,
@@ -1875,6 +1879,7 @@ def run_container_turn(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        project_id=project_id,
         runner=runner,
         allow_custom_runner=allow_custom_runner,
     ) as supervisor:
@@ -1923,6 +1928,7 @@ def run_container_goal(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    project_id: Optional[str] = None,
     runner: Optional[str] = None,
     allow_custom_runner: bool = False,
     **kwargs: Any,
@@ -1950,6 +1956,7 @@ def run_container_goal(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        project_id=project_id,
         runner=runner,
         allow_custom_runner=allow_custom_runner,
     ) as supervisor:

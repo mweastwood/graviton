@@ -178,6 +178,40 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_dict_usage_metadata(self):
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockText:
+                def __init__(self, text: str):
+                    self.text = text
+
+            async def _chunk_iter():
+                yield MockText("All tests passed.")
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="All tests passed.")
+            mock_response.usage_metadata = {
+                "prompt_token_count": 120,
+                "candidates_token_count": 60,
+                "total_token_count": 180,
+            }
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Run tests", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            self.assertEqual(result["response"], "All tests passed.")
+            self.assertEqual(result["num_turns"], 1)
+            self.assertEqual(result["usage"]["prompt_tokens"], 120)
+            self.assertEqual(result["usage"]["candidates_tokens"], 60)
+            self.assertEqual(result["usage"]["total_tokens"], 180)
+
+        asyncio.run(_test())
+
     def test_run_agent_turn_exception(self):
         async def _test():
             mock_agent = MagicMock()

@@ -883,6 +883,45 @@ class TestStreamSession(unittest.TestCase):
             mock_instance.run_turn.assert_called_once_with("Custom prompt", timeout=60.0, on_event=None)
             self.assertEqual(res, expected_res)
 
+    def test_stream_session_receive_turn_and_run_goal_kwargs_handling(self):
+        """Verify StreamSession.receive_turn and run_goal cleanly accept arbitrary extra kwargs."""
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-extra-kw"
+
+        self.mock_proc.stdout.readline.side_effect = [
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Done.",
+                    "duration_seconds": 1.0,
+                    "num_turns": 1,
+                    "usage": {},
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Goal done.",
+                    "duration_seconds": 1.5,
+                    "num_turns": 1,
+                    "usage": {},
+                },
+            }) + "\n",
+            "",
+        ]
+
+        res = session.receive_turn(custom_kwarg="val123", unexpected_param="test")
+        self.assertTrue(res.is_success)
+        self.assertEqual(res.response, "Done.")
+
+        goal_res = session.run_goal("Test goal", custom_kwarg="val456", unexpected_param="test2")
+        self.assertTrue(goal_res.is_success)
+        self.assertEqual(goal_res.response, "Goal done.")
+
+
 
 class TestCleanWorkspaceDir(unittest.TestCase):
     def test_clean_workspace_dir_none(self):
@@ -1870,6 +1909,101 @@ class TestContainerSupervisor(unittest.TestCase):
             call_kwargs = mock_run_turn.call_args.kwargs
             self.assertEqual(call_kwargs.get("custom_param"), "hello")
             self.assertEqual(call_kwargs.get("test_flag"), True)
+
+    def test_unmocked_kwargs_delegation_to_stream_session(self):
+        """Verify ContainerSupervisor.run_turn, ContainerSupervisor.run_goal, and StreamSession.receive_turn handle arbitrary kwargs without TypeError."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="unmocked_kwargs_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        session = StreamSession(agy_binary="agy")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stdout.readline.side_effect = [
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Turn complete with kwargs",
+                    "duration_seconds": 0.5,
+                    "num_turns": 1,
+                    "usage": {"total_tokens": 10},
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Goal complete with kwargs",
+                    "duration_seconds": 0.8,
+                    "num_turns": 2,
+                    "usage": {"total_tokens": 20},
+                },
+            }) + "\n",
+            "",
+        ]
+        session.proc = mock_proc
+        session.conversation_id = "test-conv-unmocked"
+        sup.session = session
+
+        with patch.object(sup, "start"):
+            res_turn = sup.run_turn(
+                "Run unmocked turn",
+                custom_kwarg="val123",
+                extra_number=42,
+            )
+            self.assertTrue(res_turn.is_success)
+            self.assertEqual(res_turn.response, "Turn complete with kwargs")
+
+            res_goal = sup.run_goal(
+                "Run unmocked goal",
+                custom_kwarg="val456",
+                extra_flag=True,
+            )
+            self.assertTrue(res_goal.is_success)
+            self.assertEqual(res_goal.response, "Goal complete with kwargs")
+
+    def test_run_container_turn_and_goal_project_id_propagation(self):
+        """Verify run_container_turn, run_container_goal, and aliases accept and forward project_id."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_turn.return_value = SupervisorResult(status="SUCCESS")
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            run_container_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-turn",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-turn")
+
+            run_container_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-goal",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-goal")
+
+            run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-turn-alias",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-turn-alias")
+
+            run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-goal-alias",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-goal-alias")
+
 
 
 class TestProjectResolutionAndAgyHubSync(unittest.TestCase):

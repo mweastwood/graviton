@@ -229,11 +229,18 @@ async def run_agent_turn(
         # Extract usage metadata if available
         usage_dict: Dict[str, Any] = {}
         usage = getattr(response, "usage_metadata", None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get("usage_metadata")
         if usage:
+            def _get_metric(obj: Any, attr: str) -> int:
+                if isinstance(obj, dict):
+                    return obj.get(attr, 0)
+                return getattr(obj, attr, 0)
+
             usage_dict = {
-                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                "candidates_tokens": getattr(usage, "candidates_token_count", 0),
-                "total_tokens": getattr(usage, "total_token_count", 0),
+                "prompt_tokens": _get_metric(usage, "prompt_token_count"),
+                "candidates_tokens": _get_metric(usage, "candidates_token_count"),
+                "total_tokens": _get_metric(usage, "total_token_count"),
             }
 
         return {
