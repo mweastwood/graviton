@@ -627,7 +627,14 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {"error": "Missing 'enabled' or 'action' field"})
                     return
             elif "agents" in data and isinstance(data["agents"], dict):
-                self.agent_manager.update_from_dict(data["agents"])
+                valid_updates = {
+                    k: v for k, v in data["agents"].items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS
+                }
+                if not valid_updates:
+                    self._send_json(400, {"error": "No valid agent configuration provided"})
+                    return
+                self.agent_manager.update_from_dict(valid_updates)
             else:
                 direct_updates = {
                     k: v for k, v in data.items()

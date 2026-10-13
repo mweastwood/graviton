@@ -206,6 +206,32 @@ class TestAgentManagerConcurrency(unittest.TestCase):
         self.assertIsInstance(am.is_enabled("reviewer"), bool)
         self.assertIsInstance(am.is_enabled("fixer"), bool)
 
+    def test_concurrent_save_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "concurrent_state.json"
+            am = AgentManager(state_path=state_file, auto_load_env=False)
+            iterations = 30
+
+            def save_worker(worker_id):
+                for i in range(iterations):
+                    if i % 2 == 0:
+                        am.disable("reviewer")
+                    else:
+                        am.enable("reviewer")
+                    am.save_state()
+
+            threads = [threading.Thread(target=save_worker, args=(i,)) for i in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertTrue(state_file.exists())
+            with open(state_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertIn("code_reviewer", saved)
+            self.assertIsInstance(saved["code_reviewer"], bool)
+
 
 class TestRouterAgentManagerIntegration(unittest.TestCase):
     def setUp(self):
@@ -422,6 +448,22 @@ class TestDashboardAgentStatus(unittest.TestCase):
         md = format_dashboard_markdown(agent_manager=None)
         self.assertNotIn("## 🤖 Autonomous Agents", md)
 
+    def test_markdown_dashboard_with_custom_agents(self):
+        am = AgentManager(auto_load_env=False)
+        extra_status = {"security_auditor": True, "custom_fixer": False}
+        full_status = {**am.get_status(), **extra_status}
+        md = format_dashboard_markdown(agent_manager=am, extra_info={"agent_status": full_status})
+        self.assertIn("## 🤖 Autonomous Agents", md)
+        self.assertIn("security_auditor", md)
+        self.assertIn("custom_fixer", md)
+        self.assertIn("code_reviewer", md)
+        # Verify canonical agents appear before custom agents
+        pos_reviewer = md.find("`code_reviewer`")
+        pos_auditor = md.find("`codebase_auditor`")
+        pos_custom = md.find("`security_auditor`")
+        self.assertTrue(pos_reviewer < pos_custom)
+        self.assertTrue(pos_auditor < pos_custom)
+
 
 class TestServerAgentEndpoints(unittest.TestCase):
     @classmethod
@@ -573,6 +615,22 @@ class TestServerAgentEndpoints(unittest.TestCase):
         self.assertFalse(body["agents"]["codebase_auditor"])
         self.assertTrue(body["agents"]["code_fixer"])
 
+        # Wrapped agents dictionary payload
+        handler_wrapped = MagicMock(spec=self.GravitonHandler)
+        handler_wrapped.path = "/api/agents"
+        handler_wrapped.agent_manager = self.am
+        handler_wrapped.dashboard_updater = None
+        payload_wrapped = json.dumps({"agents": {"reviewer": True, "auditor": True}}).encode("utf-8")
+        handler_wrapped.rfile = BytesIO(payload_wrapped)
+        handler_wrapped.headers = {"Content-Length": str(len(payload_wrapped))}
+
+        self.GravitonHandler.do_POST(handler_wrapped)
+        handler_wrapped._send_json.assert_called_once()
+        code_w, body_w = handler_wrapped._send_json.call_args[0]
+        self.assertEqual(code_w, 200)
+        self.assertTrue(body_w["agents"]["code_reviewer"])
+        self.assertTrue(body_w["agents"]["codebase_auditor"])
+
     def test_post_api_agents_errors(self):
         from io import BytesIO
 
@@ -657,6 +715,42 @@ class TestServerAgentEndpoints(unittest.TestCase):
         code7, body7 = handler7._send_json.call_args[0]
         self.assertEqual(code7, 400)
         self.assertIn("Invalid boolean value", body7["error"])
+
+        # Wrapped payload with no recognized agent keys
+        handler8 = MagicMock(spec=self.GravitonHandler)
+        handler8.path = "/api/agents"
+        handler8.agent_manager = self.am
+        payload8 = json.dumps({"agents": {"invalid_agent": True}}).encode("utf-8")
+        handler8.rfile = BytesIO(payload8)
+        handler8.headers = {"Content-Length": str(len(payload8))}
+        self.GravitonHandler.do_POST(handler8)
+        code8, body8 = handler8._send_json.call_args[0]
+        self.assertEqual(code8, 400)
+        self.assertEqual(body8["error"], "No valid agent configuration provided")
+
+        # Empty wrapped agents payload
+        handler9 = MagicMock(spec=self.GravitonHandler)
+        handler9.path = "/api/agents"
+        handler9.agent_manager = self.am
+        payload9 = json.dumps({"agents": {}}).encode("utf-8")
+        handler9.rfile = BytesIO(payload9)
+        handler9.headers = {"Content-Length": str(len(payload9))}
+        self.GravitonHandler.do_POST(handler9)
+        code9, body9 = handler9._send_json.call_args[0]
+        self.assertEqual(code9, 400)
+        self.assertEqual(body9["error"], "No valid agent configuration provided")
+
+        # Direct payload with no recognized agent keys
+        handler10 = MagicMock(spec=self.GravitonHandler)
+        handler10.path = "/api/agents"
+        handler10.agent_manager = self.am
+        payload10 = json.dumps({"invalid_name": True}).encode("utf-8")
+        handler10.rfile = BytesIO(payload10)
+        handler10.headers = {"Content-Length": str(len(payload10))}
+        self.GravitonHandler.do_POST(handler10)
+        code10, body10 = handler10._send_json.call_args[0]
+        self.assertEqual(code10, 400)
+        self.assertEqual(body10["error"], "No valid agent configuration provided")
 
 
 class TestServerAgentCLI(unittest.TestCase):

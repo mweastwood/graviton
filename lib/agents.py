@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from lib.quota import _atomic_write_json
+
 logger = logging.getLogger("graviton.agents")
 
 # Canonical agent names
@@ -165,6 +167,7 @@ class AgentManager:
         auto_load_env: bool = True,
     ):
         self._lock = threading.RLock()
+        self._save_lock = threading.Lock()
         self.state_path = Path(state_path) if state_path else None
         self._states: Dict[str, bool] = {agent: True for agent in CANONICAL_AGENTS}
 
@@ -342,22 +345,12 @@ class AgentManager:
         with self._lock:
             data = dict(self._states)
 
-        tmp_path = self.state_path.with_suffix(".tmp")
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.state_path)
-            logger.debug(f"Saved agent states to {self.state_path}")
-        except Exception as e:
-            logger.error(f"Failed to persist agent states to {self.state_path}: {e}")
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
+        with self._save_lock:
+            try:
+                _atomic_write_json(self.state_path, data, indent=2)
+                logger.debug(f"Saved agent states to {self.state_path}")
+            except Exception as e:
+                logger.error(f"Failed to persist agent states to {self.state_path}: {e}")
 
     def load_state(self) -> bool:
         """Load agent states from state_path."""

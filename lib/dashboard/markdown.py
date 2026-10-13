@@ -156,10 +156,13 @@ def _gather_markdown_context(
             agent_status = agent_manager.get_status()
         elif isinstance(agent_manager, dict):
             agent_status = agent_manager
-    elif extra_info:
-        if "agent_status" in extra_info:
-            agent_status = extra_info["agent_status"]
-        elif "agent_manager" in extra_info:
+    if extra_info:
+        if "agent_status" in extra_info and extra_info["agent_status"]:
+            if isinstance(agent_status, dict) and isinstance(extra_info["agent_status"], dict):
+                agent_status = {**agent_status, **extra_info["agent_status"]}
+            else:
+                agent_status = extra_info["agent_status"]
+        elif not agent_status and "agent_manager" in extra_info:
             am = extra_info["agent_manager"]
             agent_status = am.get_status() if hasattr(am, "get_status") and callable(am.get_status) else am
 
@@ -746,7 +749,13 @@ def _md_agents(ctx: Dict[str, Any]) -> List[str]:
         "pr_drafter": "drafter",
         "codebase_auditor": "auditor",
     }
-    for agent_name in ("code_reviewer", "code_fixer", "issue_triager", "pr_drafter", "codebase_auditor"):
+    canonical_agents = ("code_reviewer", "code_fixer", "issue_triager", "pr_drafter", "codebase_auditor")
+    all_agents = list(canonical_agents)
+    for agent_name in agent_status.keys():
+        if agent_name not in all_agents:
+            all_agents.append(agent_name)
+
+    for agent_name in all_agents:
         enabled = agent_status.get(agent_name, True)
         status_disp = "🟢 `ENABLED`" if enabled else "🔴 `DISABLED`"
         role_disp = f"`{roles.get(agent_name, agent_name)}`"
