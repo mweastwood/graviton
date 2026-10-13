@@ -90,8 +90,23 @@ class TestAgentManagerBasics(unittest.TestCase):
         self.assertTrue(new_val)
         self.assertTrue(am.is_enabled("reviewer"))
 
-        # Unrecognized agent toggle returns None
+        # Unrecognized agent rejection
+        self.assertFalse(am.set_enabled("unknown_agent", True))
+        self.assertFalse(am.set_enabled("unknown_agent", False))
+        self.assertFalse(am.enable("unknown_agent"))
+        self.assertFalse(am.disable("unknown_agent"))
+        self.assertIsNone(am.toggle("unknown_agent"))
         self.assertIsNone(am.toggle(""))
+
+        # String boolean parsing in set_enabled
+        am.set_enabled("reviewer", "false")
+        self.assertFalse(am.is_enabled("reviewer"))
+        am.set_enabled("reviewer", "true")
+        self.assertTrue(am.is_enabled("reviewer"))
+        am.set_enabled("reviewer", "0")
+        self.assertFalse(am.is_enabled("reviewer"))
+        am.set_enabled("reviewer", "1")
+        self.assertTrue(am.is_enabled("reviewer"))
 
     def test_get_status_and_summary(self):
         am = AgentManager(auto_load_env=False)
@@ -206,6 +221,11 @@ class TestRouterAgentManagerIntegration(unittest.TestCase):
         self.assertTrue(is_agent_enabled("code_fixer", {"code_fixer": True}))
         self.assertFalse(is_agent_enabled("code_fixer", {"code_fixer": False}))
         self.assertFalse(is_agent_enabled("code_fixer", {"fixer": False}))
+
+        # Verify definition in lib.agents and re-export in lib.routers.base
+        from lib.agents import is_agent_enabled as is_agent_enabled_from_agents
+        from lib.routers.base import is_agent_enabled as is_agent_enabled_from_base
+        self.assertIs(is_agent_enabled_from_agents, is_agent_enabled_from_base)
 
         # Set support
         self.assertTrue(is_agent_enabled("code_fixer", {"code_fixer"}))
@@ -363,23 +383,25 @@ class TestSchedulerAgentManagerIntegration(unittest.TestCase):
             self.assertFalse(triggered)
             self.assertEqual(len(executed_jobs), 0)
 
-            # Manual trigger with force=True bypasses agent_manager in trigger_job, but _execute_job guards it
-            scheduler.trigger_job("test_sweep", force=True)
-            self.assertEqual(len(executed_jobs), 0)
+            # Manual trigger with force=True bypasses agent_manager and executes the job
+            forced = scheduler.trigger_job("test_sweep", force=True)
+            self.assertTrue(forced)
+            self.assertEqual(len(executed_jobs), 1)
+            self.assertEqual(executed_jobs[-1][0], "codebase_auditor")
 
-            # Re-enable and trigger
+            # Re-enable and trigger normally
             am.enable("auditor")
             triggered = scheduler.trigger_job("test_sweep")
             self.assertTrue(triggered)
-            self.assertEqual(len(executed_jobs), 1)
+            self.assertEqual(len(executed_jobs), 2)
 
             # _check_and_run_jobs tick
             am.disable("auditor")
             job.last_run = None
             job.next_run = None
             scheduler._check_and_run_jobs()
-            # Still 1 execution, tick did not run it
-            self.assertEqual(len(executed_jobs), 1)
+            # Still 2 executions, tick did not run it because agent is disabled
+            self.assertEqual(len(executed_jobs), 2)
 
 
 class TestDashboardAgentStatus(unittest.TestCase):
@@ -502,6 +524,36 @@ class TestServerAgentEndpoints(unittest.TestCase):
         self.assertEqual(code2, 200)
         self.assertTrue(body2["agents"]["code_fixer"])
 
+        # String boolean parsing ("false" -> False)
+        handler3 = MagicMock(spec=self.GravitonHandler)
+        handler3.path = "/api/agents"
+        handler3.agent_manager = self.am
+        handler3.dashboard_updater = None
+        payload3 = json.dumps({"agent": "reviewer", "enabled": "false"}).encode("utf-8")
+        handler3.rfile = BytesIO(payload3)
+        handler3.headers = {"Content-Length": str(len(payload3))}
+
+        self.GravitonHandler.do_POST(handler3)
+        handler3._send_json.assert_called_once()
+        code3, body3 = handler3._send_json.call_args[0]
+        self.assertEqual(code3, 200)
+        self.assertFalse(body3["agents"]["code_reviewer"])
+
+        # String boolean parsing ("true" -> True)
+        handler4 = MagicMock(spec=self.GravitonHandler)
+        handler4.path = "/api/agents"
+        handler4.agent_manager = self.am
+        handler4.dashboard_updater = None
+        payload4 = json.dumps({"agent": "reviewer", "enabled": "true"}).encode("utf-8")
+        handler4.rfile = BytesIO(payload4)
+        handler4.headers = {"Content-Length": str(len(payload4))}
+
+        self.GravitonHandler.do_POST(handler4)
+        handler4._send_json.assert_called_once()
+        code4, body4 = handler4._send_json.call_args[0]
+        self.assertEqual(code4, 200)
+        self.assertTrue(body4["agents"]["code_reviewer"])
+
     def test_post_api_agents_batch_and_direct(self):
         from io import BytesIO
 
@@ -534,7 +586,7 @@ class TestServerAgentEndpoints(unittest.TestCase):
         code, body = handler._send_json.call_args[0]
         self.assertEqual(code, 400)
 
-        # Unknown agent in toggle
+        # Empty/Unknown agent in toggle
         handler2 = MagicMock(spec=self.GravitonHandler)
         handler2.path = "/api/agents/toggle"
         handler2.agent_manager = self.am
@@ -544,6 +596,67 @@ class TestServerAgentEndpoints(unittest.TestCase):
         self.GravitonHandler.do_POST(handler2)
         code2, body2 = handler2._send_json.call_args[0]
         self.assertEqual(code2, 400)
+        self.assertIn("error", body2)
+
+        # Unknown agent in toggle
+        handler3 = MagicMock(spec=self.GravitonHandler)
+        handler3.path = "/api/agents/toggle"
+        handler3.agent_manager = self.am
+        payload3 = json.dumps({"agent": "nonexistent_agent"}).encode("utf-8")
+        handler3.rfile = BytesIO(payload3)
+        handler3.headers = {"Content-Length": str(len(payload3))}
+        self.GravitonHandler.do_POST(handler3)
+        code3, body3 = handler3._send_json.call_args[0]
+        self.assertEqual(code3, 400)
+        self.assertIn("Unknown agent", body3["error"])
+
+        # Unknown agent in enable action
+        handler4 = MagicMock(spec=self.GravitonHandler)
+        handler4.path = "/api/agents"
+        handler4.agent_manager = self.am
+        payload4 = json.dumps({"agent": "nonexistent_agent", "action": "enable"}).encode("utf-8")
+        handler4.rfile = BytesIO(payload4)
+        handler4.headers = {"Content-Length": str(len(payload4))}
+        self.GravitonHandler.do_POST(handler4)
+        code4, body4 = handler4._send_json.call_args[0]
+        self.assertEqual(code4, 400)
+        self.assertIn("Unknown agent", body4["error"])
+
+        # Unknown agent in disable action
+        handler5 = MagicMock(spec=self.GravitonHandler)
+        handler5.path = "/api/agents"
+        handler5.agent_manager = self.am
+        payload5 = json.dumps({"agent": "nonexistent_agent", "action": "disable"}).encode("utf-8")
+        handler5.rfile = BytesIO(payload5)
+        handler5.headers = {"Content-Length": str(len(payload5))}
+        self.GravitonHandler.do_POST(handler5)
+        code5, body5 = handler5._send_json.call_args[0]
+        self.assertEqual(code5, 400)
+        self.assertIn("Unknown agent", body5["error"])
+
+        # Unknown agent with enabled field
+        handler6 = MagicMock(spec=self.GravitonHandler)
+        handler6.path = "/api/agents"
+        handler6.agent_manager = self.am
+        payload6 = json.dumps({"agent": "nonexistent_agent", "enabled": True}).encode("utf-8")
+        handler6.rfile = BytesIO(payload6)
+        handler6.headers = {"Content-Length": str(len(payload6))}
+        self.GravitonHandler.do_POST(handler6)
+        code6, body6 = handler6._send_json.call_args[0]
+        self.assertEqual(code6, 400)
+        self.assertIn("Unknown agent", body6["error"])
+
+        # Invalid boolean string
+        handler7 = MagicMock(spec=self.GravitonHandler)
+        handler7.path = "/api/agents"
+        handler7.agent_manager = self.am
+        payload7 = json.dumps({"agent": "reviewer", "enabled": "not_a_bool"}).encode("utf-8")
+        handler7.rfile = BytesIO(payload7)
+        handler7.headers = {"Content-Length": str(len(payload7))}
+        self.GravitonHandler.do_POST(handler7)
+        code7, body7 = handler7._send_json.call_args[0]
+        self.assertEqual(code7, 400)
+        self.assertIn("Invalid boolean value", body7["error"])
 
 
 class TestServerAgentCLI(unittest.TestCase):

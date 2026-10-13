@@ -113,6 +113,39 @@ def _parse_bool(val: Any) -> Optional[bool]:
     return None
 
 
+def is_agent_enabled(agent: str, agent_manager: Optional[Any] = None) -> bool:
+    """
+    Check if an agent is enabled given an optional AgentManager, dict, or collection.
+    If agent_manager is None, defaults to True.
+    """
+    if agent_manager is None or not agent:
+        return True
+    if hasattr(agent_manager, "is_enabled") and callable(agent_manager.is_enabled):
+        return bool(agent_manager.is_enabled(agent))
+    if isinstance(agent_manager, dict):
+        if agent in agent_manager:
+            return bool(agent_manager[agent])
+        canonical = canonicalize_agent_name(agent)
+        if canonical and canonical in agent_manager:
+            return bool(agent_manager[canonical])
+        role = agent_to_role(agent)
+        if role and role in agent_manager:
+            return bool(agent_manager[role])
+        alt = agent.replace("-", "_") if "-" in agent else agent.replace("_", "-")
+        if alt in agent_manager:
+            return bool(agent_manager[alt])
+        return True
+    if isinstance(agent_manager, (set, list, tuple)):
+        canonical = canonicalize_agent_name(agent)
+        role = agent_to_role(agent)
+        if canonical and canonical in agent_manager:
+            return True
+        if role and role in agent_manager:
+            return True
+        return agent in agent_manager or agent.replace("-", "_") in agent_manager
+    return True
+
+
 class AgentManager:
     """
     Thread-safe manager for tracking and toggling autonomous agent enabled states.
@@ -152,7 +185,7 @@ class AgentManager:
         for k, v in data.items():
             canonical = canonicalize_agent_name(k)
             b_val = _parse_bool(v)
-            if canonical and b_val is not None:
+            if canonical and canonical in self._states and b_val is not None:
                 self._states[canonical] = b_val
 
     def _load_from_env(self) -> None:
@@ -203,20 +236,22 @@ class AgentManager:
         with self._lock:
             return self._states.get(canonical, True)
 
-    def set_enabled(self, name_or_role: str, enabled: bool) -> bool:
+    def set_enabled(self, name_or_role: str, enabled: Any) -> bool:
         """
         Set an agent's enabled state.
         Returns True if the state was updated, False if agent is unrecognized.
         """
         canonical = canonicalize_agent_name(name_or_role)
-        if not canonical:
+        if not canonical or canonical not in self._states:
             return False
+        b_val = _parse_bool(enabled)
+        bool_val = bool(enabled) if b_val is None else b_val
         with self._lock:
             old_val = self._states.get(canonical)
-            self._states[canonical] = bool(enabled)
-            changed = old_val != bool(enabled)
+            self._states[canonical] = bool_val
+            changed = old_val != bool_val
         if changed:
-            logger.info(f"Agent '{canonical}' enabled state set to: {enabled}")
+            logger.info(f"Agent '{canonical}' enabled state set to: {bool_val}")
             self.save_state()
         return True
 
@@ -234,7 +269,7 @@ class AgentManager:
         Returns None if agent is unrecognized.
         """
         canonical = canonicalize_agent_name(name_or_role)
-        if not canonical:
+        if not canonical or canonical not in self._states:
             return None
         with self._lock:
             current = self._states.get(canonical, True)
@@ -287,8 +322,10 @@ class AgentManager:
         with self._lock:
             for k, v in updates.items():
                 canonical = canonicalize_agent_name(k)
+                if not canonical or canonical not in self._states:
+                    continue
                 b_val = _parse_bool(v)
-                if canonical and b_val is not None:
+                if b_val is not None:
                     if self._states.get(canonical) != b_val:
                         self._states[canonical] = b_val
                         changed = True

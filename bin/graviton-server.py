@@ -64,6 +64,7 @@ from lib.agents import (
     CANONICAL_AGENTS,
     ROLE_TO_AGENT,
     AgentManager,
+    _parse_bool,
     canonicalize_agent_name,
 )
 
@@ -607,11 +608,21 @@ class GravitonHandler(BaseHTTPRequestHandler):
                         self._send_json(400, {"error": f"Unknown agent '{agent_input}'"})
                         return
                 elif action in ("enable", "enabled", "on"):
-                    self.agent_manager.enable(agent_input)
+                    if not self.agent_manager.enable(agent_input):
+                        self._send_json(400, {"error": f"Unknown agent '{agent_input}'"})
+                        return
                 elif action in ("disable", "disabled", "off"):
-                    self.agent_manager.disable(agent_input)
+                    if not self.agent_manager.disable(agent_input):
+                        self._send_json(400, {"error": f"Unknown agent '{agent_input}'"})
+                        return
                 elif "enabled" in data:
-                    self.agent_manager.set_enabled(agent_input, bool(data["enabled"]))
+                    b_val = _parse_bool(data["enabled"])
+                    if b_val is None:
+                        self._send_json(400, {"error": f"Invalid boolean value for 'enabled': {data['enabled']}"})
+                        return
+                    if not self.agent_manager.set_enabled(agent_input, b_val):
+                        self._send_json(400, {"error": f"Unknown agent '{agent_input}'"})
+                        return
                 else:
                     self._send_json(400, {"error": "Missing 'enabled' or 'action' field"})
                     return

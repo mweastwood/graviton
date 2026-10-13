@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from lib.agents import is_agent_enabled
 from lib.quota import QuotaState, _atomic_write_json
 
 logger = logging.getLogger("graviton.scheduler")
@@ -839,17 +840,12 @@ class TaskScheduler:
             logger.warning(f"Cannot trigger unknown job '{job_id}'")
             return False
 
-        if not force and self.agent_manager:
-            is_en = getattr(self.agent_manager, "is_enabled", None)
-            if callable(is_en) and not is_en(job.agent):
-                logger.warning(f"Cannot trigger job '{job.job_id}': agent '{job.agent}' is disabled")
-                return False
-            elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
-                logger.warning(f"Cannot trigger job '{job.job_id}': agent '{job.agent}' is disabled")
-                return False
+        if not force and self.agent_manager and not is_agent_enabled(job.agent, self.agent_manager):
+            logger.warning(f"Cannot trigger job '{job.job_id}': agent '{job.agent}' is disabled")
+            return False
 
         logger.info(f"Manually triggering job '{job.job_id}' ({job.name})")
-        self._execute_job(job)
+        self._execute_job(job, force=force)
         return True
 
     def _pick_next_repo(self, job: ScheduledJob) -> Optional[Path]:
@@ -875,18 +871,13 @@ class TaskScheduler:
         job.current_repo_index = (idx + 1) % len(repos)
         return chosen
 
-    def _execute_job(self, job: ScheduledJob):
+    def _execute_job(self, job: ScheduledJob, force: bool = False):
         """
         Hand off job prompt to runner or custom handler and update job state.
         """
-        if self.agent_manager:
-            is_en = getattr(self.agent_manager, "is_enabled", None)
-            if callable(is_en) and not is_en(job.agent):
-                logger.info(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
-                return
-            elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
-                logger.info(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
-                return
+        if not force and self.agent_manager and not is_agent_enabled(job.agent, self.agent_manager):
+            logger.info(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+            return
 
         logger.info(f"Executing scheduled job '{job.job_id}' via agent '{job.agent}'")
         now_dt = datetime.now(timezone.utc)
@@ -1040,14 +1031,9 @@ class TaskScheduler:
         for job in jobs_to_check:
             if self._stop_event.is_set():
                 break
-            if self.agent_manager:
-                is_en = getattr(self.agent_manager, "is_enabled", None)
-                if callable(is_en) and not is_en(job.agent):
-                    logger.debug(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
-                    continue
-                elif isinstance(self.agent_manager, dict) and not self.agent_manager.get(job.agent, True):
-                    logger.debug(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
-                    continue
+            if self.agent_manager and not is_agent_enabled(job.agent, self.agent_manager):
+                logger.debug(f"Skipping scheduled job '{job.job_id}': agent '{job.agent}' is disabled")
+                continue
             with self._lock:
                 due = job.is_due(now_dt)
             if due:
