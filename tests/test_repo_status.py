@@ -160,6 +160,34 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
         self.assertEqual([p["number"] for p in repo["approved_prs"]], [15, 50])
         self.assertEqual([i["number"] for i in repo["open_issues"]], [12, 45, 99])
 
+    def test_get_repo_status_unnamed_repos_default_bucket(self):
+        # PR with empty repo_full_name
+        self.tracker.add_open_pr({"number": 10, "title": "Unnamed Open PR", "repo_full_name": ""})
+        # PR with non-tuple key
+        self.tracker._open_prs[20] = {"number": 20, "title": "Integer Key PR"}
+        # Approved PR with empty repo_full_name
+        self.tracker.add_approved_pr({"number": 30, "title": "Unnamed Approved PR", "repo_full_name": ""})
+        # Issue with empty repo_full_name
+        self.tracker.add_open_issue({"number": 40, "title": "Unnamed Issue", "repo_full_name": ""})
+
+        status = self.tracker.get_repo_status()
+        self.assertIn("default", status["repos"])
+        self.assertIn("default", status["repositories"])
+
+        default_repo = status["repos"]["default"]
+        self.assertEqual([p["number"] for p in default_repo["open_prs"]], [10, 20])
+        self.assertEqual(default_repo["open_prs_count"], 2)
+        self.assertEqual([p["number"] for p in default_repo["approved_prs"]], [30])
+        self.assertEqual(default_repo["approved_prs_count"], 1)
+        self.assertEqual([i["number"] for i in default_repo["open_issues"]], [40])
+        self.assertEqual(default_repo["open_issues_count"], 1)
+
+        summary = status["summary"]
+        self.assertEqual(summary["total_repos"], 1)
+        self.assertEqual(summary["total_open_prs"], 2)
+        self.assertEqual(summary["total_approved_prs"], 1)
+        self.assertEqual(summary["total_open_issues"], 1)
+
     @patch("subprocess.run")
     def test_sync_issues_single_repo(self, mock_run):
         mock_git_remote = MagicMock(returncode=0, stdout="https://github.com/test-owner/test-repo.git\n")
@@ -286,6 +314,27 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
         self.assertEqual(pr104["updated_at"], "2026-10-12T17:00:00Z")
 
     @patch("subprocess.run")
+    def test_sync_single_repo_details_graceful_failure(self, mock_run):
+        # 1. CalledProcessError returns ([], [])
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh", output="", stderr="Error")
+        approved, open_prs = self.tracker._sync_single_repo_details(cwd="/fake/repo")
+        self.assertEqual(approved, [])
+        self.assertEqual(open_prs, [])
+
+        # 2. Corrupted JSON output returns ([], [])
+        mock_run.side_effect = None
+        mock_run.return_value = MagicMock(returncode=0, stdout="not valid json {{{")
+        approved, open_prs = self.tracker._sync_single_repo_details(cwd="/fake/repo")
+        self.assertEqual(approved, [])
+        self.assertEqual(open_prs, [])
+
+        # 3. TimeoutExpired returns ([], [])
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        approved, open_prs = self.tracker._sync_single_repo_details(cwd="/fake/repo")
+        self.assertEqual(approved, [])
+        self.assertEqual(open_prs, [])
+
+    @patch("subprocess.run")
     def test_sync_github_issues_caching(self, mock_run):
         mock_git_remote = MagicMock(returncode=0, stdout="git@github.com:org/repo.git\n")
         raw_issues = [{"number": 1, "title": "Issue 1", "url": "url", "author": {"login": "user"}, "labels": []}]
@@ -353,6 +402,18 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
             self.assertTrue(sync_called)
             self.assertFalse(on_sync_called)
             self.assertIsNone(self.tracker._polling_thread)
+
+    def test_stop_background_polling_clears_thread_reference_on_timeout(self):
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = True
+
+        self.tracker._polling_thread = mock_thread
+        self.tracker.stop_background_polling(timeout=0.01)
+
+        # Thread reference must be cleanly cleared even if join times out and thread remains alive
+        self.assertIsNone(self.tracker._polling_thread)
+        self.assertTrue(self.tracker._stop_polling_event.is_set())
+        mock_thread.join.assert_called_once_with(timeout=0.01)
 
     def test_tracker_aliases(self):
         self.assertIs(RepoTracker, PRTracker)

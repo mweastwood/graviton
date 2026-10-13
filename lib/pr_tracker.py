@@ -78,6 +78,9 @@ _EXPLICIT_BOT_LOGINS: Tuple[str, ...] = (
 )
 
 
+class _SyncPRResult(tuple):
+    success: bool = True
+
 
 def _parse_event_timestamp(ts: Any) -> float:
     """Parse an ISO timestamp string or numeric timestamp to float epoch seconds for chronological sorting."""
@@ -441,30 +444,46 @@ class PRTracker:
     def get_repo_status(self) -> Dict[str, Any]:
         """Return aggregated repository status dictionary containing open PRs, approved PRs, and issues."""
         with self._lock:
+            def _resolve_repo(key: Any, item: Any) -> str:
+                if isinstance(key, tuple) and len(key) > 0 and key[0]:
+                    return str(key[0])
+                if isinstance(item, dict) and item.get("repo_full_name"):
+                    return str(item["repo_full_name"])
+                return "default"
+
             repos: Set[str] = set()
-            for k in self._open_prs:
-                if isinstance(k, tuple) and k[0]:
-                    repos.add(k[0])
-            for k in self._open_issues:
-                if isinstance(k, tuple) and k[0]:
-                    repos.add(k[0])
-            for k in self._approved_prs:
-                if isinstance(k, tuple) and k[0]:
-                    repos.add(k[0])
+            repo_open_prs: Dict[str, List[Dict[str, Any]]] = {}
+            repo_approved_prs: Dict[str, List[Dict[str, Any]]] = {}
+            repo_open_issues: Dict[str, List[Dict[str, Any]]] = {}
+
+            for k, p in self._open_prs.items():
+                repo = _resolve_repo(k, p)
+                repos.add(repo)
+                repo_open_prs.setdefault(repo, []).append(p)
+
+            for k, p in self._approved_prs.items():
+                repo = _resolve_repo(k, p)
+                repos.add(repo)
+                repo_approved_prs.setdefault(repo, []).append(p)
+
+            for k, i in self._open_issues.items():
+                repo = _resolve_repo(k, i)
+                repos.add(repo)
+                repo_open_issues.setdefault(repo, []).append(i)
 
             status_by_repo: Dict[str, Dict[str, Any]] = {}
             for repo in sorted(repos):
                 repo_prs = sorted(
-                    [p for p in self._open_prs.values() if p.get("repo_full_name") == repo],
-                    key=lambda x: x.get("number", 0),
+                    repo_open_prs.get(repo, []),
+                    key=lambda x: x.get("number", 0) if isinstance(x, dict) else 0,
                 )
                 repo_approved = sorted(
-                    [p for p in self._approved_prs.values() if p.get("repo_full_name") == repo],
-                    key=lambda x: x.get("number", 0),
+                    repo_approved_prs.get(repo, []),
+                    key=lambda x: x.get("number", 0) if isinstance(x, dict) else 0,
                 )
                 repo_issues = sorted(
-                    [i for i in self._open_issues.values() if i.get("repo_full_name") == repo],
-                    key=lambda x: x.get("number", 0),
+                    repo_open_issues.get(repo, []),
+                    key=lambda x: x.get("number", 0) if isinstance(x, dict) else 0,
                 )
                 status_by_repo[repo] = {
                     "open_prs": repo_prs,
@@ -523,15 +542,21 @@ class PRTracker:
             "--json",
             "number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews,updatedAt",
         ]
-        res = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
-        data = json.loads(res.stdout)
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            data = json.loads(res.stdout)
+        except Exception as e:
+            logger.debug(f"Failed to query PRs via gh CLI for {cwd}: {e}")
+            fail_res = _SyncPRResult(([], []))
+            fail_res.success = False
+            return fail_res
         approved_results = []
         open_pr_results = []
         if isinstance(data, list):
@@ -660,7 +685,9 @@ class PRTracker:
                     "updated_at": updated_at,
                 })
 
-        return approved_results, open_pr_results
+        success_res = _SyncPRResult((approved_results, open_pr_results))
+        success_res.success = True
+        return success_res
 
     def _sync_single_repo(self, cwd: Optional[str] = None) -> List[Dict[str, Any]]:
         """Synchronize approved PRs for a single repository directory (backwards compatible)."""
@@ -672,7 +699,10 @@ class PRTracker:
     ) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Synchronize repository directory via gh CLI, returning (repo_full_name, approved_prs, open_prs)."""
         repo_full_name = self._get_repo_full_name_for_dir(d)
-        approved_prs, open_prs = self._sync_single_repo_details(cwd=str(d), repo_full_name=repo_full_name)
+        res = self._sync_single_repo_details(cwd=str(d), repo_full_name=repo_full_name)
+        if getattr(res, "success", True) is False:
+            raise RuntimeError(f"Failed to sync PRs via gh CLI for {d}")
+        approved_prs, open_prs = res
         return repo_full_name, approved_prs, open_prs
 
     def _resolve_target_dirs(
@@ -953,8 +983,7 @@ class PRTracker:
         if thread and thread.is_alive() and thread != threading.current_thread():
             thread.join(timeout=timeout)
         with self._lock:
-            if thread is None or not thread.is_alive():
-                self._polling_thread = None
+            self._polling_thread = None
         logger.info("PRTracker repository background polling thread stopped.")
 
     def is_polling(self) -> bool:
