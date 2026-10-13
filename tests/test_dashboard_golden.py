@@ -81,7 +81,7 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             )
             self.assertEqual(
                 hashlib.sha256(html_out.encode()).hexdigest(),
-                "98f1124747b49933ccc6839164e04106f49a5cf90419107d56815016a9b8ec1f",
+                "d95cf613b12a4c979fc730cc9a448467d084183738efd2a0399b99d5a687abd0",
             )
 
     def test_golden_populated_state(self):
@@ -234,7 +234,7 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             )
             self.assertEqual(
                 hashlib.sha256(html_out.encode()).hexdigest(),
-                "3f03baa5dce7adfc334e21e2bf4d26191b046d758534fe2bacd0f81f9f1a562a",
+                "51e272f89efdc366c766aeef016e93267f9b026ac05701f41f3f906d72a4b7be",
             )
 
 

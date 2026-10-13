@@ -582,11 +582,13 @@ def _md_repo_status(ctx: Dict[str, Any]) -> List[str]:
             repo_name = item.get("repo_full_name") or "-"
             title_raw = str(item.get("title") or "")
             title_text = title_raw.replace("|", "-").replace("\r", " ").replace("\n", " ").replace("`", "").strip() or "-"
-            author_str = str(item.get("author") or "")
+            author_raw = item.get("author")
+            author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+            author_str = str(author_val or "").strip().lstrip("@")
             author_text = author_str.replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() if author_str else "-"
             if not author_text:
                 author_text = "-"
-            status_raw = str(item.get("status") or ("Draft" if item.get("is_draft") else "Open"))
+            status_raw = str(item.get("status") or ("DRAFT" if item.get("is_draft") else "OPEN")).strip().upper()
             status_text = status_raw.replace("|", "-").replace("`", "").strip()
             url_raw = item.get("url")
             url_val = str(url_raw or "").replace("|", "").replace("\r", "").replace("\n", "").replace("`", "").replace(")", "%29").replace("(", "%28").strip()
@@ -619,13 +621,20 @@ def _md_repo_status(ctx: Dict[str, Any]) -> List[str]:
             repo_name = item.get("repo_full_name") or "-"
             title_raw = str(item.get("title") or "")
             title_text = title_raw.replace("|", "-").replace("\r", " ").replace("\n", " ").replace("`", "").strip() or "-"
-            author_str = str(item.get("author") or "")
+            author_raw = item.get("author")
+            author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+            author_str = str(author_val or "").strip().lstrip("@")
             author_text = author_str.replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() if author_str else "-"
             if not author_text:
                 author_text = "-"
             raw_labels = item.get("labels") or []
             if isinstance(raw_labels, list) and raw_labels:
-                clean_labels = [str(l).replace("|", "-").replace("`", "").strip() for l in raw_labels[:4] if str(l).strip()]
+                clean_labels = []
+                for l in raw_labels[:4]:
+                    lbl_val = l.get("name") if isinstance(l, dict) else l
+                    lbl_clean = str(lbl_val or "").replace("|", "-").replace("`", "").strip()
+                    if lbl_clean:
+                        clean_labels.append(lbl_clean)
                 labels_str = ", ".join(f"`{l}`" for l in clean_labels) if clean_labels else "-"
             else:
                 labels_str = "-"

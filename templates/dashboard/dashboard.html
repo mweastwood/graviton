@@ -1397,7 +1397,7 @@
                         const rawParts = line.split(/(?<!\\)\|/).slice(1, -1);
                         const parts = rawParts.map(c => c.trim().replace(/\\\|/g, '|'));
                         if (parts.length > 0 && !parts.every(p => /^:?-+:?$/.test(p))) {{
-                            if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #' && !parts[0].startsWith('PR #')) {{
+                            if (parts[0] !== 'Metric' && parts[0] !== 'Task ID' && parts[0] !== 'PR #' && !parts[0].startsWith('PR #') && parts[0] !== 'Issue #' && !parts[0].startsWith('Issue #')) {{
                                 rows.push(parts);
                             }}
                         }}
@@ -1527,9 +1527,9 @@
                 for (const sub of subSecs) {{
                     const subTitle = sub.split('\n')[0].trim();
                     if (subTitle.includes('Pull Requests') || subTitle.includes('PRs')) {{
-                        openPrsRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('('));
+                        openPrsRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('(') && !r[0].includes('PR #'));
                     }} else if (subTitle.includes('Issues')) {{
-                        openIssuesRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('('));
+                        openIssuesRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('(') && !r[0].includes('Issue #'));
                     }}
                 }}
             }}
@@ -1584,7 +1584,8 @@
                             }}
                             const repoHtml = repo !== '-' ? `<code>${{repo}}</code>` : '<span class="text-muted">-</span>';
                             const authorHtml = (author && author !== '-') ? `<span class="author-badge">@${{author}}</span>` : '<span class="text-muted">-</span>';
-                            const statusPillClass = status === 'APPROVED' ? 'status-completed' : (status === 'OPEN' ? 'status-running' : (status === 'CHANGES_REQUESTED' ? 'status-failed' : 'status-queued'));
+                            const statusUpper = status.toUpperCase();
+                            const statusPillClass = statusUpper === 'APPROVED' ? 'status-completed' : (statusUpper === 'OPEN' ? 'status-running' : (statusUpper === 'CHANGES_REQUESTED' ? 'status-failed' : 'status-queued'));
                             htmlStr += `<tr><td>${{numHtml}}</td><td>${{repoHtml}}</td><td><span class="pr-title">${{title}}</span></td><td>${{authorHtml}}</td><td><span class="status-pill ${{statusPillClass}}">${{status}}</span></td><td>${{actionHtml}}</td></tr>`;
                         }}
                         htmlStr += '</tbody></table></div>';

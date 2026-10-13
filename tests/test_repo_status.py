@@ -128,6 +128,38 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
         self.assertEqual(len(repo1["approved_prs"]), 1)
         self.assertEqual(len(repo1["open_issues"]), 1)
 
+    def test_open_issues_dict_author_and_labels_normalization(self):
+        issue = {
+            "number": 201,
+            "title": "Dict fields test",
+            "repo_full_name": "owner/repo1",
+            "author": {"login": "monalisa"},
+            "labels": [{"name": "bug"}, "frontend", {"name": "urgent"}, 42],
+        }
+        self.tracker.add_open_issue(issue)
+        stored = self.tracker.get_open_issues("owner/repo1")
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["author"], "monalisa")
+        self.assertEqual(stored[0]["labels"], ["bug", "frontend", "urgent", "42"])
+
+    def test_get_repo_status_deterministic_ordering(self):
+        self.tracker.add_open_pr({"number": 30, "repo_full_name": "owner/repo1", "title": "PR 30"})
+        self.tracker.add_open_pr({"number": 10, "repo_full_name": "owner/repo1", "title": "PR 10"})
+        self.tracker.add_open_pr({"number": 20, "repo_full_name": "owner/repo1", "title": "PR 20"})
+
+        self.tracker.add_approved_pr({"number": 50, "repo_full_name": "owner/repo1", "title": "Approved 50"})
+        self.tracker.add_approved_pr({"number": 15, "repo_full_name": "owner/repo1", "title": "Approved 15"})
+
+        self.tracker.add_open_issue({"number": 99, "repo_full_name": "owner/repo1", "title": "Issue 99"})
+        self.tracker.add_open_issue({"number": 12, "repo_full_name": "owner/repo1", "title": "Issue 12"})
+        self.tracker.add_open_issue({"number": 45, "repo_full_name": "owner/repo1", "title": "Issue 45"})
+
+        status = self.tracker.get_repo_status()
+        repo = status["repos"]["owner/repo1"]
+        self.assertEqual([p["number"] for p in repo["open_prs"]], [10, 20, 30])
+        self.assertEqual([p["number"] for p in repo["approved_prs"]], [15, 50])
+        self.assertEqual([i["number"] for i in repo["open_issues"]], [12, 45, 99])
+
     @patch("subprocess.run")
     def test_sync_issues_single_repo(self, mock_run):
         mock_git_remote = MagicMock(returncode=0, stdout="https://github.com/test-owner/test-repo.git\n")
@@ -300,6 +332,28 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
             self.assertGreaterEqual(mock_sync.call_count, 1)
             self.assertGreaterEqual(len(sync_calls), 1)
 
+    def test_background_polling_stop_event_avoids_on_sync(self):
+        sync_called = False
+        on_sync_called = False
+
+        def fake_sync(*args, **kwargs):
+            nonlocal sync_called
+            sync_called = True
+            self.tracker._stop_polling_event.set()
+            return {}
+
+        def fake_on_sync(*args, **kwargs):
+            nonlocal on_sync_called
+            on_sync_called = True
+
+        with patch.object(self.tracker, "sync_repository_status", side_effect=fake_sync):
+            self.tracker.start_background_polling(poll_interval=10.0, on_sync=fake_on_sync)
+            time.sleep(0.1)
+            self.tracker.stop_background_polling()
+            self.assertTrue(sync_called)
+            self.assertFalse(on_sync_called)
+            self.assertIsNone(self.tracker._polling_thread)
+
     def test_tracker_aliases(self):
         self.assertIs(RepoTracker, PRTracker)
         self.assertIs(RepoStatusTracker, PRTracker)
@@ -375,6 +429,69 @@ class TestRepoStatusDashboard(unittest.TestCase):
         self.assertIn("1 Issues", html)
         self.assertIn("Support multi-repo polling", html)
         self.assertIn("Need live polling dashboard", html)
+
+    def test_markdown_and_html_dict_normalization_and_status(self):
+        extra_info = {
+            "open_prs": [
+                {
+                    "repo_full_name": "owner/repo1",
+                    "number": 15,
+                    "title": "PR with dict author",
+                    "author": {"login": "hubot"},
+                    "url": "https://github.com/owner/repo1/pull/15",
+                    "status": "open",
+                    "is_draft": False,
+                }
+            ],
+            "open_issues": [
+                {
+                    "repo_full_name": "owner/repo1",
+                    "number": 88,
+                    "title": "Issue with dict labels",
+                    "author": {"login": "octocat"},
+                    "url": "https://github.com/owner/repo1/issues/88",
+                    "labels": [{"name": "bug"}, {"name": "ui"}],
+                }
+            ],
+        }
+
+        md = format_dashboard_markdown(host="127.0.0.1", port=8000, extra_info=extra_info)
+        self.assertIn("`@hubot`", md)
+        self.assertNotIn("@{'login'", md)
+        self.assertIn("`@octocat`", md)
+        self.assertIn("`bug`, `ui`", md)
+        self.assertNotIn("{'name'", md)
+        self.assertIn("`OPEN`", md)
+
+        html = render_dashboard_html(md, host="127.0.0.1", port=8000, extra_info=extra_info)
+        self.assertIn("statusUpper === 'APPROVED'", html)
+        self.assertIn("parts[0] !== 'Issue #'", html)
+
+    def test_parser_fallback_cells0_link_and_no_cells4_fallback(self):
+        table_md = (
+            "## 📦 Repository Status\n\n"
+            "### Open Pull Requests\n\n"
+            "| PR # | Repository | Title | Author | Status |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#42`](https://github.com/owner/repo/pull/42) | `owner/repo` | Test PR | `@alice` | [`CHANGES`](https://evil.com) |\n\n"
+            "### Open Issues\n\n"
+            "| Issue # | Repository | Title | Author | Labels |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| [`#99`](https://github.com/owner/repo/issues/99) | `owner/repo` | Test Issue | `@bob` | [`bug`](https://evil.com) |\n"
+        )
+        parsed = parse_dashboard_markdown(table_md)
+        prs = parsed.get("open_prs", [])
+        issues = parsed.get("open_issues", [])
+
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(prs[0]["number"], 42)
+        self.assertEqual(prs[0]["url"], "https://github.com/owner/repo/pull/42")
+        self.assertNotEqual(prs[0]["url"], "https://evil.com")
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["number"], 99)
+        self.assertEqual(issues[0]["url"], "https://github.com/owner/repo/issues/99")
+        self.assertNotEqual(issues[0]["url"], "https://evil.com")
 
 
 class TestRepoStatusServerIntegration(unittest.TestCase):

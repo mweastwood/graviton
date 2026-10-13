@@ -386,7 +386,15 @@ class PRTracker:
         repo_str = repo_full_name or ""
         key = (repo_str, num_int)
 
-        labels_list = list(labels) if labels is not None else []
+        labels_list = []
+        if labels is not None:
+            for l in labels:
+                if isinstance(l, dict) and "name" in l:
+                    labels_list.append(str(l["name"]))
+                elif isinstance(l, str):
+                    labels_list.append(l)
+                elif l is not None:
+                    labels_list.append(str(l))
 
         with self._lock:
             self._open_issues[key] = {
@@ -446,9 +454,18 @@ class PRTracker:
 
             status_by_repo: Dict[str, Dict[str, Any]] = {}
             for repo in sorted(repos):
-                repo_prs = [p for p in self._open_prs.values() if p.get("repo_full_name") == repo]
-                repo_approved = [p for p in self._approved_prs.values() if p.get("repo_full_name") == repo]
-                repo_issues = [i for i in self._open_issues.values() if i.get("repo_full_name") == repo]
+                repo_prs = sorted(
+                    [p for p in self._open_prs.values() if p.get("repo_full_name") == repo],
+                    key=lambda x: x.get("number", 0),
+                )
+                repo_approved = sorted(
+                    [p for p in self._approved_prs.values() if p.get("repo_full_name") == repo],
+                    key=lambda x: x.get("number", 0),
+                )
+                repo_issues = sorted(
+                    [i for i in self._open_issues.values() if i.get("repo_full_name") == repo],
+                    key=lambda x: x.get("number", 0),
+                )
                 status_by_repo[repo] = {
                     "open_prs": repo_prs,
                     "approved_prs": repo_approved,
@@ -933,9 +950,11 @@ class PRTracker:
         self._stop_polling_event.set()
         with self._lock:
             thread = self._polling_thread
-            self._polling_thread = None
         if thread and thread.is_alive() and thread != threading.current_thread():
             thread.join(timeout=timeout)
+        with self._lock:
+            if thread is None or not thread.is_alive():
+                self._polling_thread = None
         logger.info("PRTracker repository background polling thread stopped.")
 
     def is_polling(self) -> bool:
@@ -957,6 +976,8 @@ class PRTracker:
         while not self._stop_polling_event.is_set():
             try:
                 st = self.sync_repository_status(repo_root=repo_root, repos_dir=repos_dir, force=True)
+                if self._stop_polling_event.is_set():
+                    break
                 if self._on_sync:
                     try:
                         self._on_sync(st)

@@ -466,8 +466,8 @@ def _parse_repo_status(sec_str: str) -> Tuple[List[Dict[str, Any]], List[Dict[st
                             url_cell = m_link.group(1).strip()
                         elif is_safe_url(cells[5].strip()):
                             url_cell = cells[5].strip()
-                    elif len(cells) == 5:
-                        m_link = MD_LINK_PATTERN.search(cells[4])
+                    if not url_cell and cells[0]:
+                        m_link = MD_LINK_PATTERN.search(cells[0])
                         if m_link and is_safe_url(m_link.group(1).strip()):
                             url_cell = m_link.group(1).strip()
                     if not url_cell and repo_cell and repo_cell != "-" and pr_num:
@@ -502,8 +502,8 @@ def _parse_repo_status(sec_str: str) -> Tuple[List[Dict[str, Any]], List[Dict[st
                             url_cell = m_link.group(1).strip()
                         elif is_safe_url(cells[5].strip()):
                             url_cell = cells[5].strip()
-                    elif len(cells) == 5:
-                        m_link = MD_LINK_PATTERN.search(cells[4])
+                    if not url_cell and cells[0]:
+                        m_link = MD_LINK_PATTERN.search(cells[0])
                         if m_link and is_safe_url(m_link.group(1).strip()):
                             url_cell = m_link.group(1).strip()
                     if not url_cell and repo_cell and repo_cell != "-" and issue_num:
