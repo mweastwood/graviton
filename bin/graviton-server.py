@@ -81,6 +81,7 @@ def graceful_shutdown(
     scheduler: Optional[TaskScheduler] = None,
     httpd: Optional[HTTPServer] = None,
     quota_tracker: Optional[QuotaTracker] = None,
+    pr_tracker: Optional[PRTracker] = None,
     grace_period: float = 3.0,
     timeout: Optional[float] = None,
 ) -> threading.Thread:
@@ -98,11 +99,13 @@ def graceful_shutdown(
         _is_shutting_down = True
 
         def _shutdown_worker():
+            pt = pr_tracker or getattr(GravitonHandler, "pr_tracker", None)
             run_graceful_shutdown(
                 task_manager=task_manager,
                 scheduler=scheduler,
                 httpd=httpd,
                 quota_tracker=quota_tracker,
+                pr_tracker=pt,
                 grace_period=grace_period,
                 timeout=timeout,
                 logger=logger,
@@ -234,6 +237,15 @@ class GravitonHandler(BaseHTTPRequestHandler):
             sched = GravitonHandler.scheduler
             tasks_info = self.task_manager.get_stats() if self.task_manager else {}
             quota_info = self.quota_tracker.get_info().to_dict() if self.quota_tracker else {}
+            pr_tracker = getattr(self, "pr_tracker", None) or GravitonHandler.pr_tracker
+            if pr_tracker and not isinstance(pr_tracker, (type, type(None))):
+                try:
+                    res = pr_tracker.get_repo_status()
+                    repo_status_info = res if isinstance(res, dict) else {}
+                except Exception:
+                    repo_status_info = {}
+            else:
+                repo_status_info = {}
             active_rc_urls = {}
             if self.task_manager:
                 active_rc_urls = {
@@ -254,7 +266,28 @@ class GravitonHandler(BaseHTTPRequestHandler):
                 "tasks": tasks_info,
                 "active_remote_control_urls": active_rc_urls,
                 "quota": quota_info,
+                "repo_status": repo_status_info,
             })
+        elif path_clean in ("/repo/status", "/repos/status", "/repos"):
+            pr_tracker = getattr(self, "pr_tracker", None) or GravitonHandler.pr_tracker
+            default_summary = {
+                "repos": {},
+                "summary": {
+                    "total_repos": 0,
+                    "total_open_prs": 0,
+                    "total_approved_prs": 0,
+                    "total_open_issues": 0,
+                },
+            }
+            if pr_tracker and not isinstance(pr_tracker, (type, type(None))):
+                try:
+                    res = pr_tracker.get_repo_status()
+                    repo_status_info = res if isinstance(res, dict) else default_summary
+                except Exception:
+                    repo_status_info = default_summary
+            else:
+                repo_status_info = default_summary
+            self._send_json(200, repo_status_info)
         elif path_clean == "/tasks":
             if not self.task_manager:
                 self._send_json(200, {"active": [], "queued": [], "history": [], "stats": {}})
@@ -888,6 +921,34 @@ def main():
         action="store_false",
         help="Disable automatic background polling for live model quota",
     )
+    raw_repo_poll = os.getenv("GRAVITON_REPO_POLL_INTERVAL") or os.getenv("REPO_POLL_INTERVAL", "60.0")
+    try:
+        default_repo_poll_interval = float(raw_repo_poll)
+        if default_repo_poll_interval <= 0:
+            default_repo_poll_interval = 60.0
+    except (ValueError, TypeError):
+        default_repo_poll_interval = 60.0
+
+    parser.add_argument(
+        "--repo-poll-interval",
+        type=float,
+        default=default_repo_poll_interval,
+        help="Interval in seconds for background repository status (PRs & issues) polling loop (default: 60.0, env: GRAVITON_REPO_POLL_INTERVAL or REPO_POLL_INTERVAL)",
+    )
+    raw_repo_bg = os.getenv("GRAVITON_REPO_BACKGROUND_POLLING") or os.getenv("REPO_BACKGROUND_POLLING", "true")
+    parser.add_argument(
+        "--repo-background-polling",
+        dest="repo_background_polling",
+        action="store_true",
+        default=raw_repo_bg.lower() in ("1", "true", "yes"),
+        help="Enable automatic background periodic polling for repository status (PRs & issues) (default: True, env: GRAVITON_REPO_BACKGROUND_POLLING or REPO_BACKGROUND_POLLING)",
+    )
+    parser.add_argument(
+        "--no-repo-background-polling",
+        dest="repo_background_polling",
+        action="store_false",
+        help="Disable automatic background periodic polling for repository status",
+    )
     parser.add_argument("--quit-grace-period", type=float, default=float(os.getenv("QUIT_GRACE_PERIOD", "3.0")), help="Grace period (seconds) to accept webhooks after draining active tasks during shutdown (default: 3.0)")
     parser.add_argument(
         "--supervisor",
@@ -962,6 +1023,7 @@ def main():
     scheduler = None
     dashboard_updater = None
     task_manager = None
+    pr_tracker = None
     httpd = None
     shutdown_thread: Optional[threading.Thread] = None
 
@@ -1040,7 +1102,30 @@ def main():
         GravitonHandler.scheduler = scheduler
 
         pr_tracker = PRTracker()
-        pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
+        if getattr(args, "repo_background_polling", True):
+            def _on_repo_sync(status):
+                if dashboard_updater:
+                    dashboard_updater.trigger_update()
+
+            repo_poll_int = getattr(args, "repo_poll_interval", 60.0)
+            try:
+                val = float(repo_poll_int)
+                if val > 0.0 and math.isfinite(val):
+                    repo_poll_int = val
+                else:
+                    repo_poll_int = 60.0
+            except (ValueError, TypeError):
+                repo_poll_int = 60.0
+
+            pr_tracker.start_background_polling(
+                repo_root=REPO_ROOT,
+                repos_dir=repos_dir,
+                poll_interval=repo_poll_int,
+                on_sync=_on_repo_sync,
+            )
+            logger.info(f"Started PRTracker background polling thread for repository status (every {repo_poll_int}s).")
+        else:
+            pr_tracker.sync_in_background(repo_root=REPO_ROOT, repos_dir=repos_dir)
         GravitonHandler.pr_tracker = pr_tracker
         GravitonHandler.use_supervisor = args.use_supervisor
 
@@ -1059,6 +1144,7 @@ def main():
                 scheduler=scheduler,
                 httpd=httpd,
                 quota_tracker=quota_tracker,
+                pr_tracker=pr_tracker,
                 grace_period=args.quit_grace_period,
             )
 
@@ -1146,6 +1232,11 @@ def main():
         if scheduler:
             try:
                 scheduler.stop()
+            except Exception:
+                pass
+        if pr_tracker:
+            try:
+                pr_tracker.stop_background_polling()
             except Exception:
                 pass
         if task_manager:

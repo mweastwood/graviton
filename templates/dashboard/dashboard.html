@@ -888,6 +888,22 @@
             </div>
         </div>
 
+        <!-- Repository Status (PRs & Issues) Section -->
+        <div class="card section-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>📦 Repository Status (PRs &amp; Issues)</h2>
+                </div>
+                <div class="header-counters" style="display: flex; gap: 8px;">
+                    <span id="repo-prs-count" class="badge badge-counter">{open_prs_count} PRs</span>
+                    <span id="repo-issues-count" class="badge badge-counter">{open_issues_count} Issues</span>
+                </div>
+            </div>
+            <div id="repo-status-container">
+                {repo_status_html}
+            </div>
+        </div>
+
         <!-- Recent Task Execution History Table -->
         <div class="card section-card">
             <div class="section-header">
@@ -1357,12 +1373,13 @@
 
             // 4. Tables Parsing
             const sections = md.split(/^##\s+/m);
-            let activeSec = '', queuedSec = '', approvedSec = '', historySec = '';
+            let activeSec = '', queuedSec = '', approvedSec = '', repoStatusSec = '', historySec = '';
             for (const sec of sections) {{
                 const firstLine = sec.split('\n')[0].trim();
                 if (firstLine.includes('Active Container Tasks')) activeSec = sec;
                 else if (firstLine.includes('Queued Tasks')) queuedSec = sec;
                 else if (firstLine.includes('Approved Pull Requests') || firstLine.includes('Ready to Merge')) approvedSec = sec;
+                else if (firstLine.includes('Repository Status')) repoStatusSec = sec;
                 else if (firstLine.includes('Recent Task Execution History')) historySec = sec;
             }}
 
@@ -1494,6 +1511,132 @@
                     }}
                     htmlStr += '</tbody></table></div>';
                     approvedContainer.innerHTML = htmlStr;
+                }}
+            }}
+
+            // Repository Status (PRs & Issues) Section
+            let openPrsRows = [];
+            let openIssuesRows = [];
+            if (repoStatusSec) {{
+                const subSecs = repoStatusSec.split(/^###\s+/m);
+                for (const sub of subSecs) {{
+                    const subTitle = sub.split('\n')[0].trim();
+                    if (subTitle.includes('Pull Requests') || subTitle.includes('PRs')) {{
+                        openPrsRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('('));
+                    }} else if (subTitle.includes('Issues')) {{
+                        openIssuesRows = parseTableRows(sub).filter(r => r.length >= 4 && !r[0].startsWith('('));
+                    }}
+                }}
+            }}
+            const repoPrsCount = document.getElementById('repo-prs-count');
+            if (repoPrsCount) repoPrsCount.textContent = `${{openPrsRows.length}} PRs`;
+            const repoIssuesCount = document.getElementById('repo-issues-count');
+            if (repoIssuesCount) repoIssuesCount.textContent = `${{openIssuesRows.length}} Issues`;
+
+            const repoStatusContainer = document.getElementById('repo-status-container');
+            if (repoStatusContainer) {{
+                if (openPrsRows.length === 0 && openIssuesRows.length === 0) {{
+                    repoStatusContainer.innerHTML = '<div class="empty-card"><span class="empty-icon">📦</span><p class="empty-text">No open pull requests or issues tracked.</p></div>';
+                }} else {{
+                    let htmlStr = '';
+                    // Open PRs
+                    htmlStr += '<h3 style="margin-top: 0; margin-bottom: 12px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;"><span>🔀</span> Open Pull Requests</h3>';
+                    if (openPrsRows.length === 0) {{
+                        htmlStr += '<div class="empty-card" style="padding: 16px; margin-bottom: 20px;"><p class="empty-text">No open pull requests.</p></div>';
+                    }} else {{
+                        htmlStr += '<div class="table-wrapper"><table class="data-table"><thead><tr><th>PR #</th><th>Repository</th><th>Title</th><th>Author</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+                        for (const r of openPrsRows) {{
+                            const prMatch = r[0].match(/\[.*?#?(\d+).*?\]\((.*?)\)/);
+                            let prNum = '';
+                            let prUrl = '';
+                            if (prMatch) {{
+                                prNum = escapeHtml(prMatch[1]);
+                                const candUrl = prMatch[2].trim();
+                                if (isSafeUrl(candUrl)) prUrl = candUrl;
+                            }} else {{
+                                const digitsMatch = r[0].match(/\d+/);
+                                prNum = digitsMatch ? digitsMatch[0] : escapeHtml(r[0].replace(/[`#]/g, '').trim());
+                            }}
+                            const rawRepo = r[1].replace(/`/g, '').trim();
+                            const repo = escapeHtml(rawRepo);
+                            const title = escapeHtml(r[2]);
+                            const author = escapeHtml(r[3].replace(/[`@]/g, ''));
+                            const status = r.length >= 5 ? escapeHtml(r[4].replace(/[`]/g, '').trim()) : 'OPEN';
+                            if (!prUrl && r.length >= 6) {{
+                                const urlMatch = r[5].match(/\[(.*?)\]\((.*?)\)/);
+                                if (urlMatch && isSafeUrl(urlMatch[2].trim())) prUrl = urlMatch[2].trim();
+                                else if (isSafeUrl(r[5].trim())) prUrl = r[5].trim();
+                            }}
+                            const hasNum = Boolean(prNum && prNum !== '-' && prNum !== 'None' && prNum !== '0');
+                            if (!prUrl && rawRepo && rawRepo !== '-' && hasNum) {{
+                                prUrl = `https://github.com/${{rawRepo}}/pull/${{prNum}}`;
+                            }}
+                            let numHtml = hasNum ? `<code>#${{prNum}}</code>` : '<span class="text-muted">-</span>';
+                            let actionHtml = '<span class="text-muted">-</span>';
+                            if (prUrl && isSafeUrl(prUrl)) {{
+                                numHtml = hasNum ? `<a href="${{escapeHtml(prUrl)}}" target="_blank" rel="noopener"><code>#${{prNum}}</code></a>` : '<span class="text-muted">-</span>';
+                                actionHtml = `<a href="${{escapeHtml(prUrl)}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View PR ↗</a>`;
+                            }}
+                            const repoHtml = repo !== '-' ? `<code>${{repo}}</code>` : '<span class="text-muted">-</span>';
+                            const authorHtml = (author && author !== '-') ? `<span class="author-badge">@${{author}}</span>` : '<span class="text-muted">-</span>';
+                            const statusPillClass = (status === 'APPROVED' || status === 'OPEN') ? 'status-running' : (status === 'DRAFT' ? 'status-queued' : 'status-failed');
+                            htmlStr += `<tr><td>${{numHtml}}</td><td>${{repoHtml}}</td><td><span class="pr-title">${{title}}</span></td><td>${{authorHtml}}</td><td><span class="status-pill ${{statusPillClass}}">${{status}}</span></td><td>${{actionHtml}}</td></tr>`;
+                        }}
+                        htmlStr += '</tbody></table></div>';
+                    }}
+
+                    // Open Issues
+                    htmlStr += '<h3 style="margin-top: 24px; margin-bottom: 12px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;"><span>📌</span> Open Issues</h3>';
+                    if (openIssuesRows.length === 0) {{
+                        htmlStr += '<div class="empty-card" style="padding: 16px;"><p class="empty-text">No open issues.</p></div>';
+                    }} else {{
+                        htmlStr += '<div class="table-wrapper"><table class="data-table"><thead><tr><th>Issue #</th><th>Repository</th><th>Title</th><th>Author</th><th>Labels</th><th>Action</th></tr></thead><tbody>';
+                        for (const r of openIssuesRows) {{
+                            const issMatch = r[0].match(/\[.*?#?(\d+).*?\]\((.*?)\)/);
+                            let issNum = '';
+                            let issUrl = '';
+                            if (issMatch) {{
+                                issNum = escapeHtml(issMatch[1]);
+                                const candUrl = issMatch[2].trim();
+                                if (isSafeUrl(candUrl)) issUrl = candUrl;
+                            }} else {{
+                                const digitsMatch = r[0].match(/\d+/);
+                                issNum = digitsMatch ? digitsMatch[0] : escapeHtml(r[0].replace(/[`#]/g, '').trim());
+                            }}
+                            const rawRepo = r[1].replace(/`/g, '').trim();
+                            const repo = escapeHtml(rawRepo);
+                            const title = escapeHtml(r[2]);
+                            const author = escapeHtml(r[3].replace(/[`@]/g, ''));
+                            const rawLabels = r.length >= 5 ? r[4] : '';
+                            let labelsHtml = '<span class="text-muted">-</span>';
+                            if (rawLabels && rawLabels !== '-') {{
+                                const parts = rawLabels.split(',').map(l => l.replace(/[`]/g, '').trim()).filter(Boolean);
+                                if (parts.length > 0) {{
+                                    labelsHtml = parts.slice(0, 4).map(l => `<span class="agent-badge">${{escapeHtml(l)}}</span>`).join(' ');
+                                }}
+                            }}
+                            if (!issUrl && r.length >= 6) {{
+                                const urlMatch = r[5].match(/\[(.*?)\]\((.*?)\)/);
+                                if (urlMatch && isSafeUrl(urlMatch[2].trim())) issUrl = urlMatch[2].trim();
+                                else if (isSafeUrl(r[5].trim())) issUrl = r[5].trim();
+                            }}
+                            const hasNum = Boolean(issNum && issNum !== '-' && issNum !== 'None' && issNum !== '0');
+                            if (!issUrl && rawRepo && rawRepo !== '-' && hasNum) {{
+                                issUrl = `https://github.com/${{rawRepo}}/issues/${{issNum}}`;
+                            }}
+                            let numHtml = hasNum ? `<code>#${{issNum}}</code>` : '<span class="text-muted">-</span>';
+                            let actionHtml = '<span class="text-muted">-</span>';
+                            if (issUrl && isSafeUrl(issUrl)) {{
+                                numHtml = hasNum ? `<a href="${{escapeHtml(issUrl)}}" target="_blank" rel="noopener"><code>#${{issNum}}</code></a>` : '<span class="text-muted">-</span>';
+                                actionHtml = `<a href="${{escapeHtml(issUrl)}}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View Issue ↗</a>`;
+                            }}
+                            const repoHtml = repo !== '-' ? `<code>${{repo}}</code>` : '<span class="text-muted">-</span>';
+                            const authorHtml = (author && author !== '-') ? `<span class="author-badge">@${{author}}</span>` : '<span class="text-muted">-</span>';
+                            htmlStr += `<tr><td>${{numHtml}}</td><td>${{repoHtml}}</td><td><span class="pr-title">${{title}}</span></td><td>${{authorHtml}}</td><td>${{labelsHtml}}</td><td>${{actionHtml}}</td></tr>`;
+                        }}
+                        htmlStr += '</tbody></table></div>';
+                    }}
+                    repoStatusContainer.innerHTML = htmlStr;
                 }}
             }}
 

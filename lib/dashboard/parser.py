@@ -434,6 +434,91 @@ def _parse_prs(sec_str: str) -> List[Dict[str, Any]]:
     return approved_prs_list
 
 
+def _parse_repo_status(sec_str: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Parse open pull requests and open issues from the repository status section string."""
+    prs: List[Dict[str, Any]] = []
+    issues: List[Dict[str, Any]] = []
+    subsections = re.split(r"(?m)^###\s+", sec_str)
+    for sub in subsections:
+        lines = sub.strip().splitlines()
+        if not lines:
+            continue
+        sub_title = lines[0].strip()
+        rows = _extract_table_rows(lines)
+        if "Pull Requests" in sub_title or "PRs" in sub_title:
+            for cells in rows:
+                if len(cells) >= 4 and not cells[0].startswith("(") and "PR #" not in cells[0]:
+                    pr_num = None
+                    digits_match = re.search(r"\d+", cells[0])
+                    if digits_match:
+                        try:
+                            pr_num = int(digits_match.group(0))
+                        except (ValueError, TypeError):
+                            pass
+                    repo_cell = cells[1].strip("` ")
+                    title_cell = cells[2].strip()
+                    author_cell = cells[3].strip("@` ")
+                    status_cell = cells[4].strip("` ") if len(cells) >= 5 else "OPEN"
+                    url_cell = ""
+                    if len(cells) >= 6:
+                        m_link = MD_LINK_PATTERN.search(cells[5])
+                        if m_link and is_safe_url(m_link.group(1).strip()):
+                            url_cell = m_link.group(1).strip()
+                        elif is_safe_url(cells[5].strip()):
+                            url_cell = cells[5].strip()
+                    elif len(cells) == 5:
+                        m_link = MD_LINK_PATTERN.search(cells[4])
+                        if m_link and is_safe_url(m_link.group(1).strip()):
+                            url_cell = m_link.group(1).strip()
+                    if not url_cell and repo_cell and repo_cell != "-" and pr_num:
+                        url_cell = f"https://github.com/{repo_cell}/pull/{pr_num}"
+                    prs.append({
+                        "number": pr_num,
+                        "repo_full_name": repo_cell,
+                        "title": title_cell,
+                        "author": author_cell,
+                        "status": status_cell,
+                        "url": url_cell,
+                    })
+        elif "Issues" in sub_title:
+            for cells in rows:
+                if len(cells) >= 4 and not cells[0].startswith("(") and "Issue #" not in cells[0]:
+                    issue_num = None
+                    digits_match = re.search(r"\d+", cells[0])
+                    if digits_match:
+                        try:
+                            issue_num = int(digits_match.group(0))
+                        except (ValueError, TypeError):
+                            pass
+                    repo_cell = cells[1].strip("` ")
+                    title_cell = cells[2].strip()
+                    author_cell = cells[3].strip("@` ")
+                    labels_raw = cells[4].strip() if len(cells) >= 5 else ""
+                    labels = [l.strip("` ") for l in labels_raw.split(",") if l.strip("` ")] if labels_raw != "-" else []
+                    url_cell = ""
+                    if len(cells) >= 6:
+                        m_link = MD_LINK_PATTERN.search(cells[5])
+                        if m_link and is_safe_url(m_link.group(1).strip()):
+                            url_cell = m_link.group(1).strip()
+                        elif is_safe_url(cells[5].strip()):
+                            url_cell = cells[5].strip()
+                    elif len(cells) == 5:
+                        m_link = MD_LINK_PATTERN.search(cells[4])
+                        if m_link and is_safe_url(m_link.group(1).strip()):
+                            url_cell = m_link.group(1).strip()
+                    if not url_cell and repo_cell and repo_cell != "-" and issue_num:
+                        url_cell = f"https://github.com/{repo_cell}/issues/{issue_num}"
+                    issues.append({
+                        "number": issue_num,
+                        "repo_full_name": repo_cell,
+                        "title": title_cell,
+                        "author": author_cell,
+                        "labels": labels,
+                        "url": url_cell,
+                    })
+    return prs, issues
+
+
 def _parse_history(sec_str: str) -> List[Dict[str, Any]]:
     """Parse recent execution history from the history section string."""
     sec_lines = sec_str.strip().splitlines()
@@ -597,6 +682,8 @@ def parse_dashboard_markdown(
     queued_tasks: List[Dict[str, Any]] = []
     history_tasks: List[Dict[str, Any]] = []
     approved_prs_list: List[Dict[str, Any]] = []
+    open_prs_list: List[Dict[str, Any]] = []
+    open_issues_list: List[Dict[str, Any]] = []
 
     sections = SECTION_SPLIT_PATTERN.split(markdown_content)
     for sec in sections:
@@ -611,6 +698,8 @@ def parse_dashboard_markdown(
             queued_tasks = _parse_queued(sec)
         elif "Approved Pull Requests" in title_line or "Ready to Merge" in title_line or "Mergeable" in title_line:
             approved_prs_list = _parse_prs(sec)
+        elif "Repository Status" in title_line:
+            open_prs_list, open_issues_list = _parse_repo_status(sec)
         elif "Recent Task Execution History" in title_line:
             history_tasks = _parse_history(sec)
 
@@ -625,5 +714,7 @@ def parse_dashboard_markdown(
         "queued_tasks_list": queued_tasks,
         "history_tasks": history_tasks,
         "approved_prs": approved_prs_list,
+        "open_prs": open_prs_list,
+        "open_issues": open_issues_list,
     }
     return result
