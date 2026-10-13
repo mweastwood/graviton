@@ -154,6 +154,106 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
         self.assertEqual(issues[0]["labels"], ["bug"])
 
     @patch("subprocess.run")
+    def test_sync_single_repo_details_open_prs(self, mock_run):
+        raw_prs = [
+            {
+                "number": 101,
+                "title": "Feature PR",
+                "url": "https://github.com/test-owner/test-repo/pull/101",
+                "author": {"login": "alice"},
+                "reviewDecision": "APPROVED",
+                "isDraft": False,
+                "latestReviews": [],
+                "comments": [],
+                "reviews": [],
+                "updatedAt": "2026-10-12T14:00:00Z",
+            },
+            {
+                "number": 102,
+                "title": "WIP Draft PR",
+                "url": "https://github.com/test-owner/test-repo/pull/102",
+                "author": {"login": "bob"},
+                "reviewDecision": "",
+                "isDraft": True,
+                "latestReviews": [],
+                "comments": [],
+                "reviews": [],
+                "updatedAt": "2026-10-12T15:00:00Z",
+            },
+            {
+                "number": 103,
+                "title": "Fix bug requiring changes",
+                "url": "https://github.com/test-owner/test-repo/pull/103",
+                "author": {"login": "charlie"},
+                "reviewDecision": "CHANGES_REQUESTED",
+                "isDraft": False,
+                "latestReviews": [],
+                "comments": [],
+                "reviews": [],
+                "updatedAt": "2026-10-12T16:00:00Z",
+            },
+            {
+                "number": 104,
+                "title": "PR awaiting review",
+                "url": "https://github.com/test-owner/test-repo/pull/104",
+                "author": {"login": "dave"},
+                "reviewDecision": "",
+                "isDraft": False,
+                "latestReviews": [],
+                "comments": [],
+                "reviews": [],
+                "updatedAt": "2026-10-12T17:00:00Z",
+            },
+        ]
+        mock_gh = MagicMock(returncode=0, stdout=json.dumps(raw_prs))
+        mock_run.return_value = mock_gh
+
+        approved, open_prs = self.tracker._sync_single_repo_details(
+            cwd="/fake/repo", repo_full_name="test-owner/test-repo"
+        )
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("updatedAt", cmd[cmd.index("--json") + 1])
+
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0]["number"], 101)
+
+        self.assertEqual(len(open_prs), 4)
+
+        # 1. Approved PR
+        pr101 = next(p for p in open_prs if p["number"] == 101)
+        self.assertEqual(pr101["title"], "Feature PR")
+        self.assertEqual(pr101["author"], "alice")
+        self.assertEqual(pr101["url"], "https://github.com/test-owner/test-repo/pull/101")
+        self.assertEqual(pr101["status"], "APPROVED")
+        self.assertEqual(pr101["review_decision"], "APPROVED")
+        self.assertFalse(pr101["is_draft"])
+        self.assertEqual(pr101["updated_at"], "2026-10-12T14:00:00Z")
+        self.assertEqual(pr101["repo_full_name"], "test-owner/test-repo")
+
+        # 2. Draft PR
+        pr102 = next(p for p in open_prs if p["number"] == 102)
+        self.assertEqual(pr102["status"], "DRAFT")
+        self.assertEqual(pr102["review_decision"], "")
+        self.assertTrue(pr102["is_draft"])
+        self.assertEqual(pr102["updated_at"], "2026-10-12T15:00:00Z")
+
+        # 3. Changes requested PR
+        pr103 = next(p for p in open_prs if p["number"] == 103)
+        self.assertEqual(pr103["status"], "CHANGES_REQUESTED")
+        self.assertEqual(pr103["review_decision"], "CHANGES_REQUESTED")
+        self.assertFalse(pr103["is_draft"])
+        self.assertEqual(pr103["updated_at"], "2026-10-12T16:00:00Z")
+
+        # 4. Awaiting review PR
+        pr104 = next(p for p in open_prs if p["number"] == 104)
+        self.assertEqual(pr104["status"], "AWAITING_REVIEW")
+        self.assertEqual(pr104["review_decision"], "")
+        self.assertFalse(pr104["is_draft"])
+        self.assertEqual(pr104["updated_at"], "2026-10-12T17:00:00Z")
+
+    @patch("subprocess.run")
     def test_sync_github_issues_caching(self, mock_run):
         mock_git_remote = MagicMock(returncode=0, stdout="git@github.com:org/repo.git\n")
         raw_issues = [{"number": 1, "title": "Issue 1", "url": "url", "author": {"login": "user"}, "labels": []}]

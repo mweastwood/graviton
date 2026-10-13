@@ -357,7 +357,14 @@ def _render_open_prs_table(open_prs: List[Dict[str, Any]]) -> str:
 
         repo_html = f'<code>{repo}</code>' if repo != "-" else '<span class="text-muted">-</span>'
         author_html = f'<span class="author-badge">@{author}</span>' if author != "-" else '<span class="text-muted">-</span>'
-        status_pill_class = "status-running" if status in ("APPROVED", "OPEN") else ("status-queued" if status == "DRAFT" else "status-failed")
+        if status == "APPROVED":
+            status_pill_class = "status-completed"
+        elif status == "OPEN":
+            status_pill_class = "status-running"
+        elif status == "CHANGES_REQUESTED":
+            status_pill_class = "status-failed"
+        else:
+            status_pill_class = "status-queued"
         status_html = f'<span class="status-pill {status_pill_class}">{status}</span>'
 
         rows.append(

@@ -504,7 +504,7 @@ class PRTracker:
             "--limit",
             "300",
             "--json",
-            "number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews",
+            "number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews,updatedAt",
         ]
         res = subprocess.run(
             cmd,
@@ -639,6 +639,7 @@ class PRTracker:
                     "url": url,
                     "is_draft": is_draft,
                     "status": status,
+                    "review_decision": review_decision,
                     "updated_at": updated_at,
                 })
 
@@ -649,19 +650,13 @@ class PRTracker:
         approved, _ = self._sync_single_repo_details(cwd=cwd)
         return approved
 
-    def _sync_directory(self, d: Path) -> Tuple[str, List[Dict[str, Any]]]:
-        """Synchronize repository directory via gh CLI, updating open PRs cache and returning approved PRs."""
+    def _sync_directory(
+        self, d: Path
+    ) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Synchronize repository directory via gh CLI, returning (repo_full_name, approved_prs, open_prs)."""
         repo_full_name = self._get_repo_full_name_for_dir(d)
         approved_prs, open_prs = self._sync_single_repo_details(cwd=str(d), repo_full_name=repo_full_name)
-        with self._lock:
-            # Refresh open PRs cache for this repository
-            to_remove = [k for k in self._open_prs if isinstance(k, tuple) and k[0] == repo_full_name]
-            for k in to_remove:
-                self._open_prs.pop(k, None)
-            for item in open_prs:
-                num = item["number"]
-                self._open_prs[(repo_full_name, num)] = item
-        return repo_full_name, approved_prs
+        return repo_full_name, approved_prs, open_prs
 
     def _resolve_target_dirs(
         self, repo_root: Optional[Path] = None, repos_dir: Optional[Path] = None
@@ -726,6 +721,7 @@ class PRTracker:
 
         try:
             new_approved = {}
+            new_open_prs = {}
             target_dirs = self._resolve_target_dirs(repo_root=repo_root, repos_dir=repos_dir)
 
             success_count = 0
@@ -741,6 +737,7 @@ class PRTracker:
                         res = future.result()
                         repo_full_name = res[0]
                         prs = res[1]
+                        open_prs = res[2] if len(res) > 2 else []
                         for item in prs:
                             num = item["number"]
                             key = (repo_full_name, num)
@@ -751,6 +748,10 @@ class PRTracker:
                                 "author": item["author"],
                                 "url": item["url"],
                             }
+                        for item in open_prs:
+                            num = item["number"]
+                            key = (repo_full_name, num)
+                            new_open_prs[key] = item
                         success_count += 1
                     except Exception as e:
                         logger.warning(f"Failed to sync PRs for repository directory '{d}': {e}")
@@ -758,10 +759,11 @@ class PRTracker:
             if success_count > 0 or not target_dirs:
                 with self._lock:
                     self._approved_prs = new_approved
+                    self._open_prs = new_open_prs
                     self._last_sync_time = time.time()
-                logger.info(f"PRTracker synced {len(new_approved)} approved PR(s) via gh CLI.")
+                logger.info(f"PRTracker synced {len(new_approved)} approved PR(s) and {len(new_open_prs)} open PR(s) via gh CLI.")
             else:
-                logger.warning("PRTracker sync failed for all target directories; preserving existing approved PRs.")
+                logger.warning("PRTracker sync failed for all target directories; preserving existing approved and open PRs.")
         except Exception as e:
             logger.warning(f"PRTracker initial background sync skipped/failed: {e}")
 
@@ -837,7 +839,7 @@ class PRTracker:
         repos_dir: Optional[Path] = None,
         force: bool = False,
         ttl: Optional[float] = None,
-    ) -> None:
+    ) -> List[Dict[str, Any]]:
         """
         Synchronize open issues state across target repositories using `gh issue list`.
         Caches results for `ttl` seconds unless force=True.
