@@ -627,18 +627,34 @@ class GravitonHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {"error": "Missing 'enabled' or 'action' field"})
                     return
             elif "agents" in data and isinstance(data["agents"], dict):
+                invalid_entries = [
+                    (k, v) for k, v in data["agents"].items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS and _parse_bool(v) is None
+                ]
+                if invalid_entries:
+                    bad_k, bad_v = invalid_entries[0]
+                    self._send_json(400, {"error": f"Invalid boolean value for '{bad_k}': {bad_v}"})
+                    return
                 valid_updates = {
-                    k: v for k, v in data["agents"].items()
-                    if canonicalize_agent_name(k) in CANONICAL_AGENTS
+                    k: _parse_bool(v) for k, v in data["agents"].items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS and _parse_bool(v) is not None
                 }
                 if not valid_updates:
                     self._send_json(400, {"error": "No valid agent configuration provided"})
                     return
                 self.agent_manager.update_from_dict(valid_updates)
             else:
+                invalid_entries = [
+                    (k, v) for k, v in data.items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS and _parse_bool(v) is None
+                ]
+                if invalid_entries:
+                    bad_k, bad_v = invalid_entries[0]
+                    self._send_json(400, {"error": f"Invalid boolean value for '{bad_k}': {bad_v}"})
+                    return
                 direct_updates = {
-                    k: v for k, v in data.items()
-                    if canonicalize_agent_name(k) in CANONICAL_AGENTS
+                    k: _parse_bool(v) for k, v in data.items()
+                    if canonicalize_agent_name(k) in CANONICAL_AGENTS and _parse_bool(v) is not None
                 }
                 if direct_updates:
                     self.agent_manager.update_from_dict(direct_updates)

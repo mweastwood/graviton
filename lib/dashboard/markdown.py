@@ -29,6 +29,7 @@ from lib.quota import (
 )
 from lib.scheduler import TaskScheduler
 from lib.tasks import TaskManager, TaskStatus
+from lib.agents import canonicalize_agent_name
 
 
 def _format_target_markdown_cell(target_disp: Any, target_url: Optional[str]) -> str:
@@ -159,7 +160,11 @@ def _gather_markdown_context(
     if extra_info:
         if "agent_status" in extra_info and extra_info["agent_status"]:
             if isinstance(agent_status, dict) and isinstance(extra_info["agent_status"], dict):
-                agent_status = {**agent_status, **extra_info["agent_status"]}
+                norm_extra = {
+                    (canonicalize_agent_name(k) or k): v
+                    for k, v in extra_info["agent_status"].items()
+                }
+                agent_status = {**agent_status, **norm_extra}
             else:
                 agent_status = extra_info["agent_status"]
         elif not agent_status and "agent_manager" in extra_info:
@@ -725,8 +730,8 @@ def _md_history(ctx: Dict[str, Any]) -> List[str]:
 
 def _md_agents(ctx: Dict[str, Any]) -> List[str]:
     """Render autonomous agents status table if agent_status is present."""
-    agent_status = ctx.get("agent_status")
-    if not agent_status:
+    agent_status_raw = ctx.get("agent_status")
+    if not agent_status_raw:
         return []
 
     lines = [
@@ -750,6 +755,14 @@ def _md_agents(ctx: Dict[str, Any]) -> List[str]:
         "codebase_auditor": "auditor",
     }
     canonical_agents = ("code_reviewer", "code_fixer", "issue_triager", "pr_drafter", "codebase_auditor")
+    agent_status: Dict[str, bool] = {}
+    if isinstance(agent_status_raw, dict):
+        for k, v in agent_status_raw.items():
+            c = canonicalize_agent_name(k) or k
+            agent_status[c] = v
+    else:
+        agent_status = agent_status_raw
+
     all_agents = list(canonical_agents)
     for agent_name in agent_status.keys():
         if agent_name not in all_agents:

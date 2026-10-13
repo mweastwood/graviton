@@ -242,13 +242,15 @@ class AgentManager:
     def set_enabled(self, name_or_role: str, enabled: Any) -> bool:
         """
         Set an agent's enabled state.
-        Returns True if the state was updated, False if agent is unrecognized.
+        Returns True if the state was updated, False if agent is unrecognized or boolean value is invalid.
         """
         canonical = canonicalize_agent_name(name_or_role)
         if not canonical or canonical not in self._states:
             return False
         b_val = _parse_bool(enabled)
-        bool_val = bool(enabled) if b_val is None else b_val
+        if b_val is None:
+            return False
+        bool_val = b_val
         with self._lock:
             old_val = self._states.get(canonical)
             self._states[canonical] = bool_val

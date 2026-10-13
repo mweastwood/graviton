@@ -108,6 +108,13 @@ class TestAgentManagerBasics(unittest.TestCase):
         am.set_enabled("reviewer", "1")
         self.assertTrue(am.is_enabled("reviewer"))
 
+        # Unrecognized boolean input returns False and leaves state unchanged
+        self.assertFalse(am.set_enabled("reviewer", "invalid_string"))
+        self.assertTrue(am.is_enabled("reviewer"))
+        am.set_enabled("reviewer", False)
+        self.assertFalse(am.set_enabled("reviewer", "invalid_string"))
+        self.assertFalse(am.is_enabled("reviewer"))
+
     def test_get_status_and_summary(self):
         am = AgentManager(auto_load_env=False)
         am.disable("auditor")
@@ -464,6 +471,17 @@ class TestDashboardAgentStatus(unittest.TestCase):
         self.assertTrue(pos_reviewer < pos_custom)
         self.assertTrue(pos_auditor < pos_custom)
 
+    def test_markdown_dashboard_with_role_keyed_extra_status(self):
+        am = AgentManager(auto_load_env=False)
+        self.assertTrue(am.is_enabled("reviewer"))
+        md = format_dashboard_markdown(agent_manager=am, extra_info={"agent_status": {"reviewer": False}})
+        self.assertIn("## 🤖 Autonomous Agents", md)
+        self.assertIn("| `code_reviewer` | `reviewer` | 🔴 `DISABLED` |", md)
+        # Verify no duplicate row where 'reviewer' is treated as an agent name
+        self.assertFalse(any(line.startswith("| `reviewer` |") for line in md.splitlines()))
+        agent_rows = [line for line in md.splitlines() if line.startswith("| `code_reviewer` |")]
+        self.assertEqual(len(agent_rows), 1)
+
 
 class TestServerAgentEndpoints(unittest.TestCase):
     @classmethod
@@ -751,6 +769,30 @@ class TestServerAgentEndpoints(unittest.TestCase):
         code10, body10 = handler10._send_json.call_args[0]
         self.assertEqual(code10, 400)
         self.assertEqual(body10["error"], "No valid agent configuration provided")
+
+        # Batch payload with invalid non-boolean value
+        handler11 = MagicMock(spec=self.GravitonHandler)
+        handler11.path = "/api/agents"
+        handler11.agent_manager = self.am
+        payload11 = json.dumps({"agents": {"reviewer": "not_a_bool"}}).encode("utf-8")
+        handler11.rfile = BytesIO(payload11)
+        handler11.headers = {"Content-Length": str(len(payload11))}
+        self.GravitonHandler.do_POST(handler11)
+        code11, body11 = handler11._send_json.call_args[0]
+        self.assertEqual(code11, 400)
+        self.assertIn("Invalid boolean value", body11["error"])
+
+        # Direct payload with invalid non-boolean value
+        handler12 = MagicMock(spec=self.GravitonHandler)
+        handler12.path = "/api/agents"
+        handler12.agent_manager = self.am
+        payload12 = json.dumps({"reviewer": "not_a_bool"}).encode("utf-8")
+        handler12.rfile = BytesIO(payload12)
+        handler12.headers = {"Content-Length": str(len(payload12))}
+        self.GravitonHandler.do_POST(handler12)
+        code12, body12 = handler12._send_json.call_args[0]
+        self.assertEqual(code12, 400)
+        self.assertIn("Invalid boolean value", body12["error"])
 
 
 class TestServerAgentCLI(unittest.TestCase):
