@@ -312,6 +312,68 @@ class TestAgentSdkRunner(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_run_agent_turn_raw_string_chunks(self):
+        """Verify response.chunks yielding plain str chunks emits text_delta events."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            async def _chunk_iter():
+                yield "Chunk 1 "
+                yield "Chunk 2"
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Say chunks", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            self.assertEqual(result["response"], "Chunk 1 Chunk 2")
+
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            text_events = [l for l in lines if l.get("step_update", {}).get("text_delta")]
+            self.assertEqual(len(text_events), 2)
+            self.assertEqual(text_events[0]["step_update"]["text_delta"], "Chunk 1 ")
+            self.assertEqual(text_events[1]["step_update"]["text_delta"], "Chunk 2")
+            self.assertEqual(text_events[0]["step_update"]["step_type"], "agent_response")
+
+        asyncio.run(_test())
+
+    def test_run_agent_turn_tool_result_duration_seconds(self):
+        """Verify duration_seconds on tool result chunk is forwarded in step_update."""
+        async def _test():
+            mock_agent = MagicMock()
+
+            class MockToolResult:
+                def __init__(self, name, result, call_id, duration_seconds=None):
+                    self.name = name
+                    self.result = result
+                    self.id = call_id
+                    self.duration_seconds = duration_seconds
+
+            async def _chunk_iter():
+                yield MockToolResult("run_command", "0", "call-1", duration_seconds=1.25)
+
+            mock_response = MagicMock()
+            mock_response.chunks = _chunk_iter()
+            mock_response.text = AsyncMock(return_value="Done.")
+            mock_agent.chat = AsyncMock(return_value=mock_response)
+
+            buf = io.StringIO()
+            with patch.object(sys, "stdout", buf):
+                result = await run_agent_turn(mock_agent, "Execute", turn_index=1)
+
+            self.assertEqual(result["status"], "SUCCESS")
+            lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+            tool_events = [l for l in lines if l.get("step_update", {}).get("step_type") == "tool"]
+            self.assertEqual(len(tool_events), 1)
+            self.assertEqual(tool_events[0]["step_update"]["duration_seconds"], 1.25)
+
+        asyncio.run(_test())
+
     def test_run_agent_turn_enum_tool_name_unwrapping(self):
         """Verify enum tool names are unwrapped to their .value string."""
         async def _test():

@@ -1396,6 +1396,24 @@ class TestContainerSupervisor(unittest.TestCase):
             )
             self.assertEqual(sup2.runner, "agy")
 
+    def test_container_supervisor_runner_empty_env_var_defaults_to_sdk(self):
+        """Verify empty or blank GRAVITON_AGENT_RUNNER env var defaults to sdk."""
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": ""}):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="empty_runner_env_test_1",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup.runner, "sdk")
+
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": "   \t  "}):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="empty_runner_env_test_2",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup.runner, "sdk")
+
     def test_build_docker_command_sdk_runner_resolution_order(self):
         """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=True."""
         custom_bin = self.repo_dir / "bin"

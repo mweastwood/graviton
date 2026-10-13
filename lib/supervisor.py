@@ -1137,7 +1137,8 @@ class ContainerSupervisor:
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
-        self.runner = (runner or os.environ.get("GRAVITON_AGENT_RUNNER", "sdk")).strip().lower()
+        raw_runner = runner or os.environ.get("GRAVITON_AGENT_RUNNER")
+        self.runner = (raw_runner.strip().lower() if raw_runner and raw_runner.strip() else "sdk")
         if self.runner not in ("sdk", "agy"):
             raise ValueError(f"Invalid runner '{self.runner}', must be 'sdk' or 'agy'")
         self.allow_custom_runner = allow_custom_runner

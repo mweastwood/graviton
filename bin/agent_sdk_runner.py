@@ -142,7 +142,7 @@ async def run_agent_turn(
             is_text = (
                 chunk_type.endswith("Text")
                 or (isinstance(text_cls, type) and isinstance(chunk, text_cls))
-                or (hasattr(chunk, "text") and not is_thought and not is_tool_call and not is_tool_result)
+                or ((isinstance(chunk, str) or hasattr(chunk, "text")) and not is_thought and not is_tool_call and not is_tool_result)
             )
 
             if is_thought:
@@ -203,6 +203,9 @@ async def run_agent_turn(
                     step_data["result"] = res
                 if err is not None:
                     step_data["error"] = str(err)
+                dur = getattr(chunk, "duration_seconds", None) or getattr(chunk, "duration", None)
+                if dur is not None:
+                    step_data["duration_seconds"] = dur
                 _flush_json({
                     "event": "step_update",
                     "step_update": step_data,
