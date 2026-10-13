@@ -82,6 +82,10 @@ class _SyncPRResult(tuple):
     success: bool = True
 
 
+class _SyncIssueResult(list):
+    success: bool = True
+
+
 def _parse_event_timestamp(ts: Any) -> float:
     """Parse an ISO timestamp string or numeric timestamp to float epoch seconds for chronological sorting."""
     if not ts:
@@ -253,7 +257,7 @@ class PRTracker:
                 self._approved_prs.pop(("", num_int), None)
                 self._approved_prs.pop(num_int, None)
             else:
-                to_remove = [k for k in self._approved_prs if k == num_int or (isinstance(k, tuple) and k[1] == num_int)]
+                to_remove = [k for k in self._approved_prs if k == num_int or (isinstance(k, tuple) and len(k) > 1 and k[1] == num_int)]
                 for k in to_remove:
                     self._approved_prs.pop(k, None)
 
@@ -318,7 +322,7 @@ class PRTracker:
                 "author": author_str,
                 "url": url or "",
                 "is_draft": bool(is_draft),
-                "status": status or "OPEN",
+                "status": (status or "OPEN").upper(),
                 "updated_at": updated_at or "",
                 "review_decision": review_decision or "",
             }
@@ -338,7 +342,7 @@ class PRTracker:
                 self._open_prs.pop(("", num_int), None)
                 self._open_prs.pop(num_int, None)
             else:
-                to_remove = [k for k in self._open_prs if k == num_int or (isinstance(k, tuple) and k[1] == num_int)]
+                to_remove = [k for k in self._open_prs if k == num_int or (isinstance(k, tuple) and len(k) > 1 and k[1] == num_int)]
                 for k in to_remove:
                     self._open_prs.pop(k, None)
 
@@ -390,6 +394,8 @@ class PRTracker:
         key = (repo_str, num_int)
 
         labels_list = []
+        if isinstance(labels, str):
+            labels = [l.strip() for l in labels.split(",") if l.strip()]
         if labels is not None:
             for l in labels:
                 if isinstance(l, dict) and "name" in l:
@@ -426,7 +432,7 @@ class PRTracker:
                 self._open_issues.pop(("", num_int), None)
                 self._open_issues.pop(num_int, None)
             else:
-                to_remove = [k for k in self._open_issues if k == num_int or (isinstance(k, tuple) and k[1] == num_int)]
+                to_remove = [k for k in self._open_issues if k == num_int or (isinstance(k, tuple) and len(k) > 1 and k[1] == num_int)]
                 for k in to_remove:
                     self._open_issues.pop(k, None)
 
@@ -839,7 +845,9 @@ class PRTracker:
             data = json.loads(res.stdout)
         except Exception as e:
             logger.debug(f"Failed to query issues via gh CLI for {cwd}: {e}")
-            return []
+            fail_res = _SyncIssueResult([])
+            fail_res.success = False
+            return fail_res
 
         results = []
         if isinstance(data, list):
@@ -872,13 +880,17 @@ class PRTracker:
                     "labels": labels,
                     "updated_at": updated_at,
                 })
-        return results
+        success_res = _SyncIssueResult(results)
+        success_res.success = True
+        return success_res
 
     def _sync_issues_directory(self, d: Path) -> Tuple[str, List[Dict[str, Any]]]:
         """Synchronize open issues for a repository directory."""
         repo_full_name = self._get_repo_full_name_for_dir(d)
-        issues = self._sync_issues_single_repo(cwd=str(d), repo_full_name=repo_full_name)
-        return repo_full_name, issues
+        res = self._sync_issues_single_repo(cwd=str(d), repo_full_name=repo_full_name)
+        if getattr(res, "success", True) is False:
+            raise RuntimeError(f"Failed to sync issues via gh CLI for {d}")
+        return repo_full_name, res
 
     def sync_github_issues(
         self,
@@ -927,6 +939,8 @@ class PRTracker:
                     self._open_issues = new_issues
                     self._last_issues_sync_time = time.time()
                 logger.info(f"PRTracker synced {len(new_issues)} open issue(s) via gh CLI.")
+            else:
+                logger.warning("PRTracker issues sync failed for all target directories; preserving existing open issues.")
         except Exception as e:
             logger.warning(f"PRTracker issues sync skipped/failed: {e}")
 

@@ -214,6 +214,61 @@ class TestPRTrackerRepoStatus(unittest.TestCase):
         self.assertEqual(issues[0]["labels"], ["bug"])
 
     @patch("subprocess.run")
+    def test_sync_issues_single_repo_graceful_failure(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh", output="", stderr="Error")
+        res = self.tracker._sync_issues_single_repo(cwd="/fake/repo")
+        self.assertEqual(res, [])
+        self.assertFalse(getattr(res, "success", True))
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        res = self.tracker._sync_issues_single_repo(cwd="/fake/repo")
+        self.assertEqual(res, [])
+        self.assertFalse(getattr(res, "success", True))
+
+    @patch("subprocess.run")
+    def test_sync_github_issues_preserves_cache_on_total_failure(self, mock_run):
+        self.tracker.add_open_issue({"number": 99, "repo_full_name": "org/repo", "title": "Existing Issue"})
+        self.assertEqual(len(self.tracker.get_open_issues()), 1)
+
+        mock_git = MagicMock(returncode=0, stdout="git@github.com:org/repo.git\n")
+        mock_run.side_effect = [mock_git, subprocess.CalledProcessError(1, "gh", output="", stderr="Auth error")]
+
+        issues = self.tracker.sync_github_issues(repo_root=Path("/tmp"), force=True)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["number"], 99)
+
+    def test_removal_methods_short_tuple_keys(self):
+        self.tracker._approved_prs[("repo",)] = {"number": 1, "title": "P1"}
+        self.tracker._open_prs[()] = {"number": 2, "title": "P2"}
+        self.tracker._open_issues[("single",)] = {"number": 3, "title": "I3"}
+
+        self.tracker.remove_approved_pr(999)
+        self.tracker.remove_open_pr(999)
+        self.tracker.remove_open_issue(999)
+
+    def test_add_open_issue_string_labels(self):
+        self.tracker.add_open_issue({
+            "number": 55,
+            "title": "Issue with comma labels",
+            "repo_full_name": "owner/repo",
+            "labels": "bug, help wanted, critical",
+        })
+        issues = self.tracker.get_open_issues("owner/repo")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["labels"], ["bug", "help wanted", "critical"])
+
+    def test_add_open_pr_status_normalization(self):
+        self.tracker.add_open_pr({
+            "number": 77,
+            "title": "PR lowercase status",
+            "repo_full_name": "owner/repo",
+            "status": "changes_requested",
+        })
+        prs = self.tracker.get_open_prs("owner/repo")
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(prs[0]["status"], "CHANGES_REQUESTED")
+
+    @patch("subprocess.run")
     def test_sync_single_repo_details_open_prs(self, mock_run):
         raw_prs = [
             {
