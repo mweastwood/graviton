@@ -14,6 +14,7 @@ def run_graceful_shutdown(
     scheduler: Optional[Any] = None,
     httpd: Optional[Any] = None,
     quota_tracker: Optional[Any] = None,
+    pr_tracker: Optional[Any] = None,
     grace_period: float = 3.0,
     timeout: Optional[float] = None,
     on_quit: Optional[Any] = None,
@@ -74,6 +75,13 @@ def run_graceful_shutdown(
                 qt.stop_background_polling()
             except Exception as e:
                 log.warning(f"Error stopping quota background polling during shutdown: {e}")
+
+        pt = pr_tracker
+        if pt is not None and hasattr(pt, "stop_background_polling"):
+            try:
+                pt.stop_background_polling()
+            except Exception as e:
+                log.warning(f"Error stopping PRTracker repository background polling during shutdown: {e}")
 
         if scheduler:
             try:

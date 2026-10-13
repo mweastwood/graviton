@@ -131,6 +131,24 @@ def _gather_markdown_context(
     if not approved_prs and extra_info and "approved_prs" in extra_info:
         approved_prs = extra_info.get("approved_prs") or []
 
+    open_prs: List[Dict[str, Any]] = []
+    if pr_tracker and hasattr(pr_tracker, "get_open_prs"):
+        try:
+            open_prs = pr_tracker.get_open_prs() or []
+        except Exception as e:
+            logger.debug(f"Error fetching open PRs from pr_tracker: {e}")
+    if not open_prs and extra_info and "open_prs" in extra_info:
+        open_prs = extra_info.get("open_prs") or []
+
+    open_issues: List[Dict[str, Any]] = []
+    if pr_tracker and hasattr(pr_tracker, "get_open_issues"):
+        try:
+            open_issues = pr_tracker.get_open_issues() or []
+        except Exception as e:
+            logger.debug(f"Error fetching open issues from pr_tracker: {e}")
+    if not open_issues and extra_info and "open_issues" in extra_info:
+        open_issues = extra_info.get("open_issues") or []
+
     if active_tasks:
         status_badge = "🟡 **BUSY**"
     elif task_manager and getattr(task_manager, "_draining", False):
@@ -151,6 +169,8 @@ def _gather_markdown_context(
         "recent_history": recent_history,
         "quota_info": quota_info,
         "approved_prs": approved_prs,
+        "open_prs": open_prs,
+        "open_issues": open_issues,
         "status_badge": status_badge,
         "web_url": web_url,
         "host": host,
@@ -539,6 +559,105 @@ def _md_approved_prs(ctx: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _md_repo_status(ctx: Dict[str, Any]) -> List[str]:
+    """Render repository status section containing open pull requests and open issues."""
+    open_prs = ctx.get("open_prs") or []
+    open_issues = ctx.get("open_issues") or []
+    valid_prs = [pr for pr in open_prs if isinstance(pr, dict)]
+    valid_issues = [iss for iss in open_issues if isinstance(iss, dict)]
+
+    lines = [
+        "## 📦 Repository Status",
+        "",
+        "### Open Pull Requests",
+        "",
+    ]
+    if valid_prs:
+        lines.extend([
+            "| PR # | Repository | Title | Author | Status | URL |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ])
+        for item in valid_prs:
+            num = item.get("number")
+            repo_name = item.get("repo_full_name") or "-"
+            title_raw = str(item.get("title") or "")
+            title_text = title_raw.replace("|", "-").replace("\r", " ").replace("\n", " ").replace("`", "").strip() or "-"
+            author_raw = item.get("author")
+            author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+            author_str = str(author_val or "").strip().lstrip("@")
+            author_text = author_str.replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() if author_str else "-"
+            if not author_text:
+                author_text = "-"
+            status_raw = str(item.get("status") or ("DRAFT" if item.get("is_draft") else "OPEN")).strip().upper()
+            status_text = status_raw.replace("|", "-").replace("`", "").strip()
+            url_raw = item.get("url")
+            url_val = str(url_raw or "").replace("|", "").replace("\r", "").replace("\n", "").replace("`", "").replace(")", "%29").replace("(", "%28").strip()
+            if not url_val and repo_name != "-" and num is not None:
+                url_val = f"https://github.com/{repo_name}/pull/{num}"
+            if num is not None:
+                pr_cell = f"[`#{num}`]({url_val})" if url_val and is_safe_url(url_val) else f"`#{num}`"
+            else:
+                pr_cell = "-"
+            url_cell = f"[View PR ↗]({url_val})" if url_val and is_safe_url(url_val) else "-"
+            author_cell = f"`@{author_text}`" if author_text != "-" else "-"
+            repo_cell = f"`{repo_name}`" if repo_name != "-" else "-"
+            status_cell = f"`{status_text}`"
+            lines.append(f"| {pr_cell} | {repo_cell} | {title_text} | {author_cell} | {status_cell} | {url_cell} |")
+        lines.append("")
+    else:
+        lines.extend(["*(No open pull requests)*", ""])
+
+    lines.extend([
+        "### Open Issues",
+        "",
+    ])
+    if valid_issues:
+        lines.extend([
+            "| Issue # | Repository | Title | Author | Labels | URL |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ])
+        for item in valid_issues:
+            num = item.get("number")
+            repo_name = item.get("repo_full_name") or "-"
+            title_raw = str(item.get("title") or "")
+            title_text = title_raw.replace("|", "-").replace("\r", " ").replace("\n", " ").replace("`", "").strip() or "-"
+            author_raw = item.get("author")
+            author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+            author_str = str(author_val or "").strip().lstrip("@")
+            author_text = author_str.replace("\r", " ").replace("\n", " ").replace("|", "-").replace("`", "").strip() if author_str else "-"
+            if not author_text:
+                author_text = "-"
+            raw_labels = item.get("labels") or []
+            if isinstance(raw_labels, list) and raw_labels:
+                clean_labels = []
+                for l in raw_labels[:4]:
+                    lbl_val = l.get("name") if isinstance(l, dict) else l
+                    lbl_clean = str(lbl_val or "").replace("|", "-").replace("`", "").strip()
+                    if lbl_clean:
+                        clean_labels.append(lbl_clean)
+                labels_str = ", ".join(f"`{l}`" for l in clean_labels) if clean_labels else "-"
+            else:
+                labels_str = "-"
+            url_raw = item.get("url")
+            url_val = str(url_raw or "").replace("|", "").replace("\r", "").replace("\n", "").replace("`", "").replace(")", "%29").replace("(", "%28").strip()
+            if not url_val and repo_name != "-" and num is not None:
+                url_val = f"https://github.com/{repo_name}/issues/{num}"
+            if num is not None:
+                issue_cell = f"[`#{num}`]({url_val})" if url_val and is_safe_url(url_val) else f"`#{num}`"
+            else:
+                issue_cell = "-"
+            url_cell = f"[View Issue ↗]({url_val})" if url_val and is_safe_url(url_val) else "-"
+            author_cell = f"`@{author_text}`" if author_text != "-" else "-"
+            repo_cell = f"`{repo_name}`" if repo_name != "-" else "-"
+            lines.append(f"| {issue_cell} | {repo_cell} | {title_text} | {author_cell} | {labels_str} | {url_cell} |")
+        lines.append("")
+    else:
+        lines.extend(["*(No open issues)*", ""])
+
+    lines.extend(["---", ""])
+    return lines
+
+
 def _md_history(ctx: Dict[str, Any]) -> List[str]:
     """Render recent task execution history table or empty state."""
     recent_history = ctx["recent_history"]
@@ -625,6 +744,7 @@ def format_dashboard_markdown(
     lines.extend(_md_quota(ctx, quota_tracker=quota_tracker))
     lines.extend(_md_queued(ctx))
     lines.extend(_md_approved_prs(ctx))
+    lines.extend(_md_repo_status(ctx))
     lines.extend(_md_history(ctx))
     lines.extend(_md_footer())
 

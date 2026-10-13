@@ -136,6 +136,7 @@ def _get_fallback_dashboard_template() -> str:
     <div>{active_table_html}</div>
     <div>{queued_table_html}</div>
     <div>{approved_table_html}</div>
+    <div>{repo_status_html}</div>
     <div>{history_table_html}</div>
     <pre id="content">{escaped_md}</pre>
 </body>
@@ -320,6 +321,150 @@ def _render_approved_prs_table(approved_prs: List[Dict[str, Any]]) -> str:
     )
 
 
+def _render_open_prs_table(open_prs: List[Dict[str, Any]]) -> str:
+    """Render HTML table or empty state for open PRs."""
+    valid_prs = [pr for pr in open_prs if isinstance(pr, dict)]
+    if not valid_prs:
+        return (
+            '<div class="empty-card" style="padding: 16px; margin-bottom: 20px;">'
+            '<p class="empty-text">No open pull requests.</p>'
+            '</div>'
+        )
+    rows = []
+    for pr in valid_prs:
+        pr_num_raw = pr.get("number")
+        raw_num = str(pr_num_raw).strip() if pr_num_raw is not None else ""
+        raw_repo = str(pr.get("repo_full_name", "") or "-").strip() or "-"
+        has_num = bool(raw_num and raw_num not in ("0", "-", "None"))
+        num = html.escape(raw_num) if has_num else ""
+        repo = html.escape(raw_repo)
+        title = html.escape(str(pr.get("title") or ""))
+        author_raw = pr.get("author")
+        author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+        author_str = str(author_val or "").strip().lstrip("@")
+        author = html.escape(author_str) if author_str else "-"
+        url = pr.get("url", "")
+        if not url and raw_repo != "-" and has_num:
+            url = f"https://github.com/{raw_repo}/pull/{raw_num}"
+
+        if url and is_safe_url(url):
+            num_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener"><code>#{num}</code></a>' if has_num else '<span class="text-muted">-</span>'
+            action_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View PR ↗</a>'
+        else:
+            num_html = f'<code>#{num}</code>' if has_num else '<span class="text-muted">-</span>'
+            action_html = '<span class="text-muted">-</span>'
+
+        repo_html = f'<code>{repo}</code>' if repo != "-" else '<span class="text-muted">-</span>'
+        author_html = f'<span class="author-badge">@{author}</span>' if author != "-" else '<span class="text-muted">-</span>'
+        raw_status = str(pr.get("status") or ("DRAFT" if pr.get("is_draft") else "OPEN")).strip()
+        status_upper = raw_status.upper()
+        status = html.escape(status_upper)
+        if status_upper == "APPROVED":
+            status_pill_class = "status-completed"
+        elif status_upper == "OPEN":
+            status_pill_class = "status-running"
+        elif status_upper == "CHANGES_REQUESTED":
+            status_pill_class = "status-failed"
+        else:
+            status_pill_class = "status-queued"
+        status_html = f'<span class="status-pill {status_pill_class}">{status}</span>'
+
+        rows.append(
+            f'<tr><td>{num_html}</td>'
+            f'<td>{repo_html}</td>'
+            f'<td><span class="pr-title">{title}</span></td>'
+            f'<td>{author_html}</td>'
+            f'<td>{status_html}</td>'
+            f'<td>{action_html}</td></tr>'
+        )
+    return (
+        '<div class="table-wrapper"><table class="data-table">'
+        '<thead><tr><th>PR #</th><th>Repository</th><th>Title</th><th>Author</th><th>Status</th><th>Action</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def _render_open_issues_table(open_issues: List[Dict[str, Any]]) -> str:
+    """Render HTML table or empty state for open issues."""
+    valid_issues = [iss for iss in open_issues if isinstance(iss, dict)]
+    if not valid_issues:
+        return (
+            '<div class="empty-card" style="padding: 16px;">'
+            '<p class="empty-text">No open issues.</p>'
+            '</div>'
+        )
+    rows = []
+    for iss in valid_issues:
+        iss_num_raw = iss.get("number")
+        raw_num = str(iss_num_raw).strip() if iss_num_raw is not None else ""
+        raw_repo = str(iss.get("repo_full_name", "") or "-").strip() or "-"
+        has_num = bool(raw_num and raw_num not in ("0", "-", "None"))
+        num = html.escape(raw_num) if has_num else ""
+        repo = html.escape(raw_repo)
+        title = html.escape(str(iss.get("title") or ""))
+        author_raw = iss.get("author")
+        author_val = author_raw.get("login") if isinstance(author_raw, dict) else author_raw
+        author_str = str(author_val or "").strip().lstrip("@")
+        author = html.escape(author_str) if author_str else "-"
+        raw_labels = iss.get("labels") or []
+        url = iss.get("url", "")
+        if not url and raw_repo != "-" and has_num:
+            url = f"https://github.com/{raw_repo}/issues/{raw_num}"
+
+        if url and is_safe_url(url):
+            num_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener"><code>#{num}</code></a>' if has_num else '<span class="text-muted">-</span>'
+            action_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">View Issue ↗</a>'
+        else:
+            num_html = f'<code>#{num}</code>' if has_num else '<span class="text-muted">-</span>'
+            action_html = '<span class="text-muted">-</span>'
+
+        repo_html = f'<code>{repo}</code>' if repo != "-" else '<span class="text-muted">-</span>'
+        author_html = f'<span class="author-badge">@{author}</span>' if author != "-" else '<span class="text-muted">-</span>'
+
+        labels_html_list = []
+        if isinstance(raw_labels, list) and raw_labels:
+            for l in raw_labels[:4]:
+                lbl_val = l.get("name") if isinstance(l, dict) else l
+                clean_l = str(lbl_val or "").strip()
+                if clean_l:
+                    labels_html_list.append(f'<span class="agent-badge">{html.escape(clean_l)}</span>')
+            labels_html = " ".join(labels_html_list) if labels_html_list else '<span class="text-muted">-</span>'
+        else:
+            labels_html = '<span class="text-muted">-</span>'
+
+        rows.append(
+            f'<tr><td>{num_html}</td>'
+            f'<td>{repo_html}</td>'
+            f'<td><span class="pr-title">{title}</span></td>'
+            f'<td>{author_html}</td>'
+            f'<td>{labels_html}</td>'
+            f'<td>{action_html}</td></tr>'
+        )
+    return (
+        '<div class="table-wrapper"><table class="data-table">'
+        '<thead><tr><th>Issue #</th><th>Repository</th><th>Title</th><th>Author</th><th>Labels</th><th>Action</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def _render_repo_status_html(open_prs: List[Dict[str, Any]], open_issues: List[Dict[str, Any]]) -> str:
+    """Render repository status HTML card content including open PRs and issues tables."""
+    valid_prs = [p for p in open_prs if isinstance(p, dict)]
+    valid_issues = [i for i in open_issues if isinstance(i, dict)]
+
+    if not valid_prs and not valid_issues:
+        return '<div class="empty-card"><span class="empty-icon">📦</span><p class="empty-text">No open pull requests or issues tracked.</p></div>'
+
+    html_parts = []
+    html_parts.append('<h3 style="margin-top: 0; margin-bottom: 12px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;"><span>🔀</span> Open Pull Requests</h3>')
+    html_parts.append(_render_open_prs_table(valid_prs))
+    html_parts.append('<h3 style="margin-top: 24px; margin-bottom: 12px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;"><span>📌</span> Open Issues</h3>')
+    html_parts.append(_render_open_issues_table(valid_issues))
+
+    return "\n".join(html_parts)
+
+
+
 def _render_history_tasks_table(history_tasks: List[Dict[str, Any]]) -> str:
     """Render HTML table or empty state card for execution history."""
     if not history_tasks:
@@ -379,6 +524,28 @@ def _enrich_dashboard_data(
             logger.debug(f"Error enriching dashboard data from pr_tracker: {e}")
     if not data.get("approved_prs") and extra_info and "approved_prs" in extra_info:
         data["approved_prs"] = list(extra_info.get("approved_prs") or [])
+
+    if pr_tracker and not data.get("open_prs"):
+        try:
+            if hasattr(pr_tracker, "get_open_prs"):
+                open_prs_objs = pr_tracker.get_open_prs()
+                if open_prs_objs:
+                    data["open_prs"] = list(open_prs_objs)
+        except Exception as e:
+            logger.debug(f"Error enriching dashboard data with open_prs from pr_tracker: {e}")
+    if not data.get("open_prs") and extra_info and "open_prs" in extra_info:
+        data["open_prs"] = list(extra_info.get("open_prs") or [])
+
+    if pr_tracker and not data.get("open_issues"):
+        try:
+            if hasattr(pr_tracker, "get_open_issues"):
+                open_iss_objs = pr_tracker.get_open_issues()
+                if open_iss_objs:
+                    data["open_issues"] = list(open_iss_objs)
+        except Exception as e:
+            logger.debug(f"Error enriching dashboard data with open_issues from pr_tracker: {e}")
+    if not data.get("open_issues") and extra_info and "open_issues" in extra_info:
+        data["open_issues"] = list(extra_info.get("open_issues") or [])
 
     if task_manager:
         try:
@@ -899,6 +1066,8 @@ def render_dashboard_html(
     quota_params = _render_quota_html(data)
 
     valid_approved_prs = [pr for pr in data.get("approved_prs", []) if isinstance(pr, dict)]
+    valid_open_prs = [pr for pr in data.get("open_prs", []) if isinstance(pr, dict)]
+    valid_open_issues = [iss for iss in data.get("open_issues", []) if isinstance(iss, dict)]
 
     table_params = {
         "active_count": len(data["active_tasks"]),
@@ -907,6 +1076,9 @@ def render_dashboard_html(
         "queued_table_html": _render_queued_tasks_table(data["queued_tasks_list"]),
         "approved_count": len(valid_approved_prs),
         "approved_table_html": _render_approved_prs_table(valid_approved_prs),
+        "open_prs_count": len(valid_open_prs),
+        "open_issues_count": len(valid_open_issues),
+        "repo_status_html": _render_repo_status_html(valid_open_prs, valid_open_issues),
         "history_count": len(data["history_tasks"]),
         "history_table_html": _render_history_tasks_table(data["history_tasks"]),
         "escaped_md": escaped_md,

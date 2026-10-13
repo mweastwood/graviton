@@ -161,7 +161,7 @@ class TestPRTracker(unittest.TestCase):
         cmd = mock_run.call_args_list[-1][0][0]
         self.assertIn("--limit", cmd)
         self.assertIn("300", cmd)
-        self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews", cmd)
+        self.assertIn("number,title,url,author,reviewDecision,isDraft,latestReviews,comments,reviews,updatedAt", cmd)
 
     @patch("subprocess.run")
     def test_sync_github_prs_with_latest_reviews_changes_requested_ignored(self, mock_run):
@@ -400,10 +400,12 @@ class TestPRTracker(unittest.TestCase):
             mock_run.side_effect = [mock_git_res, mock_gh_res]
 
             tracker = PRTracker()
-            repo_name, prs = tracker._sync_directory(d)
+            repo_name, prs, open_prs = tracker._sync_directory(d)
             self.assertEqual(repo_name, "org/myrepo")
             self.assertEqual(len(prs), 1)
             self.assertEqual(prs[0]["number"], 101)
+            self.assertEqual(len(open_prs), 1)
+            self.assertEqual(open_prs[0]["number"], 101)
 
     @patch("subprocess.run")
     def test_concurrent_multi_repo_sync(self, mock_run):
@@ -972,7 +974,7 @@ class TestPRTracker(unittest.TestCase):
                 mock_run.side_effect = [mock_git_res, mock_gh_res]
 
                 tracker = PRTracker()
-                repo_name, prs = tracker._sync_directory(d)
+                repo_name, prs, _ = tracker._sync_directory(d)
                 self.assertEqual(repo_name, expected_repo)
 
     @patch("subprocess.run")
