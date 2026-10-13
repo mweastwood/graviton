@@ -60,6 +60,8 @@ __all__ = [
     "run_container_goal",
     "run_container_turn",
     "run_goal_turn",
+    "run_isolated_agent_goal",
+    "run_isolated_agent_turn",
     "run_stream_turn",
     "sync_conversation_to_agyhub",
     "to_ssh_url",
@@ -533,6 +535,7 @@ class StreamSession:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **_kwargs: Any,
     ) -> SupervisorResult:
         """
         Stream events from stdout until a 'result' event signals turn completion.
@@ -754,13 +757,14 @@ class StreamSession:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """
         Execute an autonomous multi-turn goal. Automatically prepends '/goal ' if needed.
         """
         clean_goal = goal.strip()
         prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -901,6 +905,7 @@ def run_goal_turn(
     extra_args: Optional[List[str]] = None,
     agy_binary: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute an autonomous /goal using StreamSession.
@@ -915,7 +920,7 @@ def run_goal_turn(
         agy_binary=agy_binary,
         env=env,
     ) as session:
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -1092,6 +1097,15 @@ class ContainerSupervisor:
       with strict read-only overlays for host binaries, built-in skills, and credentials
     - Host SSH and GitHub CLI configs mounted read-only (:ro)
     - Automatically cleans up container and ephemeral directory on exit
+
+    Execution Runtime Selection:
+    Supports configurable execution runtimes via the `runner` parameter or the
+    `GRAVITON_AGENT_RUNNER` environment variable:
+    - "sdk" (default): Runs via the `google-antigravity` Python SDK agent runner
+      (/usr/local/bin/agent_sdk_runner.py), providing native async execution and structured
+      streaming over standard I/O.
+    - "agy": Runs via the standard `agy` CLI binary
+      (agy --input-format stream-json --output-format stream-json).
     """
 
     def __init__(
@@ -1120,10 +1134,17 @@ class ContainerSupervisor:
         container_home: Optional[str] = None,
         cli_dir: Optional[Union[str, Path]] = None,
         ssh_dir: Optional[Union[str, Path]] = None,
+        runner: Optional[str] = None,
+        allow_custom_runner: bool = False,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.agent_name = agent_name
         self.model = model
+        raw_runner = runner or os.environ.get("GRAVITON_AGENT_RUNNER")
+        self.runner = (raw_runner.strip().lower() if raw_runner and raw_runner.strip() else "sdk")
+        if self.runner not in ("sdk", "agy"):
+            raise ValueError(f"Invalid runner '{self.runner}', must be 'sdk' or 'agy'")
+        self.allow_custom_runner = allow_custom_runner
         self.image_name = image_name or os.environ.get("ANTIGRAVITY_IMAGE", "antigravity-agent:latest")
         self.remote_control = remote_control
         self.dangerously_skip_permissions = dangerously_skip_permissions
@@ -1392,6 +1413,20 @@ class ContainerSupervisor:
         # Ephemeral workspace mount
         cmd.extend(["-v", f"{self.temp_workspace.resolve()}:/workspace", "-w", "/workspace"])
 
+        # Mount SDK runner script if present.
+        # Prioritizing self.repo_dir / "bin" / "agent_sdk_runner.py" enables testing and
+        # runner development for trusted repositories. When allow_custom_runner is False,
+        # only Graviton's internal supervisor runner is mounted.
+        sdk_runner_path = None
+        if self.allow_custom_runner:
+            repo_runner = self.repo_dir / "bin" / "agent_sdk_runner.py"
+            if repo_runner.is_file():
+                sdk_runner_path = repo_runner
+        if not sdk_runner_path:
+            sdk_runner_path = Path(__file__).resolve().parent.parent / "bin" / "agent_sdk_runner.py"
+        if sdk_runner_path.is_file():
+            cmd.extend(["-v", f"{sdk_runner_path.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro"])
+
         # Host agy binary mount
         host_agy = self.agy_binary or shutil.which("agy")
         if host_agy and Path(host_agy).exists():
@@ -1536,13 +1571,25 @@ class ContainerSupervisor:
         if agy_args is not None:
             cmd.extend(agy_args)
         else:
-            inner_cmd = [
-                "agy",
-                "--input-format", "stream-json",
-                "--output-format", "stream-json",
-            ]
-            if self.dangerously_skip_permissions:
-                inner_cmd.append("--dangerously-skip-permissions")
+            if self.runner == "sdk":
+                inner_cmd = [
+                    "python3",
+                    "/usr/local/bin/agent_sdk_runner.py",
+                    "--input-format", "stream-json",
+                    "--output-format", "stream-json",
+                ]
+                if self.dangerously_skip_permissions:
+                    inner_cmd.append("--dangerously-skip-permissions")
+                else:
+                    inner_cmd.append("--no-dangerously-skip-permissions")
+            else:
+                inner_cmd = [
+                    "agy",
+                    "--input-format", "stream-json",
+                    "--output-format", "stream-json",
+                ]
+                if self.dangerously_skip_permissions:
+                    inner_cmd.append("--dangerously-skip-permissions")
             if self.remote_control:
                 inner_cmd.append("--remote-control")
             # Note: Do not pass '--agent' in container mode. Passing '--agent' causes agy to enter
@@ -1705,11 +1752,12 @@ class ContainerSupervisor:
         on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
         idle_timeout: Optional[float] = None,
         max_duration: Optional[float] = 1800.0,
+        **kwargs: Any,
     ) -> SupervisorResult:
         """Execute an autonomous /goal in the container session."""
         clean_goal = goal.strip()
         prompt = clean_goal if clean_goal.startswith("/goal") else f"/goal {clean_goal}"
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -1803,6 +1851,9 @@ def run_container_turn(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    project_id: Optional[str] = None,
+    runner: Optional[str] = None,
+    allow_custom_runner: bool = False,
     **kwargs: Any,
 ) -> SupervisorResult:
     """
@@ -1828,6 +1879,9 @@ def run_container_turn(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        project_id=project_id,
+        runner=runner,
+        allow_custom_runner=allow_custom_runner,
     ) as supervisor:
         extra = dict(kwargs)
         if on_thought is not None:
@@ -1874,6 +1928,10 @@ def run_container_goal(
     docker_binary: Optional[str] = None,
     agy_binary: Optional[str] = None,
     cache_dir: Optional[Union[str, Path]] = None,
+    project_id: Optional[str] = None,
+    runner: Optional[str] = None,
+    allow_custom_runner: bool = False,
+    **kwargs: Any,
 ) -> SupervisorResult:
     """
     Convenience function to execute an autonomous /goal in an isolated container.
@@ -1898,8 +1956,11 @@ def run_container_goal(
         docker_binary=docker_binary,
         agy_binary=agy_binary,
         cache_dir=cache_dir,
+        project_id=project_id,
+        runner=runner,
+        allow_custom_runner=allow_custom_runner,
     ) as supervisor:
-        extra = {}
+        extra = dict(kwargs)
         if on_thought is not None:
             extra["on_thought"] = on_thought
         if on_tool_call is not None:
@@ -1917,4 +1978,9 @@ def run_container_goal(
             on_event=on_event,
             **extra,
         )
+
+
+# Aliases for container run helpers
+run_isolated_agent_turn = run_container_turn
+run_isolated_agent_goal = run_container_goal
 

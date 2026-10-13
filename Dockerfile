@@ -27,7 +27,11 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # 3. Install Antigravity Python SDK & CLI dependencies
 RUN pip install --break-system-packages google-antigravity
 
-# 4. Set workspace & credential directories
+# 4. Install Antigravity SDK Agent Runner
+COPY bin/agent_sdk_runner.py /usr/local/bin/agent_sdk_runner.py
+RUN chmod +x /usr/local/bin/agent_sdk_runner.py
+
+# 5. Set workspace & credential directories
 WORKDIR /workspace
 RUN mkdir -p /root/.gemini/antigravity-cli \
     && mkdir -p -m 777 /home/ubuntu/.gemini/antigravity-cli \

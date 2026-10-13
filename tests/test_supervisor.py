@@ -35,6 +35,8 @@ from lib.supervisor import (
     run_container_goal,
     run_container_turn,
     run_goal_turn,
+    run_isolated_agent_goal,
+    run_isolated_agent_turn,
     run_stream_turn,
     sync_conversation_to_agyhub,
     to_ssh_url,
@@ -881,6 +883,45 @@ class TestStreamSession(unittest.TestCase):
             mock_instance.run_turn.assert_called_once_with("Custom prompt", timeout=60.0, on_event=None)
             self.assertEqual(res, expected_res)
 
+    def test_stream_session_receive_turn_and_run_goal_kwargs_handling(self):
+        """Verify StreamSession.receive_turn and run_goal cleanly accept arbitrary extra kwargs."""
+        session = StreamSession(agy_binary="agy")
+        session.proc = self.mock_proc
+        session.conversation_id = "conv-extra-kw"
+
+        self.mock_proc.stdout.readline.side_effect = [
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Done.",
+                    "duration_seconds": 1.0,
+                    "num_turns": 1,
+                    "usage": {},
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Goal done.",
+                    "duration_seconds": 1.5,
+                    "num_turns": 1,
+                    "usage": {},
+                },
+            }) + "\n",
+            "",
+        ]
+
+        res = session.receive_turn(custom_kwarg="val123", unexpected_param="test")
+        self.assertTrue(res.is_success)
+        self.assertEqual(res.response, "Done.")
+
+        goal_res = session.run_goal("Test goal", custom_kwarg="val456", unexpected_param="test2")
+        self.assertTrue(goal_res.is_success)
+        self.assertEqual(goal_res.response, "Goal done.")
+
+
 
 class TestCleanWorkspaceDir(unittest.TestCase):
     def test_clean_workspace_dir_none(self):
@@ -1347,8 +1388,9 @@ class TestContainerSupervisor(unittest.TestCase):
             # Image
             self.assertIn("test-agent-image:custom", cmd)
 
-            # Inner agy command
-            self.assertIn("agy", cmd)
+            # Inner SDK runner command
+            self.assertIn("python3", cmd)
+            self.assertIn("/usr/local/bin/agent_sdk_runner.py", cmd)
             self.assertIn("--input-format", cmd)
             self.assertIn("stream-json", cmd)
             self.assertIn("--output-format", cmd)
@@ -1360,6 +1402,146 @@ class TestContainerSupervisor(unittest.TestCase):
             self.assertIn("--project", cmd)
             self.assertIn("project-xyz-123", cmd)
             self.assertIn("--verbose", cmd)
+
+    def test_build_docker_command_with_agy_runner(self):
+        """Verify build_docker_command falls back to agy when runner='agy'."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="agy_runner_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="agy",
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn("agy", cmd)
+        self.assertIn("--input-format", cmd)
+        self.assertIn("stream-json", cmd)
+
+    def test_container_supervisor_runner_string_sanitization(self):
+        """Verify runner parameter and env var are stripped and lowercased."""
+        sup1 = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sanitize_test_1",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="  SDK  ",
+        )
+        self.assertEqual(sup1.runner, "sdk")
+
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": "  AGY  "}):
+            sup2 = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sanitize_test_2",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup2.runner, "agy")
+
+    def test_container_supervisor_runner_empty_env_var_defaults_to_sdk(self):
+        """Verify empty or blank GRAVITON_AGENT_RUNNER env var defaults to sdk."""
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": ""}):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="empty_runner_env_test_1",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup.runner, "sdk")
+
+        with patch.dict(os.environ, {"GRAVITON_AGENT_RUNNER": "   \t  "}):
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="empty_runner_env_test_2",
+                base_workspaces_dir=self.tmp_dir.name,
+            )
+            self.assertEqual(sup.runner, "sdk")
+
+    def test_build_docker_command_sdk_runner_resolution_order(self):
+        """Verify build_docker_command prioritizes repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=True."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_order_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+                allow_custom_runner=True,
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
+    def test_build_docker_command_sdk_runner_allow_custom_runner_default_false(self):
+        """Verify build_docker_command ignores repo_dir/bin/agent_sdk_runner.py by default (allow_custom_runner=False)."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_default_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+            )
+            self.assertFalse(sup.allow_custom_runner)
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertNotIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+            self.assertTrue(any("/usr/local/bin/agent_sdk_runner.py:ro" in arg for arg in cmd))
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
+    def test_supervisor_invalid_runner_raises_value_error(self):
+        """Verify ContainerSupervisor raises ValueError when an invalid runner option is passed."""
+        with self.assertRaises(ValueError) as ctx:
+            ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="invalid_runner_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="invalid_runner",
+            )
+        self.assertIn("Invalid runner 'invalid_runner', must be 'sdk' or 'agy'", str(ctx.exception))
+
+    def test_build_docker_command_sdk_runner_allow_custom_runner_false(self):
+        """Verify build_docker_command ignores repo_dir/bin/agent_sdk_runner.py when allow_custom_runner=False."""
+        custom_bin = self.repo_dir / "bin"
+        custom_bin.mkdir(parents=True, exist_ok=True)
+        custom_runner = custom_bin / "agent_sdk_runner.py"
+        custom_runner.write_text("#!/usr/bin/env python3\n# custom runner\n")
+        try:
+            sup = ContainerSupervisor(
+                repo_dir=self.repo_dir,
+                run_id="sdk_res_disabled_test",
+                base_workspaces_dir=self.tmp_dir.name,
+                runner="sdk",
+                allow_custom_runner=False,
+            )
+            sup.prepare_workspace()
+            cmd = sup.build_docker_command()
+            self.assertNotIn(f"{custom_runner.resolve()}:/usr/local/bin/agent_sdk_runner.py:ro", cmd)
+            self.assertTrue(any("/usr/local/bin/agent_sdk_runner.py:ro" in arg for arg in cmd))
+        finally:
+            if custom_runner.exists():
+                custom_runner.unlink()
+
+    def test_build_docker_command_sdk_runner_no_dangerously_skip_permissions(self):
+        """Verify build_docker_command with runner='sdk' and dangerously_skip_permissions=False passes --no-dangerously-skip-permissions."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="sdk_no_perms_test",
+            base_workspaces_dir=self.tmp_dir.name,
+            runner="sdk",
+            dangerously_skip_permissions=False,
+        )
+        sup.prepare_workspace()
+        cmd = sup.build_docker_command()
+        self.assertIn("--no-dangerously-skip-permissions", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
 
     def test_build_docker_command_falls_back_to_remote_control_instance_name(self):
         """Verify build_docker_command falls back to get_remote_control_instance_name() when env is unset."""
@@ -1650,6 +1832,178 @@ class TestContainerSupervisor(unittest.TestCase):
                 max_duration=1800.0,
             )
             self.assertEqual(res2, expected_res)
+
+    def test_run_isolated_agent_turn_and_goal_runner_propagation(self):
+        """Verify run_isolated_agent_turn and run_isolated_agent_goal accept and forward runner."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_turn.return_value = SupervisorResult(status="SUCCESS")
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            # Test run_isolated_agent_turn with runner="agy"
+            res_turn = run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                runner="agy",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "agy")
+            self.assertEqual(res_turn.status, "SUCCESS")
+
+            # Test run_isolated_agent_turn with runner="sdk"
+            run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                runner="sdk",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "sdk")
+
+            # Test run_isolated_agent_goal with runner="agy"
+            res_goal = run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                runner="agy",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "agy")
+            self.assertEqual(res_goal.status, "SUCCESS")
+
+            # Test run_isolated_agent_goal with runner="sdk"
+            run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                runner="sdk",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("runner"), "sdk")
+
+    def test_run_isolated_agent_goal_kwargs_propagation(self):
+        """Verify run_isolated_agent_goal forwards arbitrary kwargs to supervisor.run_goal."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            res = run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                custom_kwarg="val123",
+                extra_number=99,
+            )
+            self.assertEqual(res.status, "SUCCESS")
+            mock_inst.run_goal.assert_called_once()
+            call_kwargs = mock_inst.run_goal.call_args.kwargs
+            self.assertEqual(call_kwargs.get("custom_kwarg"), "val123")
+            self.assertEqual(call_kwargs.get("extra_number"), 99)
+
+    def test_container_supervisor_run_goal_forwards_kwargs_to_run_turn(self):
+        """Verify ContainerSupervisor.run_goal forwards extra kwargs down to run_turn."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="run_goal_kwargs_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        with patch.object(sup, "run_turn") as mock_run_turn:
+            mock_run_turn.return_value = SupervisorResult(status="SUCCESS")
+            res = sup.run_goal("Test goal", custom_param="hello", test_flag=True)
+            self.assertEqual(res.status, "SUCCESS")
+            mock_run_turn.assert_called_once()
+            call_kwargs = mock_run_turn.call_args.kwargs
+            self.assertEqual(call_kwargs.get("custom_param"), "hello")
+            self.assertEqual(call_kwargs.get("test_flag"), True)
+
+    def test_unmocked_kwargs_delegation_to_stream_session(self):
+        """Verify ContainerSupervisor.run_turn, ContainerSupervisor.run_goal, and StreamSession.receive_turn handle arbitrary kwargs without TypeError."""
+        sup = ContainerSupervisor(
+            repo_dir=self.repo_dir,
+            run_id="unmocked_kwargs_test",
+            base_workspaces_dir=self.tmp_dir.name,
+        )
+        session = StreamSession(agy_binary="agy")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stdout.readline.side_effect = [
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Turn complete with kwargs",
+                    "duration_seconds": 0.5,
+                    "num_turns": 1,
+                    "usage": {"total_tokens": 10},
+                },
+            }) + "\n",
+            json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "SUCCESS",
+                    "response": "Goal complete with kwargs",
+                    "duration_seconds": 0.8,
+                    "num_turns": 2,
+                    "usage": {"total_tokens": 20},
+                },
+            }) + "\n",
+            "",
+        ]
+        session.proc = mock_proc
+        session.conversation_id = "test-conv-unmocked"
+        sup.session = session
+
+        with patch.object(sup, "start"):
+            res_turn = sup.run_turn(
+                "Run unmocked turn",
+                custom_kwarg="val123",
+                extra_number=42,
+            )
+            self.assertTrue(res_turn.is_success)
+            self.assertEqual(res_turn.response, "Turn complete with kwargs")
+
+            res_goal = sup.run_goal(
+                "Run unmocked goal",
+                custom_kwarg="val456",
+                extra_flag=True,
+            )
+            self.assertTrue(res_goal.is_success)
+            self.assertEqual(res_goal.response, "Goal complete with kwargs")
+
+    def test_run_container_turn_and_goal_project_id_propagation(self):
+        """Verify run_container_turn, run_container_goal, and aliases accept and forward project_id."""
+        with patch("lib.supervisor.ContainerSupervisor") as mock_cls:
+            mock_inst = MagicMock()
+            mock_cls.return_value.__enter__.return_value = mock_inst
+            mock_inst.run_turn.return_value = SupervisorResult(status="SUCCESS")
+            mock_inst.run_goal.return_value = SupervisorResult(status="SUCCESS")
+
+            run_container_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-turn",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-turn")
+
+            run_container_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-goal",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-goal")
+
+            run_isolated_agent_turn(
+                prompt="Fix bug",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-turn-alias",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-turn-alias")
+
+            run_isolated_agent_goal(
+                goal="Achieve 100% tests",
+                repo_dir=self.repo_dir,
+                project_id="test-proj-goal-alias",
+            )
+            self.assertEqual(mock_cls.call_args.kwargs.get("project_id"), "test-proj-goal-alias")
+
 
 
 class TestProjectResolutionAndAgyHubSync(unittest.TestCase):
