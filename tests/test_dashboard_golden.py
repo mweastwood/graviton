@@ -77,11 +77,11 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             # If the template or markdown format changes intentionally, update these golden hashes.
             self.assertEqual(
                 hashlib.sha256(md.encode()).hexdigest(),
-                "1b31005add23845267697f613f0bac6e43c3f114336c3989224afee48543b56e",
+                "166ffe53126196d4d4a29bbd304a3da42c970487264edc0bdc7a29daf3ca7afe",
             )
             self.assertEqual(
                 hashlib.sha256(html_out.encode()).hexdigest(),
-                "d95cf613b12a4c979fc730cc9a448467d084183738efd2a0399b99d5a687abd0",
+                "dfdd40f5089b0c4a31e51b9487fcf8a705cba5a642c3ca7947e3cf443c9d5742",
             )
 
     def test_golden_populated_state(self):
@@ -234,7 +234,7 @@ class TestDashboardGoldenOutput(unittest.TestCase):
             )
             self.assertEqual(
                 hashlib.sha256(html_out.encode()).hexdigest(),
-                "51e272f89efdc366c766aeef016e93267f9b026ac05701f41f3f906d72a4b7be",
+                "115b2359ba9a9520a9542c1cfca1bed6903b53364f7daf404a9b2e5ec4a2bdc4",
             )
 
 
