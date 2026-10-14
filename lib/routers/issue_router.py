@@ -20,6 +20,7 @@ from lib.routers.base import (
     _build_accepted_response,
     _extract_repo_info,
     has_explicit_command,
+    is_agent_enabled,
     is_pr_created_by_us,
 )
 from lib.security import extract_agent_marker
@@ -36,6 +37,7 @@ def handle_issues_event(
     default_drafter: str = "pr_drafter",
     repo_root: Optional[Path] = None,
     repos_dir: Optional[Path] = None,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'issues' webhook event (Opened, Edited, Labeled)."""
     action = payload.get("action")
@@ -83,6 +85,12 @@ def handle_issues_event(
                 "reason": "Release issue edit does not trigger triage",
             }
 
+        if not is_agent_enabled(default_triager, agent_manager):
+            return {
+                "status": "ignored",
+                "reason": f"Agent '{default_triager}' is disabled",
+            }
+
         if repo_full_name:
             prompt = f"Triage Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
         else:
@@ -105,6 +113,11 @@ def handle_issues_event(
                 return {
                     "status": "ignored",
                     "reason": "Bot issue event dropped",
+                }
+            if not is_agent_enabled(default_drafter, agent_manager):
+                return {
+                    "status": "ignored",
+                    "reason": f"Agent '{default_drafter}' is disabled",
                 }
             if repo_full_name:
                 prompt = f"Draft initial PR to implement ready Issue #{issue_number} in {repo_full_name}: '{issue_title}' - {issue_body}"
@@ -141,6 +154,7 @@ def handle_issue_comment_event(
     pr_tracker: Optional[Any] = None,
     repo_root: Optional[Path] = None,
     repos_dir: Optional[Path] = None,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'issue_comment' webhook event."""
     action = payload.get("action")
@@ -204,6 +218,12 @@ def handle_issue_comment_event(
                 return {
                     "status": "ignored",
                     "reason": "Bot comment dropped",
+                }
+
+            if not is_agent_enabled(agent, agent_manager):
+                return {
+                    "status": "ignored",
+                    "reason": f"Agent '{agent}' is disabled",
                 }
 
             if repo_full_name:
@@ -292,6 +312,11 @@ def handle_issue_comment_event(
                         "status": "ignored",
                         "reason": "Bot comment dropped",
                     }
+                if not is_agent_enabled(agent, agent_manager):
+                    return {
+                        "status": "ignored",
+                        "reason": f"Agent '{agent}' is disabled",
+                    }
                 if repo_full_name:
                     prompt = f"Draft initial PR for Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"
                 else:
@@ -312,6 +337,11 @@ def handle_issue_comment_event(
                     return {
                         "status": "ignored",
                         "reason": "Bot comment dropped",
+                    }
+                if not is_agent_enabled(agent, agent_manager):
+                    return {
+                        "status": "ignored",
+                        "reason": f"Agent '{agent}' is disabled",
                     }
                 if repo_full_name:
                     prompt = f"Continue triage on Issue #{issue_number} in {repo_full_name} based on comment: '{comment_body}'"

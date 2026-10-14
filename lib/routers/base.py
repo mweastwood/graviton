@@ -8,6 +8,7 @@ import subprocess
 import threading
 from typing import Any, Dict, Optional, Tuple
 
+from lib.agents import is_agent_enabled
 from lib.pr_tracker import is_bot_event
 
 

@@ -13,6 +13,7 @@ from lib.routers.base import (
     _pr_review_timestamps,
     _pr_review_timestamps_lock,
     has_explicit_command,
+    is_agent_enabled,
     is_pr_created_by_us,
 )
 from lib.security import extract_agent_marker
@@ -69,6 +70,7 @@ def handle_pull_request_event(
     pr_tracker: Optional[Any] = None,
     debounce_window: float = 30.0,
     use_goal: bool = False,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request' webhook event."""
     action = payload.get("action")
@@ -87,6 +89,12 @@ def handle_pull_request_event(
             return {
                 "status": "ignored",
                 "reason": "Bot PR event dropped",
+            }
+
+        if not is_agent_enabled(default_reviewer, agent_manager):
+            return {
+                "status": "ignored",
+                "reason": f"Agent '{default_reviewer}' is disabled",
             }
 
         if pr_number is not None and debounce_window > 0:
@@ -132,6 +140,7 @@ def handle_pull_request_review_event(
     default_fixer: str = "code_fixer",
     pr_tracker: Optional[Any] = None,
     use_goal: bool = False,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review' webhook event."""
     action = payload.get("action")
@@ -182,6 +191,11 @@ def handle_pull_request_review_event(
                 "status": "ignored",
                 "reason": f"Review state '{review_state}' with approval marker does not trigger fixer",
             }
+        if not is_agent_enabled(default_fixer, agent_manager):
+            return {
+                "status": "ignored",
+                "reason": f"Agent '{default_fixer}' is disabled",
+            }
         goal_prompt = format_pr_feedback_goal(pr_number, review_body, repo_full_name=repo_full_name)
         if use_goal:
             prompt = goal_prompt
@@ -212,6 +226,7 @@ def handle_pull_request_review_comment_event(
     payload: Dict[str, Any],
     default_fixer: str = "code_fixer",
     use_goal: bool = False,
+    agent_manager: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Handle GitHub 'pull_request_review_comment' webhook event (inline comments)."""
     action = payload.get("action")
@@ -246,6 +261,11 @@ def handle_pull_request_review_comment_event(
         }
 
     if action == "created":
+        if not is_agent_enabled(default_fixer, agent_manager):
+            return {
+                "status": "ignored",
+                "reason": f"Agent '{default_fixer}' is disabled",
+            }
         goal_prompt = format_pr_review_comment_goal(
             pr_number, file_path, line, comment_body, repo_full_name=repo_full_name
         )
