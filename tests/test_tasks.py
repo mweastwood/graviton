@@ -1740,7 +1740,7 @@ class TestTaskManager(unittest.TestCase):
         self.assertTrue(manager.wait_for_task(task, target_statuses=(TaskStatus.RUNNING, TaskStatus.COMPLETED)))
 
         self.assertEqual(task.selected_pool, "claude_gpt")
-        self.assertEqual(task.selected_model, "claude-sonnet-5-5-medium")
+        self.assertEqual(task.selected_model, DEFAULT_THIRD_PARTY_MODELS[0])
         manager.stop()
 
     def test_get_stats_queue_status_during_single_pool_exhaustion(self):

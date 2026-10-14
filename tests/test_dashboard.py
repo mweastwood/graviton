@@ -1714,12 +1714,12 @@ class TestDashboardUpdater(unittest.TestCase):
         self.assertTrue(captured_tmp[0].endswith(expected_suffix))
 
     def test_parse_dashboard_markdown_model_selection_fields(self):
-        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-3.6-flash-high` |"
+        md = "# Dashboard\n| **Active Pool** | `gemini` |\n| **Active Model** | `gemini-4-argon-medium` |"
         parsed = parse_dashboard_markdown(md)
         self.assertIn("available_gemini_models", parsed)
         self.assertIn("available_third_party_models", parsed)
-        self.assertEqual(parsed["active_gemini_model"], "gemini-3.6-flash-high")
-        self.assertIn("gemini-3.6-flash-high", parsed["available_gemini_models"])
+        self.assertEqual(parsed["active_gemini_model"], "gemini-4-argon-medium")
+        self.assertIn("gemini-4-argon-medium", parsed["available_gemini_models"])
 
     def test_render_dashboard_html_model_dropdown_elements(self):
         tracker = QuotaTracker()

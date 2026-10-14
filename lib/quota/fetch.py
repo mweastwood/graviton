@@ -86,20 +86,21 @@ def _get_effective_parse_json():
 
 
 DEFAULT_GEMINI_MODELS: List[str] = [
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-4-argon-low",
+    "gemini-3.8-flash-high",
     "gemini-3.8-flash-medium",
-    "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-low",
-    "gemini-3.5-flash-high",
-    "gemini-3.5-flash-medium",
-    "gemini-3.5-flash-low",
-    "gemini-3.1-pro-high",
-    "gemini-3.1-pro-low",
+    "gemini-3.8-flash-low",
 ]
 
 DEFAULT_THIRD_PARTY_MODELS: List[str] = [
-    "claude-sonnet-5-5-medium",
     "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+    "claude-opus-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
+    "claude-sonnet-5-5-low",
     "gpt-oss-120b-medium",
 ]
 
